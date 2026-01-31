@@ -11,7 +11,9 @@
 #[cfg(doc)]
 use crate::vm::Vm;
 
+use crate::host::SigHash;
 use crate::program::Program;
+use crate::program::{HostSigId, SymbolId};
 use crate::value::FuncId;
 use crate::vm::TrapInfo;
 
@@ -40,6 +42,10 @@ impl TraceMask {
     pub const RUN: Self = Self(1 << 0);
     /// Emit [`TraceEvent::Instr`] for each executed instruction.
     pub const INSTR: Self = Self(1 << 1);
+    /// Emit [`TraceEvent::ScopeEnter`] and [`TraceEvent::ScopeExit`] for call frames.
+    pub const CALL: Self = Self(1 << 2);
+    /// Emit [`TraceEvent::ScopeEnter`] and [`TraceEvent::ScopeExit`] for host calls.
+    pub const HOST: Self = Self(1 << 3);
 
     /// Returns `true` if this mask includes all bits in `other`.
     #[must_use]
@@ -55,6 +61,25 @@ pub enum TraceRunMode {
     Unverified,
     /// Running verified bytecode (still validates host call returns).
     Verified,
+}
+
+/// The kind of scope being entered/exited.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScopeKind {
+    /// A VM call frame (function activation).
+    CallFrame {
+        /// Function id for the frame being entered/exited.
+        func: FuncId,
+    },
+    /// A VM host call.
+    HostCall {
+        /// Host signature identifier.
+        host_sig: HostSigId,
+        /// Host symbol identifier.
+        symbol: SymbolId,
+        /// Host signature hash carried in bytecode/program.
+        sig_hash: SigHash,
+    },
 }
 
 /// A trace event emitted by the VM.
@@ -81,6 +106,36 @@ pub enum TraceEvent<'a> {
         span_id: Option<u64>,
         /// Opcode byte.
         opcode: u8,
+    },
+    /// Enter a profiling scope.
+    ///
+    /// Scope events are emitted for:
+    /// - call frames (when [`TraceMask::CALL`] is requested)
+    /// - host calls (when [`TraceMask::HOST`] is requested)
+    ScopeEnter {
+        /// Scope kind.
+        kind: ScopeKind,
+        /// Current stack depth (frames) after entering the scope.
+        depth: usize,
+        /// Function id at the scope boundary.
+        func: FuncId,
+        /// Program counter at the scope boundary.
+        pc: u32,
+        /// Best-effort span id at the scope boundary.
+        span_id: Option<u64>,
+    },
+    /// Exit a profiling scope.
+    ScopeExit {
+        /// Scope kind.
+        kind: ScopeKind,
+        /// Current stack depth (frames) before exiting the scope.
+        depth: usize,
+        /// Function id at the scope boundary.
+        func: FuncId,
+        /// Program counter at the scope boundary.
+        pc: u32,
+        /// Best-effort span id at the scope boundary.
+        span_id: Option<u64>,
     },
     /// End of a VM run.
     RunEnd {

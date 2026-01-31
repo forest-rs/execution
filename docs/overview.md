@@ -12,7 +12,8 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Portable, versioned bytecode serialization.
 - Verifiable programs (fail fast with good diagnostics).
 - `no_std + alloc` core by default; optional `std` feature.
-- Tracing/profiling first; interactive debugging later.
+- Tracing/profiling first; interactive debugging later (including planned call-frame and host-call
+  scopes for external profilers).
 
 ## Non-goals (v1)
 - Incremental recompute / dirty propagation (design should not preclude it).

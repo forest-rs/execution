@@ -17,7 +17,7 @@ use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::host::{Host, HostError};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
-use crate::trace::{TraceEvent, TraceMask, TraceOutcome, TraceRunMode, TraceSink};
+use crate::trace::{ScopeKind, TraceEvent, TraceMask, TraceOutcome, TraceRunMode, TraceSink};
 use crate::value::{AggHandle, Decimal, FuncId, Value};
 use crate::verifier::VerifiedProgram;
 
@@ -364,6 +364,22 @@ impl<H: Host> Vm<H> {
 
         self.push_frame(program, entry, entry_fn, args, Vec::new(), 0, 0)
             .map_err(|t| self.trap(entry, 0, None, t))?;
+
+        if trace_mask.contains(TraceMask::CALL)
+            && let Some(t) = trace.as_mut()
+        {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.event(
+                program,
+                TraceEvent::ScopeEnter {
+                    kind: ScopeKind::CallFrame { func: entry },
+                    depth: self.frames.len(),
+                    func: entry,
+                    pc: 0,
+                    span_id: self.span_at(program, entry, 0),
+                },
+            );
+        }
 
         loop {
             if self.limits.fuel == 0 {
@@ -1068,9 +1084,41 @@ impl<H: Host> Vm<H> {
                         program, callee, callee_fn, &call_args, rets, ret_base, ret_pc,
                     )
                     .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+
+                    if trace_mask.contains(TraceMask::CALL)
+                        && let Some(t) = trace.as_mut()
+                    {
+                        let t: &mut dyn TraceSink = &mut **t;
+                        t.event(
+                            program,
+                            TraceEvent::ScopeEnter {
+                                kind: ScopeKind::CallFrame { func: callee },
+                                depth: self.frames.len(),
+                                func: callee,
+                                pc: 0,
+                                span_id: self.span_at(program, callee, 0),
+                            },
+                        );
+                    }
                 }
 
                 Instr::Ret { eff_in: _, rets } => {
+                    if trace_mask.contains(TraceMask::CALL)
+                        && let Some(t) = trace.as_mut()
+                    {
+                        let t: &mut dyn TraceSink = &mut **t;
+                        t.event(
+                            program,
+                            TraceEvent::ScopeExit {
+                                kind: ScopeKind::CallFrame { func: func_id },
+                                depth: self.frames.len(),
+                                func: func_id,
+                                pc,
+                                span_id,
+                            },
+                        );
+                    }
+
                     let mut ret_vals = Vec::with_capacity(rets.len());
                     for r in &rets {
                         ret_vals.push(
@@ -1157,11 +1205,51 @@ impl<H: Host> Vm<H> {
                         }
                     }
 
+                    if trace_mask.contains(TraceMask::HOST)
+                        && let Some(t) = trace.as_mut()
+                    {
+                        let t: &mut dyn TraceSink = &mut **t;
+                        t.event(
+                            program,
+                            TraceEvent::ScopeEnter {
+                                kind: ScopeKind::HostCall {
+                                    host_sig,
+                                    symbol: hs.symbol,
+                                    sig_hash: hs.sig_hash,
+                                },
+                                depth: self.frames.len(),
+                                func: func_id,
+                                pc,
+                                span_id,
+                            },
+                        );
+                    }
+
                     let (mut out_vals, extra_fuel) =
                         self.host.call(sym, hs.sig_hash, &call_args).map_err(|e| {
                             self.trap(func_id, pc, span_id, Trap::HostCallFailed(e))
                         })?;
                     self.limits.fuel = self.limits.fuel.saturating_sub(extra_fuel);
+
+                    if trace_mask.contains(TraceMask::HOST)
+                        && let Some(t) = trace.as_mut()
+                    {
+                        let t: &mut dyn TraceSink = &mut **t;
+                        t.event(
+                            program,
+                            TraceEvent::ScopeExit {
+                                kind: ScopeKind::HostCall {
+                                    host_sig,
+                                    symbol: hs.symbol,
+                                    sig_hash: hs.sig_hash,
+                                },
+                                depth: self.frames.len(),
+                                func: func_id,
+                                pc,
+                                span_id,
+                            },
+                        );
+                    }
 
                     write_reg_at(&mut self.regs, base, reg_count, eff_out, Value::Unit)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -2111,8 +2199,8 @@ mod tests {
     use crate::asm::Asm;
     use crate::asm::FunctionSig;
     use crate::asm::ProgramBuilder;
-    use crate::host::{HostSig, SigHash};
-    use crate::program::{FunctionDef, Program, StructTypeDef, TypeTableDef, ValueType};
+    use crate::host::{HostSig, SigHash, sig_hash};
+    use crate::program::{FunctionDef, Program, StructTypeDef, SymbolId, TypeTableDef, ValueType};
     use crate::trace::{TraceEvent, TraceMask, TraceOutcome, TraceSink};
     use alloc::vec;
     use alloc::vec::Vec;
@@ -2194,6 +2282,7 @@ mod tests {
                         self.ends += 1;
                         assert!(matches!(outcome, TraceOutcome::Ok));
                     }
+                    _ => {}
                 }
             }
         }
@@ -2225,6 +2314,76 @@ mod tests {
         assert_eq!(trace.starts, 1);
         assert_eq!(trace.ends, 1);
         assert_eq!(trace.instrs, vec![0x12, 0x51]);
+    }
+
+    #[test]
+    fn vm_trace_scopes_fire_for_call_frames_and_host_calls() {
+        struct ScopeTrace {
+            events: Vec<ScopeKind>,
+        }
+
+        impl TraceSink for ScopeTrace {
+            fn mask(&self) -> TraceMask {
+                TraceMask::CALL | TraceMask::HOST
+            }
+
+            fn event(&mut self, _program: &Program, event: TraceEvent<'_>) {
+                match event {
+                    TraceEvent::ScopeEnter { kind, .. } | TraceEvent::ScopeExit { kind, .. } => {
+                        self.events.push(kind);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let sig = HostSig {
+            args: vec![ValueType::I64],
+            rets: vec![ValueType::I64],
+        };
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("id", sig.clone());
+
+        let f0 = pb.declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+            reg_count: 2,
+        });
+        let f1 = pb.declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+            reg_count: 3,
+        });
+
+        let mut a1 = Asm::new();
+        a1.const_i64(1, 9);
+        a1.host_call(0, host_sig, 0, &[1], &[2]);
+        a1.ret(0, &[2]);
+        pb.define_function(f1, a1).unwrap();
+
+        let mut a0 = Asm::new();
+        a0.call(0, f1, 0, &[], &[1]);
+        a0.ret(0, &[1]);
+        pb.define_function(f0, a0).unwrap();
+
+        let p = pb.build_checked().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let mut trace = ScopeTrace { events: Vec::new() };
+        let out = vm.run_traced(&p, f0, &[], &mut trace).unwrap();
+        assert_eq!(out, vec![Value::I64(9)]);
+
+        let f0_kind = ScopeKind::CallFrame { func: f0 };
+        let f1_kind = ScopeKind::CallFrame { func: f1 };
+        let host_kind = ScopeKind::HostCall {
+            host_sig,
+            symbol: SymbolId(0),
+            sig_hash: sig_hash(&sig),
+        };
+        assert_eq!(
+            trace.events,
+            vec![f0_kind, f1_kind, host_kind, host_kind, f1_kind, f0_kind]
+        );
     }
 
     #[test]

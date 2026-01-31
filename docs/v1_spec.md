@@ -219,6 +219,20 @@ The serialized program is:
 
 Unknown section tags are skipped by decoders (forward-compat). Known sections are rejected if duplicated.
 
+## Tracing (hooks)
+
+The VM can optionally emit tracing events to a sink.
+
+v1 is intended to support:
+- run start/end events
+- instruction step events
+- scope events for profiling:
+  - call frames (function enter/exit)
+  - host calls (time spent in embedder code)
+
+The tracing API is designed so that profiler integrations (e.g. using the ecosystem `profiling`
+crate) can be built as adapters without adding any dependency to the `execution_tape` core crate.
+
 ### Section tags (v1)
 - `1 = symbols`
 - `2 = const_pool`
