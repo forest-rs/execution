@@ -1,0 +1,71 @@
+// Copyright 2026 the Execution Tape Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! `execution_tape`: a portable, verifiable bytecode format and register VM runtime.
+//!
+//! This crate is in early design/implementation. The current v1 draft spec lives in:
+//! - `docs/v1_spec.md`
+//! - `docs/overview.md`
+//!
+//! ## Example
+//!
+//! ```no_run
+//! extern crate alloc;
+//!
+//! use alloc::vec;
+//! use alloc::vec::Vec;
+//!
+//! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+//! use execution_tape::host::{Host, HostError, SigHash};
+//! use execution_tape::program::ValueType;
+//! use execution_tape::value::{FuncId, Value};
+//! use execution_tape::vm::{Limits, Vm};
+//!
+//! struct NoHost;
+//!
+//! impl Host for NoHost {
+//!     fn call(
+//!         &mut self,
+//!         _symbol: &str,
+//!         _sig_hash: SigHash,
+//!         _args: &[Value],
+//!     ) -> Result<(Vec<Value>, u64), HostError> {
+//!         Err(HostError::UnknownSymbol)
+//!     }
+//! }
+//!
+//! let mut a = Asm::new();
+//! a.const_i64(1, 7);
+//! a.ret(0, &[1]);
+//!
+//! let mut pb = ProgramBuilder::new();
+//! pb.push_function_checked(
+//!     a,
+//!     FunctionSig {
+//!         arg_types: vec![],
+//!         ret_types: vec![ValueType::I64],
+//!         reg_count: 2,
+//!     },
+//! )?;
+//! let program = pb.build_checked()?;
+//!
+//! let mut vm = Vm::new(NoHost, Limits::default());
+//! let out = vm.run(&program, FuncId(0), &[]).unwrap();
+//! assert_eq!(out, vec![Value::I64(7)]);
+//! # Ok::<(), execution_tape::asm::BuildError>(())
+//! ```
+
+#![no_std]
+
+extern crate alloc;
+
+pub mod aggregates;
+pub mod asm;
+pub(crate) mod bytecode;
+pub mod format;
+pub mod host;
+pub mod program;
+pub mod trace;
+pub mod value;
+pub mod verifier;
+pub mod vm;

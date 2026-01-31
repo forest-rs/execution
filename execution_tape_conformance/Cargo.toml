@@ -1,0 +1,17 @@
+[package]
+name = "execution_tape_conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal conformance/regression tests for the execution_tape format, verifier, and VM."
+readme = "README.md"
+keywords = ["vm", "bytecode", "tests"]
+categories = ["development-tools::testing"]
+
+[lints]
+workspace = true
+
+[dependencies]
+execution_tape = { path = "../execution_tape" }
