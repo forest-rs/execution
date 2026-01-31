@@ -5,6 +5,7 @@ Workspace repository for the `execution_tape` bytecode container + VM and relate
 Crates:
 - `execution_tape/`: core `no_std + alloc` crate (format, verifier, VM, tracing hooks)
 - `execution_tape_conformance/`: conformance/regression tests
+- `execution_tape_wind_tunnel/`: benchmarks (Criterion)
 
 Docs:
 - `docs/overview.md`
@@ -19,4 +20,5 @@ Suggested checks:
 cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+cargo bench -p execution_tape_wind_tunnel
 ```
