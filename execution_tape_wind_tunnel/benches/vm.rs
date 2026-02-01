@@ -4,7 +4,7 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-use execution_tape::host::{Host, HostError, HostSig, SigHash, sig_hash as sig_hash_fn};
+use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn};
 use execution_tape::program::ValueType;
 use execution_tape::trace::{TraceEvent, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
@@ -336,7 +336,7 @@ impl Host for NopHost {
         &mut self,
         _symbol: &str,
         _sig_hash: SigHash,
-        _args: &[Value],
+        _args: &[ValueRef<'_>],
     ) -> Result<(Vec<Value>, u64), HostError> {
         Err(HostError::UnknownSymbol)
     }
@@ -350,7 +350,7 @@ impl Host for IdentityHost {
         &mut self,
         symbol: &str,
         sig_hash: SigHash,
-        args: &[Value],
+        args: &[ValueRef<'_>],
     ) -> Result<(Vec<Value>, u64), HostError> {
         if symbol != "id" {
             return Err(HostError::UnknownSymbol);
@@ -362,10 +362,10 @@ impl Host for IdentityHost {
         if sig_hash != expected {
             return Err(HostError::SignatureMismatch);
         }
-        let Some(Value::I64(x)) = args.first() else {
+        let Some(ValueRef::I64(x)) = args.first().copied() else {
             return Err(HostError::Failed);
         };
-        Ok((vec![Value::I64(*x)], 0))
+        Ok((vec![Value::I64(x)], 0))
     }
 }
 

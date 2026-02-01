@@ -13,7 +13,7 @@ use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap};
 use crate::bytecode::{DecodedInstr, Instr};
-use crate::host::{Host, HostError};
+use crate::host::{Host, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceEvent, TraceMask, TraceOutcome, TraceSink};
@@ -1109,10 +1109,10 @@ impl<H: Host> Vm<H> {
                         .host_sig_rets(hs)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
-                    let mut call_args = Vec::with_capacity(args.len());
+                    let mut call_args: Vec<ValueRef<'_>> = Vec::with_capacity(args.len());
                     for a in args {
                         call_args.push(
-                            read_reg_at(&self.regs, base, reg_count, a)
+                            read_value_ref_at(&self.regs, base, reg_count, a)
                                 .map_err(|t| self.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -2038,6 +2038,41 @@ fn read_reg_at(regs: &[Value], base: usize, reg_count: usize, reg: u32) -> Resul
     Ok(regs[idx].clone())
 }
 
+fn read_reg_ref_at(
+    regs: &[Value],
+    base: usize,
+    reg_count: usize,
+    reg: u32,
+) -> Result<&Value, Trap> {
+    let idx = base + (reg as usize);
+    if idx >= base + reg_count {
+        return Err(Trap::RegOutOfBounds);
+    }
+    Ok(&regs[idx])
+}
+
+fn read_value_ref_at<'a>(
+    regs: &'a [Value],
+    base: usize,
+    reg_count: usize,
+    reg: u32,
+) -> Result<ValueRef<'a>, Trap> {
+    let v = read_reg_ref_at(regs, base, reg_count, reg)?;
+    Ok(match v {
+        Value::Unit => ValueRef::Unit,
+        Value::Bool(b) => ValueRef::Bool(*b),
+        Value::I64(i) => ValueRef::I64(*i),
+        Value::U64(u) => ValueRef::U64(*u),
+        Value::F64(f) => ValueRef::F64(*f),
+        Value::Decimal(d) => ValueRef::Decimal(*d),
+        Value::Bytes(b) => ValueRef::Bytes(b.as_slice()),
+        Value::Str(s) => ValueRef::Str(s.as_str()),
+        Value::Obj(o) => ValueRef::Obj(*o),
+        Value::Agg(h) => ValueRef::Agg(*h),
+        Value::Func(f) => ValueRef::Func(*f),
+    })
+}
+
 fn write_reg_at(
     regs: &mut [Value],
     base: usize,
@@ -2072,10 +2107,10 @@ mod tests {
             &mut self,
             symbol: &str,
             _sig_hash: SigHash,
-            args: &[Value],
+            args: &[ValueRef<'_>],
         ) -> Result<(Vec<Value>, u64), HostError> {
             match symbol {
-                "id" => Ok((args.to_vec(), 0)),
+                "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
                 _ => Err(HostError::UnknownSymbol),
             }
         }
@@ -2090,7 +2125,7 @@ mod tests {
             &mut self,
             _symbol: &str,
             _sig_hash: SigHash,
-            _args: &[Value],
+            _args: &[ValueRef<'_>],
         ) -> Result<(Vec<Value>, u64), HostError> {
             self.calls += 1;
             Ok((Vec::new(), 0))
@@ -2555,7 +2590,7 @@ mod tests {
                 &mut self,
                 symbol: &str,
                 _sig_hash: SigHash,
-                _args: &[Value],
+                _args: &[ValueRef<'_>],
             ) -> Result<(Vec<Value>, u64), HostError> {
                 match symbol {
                     "bad" => Ok((vec![Value::Bool(true)], 0)),

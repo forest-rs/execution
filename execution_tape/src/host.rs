@@ -10,6 +10,10 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::program::ValueType;
+use crate::value::AggHandle;
+use crate::value::Decimal;
+use crate::value::FuncId;
+use crate::value::Obj;
 use crate::value::Value;
 
 #[cfg(doc)]
@@ -78,6 +82,76 @@ impl fmt::Display for HostError {
 
 impl core::error::Error for HostError {}
 
+/// A borrowed host-call argument value.
+///
+/// This is a view into VM registers to avoid cloning alloc-backed values (e.g. bytes/strings) just
+/// to pass them to the host.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ValueRef<'a> {
+    /// `()`.
+    Unit,
+    /// Boolean.
+    Bool(bool),
+    /// Signed 64-bit integer.
+    I64(i64),
+    /// Unsigned 64-bit integer.
+    U64(u64),
+    /// 64-bit float.
+    F64(f64),
+    /// Decimal.
+    Decimal(Decimal),
+    /// Byte string.
+    Bytes(&'a [u8]),
+    /// UTF-8 string.
+    Str(&'a str),
+    /// Host object.
+    Obj(Obj),
+    /// Aggregate handle (tuple/struct/array).
+    Agg(AggHandle),
+    /// Function reference.
+    Func(FuncId),
+}
+
+impl<'a> ValueRef<'a> {
+    /// Converts this borrowed view into an owned [`Value`].
+    ///
+    /// This allocates for bytes/strings and is mainly intended for tests and simple hosts.
+    #[must_use]
+    pub fn to_value(self) -> Value {
+        match self {
+            Self::Unit => Value::Unit,
+            Self::Bool(b) => Value::Bool(b),
+            Self::I64(i) => Value::I64(i),
+            Self::U64(u) => Value::U64(u),
+            Self::F64(f) => Value::F64(f),
+            Self::Decimal(d) => Value::Decimal(d),
+            Self::Bytes(b) => Value::Bytes(b.to_vec()),
+            Self::Str(s) => Value::Str(s.into()),
+            Self::Obj(o) => Value::Obj(o),
+            Self::Agg(h) => Value::Agg(h),
+            Self::Func(f) => Value::Func(f),
+        }
+    }
+
+    /// Returns the corresponding value type tag.
+    #[must_use]
+    pub fn value_type(self) -> ValueType {
+        match self {
+            Self::Unit => ValueType::Unit,
+            Self::Bool(_) => ValueType::Bool,
+            Self::I64(_) => ValueType::I64,
+            Self::U64(_) => ValueType::U64,
+            Self::F64(_) => ValueType::F64,
+            Self::Decimal(_) => ValueType::Decimal,
+            Self::Bytes(_) => ValueType::Bytes,
+            Self::Str(_) => ValueType::Str,
+            Self::Obj(o) => ValueType::Obj(o.host_type),
+            Self::Agg(_) => ValueType::Agg,
+            Self::Func(_) => ValueType::Func,
+        }
+    }
+}
+
 /// Host call interface.
 ///
 /// The interpreter provides:
@@ -95,7 +169,7 @@ pub trait Host {
         &mut self,
         symbol: &str,
         sig_hash: SigHash,
-        args: &[Value],
+        args: &[ValueRef<'_>],
     ) -> Result<(Vec<Value>, u64), HostError>;
 }
 
