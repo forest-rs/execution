@@ -16,6 +16,7 @@ use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::host::sig_hash_slices;
 use crate::program::{ConstEntry, ElemTypeId, Function, Program, SpanEntry, TypeId, ValueType};
+use crate::value::FuncId;
 
 #[cfg(doc)]
 use crate::vm::Vm;
@@ -26,9 +27,13 @@ use crate::vm::Vm;
 /// [`Vm::run`], which can assume
 /// (and potentially optimize around) verifier-enforced invariants from [`VerifyConfig`], while
 /// still validating host ABI conformance at runtime.
+///
+/// Internally, a [`VerifiedProgram`] also carries a decoded instruction stream so the VM does not
+/// need to decode bytecode at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedProgram {
     program: Program,
+    decoded_functions: Vec<Vec<DecodedInstr>>,
 }
 
 impl VerifiedProgram {
@@ -36,6 +41,16 @@ impl VerifiedProgram {
     #[must_use]
     pub fn program(&self) -> &Program {
         &self.program
+    }
+
+    /// Returns the decoded instruction stream for `func`, if present.
+    ///
+    /// The verifier guarantees that this exists for all functions in the program.
+    #[must_use]
+    pub(crate) fn decoded(&self, func: FuncId) -> Option<&[DecodedInstr]> {
+        self.decoded_functions
+            .get(func.0 as usize)
+            .map(Vec::as_slice)
     }
 
     /// Consumes `self` and returns the underlying program.
@@ -444,7 +459,35 @@ impl Default for VerifyConfig {
 
 /// Verifies `program` according to v1 container-level rules.
 pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), VerifyError> {
-    // Verify host signature table entries.
+    verify_host_sigs(program)?;
+
+    for (i, func) in program.functions.iter().enumerate() {
+        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let _decoded = verify_function_container(program, func_id, func, cfg)?;
+    }
+    Ok(())
+}
+
+/// Verifies `program` and returns a [`VerifiedProgram`] wrapper on success.
+pub fn verify_program_owned(
+    program: Program,
+    cfg: &VerifyConfig,
+) -> Result<VerifiedProgram, VerifyError> {
+    verify_host_sigs(&program)?;
+
+    let mut decoded_functions: Vec<Vec<DecodedInstr>> = Vec::with_capacity(program.functions.len());
+    for (i, func) in program.functions.iter().enumerate() {
+        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        decoded_functions.push(verify_function_container(&program, func_id, func, cfg)?);
+    }
+
+    Ok(VerifiedProgram {
+        program,
+        decoded_functions,
+    })
+}
+
+fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
     for (i, hs) in program.host_sigs.iter().enumerate() {
         let host_sig = u32::try_from(i).unwrap_or(u32::MAX);
         if (hs.symbol.0 as usize) >= program.symbols.len() {
@@ -460,21 +503,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
             return Err(VerifyError::HostSigHashMismatch { host_sig });
         }
     }
-
-    for (i, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        verify_function_container(program, func_id, func, cfg)?;
-    }
     Ok(())
-}
-
-/// Verifies `program` and returns a [`VerifiedProgram`] wrapper on success.
-pub fn verify_program_owned(
-    program: Program,
-    cfg: &VerifyConfig,
-) -> Result<VerifiedProgram, VerifyError> {
-    verify_program(&program, cfg)?;
-    Ok(VerifiedProgram { program })
 }
 
 fn verify_function_container(
@@ -482,7 +511,7 @@ fn verify_function_container(
     func_id: u32,
     func: &Function,
     cfg: &VerifyConfig,
-) -> Result<(), VerifyError> {
+) -> Result<Vec<DecodedInstr>, VerifyError> {
     if func.reg_count > cfg.max_regs_per_function {
         return Err(VerifyError::RegCountTooLarge {
             func: func_id,
@@ -512,9 +541,13 @@ fn verify_function_container(
     verify_span_table(bytecode.len() as u64, spans)
         .map_err(|_| VerifyError::BadSpanDeltas { func: func_id })?;
 
-    verify_function_bytecode(program, func_id, func, bytecode, arg_types, ret_types)?;
+    let decoded =
+        decode_instructions(bytecode).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
+    verify_function_bytecode(
+        program, func_id, func, bytecode, arg_types, ret_types, &decoded,
+    )?;
 
-    Ok(())
+    Ok(decoded)
 }
 
 fn verify_span_table(bytecode_len: u64, spans: &[SpanEntry]) -> Result<(), ()> {
@@ -538,6 +571,7 @@ fn verify_function_bytecode(
     bytecode: &[u8],
     arg_types: &[ValueType],
     ret_types: &[ValueType],
+    decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
     if func.reg_count == 0 {
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
@@ -547,14 +581,12 @@ fn verify_function_bytecode(
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
     }
 
-    let decoded =
-        decode_instructions(bytecode).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
-    let boundaries = compute_boundaries(bytecode.len(), &decoded);
+    let boundaries = compute_boundaries(bytecode.len(), decoded);
 
     // Build CFG blocks and reachability.
     let byte_len =
         u32::try_from(bytecode.len()).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
-    let blocks = build_basic_blocks(byte_len, &decoded, &boundaries)
+    let blocks = build_basic_blocks(byte_len, decoded, &boundaries)
         .map_err(|pc| VerifyError::InvalidJumpTarget { func: func_id, pc })?;
     let reachable = compute_reachable(&blocks);
 
@@ -562,7 +594,7 @@ fn verify_function_bytecode(
     let reg_count = func.reg_count as usize;
     let entry_init = initial_init(reg_count, arg_types.len());
     let (in_sets, out_sets) =
-        compute_must_init(&blocks, &reachable, reg_count, &entry_init, &decoded)?;
+        compute_must_init(&blocks, &reachable, reg_count, &entry_init, decoded)?;
 
     // Validate reads.
     for (b_idx, block) in blocks.iter().enumerate() {
@@ -584,7 +616,7 @@ fn verify_function_bytecode(
         &reachable,
         reg_count,
         &entry_types,
-        &decoded,
+        decoded,
     )?;
     for (b_idx, block) in blocks.iter().enumerate() {
         if !reachable[b_idx] {

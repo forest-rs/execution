@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap};
-use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
+use crate::bytecode::{DecodedInstr, Instr};
 use crate::host::{Host, HostError};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
@@ -50,8 +50,6 @@ pub enum Trap {
     CallDepthExceeded,
     /// Host call count limit exceeded.
     HostCallLimitExceeded,
-    /// Bytecode decoding failed.
-    BytecodeDecode,
     /// Attempted to access an invalid `pc` / instruction boundary.
     InvalidPc,
     /// A register was out of bounds.
@@ -110,7 +108,6 @@ impl fmt::Display for Trap {
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
-            Self::BytecodeDecode => write!(f, "bytecode decode failed"),
             Self::InvalidPc => write!(f, "invalid pc"),
             Self::RegOutOfBounds => write!(f, "register out of bounds"),
             Self::ConstOutOfBounds => write!(f, "constant out of bounds"),
@@ -189,7 +186,6 @@ struct Frame {
     base: usize,
     reg_count: usize,
     byte_len: u32,
-    decoded: Vec<DecodedInstr>,
     rets: Vec<u32>,
     ret_base: usize,
     ret_pc: u32,
@@ -248,12 +244,12 @@ impl<H: Host> Vm<H> {
         trace_mask: TraceMask,
         mut trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
-        let program = program.program();
+        let program_ref = program.program();
         if trace_mask.contains(TraceMask::RUN)
             && let Some(t) = trace.as_mut()
         {
             t.event(
-                program,
+                program_ref,
                 TraceEvent::RunStart {
                     entry,
                     arg_count: args.len(),
@@ -270,7 +266,7 @@ impl<H: Host> Vm<H> {
                 Ok(_) => TraceOutcome::Ok,
                 Err(e) => TraceOutcome::Trap(e),
             };
-            t.event(program, TraceEvent::RunEnd { outcome });
+            t.event(program_ref, TraceEvent::RunEnd { outcome });
         }
 
         result
@@ -278,26 +274,28 @@ impl<H: Host> Vm<H> {
 
     fn run_body(
         &mut self,
-        program: &Program,
+        program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
         trace_mask: TraceMask,
         trace: &mut Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
+        let program_ref = program.program();
         self.frames.clear();
         self.regs.clear();
         self.host_calls = 0;
 
-        let entry_fn = program
+        let entry_fn = program_ref
             .functions
             .get(entry.0 as usize)
             .ok_or_else(|| self.trap(entry, 0, None, Trap::InvalidPc))?;
         if args.len() != entry_fn.arg_count as usize {
             return Err(self.trap(entry, 0, None, Trap::InvalidPc));
         }
-        validate_entry_args(program, entry_fn, args).map_err(|t| self.trap(entry, 0, None, t))?;
+        validate_entry_args(program_ref, entry_fn, args)
+            .map_err(|t| self.trap(entry, 0, None, t))?;
 
-        self.push_frame(program, entry, entry_fn, args, Vec::new(), 0, 0)
+        self.push_frame(entry, entry_fn, args, Vec::new(), 0, 0)
             .map_err(|t| self.trap(entry, 0, None, t))?;
 
         if trace_mask.contains(TraceMask::CALL)
@@ -305,13 +303,13 @@ impl<H: Host> Vm<H> {
         {
             let t: &mut dyn TraceSink = &mut **t;
             t.event(
-                program,
+                program_ref,
                 TraceEvent::ScopeEnter {
                     kind: ScopeKind::CallFrame { func: entry },
                     depth: self.frames.len(),
                     func: entry,
                     pc: 0,
-                    span_id: self.span_at(program, entry, 0),
+                    span_id: self.span_at(program_ref, entry, 0),
                 },
             );
         }
@@ -321,7 +319,7 @@ impl<H: Host> Vm<H> {
                 return Err(self.trap(
                     self.cur_func(),
                     self.cur_pc(),
-                    self.cur_span(program),
+                    self.cur_span(program_ref),
                     Trap::FuelExceeded,
                 ));
             }
@@ -337,11 +335,14 @@ impl<H: Host> Vm<H> {
                 let f = &self.frames[frame_index];
                 (f.func, f.pc, f.base, f.reg_count, f.byte_len)
             };
-            let span_id = self.span_at(program, func_id, pc);
+            let span_id = self.span_at(program_ref, func_id, pc);
 
             let (opcode, instr, next_pc) = {
                 let f = &self.frames[frame_index];
-                fetch_at_pc(&f.decoded, f.pc, f.byte_len)
+                let decoded = program
+                    .decoded(func_id)
+                    .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                fetch_at_pc(decoded, f.pc, f.byte_len)
                     .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?
             };
 
@@ -350,7 +351,7 @@ impl<H: Host> Vm<H> {
             {
                 let t: &mut dyn TraceSink = &mut **t;
                 t.event(
-                    program,
+                    program_ref,
                     TraceEvent::Instr {
                         func: func_id,
                         pc,
@@ -421,14 +422,16 @@ impl<H: Host> Vm<H> {
                     self.frames[frame_index].pc = next_pc;
                 }
                 Instr::ConstPool { dst, idx } => {
-                    let c = program
+                    let c = program_ref
                         .const_pool
                         .get(idx.0 as usize)
                         .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
-                    let v = const_to_value(c, &program.const_bytes_data, &program.const_str_data)
-                        .ok_or_else(|| {
-                        self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds)
-                    })?;
+                    let v = const_to_value(
+                        c,
+                        &program_ref.const_bytes_data,
+                        &program_ref.const_str_data,
+                    )
+                    .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, v)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     self.frames[frame_index].pc = next_pc;
@@ -981,7 +984,7 @@ impl<H: Host> Vm<H> {
                     args,
                     rets,
                 } => {
-                    let callee_fn = program
+                    let callee_fn = program_ref
                         .functions
                         .get(callee.0 as usize)
                         .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
@@ -1000,23 +1003,21 @@ impl<H: Host> Vm<H> {
 
                     let ret_base = base;
                     let ret_pc = next_pc;
-                    self.push_frame(
-                        program, callee, callee_fn, &call_args, rets, ret_base, ret_pc,
-                    )
-                    .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                    self.push_frame(callee, callee_fn, &call_args, rets, ret_base, ret_pc)
+                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
 
                     if trace_mask.contains(TraceMask::CALL)
                         && let Some(t) = trace.as_mut()
                     {
                         let t: &mut dyn TraceSink = &mut **t;
                         t.event(
-                            program,
+                            program_ref,
                             TraceEvent::ScopeEnter {
                                 kind: ScopeKind::CallFrame { func: callee },
                                 depth: self.frames.len(),
                                 func: callee,
                                 pc: 0,
-                                span_id: self.span_at(program, callee, 0),
+                                span_id: self.span_at(program_ref, callee, 0),
                             },
                         );
                     }
@@ -1028,7 +1029,7 @@ impl<H: Host> Vm<H> {
                     {
                         let t: &mut dyn TraceSink = &mut **t;
                         t.event(
-                            program,
+                            program_ref,
                             TraceEvent::ScopeExit {
                                 kind: ScopeKind::CallFrame { func: func_id },
                                 depth: self.frames.len(),
@@ -1060,7 +1061,7 @@ impl<H: Host> Vm<H> {
                     let caller_index = self.frames.len() - 1;
                     let caller_func = self.frames[caller_index].func;
                     let caller_pc = self.frames[caller_index].pc;
-                    let caller_span = self.span_at(program, caller_func, caller_pc);
+                    let caller_span = self.span_at(program_ref, caller_func, caller_pc);
 
                     if finished.rets.len() != ret_vals.len() {
                         return Err(self.trap(
@@ -1097,14 +1098,14 @@ impl<H: Host> Vm<H> {
                     }
                     self.host_calls += 1;
 
-                    let hs = program
+                    let hs = program_ref
                         .host_sig(host_sig)
                         .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
-                    let sym = program
+                    let sym = program_ref
                         .symbol_str(hs.symbol)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
-                    let ret_types = program
+                    let ret_types = program_ref
                         .host_sig_rets(hs)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
@@ -1121,7 +1122,7 @@ impl<H: Host> Vm<H> {
                     {
                         let t: &mut dyn TraceSink = &mut **t;
                         t.event(
-                            program,
+                            program_ref,
                             TraceEvent::ScopeEnter {
                                 kind: ScopeKind::HostCall {
                                     host_sig,
@@ -1147,7 +1148,7 @@ impl<H: Host> Vm<H> {
                     {
                         let t: &mut dyn TraceSink = &mut **t;
                         t.event(
-                            program,
+                            program_ref,
                             TraceEvent::ScopeExit {
                                 kind: ScopeKind::HostCall {
                                     host_sig,
@@ -1225,12 +1226,12 @@ impl<H: Host> Vm<H> {
                     type_id,
                     values,
                 } => {
-                    let st = program
+                    let st = program_ref
                         .types
                         .structs
                         .get(type_id.0 as usize)
                         .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
-                    let field_types = program
+                    let field_types = program_ref
                         .types
                         .struct_field_types(st)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
@@ -1280,7 +1281,7 @@ impl<H: Host> Vm<H> {
                     len,
                     values,
                 } => {
-                    program
+                    program_ref
                         .types
                         .array_elems
                         .get(elem_type_id.0 as usize)
@@ -1798,7 +1799,6 @@ impl<H: Host> Vm<H> {
 
     fn push_frame(
         &mut self,
-        program: &Program,
         func_id: FuncId,
         func: &Function,
         args: &[Value],
@@ -1810,11 +1810,7 @@ impl<H: Host> Vm<H> {
             return Err(Trap::CallDepthExceeded);
         }
 
-        let bytecode = program
-            .function_bytecode(func)
-            .map_err(|_| Trap::InvalidPc)?;
-        let decoded = decode_instructions(bytecode).map_err(|_| Trap::BytecodeDecode)?;
-        let byte_len = u32::try_from(bytecode.len()).map_err(|_| Trap::InvalidPc)?;
+        let byte_len = func.bytecode.len;
 
         let reg_count = func.reg_count as usize;
         let base = self.regs.len();
@@ -1838,7 +1834,6 @@ impl<H: Host> Vm<H> {
             base,
             reg_count,
             byte_len,
-            decoded,
             rets,
             ret_base,
             ret_pc,
