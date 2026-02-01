@@ -2,7 +2,7 @@
 id: et-71ae
 status: open
 deps: []
-links: []
+links: [et-eaf4]
 created: 2026-01-31T14:47:37Z
 type: task
 priority: 2
@@ -21,3 +21,9 @@ Acceptance:
 - New benches compile and run under `cargo bench -p execution_tape_wind_tunnel --bench vm`.
 - Each bench has a short comment describing what it measures.
 
+
+## Notes
+
+**2026-02-01T05:45:28Z**
+
+Bench updates likely land under et-eaf4 (PR7: Cleanup + wind-tunnel perf confirmation).
