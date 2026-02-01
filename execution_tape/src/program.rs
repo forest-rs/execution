@@ -120,6 +120,32 @@ pub struct Function {
     pub ret_types: ByteRange,
 }
 
+impl Function {
+    /// Returns this function's argument types slice from `program`.
+    #[inline]
+    pub fn arg_types<'a>(&self, program: &'a Program) -> Result<&'a [ValueType], DecodeError> {
+        program.function_arg_types(self)
+    }
+
+    /// Returns this function's return types slice from `program`.
+    #[inline]
+    pub fn ret_types<'a>(&self, program: &'a Program) -> Result<&'a [ValueType], DecodeError> {
+        program.function_ret_types(self)
+    }
+
+    /// Returns this function's bytecode stream from `program`.
+    #[inline]
+    pub fn bytecode<'a>(&self, program: &'a Program) -> Result<&'a [u8], DecodeError> {
+        program.function_bytecode(self)
+    }
+
+    /// Returns this function's span table entries from `program`.
+    #[inline]
+    pub fn spans<'a>(&self, program: &'a Program) -> Result<&'a [SpanEntry], DecodeError> {
+        program.function_spans(self)
+    }
+}
+
 /// An input function definition used to construct a [`Program`] with packed arenas.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionDef {

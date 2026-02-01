@@ -31,7 +31,8 @@ It does **not** own:
 - Incremental recompute (pure-region caching is a v2+ topic).
 
 ## Terminology
-- **Value**: runtime datum stored in a register.
+- **Value**: runtime datum computed by the VM. Some values (notably `Bytes`/`Str`) may be stored indirectly by
+  handle into a per-run arena while preserving the same observable semantics.
 - **Register**: a virtual slot; bytecode operands refer to registers by index.
 - **Frame**: one function activation containing `pc`, `base`, and per-frame register count.
 - **Program Counter (pc)**: byte offset into a function’s bytecode stream.
@@ -46,8 +47,8 @@ It does **not** own:
 
 ## Value model
 
-### Tags
-The VM defines a closed set of runtime tags. v1 requires these tags:
+### Value kinds
+The VM defines a closed set of value kinds. v1 requires these kinds:
 - `Unit`
 - `Bool`
 - `I64`
@@ -59,6 +60,10 @@ The VM defines a closed set of runtime tags. v1 requires these tags:
 - `Obj` (opaque handle)
 - `Agg` (aggregate handle: tuple/struct/array heap node)
 - `Func` (function reference)
+
+Implementation note: the VM may store registers in per-kind register files (`RegClass`) rather than as a tagged
+union `Value` in order to avoid runtime tag checks in the hot interpreter loop. This is safe because execution
+requires verification, and the verifier assigns each register a stable kind and enforces type correctness.
 
 ### `Decimal`
 - Per-value scale (`u8`) and mantissa (`i64`).

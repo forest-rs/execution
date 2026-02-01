@@ -16,6 +16,11 @@ use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::host::sig_hash_slices;
 use crate::program::{ConstEntry, ElemTypeId, Function, Program, SpanEntry, TypeId, ValueType};
+use crate::typed::{
+    AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
+    RegLayout, StrReg, U64Reg, UnitReg, VReg, VerifiedDecodedInstr, VerifiedFunction,
+    VerifiedInstr, instr_writes, reg_class_of_value_type,
+};
 use crate::value::FuncId;
 
 #[cfg(doc)]
@@ -33,7 +38,7 @@ use crate::vm::Vm;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedProgram {
     program: Program,
-    decoded_functions: Vec<Vec<DecodedInstr>>,
+    verified_functions: Vec<VerifiedFunction>,
 }
 
 impl VerifiedProgram {
@@ -43,14 +48,9 @@ impl VerifiedProgram {
         &self.program
     }
 
-    /// Returns the decoded instruction stream for `func`, if present.
-    ///
-    /// The verifier guarantees that this exists for all functions in the program.
     #[must_use]
-    pub(crate) fn decoded(&self, func: FuncId) -> Option<&[DecodedInstr]> {
-        self.decoded_functions
-            .get(func.0 as usize)
-            .map(Vec::as_slice)
+    pub(crate) fn verified(&self, func: FuncId) -> Option<&VerifiedFunction> {
+        self.verified_functions.get(func.0 as usize)
     }
 
     /// Consumes `self` and returns the underlying program.
@@ -496,7 +496,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
 
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let _decoded = verify_function_container(program, func_id, func, cfg)?;
+        let _ = verify_function_container(program, func_id, func, cfg)?;
     }
     Ok(())
 }
@@ -508,15 +508,15 @@ pub fn verify_program_owned(
 ) -> Result<VerifiedProgram, VerifyError> {
     verify_host_sigs(&program)?;
 
-    let mut decoded_functions: Vec<Vec<DecodedInstr>> = Vec::with_capacity(program.functions.len());
+    let mut verified_functions: Vec<VerifiedFunction> = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        decoded_functions.push(verify_function_container(&program, func_id, func, cfg)?);
+        verified_functions.push(verify_function_container(&program, func_id, func, cfg)?);
     }
 
     Ok(VerifiedProgram {
         program,
-        decoded_functions,
+        verified_functions,
     })
 }
 
@@ -547,7 +547,7 @@ fn verify_function_container(
     func_id: u32,
     func: &Function,
     cfg: &VerifyConfig,
-) -> Result<Vec<DecodedInstr>, VerifyError> {
+) -> Result<VerifiedFunction, VerifyError> {
     if program.types.field_types.contains(&ValueType::Any)
         || program.types.array_elems.contains(&ValueType::Any)
     {
@@ -561,17 +561,17 @@ fn verify_function_container(
         });
     }
 
-    let bytecode = program
-        .function_bytecode(func)
+    let bytecode = func
+        .bytecode(program)
         .map_err(|_| VerifyError::FunctionBytecodeOutOfBounds { func: func_id })?;
-    let spans = program
-        .function_spans(func)
+    let spans = func
+        .spans(program)
         .map_err(|_| VerifyError::FunctionSpansOutOfBounds { func: func_id })?;
-    let arg_types = program
-        .function_arg_types(func)
+    let arg_types = func
+        .arg_types(program)
         .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: func_id })?;
-    let ret_types = program
-        .function_ret_types(func)
+    let ret_types = func
+        .ret_types(program)
         .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: func_id })?;
     if arg_types.contains(&ValueType::Any) || ret_types.contains(&ValueType::Any) {
         return Err(VerifyError::AnyInFunctionSig { func: func_id });
@@ -590,9 +590,7 @@ fn verify_function_container(
         decode_instructions(bytecode).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
     verify_function_bytecode(
         program, func_id, func, bytecode, arg_types, ret_types, &decoded,
-    )?;
-
-    Ok(decoded)
+    )
 }
 
 fn verify_span_table(bytecode_len: u64, spans: &[SpanEntry]) -> Result<(), ()> {
@@ -617,7 +615,7 @@ fn verify_function_bytecode(
     arg_types: &[ValueType],
     ret_types: &[ValueType],
     decoded: &[DecodedInstr],
-) -> Result<(), VerifyError> {
+) -> Result<VerifiedFunction, VerifyError> {
     if func.reg_count == 0 {
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
     }
@@ -697,7 +695,886 @@ fn verify_function_bytecode(
         }
     }
 
-    Ok(())
+    // Compute a stable virtual-register type assignment. Unstable (merged) regs have already been
+    // rejected above (`UnstableRegType`), so this should converge to a single concrete `ValueType`
+    // for every virtual register that is ever written.
+    let mut reg_types: Vec<Option<ValueType>> = vec![None; reg_count];
+    if reg_count != 0 {
+        reg_types[0] = Some(ValueType::Unit); // effect token
+        for (i, &t) in arg_types.iter().enumerate() {
+            if 1 + i < reg_count {
+                reg_types[1 + i] = Some(t);
+            }
+        }
+    }
+
+    for (b_idx, block) in blocks.iter().enumerate() {
+        if !reachable[b_idx] {
+            continue;
+        }
+        let mut state = type_in[b_idx].clone();
+        for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
+            transfer_types(program, &di.instr, &mut state);
+            for w in instr_writes(&di.instr) {
+                let Some(t) = state.values.get(w as usize).copied().flatten().flatten() else {
+                    continue;
+                };
+                if t == ValueType::Any {
+                    return Err(VerifyError::UnstableRegType {
+                        func: func_id,
+                        reg: w,
+                    });
+                }
+                match reg_types.get_mut(w as usize) {
+                    Some(slot @ None) => *slot = Some(t),
+                    Some(Some(prev)) if *prev == t => {}
+                    Some(Some(_prev)) => {
+                        return Err(VerifyError::UnstableRegType {
+                            func: func_id,
+                            reg: w,
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    // Build a per-function register layout: each virtual register maps to exactly one class-local
+    // index.
+    let mut counts = RegCounts::default();
+    let mut reg_map: Vec<VReg> = Vec::with_capacity(reg_count);
+    for (i, t) in reg_types.iter().copied().enumerate() {
+        let t = t.unwrap_or(ValueType::Unit);
+        let class = reg_class_of_value_type(t).ok_or(VerifyError::UnstableRegType {
+            func: func_id,
+            reg: u32::try_from(i).unwrap_or(u32::MAX),
+        })?;
+        let idx_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let v = match class {
+            RegClass::Unit => {
+                let r = UnitReg(idx_u32(counts.unit));
+                counts.unit += 1;
+                VReg::Unit(r)
+            }
+            RegClass::Bool => {
+                let r = BoolReg(idx_u32(counts.bools));
+                counts.bools += 1;
+                VReg::Bool(r)
+            }
+            RegClass::I64 => {
+                let r = I64Reg(idx_u32(counts.i64s));
+                counts.i64s += 1;
+                VReg::I64(r)
+            }
+            RegClass::U64 => {
+                let r = U64Reg(idx_u32(counts.u64s));
+                counts.u64s += 1;
+                VReg::U64(r)
+            }
+            RegClass::F64 => {
+                let r = F64Reg(idx_u32(counts.f64s));
+                counts.f64s += 1;
+                VReg::F64(r)
+            }
+            RegClass::Decimal => {
+                let r = DecimalReg(idx_u32(counts.decimals));
+                counts.decimals += 1;
+                VReg::Decimal(r)
+            }
+            RegClass::Bytes => {
+                let r = BytesReg(idx_u32(counts.bytes));
+                counts.bytes += 1;
+                VReg::Bytes(r)
+            }
+            RegClass::Str => {
+                let r = StrReg(idx_u32(counts.strs));
+                counts.strs += 1;
+                VReg::Str(r)
+            }
+            RegClass::Obj => {
+                let r = ObjReg(idx_u32(counts.objs));
+                counts.objs += 1;
+                VReg::Obj(r)
+            }
+            RegClass::Agg => {
+                let r = AggReg(idx_u32(counts.aggs));
+                counts.aggs += 1;
+                VReg::Agg(r)
+            }
+            RegClass::Func => {
+                let r = FuncReg(idx_u32(counts.funcs));
+                counts.funcs += 1;
+                VReg::Func(r)
+            }
+        };
+        reg_map.push(v);
+    }
+
+    let mut arg_regs: Vec<VReg> = Vec::with_capacity(arg_types.len());
+    for i in 0..arg_types.len() {
+        let r = reg_map
+            .get(1 + i)
+            .copied()
+            .unwrap_or(VReg::Unit(UnitReg(0)));
+        arg_regs.push(r);
+    }
+    let reg_layout = RegLayout {
+        reg_map,
+        counts,
+        arg_regs,
+    };
+
+    let map = |reg: u32| -> Result<VReg, VerifyError> {
+        reg_layout
+            .reg_map
+            .get(reg as usize)
+            .copied()
+            .ok_or(VerifyError::RegOutOfBounds {
+                func: func_id,
+                pc: 0,
+                reg,
+            })
+    };
+    let map_unit = |reg: u32| -> Result<UnitReg, VerifyError> {
+        match map(reg)? {
+            VReg::Unit(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_bool = |reg: u32| -> Result<BoolReg, VerifyError> {
+        match map(reg)? {
+            VReg::Bool(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_i64 = |reg: u32| -> Result<I64Reg, VerifyError> {
+        match map(reg)? {
+            VReg::I64(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_u64 = |reg: u32| -> Result<U64Reg, VerifyError> {
+        match map(reg)? {
+            VReg::U64(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_f64 = |reg: u32| -> Result<F64Reg, VerifyError> {
+        match map(reg)? {
+            VReg::F64(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_decimal = |reg: u32| -> Result<DecimalReg, VerifyError> {
+        match map(reg)? {
+            VReg::Decimal(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_bytes = |reg: u32| -> Result<BytesReg, VerifyError> {
+        match map(reg)? {
+            VReg::Bytes(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_str = |reg: u32| -> Result<StrReg, VerifyError> {
+        match map(reg)? {
+            VReg::Str(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+    let map_agg = |reg: u32| -> Result<AggReg, VerifyError> {
+        match map(reg)? {
+            VReg::Agg(r) => Ok(r),
+            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
+        }
+    };
+
+    let mut verified_instrs: Vec<VerifiedDecodedInstr> = Vec::with_capacity(decoded.len());
+    for di in decoded {
+        let vi = match &di.instr {
+            Instr::Nop => VerifiedInstr::Nop,
+            Instr::Trap { code } => VerifiedInstr::Trap { code: *code },
+
+            Instr::Mov { dst, src } => match (map(*dst)?, map(*src)?) {
+                (VReg::Unit(d), VReg::Unit(s)) => VerifiedInstr::MovUnit { dst: d, src: s },
+                (VReg::Bool(d), VReg::Bool(s)) => VerifiedInstr::MovBool { dst: d, src: s },
+                (VReg::I64(d), VReg::I64(s)) => VerifiedInstr::MovI64 { dst: d, src: s },
+                (VReg::U64(d), VReg::U64(s)) => VerifiedInstr::MovU64 { dst: d, src: s },
+                (VReg::F64(d), VReg::F64(s)) => VerifiedInstr::MovF64 { dst: d, src: s },
+                (VReg::Decimal(d), VReg::Decimal(s)) => {
+                    VerifiedInstr::MovDecimal { dst: d, src: s }
+                }
+                (VReg::Bytes(d), VReg::Bytes(s)) => VerifiedInstr::MovBytes { dst: d, src: s },
+                (VReg::Str(d), VReg::Str(s)) => VerifiedInstr::MovStr { dst: d, src: s },
+                (VReg::Obj(d), VReg::Obj(s)) => VerifiedInstr::MovObj { dst: d, src: s },
+                (VReg::Agg(d), VReg::Agg(s)) => VerifiedInstr::MovAgg { dst: d, src: s },
+                (VReg::Func(d), VReg::Func(s)) => VerifiedInstr::MovFunc { dst: d, src: s },
+                _ => {
+                    return Err(VerifyError::UnstableRegType {
+                        func: func_id,
+                        reg: *dst,
+                    });
+                }
+            },
+
+            Instr::ConstUnit { dst } => VerifiedInstr::ConstUnit {
+                dst: map_unit(*dst)?,
+            },
+            Instr::ConstBool { dst, imm } => VerifiedInstr::ConstBool {
+                dst: map_bool(*dst)?,
+                imm: *imm,
+            },
+            Instr::ConstI64 { dst, imm } => VerifiedInstr::ConstI64 {
+                dst: map_i64(*dst)?,
+                imm: *imm,
+            },
+            Instr::ConstU64 { dst, imm } => VerifiedInstr::ConstU64 {
+                dst: map_u64(*dst)?,
+                imm: *imm,
+            },
+            Instr::ConstF64 { dst, bits } => VerifiedInstr::ConstF64 {
+                dst: map_f64(*dst)?,
+                bits: *bits,
+            },
+            Instr::ConstDecimal {
+                dst,
+                mantissa,
+                scale,
+            } => VerifiedInstr::ConstDecimal {
+                dst: map_decimal(*dst)?,
+                mantissa: *mantissa,
+                scale: *scale,
+            },
+
+            Instr::ConstPool { dst, idx } => {
+                let c = program.const_pool.get(idx.0 as usize).ok_or(
+                    VerifyError::ConstOutOfBounds {
+                        func: func_id,
+                        pc: di.offset,
+                        const_id: idx.0,
+                    },
+                )?;
+                match const_value_type(c) {
+                    ValueType::Unit => VerifiedInstr::ConstPoolUnit {
+                        dst: map_unit(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::Bool => VerifiedInstr::ConstPoolBool {
+                        dst: map_bool(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::I64 => VerifiedInstr::ConstPoolI64 {
+                        dst: map_i64(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::U64 => VerifiedInstr::ConstPoolU64 {
+                        dst: map_u64(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::F64 => VerifiedInstr::ConstPoolF64 {
+                        dst: map_f64(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::Decimal => VerifiedInstr::ConstPoolDecimal {
+                        dst: map_decimal(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::Bytes => VerifiedInstr::ConstPoolBytes {
+                        dst: map_bytes(*dst)?,
+                        idx: *idx,
+                    },
+                    ValueType::Str => VerifiedInstr::ConstPoolStr {
+                        dst: map_str(*dst)?,
+                        idx: *idx,
+                    },
+                    _ => {
+                        return Err(VerifyError::ConstOutOfBounds {
+                            func: func_id,
+                            pc: di.offset,
+                            const_id: idx.0,
+                        });
+                    }
+                }
+            }
+
+            Instr::DecAdd { dst, a, b } => VerifiedInstr::DecAdd {
+                dst: map_decimal(*dst)?,
+                a: map_decimal(*a)?,
+                b: map_decimal(*b)?,
+            },
+            Instr::DecSub { dst, a, b } => VerifiedInstr::DecSub {
+                dst: map_decimal(*dst)?,
+                a: map_decimal(*a)?,
+                b: map_decimal(*b)?,
+            },
+            Instr::DecMul { dst, a, b } => VerifiedInstr::DecMul {
+                dst: map_decimal(*dst)?,
+                a: map_decimal(*a)?,
+                b: map_decimal(*b)?,
+            },
+
+            Instr::F64Add { dst, a, b } => VerifiedInstr::F64Add {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Sub { dst, a, b } => VerifiedInstr::F64Sub {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Mul { dst, a, b } => VerifiedInstr::F64Mul {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Div { dst, a, b } => VerifiedInstr::F64Div {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+
+            Instr::I64Add { dst, a, b } => VerifiedInstr::I64Add {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Sub { dst, a, b } => VerifiedInstr::I64Sub {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Mul { dst, a, b } => VerifiedInstr::I64Mul {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+
+            Instr::U64Add { dst, a, b } => VerifiedInstr::U64Add {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Sub { dst, a, b } => VerifiedInstr::U64Sub {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Mul { dst, a, b } => VerifiedInstr::U64Mul {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64And { dst, a, b } => VerifiedInstr::U64And {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Or { dst, a, b } => VerifiedInstr::U64Or {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Xor { dst, a, b } => VerifiedInstr::U64Xor {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Shl { dst, a, b } => VerifiedInstr::U64Shl {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Shr { dst, a, b } => VerifiedInstr::U64Shr {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+
+            Instr::I64Eq { dst, a, b } => VerifiedInstr::I64Eq {
+                dst: map_bool(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Lt { dst, a, b } => VerifiedInstr::I64Lt {
+                dst: map_bool(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Gt { dst, a, b } => VerifiedInstr::I64Gt {
+                dst: map_bool(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Le { dst, a, b } => VerifiedInstr::I64Le {
+                dst: map_bool(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Ge { dst, a, b } => VerifiedInstr::I64Ge {
+                dst: map_bool(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+
+            Instr::U64Eq { dst, a, b } => VerifiedInstr::U64Eq {
+                dst: map_bool(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Lt { dst, a, b } => VerifiedInstr::U64Lt {
+                dst: map_bool(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Gt { dst, a, b } => VerifiedInstr::U64Gt {
+                dst: map_bool(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Le { dst, a, b } => VerifiedInstr::U64Le {
+                dst: map_bool(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Ge { dst, a, b } => VerifiedInstr::U64Ge {
+                dst: map_bool(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+
+            Instr::F64Eq { dst, a, b } => VerifiedInstr::F64Eq {
+                dst: map_bool(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Lt { dst, a, b } => VerifiedInstr::F64Lt {
+                dst: map_bool(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Gt { dst, a, b } => VerifiedInstr::F64Gt {
+                dst: map_bool(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Le { dst, a, b } => VerifiedInstr::F64Le {
+                dst: map_bool(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Ge { dst, a, b } => VerifiedInstr::F64Ge {
+                dst: map_bool(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+
+            Instr::BoolNot { dst, a } => VerifiedInstr::BoolNot {
+                dst: map_bool(*dst)?,
+                a: map_bool(*a)?,
+            },
+
+            Instr::I64And { dst, a, b } => VerifiedInstr::I64And {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Or { dst, a, b } => VerifiedInstr::I64Or {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Xor { dst, a, b } => VerifiedInstr::I64Xor {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Shl { dst, a, b } => VerifiedInstr::I64Shl {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Shr { dst, a, b } => VerifiedInstr::I64Shr {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+
+            Instr::U64ToI64 { dst, a } => VerifiedInstr::U64ToI64 {
+                dst: map_i64(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::I64ToU64 { dst, a } => VerifiedInstr::I64ToU64 {
+                dst: map_u64(*dst)?,
+                a: map_i64(*a)?,
+            },
+
+            Instr::Select { dst, cond, a, b } => match (map(*dst)?, map(*a)?, map(*b)?) {
+                (VReg::Unit(d), VReg::Unit(aa), VReg::Unit(bb)) => VerifiedInstr::SelectUnit {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Bool(d), VReg::Bool(aa), VReg::Bool(bb)) => VerifiedInstr::SelectBool {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::I64(d), VReg::I64(aa), VReg::I64(bb)) => VerifiedInstr::SelectI64 {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::U64(d), VReg::U64(aa), VReg::U64(bb)) => VerifiedInstr::SelectU64 {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::F64(d), VReg::F64(aa), VReg::F64(bb)) => VerifiedInstr::SelectF64 {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Decimal(d), VReg::Decimal(aa), VReg::Decimal(bb)) => {
+                    VerifiedInstr::SelectDecimal {
+                        dst: d,
+                        cond: map_bool(*cond)?,
+                        a: aa,
+                        b: bb,
+                    }
+                }
+                (VReg::Bytes(d), VReg::Bytes(aa), VReg::Bytes(bb)) => VerifiedInstr::SelectBytes {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Str(d), VReg::Str(aa), VReg::Str(bb)) => VerifiedInstr::SelectStr {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Obj(d), VReg::Obj(aa), VReg::Obj(bb)) => VerifiedInstr::SelectObj {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Agg(d), VReg::Agg(aa), VReg::Agg(bb)) => VerifiedInstr::SelectAgg {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Func(d), VReg::Func(aa), VReg::Func(bb)) => VerifiedInstr::SelectFunc {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                _ => {
+                    return Err(VerifyError::UnstableRegType {
+                        func: func_id,
+                        reg: *dst,
+                    });
+                }
+            },
+
+            Instr::Br {
+                cond,
+                pc_true,
+                pc_false,
+            } => VerifiedInstr::Br {
+                cond: map_bool(*cond)?,
+                pc_true: *pc_true,
+                pc_false: *pc_false,
+            },
+            Instr::Jmp { pc_target } => VerifiedInstr::Jmp {
+                pc_target: *pc_target,
+            },
+
+            Instr::Call {
+                eff_out,
+                func_id: callee,
+                eff_in,
+                args,
+                rets,
+            } => {
+                let mut call_args = Vec::with_capacity(args.len());
+                for r in args {
+                    call_args.push(map(*r)?);
+                }
+                let mut call_rets = Vec::with_capacity(rets.len());
+                for r in rets {
+                    call_rets.push(map(*r)?);
+                }
+                VerifiedInstr::Call {
+                    eff_out: map_unit(*eff_out)?,
+                    func_id: *callee,
+                    eff_in: map_unit(*eff_in)?,
+                    args: call_args,
+                    rets: call_rets,
+                }
+            }
+            Instr::Ret { eff_in, rets } => {
+                let mut out = Vec::with_capacity(rets.len());
+                for r in rets {
+                    out.push(map(*r)?);
+                }
+                VerifiedInstr::Ret {
+                    eff_in: map_unit(*eff_in)?,
+                    rets: out,
+                }
+            }
+            Instr::HostCall {
+                eff_out,
+                host_sig,
+                eff_in,
+                args,
+                rets,
+            } => {
+                let mut call_args = Vec::with_capacity(args.len());
+                for r in args {
+                    call_args.push(map(*r)?);
+                }
+                let mut call_rets = Vec::with_capacity(rets.len());
+                for r in rets {
+                    call_rets.push(map(*r)?);
+                }
+                VerifiedInstr::HostCall {
+                    eff_out: map_unit(*eff_out)?,
+                    host_sig: *host_sig,
+                    eff_in: map_unit(*eff_in)?,
+                    args: call_args,
+                    rets: call_rets,
+                }
+            }
+
+            Instr::TupleNew { dst, values } => {
+                let mut vs = Vec::with_capacity(values.len());
+                for r in values {
+                    vs.push(map(*r)?);
+                }
+                VerifiedInstr::TupleNew {
+                    dst: map_agg(*dst)?,
+                    values: vs,
+                }
+            }
+            Instr::TupleGet { dst, tuple, index } => VerifiedInstr::TupleGet {
+                dst: map(*dst)?,
+                tuple: map_agg(*tuple)?,
+                index: *index,
+            },
+
+            Instr::StructNew {
+                dst,
+                type_id,
+                values,
+            } => {
+                let mut vs = Vec::with_capacity(values.len());
+                for r in values {
+                    vs.push(map(*r)?);
+                }
+                VerifiedInstr::StructNew {
+                    dst: map_agg(*dst)?,
+                    type_id: *type_id,
+                    values: vs,
+                }
+            }
+            Instr::StructGet {
+                dst,
+                st,
+                field_index,
+            } => VerifiedInstr::StructGet {
+                dst: map(*dst)?,
+                st: map_agg(*st)?,
+                field_index: *field_index,
+            },
+
+            Instr::ArrayNew {
+                dst,
+                elem_type_id,
+                len,
+                values,
+            } => {
+                let mut vs = Vec::with_capacity(values.len());
+                for r in values {
+                    vs.push(map(*r)?);
+                }
+                VerifiedInstr::ArrayNew {
+                    dst: map_agg(*dst)?,
+                    elem_type_id: *elem_type_id,
+                    len: *len,
+                    values: vs,
+                }
+            }
+            Instr::ArrayLen { dst, arr } => VerifiedInstr::ArrayLen {
+                dst: map_u64(*dst)?,
+                arr: map_agg(*arr)?,
+            },
+            Instr::ArrayGet { dst, arr, index } => VerifiedInstr::ArrayGet {
+                dst: map(*dst)?,
+                arr: map_agg(*arr)?,
+                index: map_u64(*index)?,
+            },
+            Instr::ArrayGetImm { dst, arr, index } => VerifiedInstr::ArrayGetImm {
+                dst: map(*dst)?,
+                arr: map_agg(*arr)?,
+                index: *index,
+            },
+
+            Instr::TupleLen { dst, tuple } => VerifiedInstr::TupleLen {
+                dst: map_u64(*dst)?,
+                tuple: map_agg(*tuple)?,
+            },
+            Instr::StructFieldCount { dst, st } => VerifiedInstr::StructFieldCount {
+                dst: map_u64(*dst)?,
+                st: map_agg(*st)?,
+            },
+
+            Instr::BytesLen { dst, bytes } => VerifiedInstr::BytesLen {
+                dst: map_u64(*dst)?,
+                bytes: map_bytes(*bytes)?,
+            },
+            Instr::StrLen { dst, s } => VerifiedInstr::StrLen {
+                dst: map_u64(*dst)?,
+                s: map_str(*s)?,
+            },
+
+            Instr::I64Div { dst, a, b } => VerifiedInstr::I64Div {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64Rem { dst, a, b } => VerifiedInstr::I64Rem {
+                dst: map_i64(*dst)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::U64Div { dst, a, b } => VerifiedInstr::U64Div {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Rem { dst, a, b } => VerifiedInstr::U64Rem {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+
+            Instr::I64ToF64 { dst, a } => VerifiedInstr::I64ToF64 {
+                dst: map_f64(*dst)?,
+                a: map_i64(*a)?,
+            },
+            Instr::U64ToF64 { dst, a } => VerifiedInstr::U64ToF64 {
+                dst: map_f64(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::F64ToI64 { dst, a } => VerifiedInstr::F64ToI64 {
+                dst: map_i64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToU64 { dst, a } => VerifiedInstr::F64ToU64 {
+                dst: map_u64(*dst)?,
+                a: map_f64(*a)?,
+            },
+
+            Instr::DecToI64 { dst, a } => VerifiedInstr::DecToI64 {
+                dst: map_i64(*dst)?,
+                a: map_decimal(*a)?,
+            },
+            Instr::DecToU64 { dst, a } => VerifiedInstr::DecToU64 {
+                dst: map_u64(*dst)?,
+                a: map_decimal(*a)?,
+            },
+            Instr::I64ToDec { dst, a, scale } => VerifiedInstr::I64ToDec {
+                dst: map_decimal(*dst)?,
+                a: map_i64(*a)?,
+                scale: *scale,
+            },
+            Instr::U64ToDec { dst, a, scale } => VerifiedInstr::U64ToDec {
+                dst: map_decimal(*dst)?,
+                a: map_u64(*a)?,
+                scale: *scale,
+            },
+
+            Instr::BytesEq { dst, a, b } => VerifiedInstr::BytesEq {
+                dst: map_bool(*dst)?,
+                a: map_bytes(*a)?,
+                b: map_bytes(*b)?,
+            },
+            Instr::StrEq { dst, a, b } => VerifiedInstr::StrEq {
+                dst: map_bool(*dst)?,
+                a: map_str(*a)?,
+                b: map_str(*b)?,
+            },
+            Instr::BytesConcat { dst, a, b } => VerifiedInstr::BytesConcat {
+                dst: map_bytes(*dst)?,
+                a: map_bytes(*a)?,
+                b: map_bytes(*b)?,
+            },
+            Instr::StrConcat { dst, a, b } => VerifiedInstr::StrConcat {
+                dst: map_str(*dst)?,
+                a: map_str(*a)?,
+                b: map_str(*b)?,
+            },
+            Instr::BytesGet { dst, bytes, index } => VerifiedInstr::BytesGet {
+                dst: map_u64(*dst)?,
+                bytes: map_bytes(*bytes)?,
+                index: map_u64(*index)?,
+            },
+            Instr::BytesGetImm { dst, bytes, index } => VerifiedInstr::BytesGetImm {
+                dst: map_u64(*dst)?,
+                bytes: map_bytes(*bytes)?,
+                index: *index,
+            },
+            Instr::BytesSlice {
+                dst,
+                bytes,
+                start,
+                end,
+            } => VerifiedInstr::BytesSlice {
+                dst: map_bytes(*dst)?,
+                bytes: map_bytes(*bytes)?,
+                start: map_u64(*start)?,
+                end: map_u64(*end)?,
+            },
+            Instr::StrSlice { dst, s, start, end } => VerifiedInstr::StrSlice {
+                dst: map_str(*dst)?,
+                s: map_str(*s)?,
+                start: map_u64(*start)?,
+                end: map_u64(*end)?,
+            },
+            Instr::StrToBytes { dst, s } => VerifiedInstr::StrToBytes {
+                dst: map_bytes(*dst)?,
+                s: map_str(*s)?,
+            },
+            Instr::BytesToStr { dst, bytes } => VerifiedInstr::BytesToStr {
+                dst: map_str(*dst)?,
+                bytes: map_bytes(*bytes)?,
+            },
+        };
+
+        verified_instrs.push(VerifiedDecodedInstr {
+            offset: di.offset,
+            opcode: di.opcode,
+            instr: vi,
+        });
+    }
+
+    Ok(VerifiedFunction {
+        byte_len,
+        reg_layout,
+        instrs: verified_instrs,
+    })
 }
 
 fn validate_instr_reads_writes(
@@ -1231,7 +2108,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         } => {
             set_value(state, *eff_out, ValueType::Unit);
             if let Some(callee) = program.functions.get(func_id.0 as usize)
-                && let Ok(types) = program.function_ret_types(callee)
+                && let Ok(types) = callee.ret_types(program)
             {
                 for (dst, t) in rets.iter().zip(types.iter().copied()) {
                     set_value(state, *dst, t);
@@ -1653,11 +2530,11 @@ fn validate_instr_types(
                 .functions
                 .get(callee.0 as usize)
                 .ok_or(VerifyError::CallArityMismatch { func: func_id, pc })?;
-            let callee_args = program
-                .function_arg_types(callee_fn)
+            let callee_args = callee_fn
+                .arg_types(program)
                 .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: callee.0 })?;
-            let callee_rets = program
-                .function_ret_types(callee_fn)
+            let callee_rets = callee_fn
+                .ret_types(program)
                 .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: callee.0 })?;
             if args.len() != callee_args.len() || rets.len() != callee_rets.len() {
                 return Err(VerifyError::CallArityMismatch { func: func_id, pc });
