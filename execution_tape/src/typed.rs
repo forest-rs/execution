@@ -431,6 +431,21 @@ pub(crate) enum VerifiedInstr {
         dst: BoolReg,
         a: BoolReg,
     },
+    BoolAnd {
+        dst: BoolReg,
+        a: BoolReg,
+        b: BoolReg,
+    },
+    BoolOr {
+        dst: BoolReg,
+        a: BoolReg,
+        b: BoolReg,
+    },
+    BoolXor {
+        dst: BoolReg,
+        a: BoolReg,
+        b: BoolReg,
+    },
 
     U64ToI64 {
         dst: I64Reg,
@@ -772,6 +787,9 @@ pub(crate) fn instr_writes(instr: &Instr) -> Vec<u32> {
         | Instr::U64Le { dst, .. }
         | Instr::U64Ge { dst, .. }
         | Instr::BoolNot { dst, .. }
+        | Instr::BoolAnd { dst, .. }
+        | Instr::BoolOr { dst, .. }
+        | Instr::BoolXor { dst, .. }
         | Instr::I64And { dst, .. }
         | Instr::I64Or { dst, .. }
         | Instr::I64Xor { dst, .. }

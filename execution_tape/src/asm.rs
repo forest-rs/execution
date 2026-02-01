@@ -844,6 +844,33 @@ impl Asm {
         self
     }
 
+    /// `0x88 bool_and dst, a, b`.
+    pub fn bool_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.bytes.push(0x88);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x89 bool_or dst, a, b`.
+    pub fn bool_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.bytes.push(0x89);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x8A bool_xor dst, a, b`.
+    pub fn bool_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.bytes.push(0x8A);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
     /// `0x83 f64_eq dst, a, b`.
     pub fn f64_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.bytes.push(0x83);
