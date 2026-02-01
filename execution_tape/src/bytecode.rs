@@ -128,6 +128,12 @@ pub(crate) enum Instr {
 
     /// `dst = !a` (`bool`).
     BoolNot { dst: u32, a: u32 },
+    /// `dst = a & b` (`bool`).
+    BoolAnd { dst: u32, a: u32, b: u32 },
+    /// `dst = a | b` (`bool`).
+    BoolOr { dst: u32, a: u32, b: u32 },
+    /// `dst = a ^ b` (`bool`).
+    BoolXor { dst: u32, a: u32, b: u32 },
 
     /// `dst = a & b` (`i64`).
     I64And { dst: u32, a: u32, b: u32 },
@@ -455,6 +461,21 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
             0x30 => Instr::BoolNot {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
+            },
+            0x88 => Instr::BoolAnd {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            0x89 => Instr::BoolOr {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            0x8A => Instr::BoolXor {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
             },
             0x31 => Instr::U64Le {
                 dst: read_reg(&mut r)?,

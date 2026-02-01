@@ -1006,6 +1006,30 @@ impl<H: Host> Vm<H> {
                     self.write_bool(base, *dst, !self.read_bool(base, *a));
                     self.frames[frame_index].pc = next_pc;
                 }
+                VerifiedInstr::BoolAnd { dst, a, b } => {
+                    self.write_bool(
+                        base,
+                        *dst,
+                        self.read_bool(base, *a) & self.read_bool(base, *b),
+                    );
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::BoolOr { dst, a, b } => {
+                    self.write_bool(
+                        base,
+                        *dst,
+                        self.read_bool(base, *a) | self.read_bool(base, *b),
+                    );
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::BoolXor { dst, a, b } => {
+                    self.write_bool(
+                        base,
+                        *dst,
+                        self.read_bool(base, *a) ^ self.read_bool(base, *b),
+                    );
+                    self.frames[frame_index].pc = next_pc;
+                }
 
                 VerifiedInstr::U64ToI64 { dst, a } => {
                     let u = self.read_u64(base, *a);

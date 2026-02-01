@@ -1160,6 +1160,21 @@ fn verify_function_bytecode(
                 dst: map_bool(*dst)?,
                 a: map_bool(*a)?,
             },
+            Instr::BoolAnd { dst, a, b } => VerifiedInstr::BoolAnd {
+                dst: map_bool(*dst)?,
+                a: map_bool(*a)?,
+                b: map_bool(*b)?,
+            },
+            Instr::BoolOr { dst, a, b } => VerifiedInstr::BoolOr {
+                dst: map_bool(*dst)?,
+                a: map_bool(*a)?,
+                b: map_bool(*b)?,
+            },
+            Instr::BoolXor { dst, a, b } => VerifiedInstr::BoolXor {
+                dst: map_bool(*dst)?,
+                a: map_bool(*a)?,
+                b: map_bool(*b)?,
+            },
 
             Instr::I64And { dst, a, b } => VerifiedInstr::I64And {
                 dst: map_i64(*dst)?,
@@ -1662,6 +1677,9 @@ fn validate_instr_reads_writes(
         | Instr::F64Gt { dst, a, b }
         | Instr::F64Le { dst, a, b }
         | Instr::F64Ge { dst, a, b }
+        | Instr::BoolAnd { dst, a, b }
+        | Instr::BoolOr { dst, a, b }
+        | Instr::BoolXor { dst, a, b }
         | Instr::BytesEq { dst, a, b }
         | Instr::StrEq { dst, a, b }
         | Instr::BytesConcat { dst, a, b }
@@ -2069,7 +2087,10 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         | Instr::F64Gt { dst, .. }
         | Instr::F64Le { dst, .. }
         | Instr::F64Ge { dst, .. }
-        | Instr::BoolNot { dst, .. } => set_value(state, *dst, ValueType::Bool),
+        | Instr::BoolNot { dst, .. }
+        | Instr::BoolAnd { dst, .. }
+        | Instr::BoolOr { dst, .. }
+        | Instr::BoolXor { dst, .. } => set_value(state, *dst, ValueType::Bool),
         Instr::BytesEq { dst, .. } | Instr::StrEq { dst, .. } => {
             set_value(state, *dst, ValueType::Bool);
         }
@@ -2412,6 +2433,10 @@ fn validate_instr_types(
         }
         Instr::BoolNot { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::Bool)?;
+        }
+        Instr::BoolAnd { a, b, .. } | Instr::BoolOr { a, b, .. } | Instr::BoolXor { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::Bool)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::Bool)?;
         }
         Instr::F64Eq { a, b, .. }
         | Instr::F64Lt { a, b, .. }
@@ -3145,6 +3170,9 @@ fn compute_block_writes(
                 | Instr::I64Le { dst, .. }
                 | Instr::I64Ge { dst, .. }
                 | Instr::BoolNot { dst, .. }
+                | Instr::BoolAnd { dst, .. }
+                | Instr::BoolOr { dst, .. }
+                | Instr::BoolXor { dst, .. }
                 | Instr::U64ToI64 { dst, .. }
                 | Instr::I64ToU64 { dst, .. }
                 | Instr::U64Div { dst, .. }

@@ -288,6 +288,41 @@ fn roundtrip_verify_run_u64_ordering() {
 }
 
 #[test]
+fn roundtrip_verify_run_bool_bitwise() {
+    let mut a = Asm::new();
+    a.const_bool(1, true);
+    a.const_bool(2, false);
+    a.bool_and(3, 1, 2);
+    a.bool_or(4, 1, 2);
+    a.bool_xor(5, 1, 2);
+    a.ret(0, &[3, 4, 5]);
+
+    let mut pb = ProgramBuilder::new();
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::Bool, ValueType::Bool, ValueType::Bool],
+            reg_count: 6,
+        },
+    )
+    .unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
+
+    let mut vm = Vm::new(TestHost, Limits::default());
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
+    assert_eq!(
+        out,
+        vec![Value::Bool(false), Value::Bool(true), Value::Bool(true)]
+    );
+}
+
+#[test]
 fn roundtrip_verify_run_i64_bitwise_and_shifts() {
     // (0b0110 & 0b1010) | 0b0001 = 0b0011
     // 0b0011 ^ (1 << 3) = 0b1011

@@ -391,6 +391,9 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
 - `i64_lt r_dst, r_a, r_b` -> `Bool`
 - `bool_not r_dst, r_a`
+- `bool_and r_dst, r_a, r_b`
+- `bool_or r_dst, r_a, r_b`
+- `bool_xor r_dst, r_a, r_b`
 - `br r_cond, pc_true, pc_false`
 - `jmp pc_target`
 
@@ -457,6 +460,9 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x85 f64_gt dst, a, b` (IEEE: false if NaN)
 - `0x86 f64_le dst, a, b` (IEEE: false if NaN)
 - `0x87 f64_ge dst, a, b` (IEEE: false if NaN)
+- `0x88 bool_and dst, a, b`
+- `0x89 bool_or dst, a, b`
+- `0x8A bool_xor dst, a, b`
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`
