@@ -1,6 +1,6 @@
 ---
 id: et-eaf4
-status: open
+status: closed
 deps: [et-4d1d]
 links: [et-71ae]
 created: 2026-02-01T05:44:32Z
@@ -26,3 +26,9 @@ Branch naming: `et-tagless/pr7-cleanup-wind-tunnel`.
 
 - Wind-tunnel benches run and show no regressions on core numeric loops.
 - `cargo clippy` stays clean; no new deps.
+
+## Notes
+
+**2026-02-01T15:30:02Z**
+
+Ran wind-tunnel benches vs main: all existing numeric/call/host-call benches improved (e.g. i64_add_chain/1000 ~25.3µs vs main ~161µs). Added new bytes/str const-length benches (0/32/1024/4096) to cover arena-handle path.

@@ -5,7 +5,7 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn};
-use execution_tape::program::ValueType;
+use execution_tape::program::{Const, ValueType};
 use execution_tape::trace::{TraceEvent, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
@@ -13,6 +13,8 @@ use execution_tape::vm::{Limits, Vm};
 fn bench_vm(c: &mut Criterion) {
     bench_i64_add_chain(c);
     bench_i64_add_chain_traced_instr(c);
+    bench_bytes_const_len(c);
+    bench_str_const_len(c);
     bench_call_overhead(c);
     bench_call_loop(c);
     bench_host_call(c);
@@ -47,6 +49,36 @@ fn bench_i64_add_chain_traced_instr(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
                 let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_bytes_const_len(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bytes_const_len");
+    for &n in &[0_usize, 32, 1024, 4096] {
+        let p = build_bytes_const_len(n);
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, p| {
+            b.iter(|| {
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_str_const_len(c: &mut Criterion) {
+    let mut group = c.benchmark_group("str_const_len");
+    for &n in &[0_usize, 32, 1024, 4096] {
+        let p = build_str_const_len(n);
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, p| {
+            b.iter(|| {
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
                 black_box(out);
             });
         });
@@ -168,6 +200,48 @@ fn build_i64_add_chain(chain_len: u32) -> execution_tape::verifier::VerifiedProg
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
             reg_count: cur,
+        },
+    )
+    .unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_bytes_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+    let bytes = pb.constant(Const::Bytes(vec![0_u8; n]));
+
+    let mut a = Asm::new();
+    a.const_pool(1, bytes);
+    a.bytes_len(2, 1);
+    a.ret(0, &[2]);
+
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::U64],
+            reg_count: 3,
+        },
+    )
+    .unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+    let s = pb.constant(Const::Str("a".repeat(n)));
+
+    let mut a = Asm::new();
+    a.const_pool(1, s);
+    a.str_len(2, 1);
+    a.ret(0, &[2]);
+
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::U64],
+            reg_count: 3,
         },
     )
     .unwrap();
