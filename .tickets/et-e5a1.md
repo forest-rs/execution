@@ -2,7 +2,7 @@
 id: et-e5a1
 status: open
 deps: []
-links: []
+links: [et-991c]
 created: 2026-01-31T14:47:47Z
 type: task
 priority: 2
@@ -23,3 +23,9 @@ Acceptance:
 - Benchmark(s) demonstrate improvement (ns/op) for at least one workload.
 - No regressions in conformance tests.
 
+
+## Notes
+
+**2026-02-01T05:45:28Z**
+
+Superseded by et-991c (VerifiedProgram caches decoded/validated instruction stream).
