@@ -1,6 +1,6 @@
 ---
 id: et-fe3c
-status: open
+status: closed
 deps: [et-991c]
 links: []
 created: 2026-02-01T05:44:10Z

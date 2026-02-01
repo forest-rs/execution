@@ -765,7 +765,7 @@ fn verifier_rejects_select_type_mismatch() {
         a,
         FunctionSig {
             arg_types: vec![],
-            ret_types: vec![ValueType::Any],
+            ret_types: vec![ValueType::U64],
             reg_count: 5,
         },
     )

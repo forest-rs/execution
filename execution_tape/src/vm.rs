@@ -2361,7 +2361,7 @@ mod tests {
             a,
             FunctionSig {
                 arg_types: vec![],
-                ret_types: vec![ValueType::Any],
+                ret_types: vec![ValueType::Bool],
                 reg_count: 4,
             },
         )
@@ -2392,7 +2392,7 @@ mod tests {
             a,
             FunctionSig {
                 arg_types: vec![],
-                ret_types: vec![ValueType::Any],
+                ret_types: vec![ValueType::Bool],
                 reg_count: 5,
             },
         )
@@ -2422,7 +2422,7 @@ mod tests {
             a,
             FunctionSig {
                 arg_types: vec![],
-                ret_types: vec![ValueType::U64, ValueType::Any],
+                ret_types: vec![ValueType::U64, ValueType::U64],
                 reg_count: 7,
             },
         )

@@ -263,6 +263,25 @@ pub enum VerifyError {
         /// Expected type.
         expected: ValueType,
     },
+    /// A verified program forbids [`ValueType::Any`] in function signatures.
+    AnyInFunctionSig {
+        /// Function index within the program.
+        func: u32,
+    },
+    /// A verified program forbids [`ValueType::Any`] in host signatures.
+    AnyInHostSig {
+        /// Host signature id.
+        host_sig: u32,
+    },
+    /// A verified program forbids [`ValueType::Any`] in the type table.
+    AnyInTypeTable,
+    /// A register has no stable concrete type across reachable paths.
+    UnstableRegType {
+        /// Function index within the program.
+        func: u32,
+        /// Register index.
+        reg: u32,
+    },
     /// A typed use saw a concrete type that does not match what was expected.
     TypeMismatch {
         /// Function index within the program.
@@ -393,6 +412,20 @@ impl fmt::Display for VerifyError {
                 f,
                 "function {func} pc={pc} unknown type at use (r{reg}, expected {expected:?})"
             ),
+            Self::AnyInFunctionSig { func } => {
+                write!(
+                    f,
+                    "function {func} signature contains ValueType::Any (forbidden)"
+                )
+            }
+            Self::AnyInHostSig { host_sig } => {
+                write!(f, "host_sig {host_sig} contains ValueType::Any (forbidden)")
+            }
+            Self::AnyInTypeTable => write!(f, "type table contains ValueType::Any (forbidden)"),
+            Self::UnstableRegType { func, reg } => write!(
+                f,
+                "function {func}: reg {reg} has no stable concrete type across reachable paths"
+            ),
             Self::TypeMismatch {
                 func,
                 pc,
@@ -499,6 +532,9 @@ fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
         let rets = program
             .host_sig_rets(hs)
             .map_err(|_| VerifyError::HostSigMalformed { host_sig })?;
+        if args.contains(&ValueType::Any) || rets.contains(&ValueType::Any) {
+            return Err(VerifyError::AnyInHostSig { host_sig });
+        }
         if hs.sig_hash != sig_hash_slices(args, rets) {
             return Err(VerifyError::HostSigHashMismatch { host_sig });
         }
@@ -512,6 +548,12 @@ fn verify_function_container(
     func: &Function,
     cfg: &VerifyConfig,
 ) -> Result<Vec<DecodedInstr>, VerifyError> {
+    if program.types.field_types.contains(&ValueType::Any)
+        || program.types.array_elems.contains(&ValueType::Any)
+    {
+        return Err(VerifyError::AnyInTypeTable);
+    }
+
     if func.reg_count > cfg.max_regs_per_function {
         return Err(VerifyError::RegCountTooLarge {
             func: func_id,
@@ -531,6 +573,9 @@ fn verify_function_container(
     let ret_types = program
         .function_ret_types(func)
         .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: func_id })?;
+    if arg_types.contains(&ValueType::Any) || ret_types.contains(&ValueType::Any) {
+        return Err(VerifyError::AnyInFunctionSig { func: func_id });
+    }
 
     if u32::try_from(arg_types.len()).ok() != Some(func.arg_count)
         || u32::try_from(ret_types.len()).ok() != Some(func.ret_count)
@@ -628,6 +673,28 @@ fn verify_function_bytecode(
             transfer_types(program, &di.instr, &mut state);
         }
         debug_assert_eq!(state, type_out[b_idx], "type OUT mismatch");
+    }
+
+    for b_idx in 0..blocks.len() {
+        if !reachable[b_idx] {
+            continue;
+        }
+        for (r, t) in type_in[b_idx].values.iter().enumerate() {
+            if matches!(t, Some(Some(ValueType::Any))) {
+                return Err(VerifyError::UnstableRegType {
+                    func: func_id,
+                    reg: u32::try_from(r).unwrap_or(u32::MAX),
+                });
+            }
+        }
+        for (r, t) in type_out[b_idx].values.iter().enumerate() {
+            if matches!(t, Some(Some(ValueType::Any))) {
+                return Err(VerifyError::UnstableRegType {
+                    func: func_id,
+                    reg: u32::try_from(r).unwrap_or(u32::MAX),
+                });
+            }
+        }
     }
 
     Ok(())
@@ -2613,7 +2680,7 @@ mod tests {
             a,
             FunctionSig {
                 arg_types: vec![],
-                ret_types: vec![ValueType::Any],
+                ret_types: vec![ValueType::I64],
                 reg_count: 4,
             },
         )
@@ -2676,7 +2743,7 @@ mod tests {
             a,
             FunctionSig {
                 arg_types: vec![],
-                ret_types: vec![ValueType::Any],
+                ret_types: vec![ValueType::I64],
                 reg_count: 4,
             },
         )
@@ -2703,7 +2770,7 @@ mod tests {
             a,
             FunctionSig {
                 arg_types: vec![],
-                ret_types: vec![ValueType::Any],
+                ret_types: vec![ValueType::I64],
                 reg_count: 4,
             },
         )
