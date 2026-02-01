@@ -5,7 +5,7 @@
 
 use execution_tape::aggregates::AggError;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-use execution_tape::host::{Host, HostError, HostSig, SigHash};
+use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{
     Const, FunctionDef, HostSymbol, Program, StructTypeDef, TypeTableDef, ValueType,
 };
@@ -23,10 +23,10 @@ impl Host for TestHost {
         &mut self,
         symbol: &str,
         _sig_hash: SigHash,
-        args: &[Value],
+        args: &[ValueRef<'_>],
     ) -> Result<(Vec<Value>, u64), HostError> {
         match symbol {
-            "id" => Ok((args.to_vec(), 0)),
+            "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
             _ => Err(HostError::UnknownSymbol),
         }
     }
@@ -707,7 +707,7 @@ fn vm_traps_host_call_limit_in_loop() {
             &mut self,
             _symbol: &str,
             _sig_hash: SigHash,
-            _args: &[Value],
+            _args: &[ValueRef<'_>],
         ) -> Result<(Vec<Value>, u64), HostError> {
             self.calls += 1;
             Ok((Vec::new(), 0))

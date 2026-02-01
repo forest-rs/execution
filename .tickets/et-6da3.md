@@ -1,6 +1,6 @@
 ---
 id: et-6da3
-status: open
+status: closed
 deps: [et-6e83]
 links: []
 created: 2026-02-01T05:44:17Z

@@ -28,6 +28,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - **Register**: a virtual slot holding a `Value`.
 - **`SpanId`**: stable identifier for tracing and source mapping (e.g. node GUID).
 - **Host call**: effectful operation implemented by the embedder.
+- Host-call arguments are passed as borrowed views (bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning).
 - **Effect token**: SSA-like value that enforces effect ordering.
 
 ## Execution model (v1)

@@ -542,7 +542,7 @@ The embedder provides a `Host` that can:
 - resolve symbols to callable handles (or reject)
 - execute a call with:
   - `symbol` + `sig_hash`
-  - argument `Value`s
+  - argument `Value`s (passed as borrowed views; bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning)
   - access to tracing sink
   - ability to charge extra fuel
 
@@ -596,6 +596,7 @@ encoding or register conventions change.
   - `host_sigs[i].symbol_id` must be in-bounds
   - `host_sigs[i].sig_hash` must match the canonical hash of its `(arg_types, ret_types)`
 - **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types (treating `Any` as an escape hatch).
+- **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types.
 
 ## Open items to resolve during implementation
 - Finalize opcode numbers and exact operand encodings.
