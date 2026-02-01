@@ -61,11 +61,13 @@
 extern crate alloc;
 
 pub mod aggregates;
+pub(crate) mod arena;
 pub mod asm;
 pub(crate) mod bytecode;
 pub mod format;
 pub mod host;
 pub mod program;
+pub(crate) mod reg_value;
 pub mod trace;
 pub mod value;
 pub mod verifier;
