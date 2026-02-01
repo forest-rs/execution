@@ -196,11 +196,13 @@ struct RegBase {
 struct Frame {
     func: FuncId,
     pc: u32,
+    instr_ix: usize,
     byte_len: u32,
     base: RegBase,
     rets: Vec<VReg>,
     ret_base: RegBase,
     ret_pc: u32,
+    ret_instr_ix: usize,
 }
 
 /// A simple register VM.
@@ -354,11 +356,13 @@ impl<H: Host> Vm<H> {
         self.frames.push(Frame {
             func: entry,
             pc: 0,
+            instr_ix: 0,
             byte_len: entry_vf.byte_len,
             base: entry_base,
             rets: Vec::new(),
             ret_base: RegBase::default(),
             ret_pc: 0,
+            ret_instr_ix: 0,
         });
 
         if trace_mask.contains(TraceMask::CALL)
@@ -394,18 +398,23 @@ impl<H: Host> Vm<H> {
                 .checked_sub(1)
                 .ok_or_else(|| self.trap(entry, 0, None, Trap::InvalidPc))?;
 
-            let (func_id, pc, base, _byte_len) = {
+            let (func_id, pc, instr_ix, base, _byte_len) = {
                 let f = &self.frames[frame_index];
-                (f.func, f.pc, f.base, f.byte_len)
+                (f.func, f.pc, f.instr_ix, f.base, f.byte_len)
             };
             let span_id = self.span_at(program_ref, func_id, pc);
 
             let vf = program
                 .verified(func_id)
                 .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-            let (opcode, instr, next_pc) = vf
-                .fetch_at_pc(pc)
+            let (opcode, instr, actual_pc, next_pc) = vf
+                .fetch_at_ix(instr_ix)
                 .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+            debug_assert_eq!(
+                pc, actual_pc,
+                "frame pc must match verified instruction offset"
+            );
+            let next_instr_ix = instr_ix.saturating_add(1);
 
             if trace_mask.contains(TraceMask::INSTR)
                 && let Some(t) = trace.as_mut()
@@ -423,8 +432,12 @@ impl<H: Host> Vm<H> {
                 );
             }
 
+            // Default fallthrough: advance to the next decoded instruction.
+            self.frames[frame_index].pc = next_pc;
+            self.frames[frame_index].instr_ix = next_instr_ix;
+
             match instr {
-                VerifiedInstr::Nop => self.frames[frame_index].pc = next_pc,
+                VerifiedInstr::Nop => {}
                 VerifiedInstr::Trap { code } => {
                     return Err(self.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
                 }
@@ -433,77 +446,93 @@ impl<H: Host> Vm<H> {
                     let v = self.read_unit(base, *src);
                     self.write_unit(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovBool { dst, src } => {
                     let v = self.read_bool(base, *src);
                     self.write_bool(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovI64 { dst, src } => {
                     let v = self.read_i64(base, *src);
                     self.write_i64(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovU64 { dst, src } => {
                     let v = self.read_u64(base, *src);
                     self.write_u64(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovF64 { dst, src } => {
                     let v = self.read_f64(base, *src);
                     self.write_f64(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovDecimal { dst, src } => {
                     let v = self.read_decimal(base, *src);
                     self.write_decimal(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovBytes { dst, src } => {
                     let v = self.read_bytes_handle(base, *src);
                     self.write_bytes_handle(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovStr { dst, src } => {
                     let v = self.read_str_handle(base, *src);
                     self.write_str_handle(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovObj { dst, src } => {
                     let v = self.read_obj(base, *src);
                     self.write_obj(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovAgg { dst, src } => {
                     let v = self.read_agg_handle(base, *src);
                     self.write_agg_handle(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovFunc { dst, src } => {
                     let v = self.read_func(base, *src);
                     self.write_func(base, *dst, v);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
                 VerifiedInstr::ConstUnit { dst } => {
                     self.write_unit(base, *dst, 0);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstBool { dst, imm } => {
                     self.write_bool(base, *dst, *imm);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstI64 { dst, imm } => {
                     self.write_i64(base, *dst, *imm);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstU64 { dst, imm } => {
                     self.write_u64(base, *dst, *imm);
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstF64 { dst, bits } => {
                     self.write_f64(base, *dst, f64::from_bits(*bits));
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstDecimal {
                     dst,
@@ -519,6 +548,7 @@ impl<H: Host> Vm<H> {
                         },
                     );
                     self.frames[frame_index].pc = next_pc;
+                    self.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
                 VerifiedInstr::ConstPoolUnit { dst, idx } => {
@@ -1097,13 +1127,25 @@ impl<H: Host> Vm<H> {
                     pc_true,
                     pc_false,
                 } => {
-                    self.frames[frame_index].pc = if self.read_bool(base, *cond) {
+                    let target_pc = if self.read_bool(base, *cond) {
                         *pc_true
                     } else {
                         *pc_false
                     };
+                    let target_ix = vf
+                        .instr_ix_at_pc(target_pc)
+                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    self.frames[frame_index].pc = target_pc;
+                    self.frames[frame_index].instr_ix = target_ix;
                 }
-                VerifiedInstr::Jmp { pc_target } => self.frames[frame_index].pc = *pc_target,
+                VerifiedInstr::Jmp { pc_target } => {
+                    let target_pc = *pc_target;
+                    let target_ix = vf
+                        .instr_ix_at_pc(target_pc)
+                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    self.frames[frame_index].pc = target_pc;
+                    self.frames[frame_index].instr_ix = target_ix;
+                }
 
                 VerifiedInstr::Call {
                     eff_out,
@@ -1129,6 +1171,7 @@ impl<H: Host> Vm<H> {
 
                     let ret_base = base;
                     let ret_pc = next_pc;
+                    let ret_instr_ix = next_instr_ix;
 
                     let callee_base = self.alloc_frame(callee_vf);
                     if args.len() != callee_vf.reg_layout.arg_regs.len() {
@@ -1146,11 +1189,13 @@ impl<H: Host> Vm<H> {
                     self.frames.push(Frame {
                         func: *callee,
                         pc: 0,
+                        instr_ix: 0,
                         byte_len: callee_vf.byte_len,
                         base: callee_base,
                         rets: rets.clone(),
                         ret_base,
                         ret_pc,
+                        ret_instr_ix,
                     });
 
                     if trace_mask.contains(TraceMask::CALL)
@@ -1221,6 +1266,7 @@ impl<H: Host> Vm<H> {
 
                     let caller_index = self.frames.len() - 1;
                     self.frames[caller_index].pc = finished.ret_pc;
+                    self.frames[caller_index].instr_ix = finished.ret_instr_ix;
                 }
 
                 VerifiedInstr::HostCall {
