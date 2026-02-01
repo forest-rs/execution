@@ -23,9 +23,12 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 
 ## Glossary
 - **`Program`**: serialized artifact containing constants, types, functions, and bytecode.
-- **`VerifiedProgram`**: a `Program` that has passed verifier checks and is safe to execute.
+- **`VerifiedProgram`**: a `Program` that has passed verifier checks and is safe to execute. In addition to the
+  serialized `Program`, it includes verifier-produced, execution-ready function bodies (decoded/validated
+  instruction stream + register layout) used by the VM.
 - **`Frame`**: a call instance with its own register base and program counter.
-- **Register**: a virtual slot holding a `Value`.
+- **Register**: a virtual slot with a statically verified `ValueType`. The VM may store registers in
+  per-`RegClass` arrays rather than as a tagged union to keep the hot loop monomorphic.
 - **`SpanId`**: stable identifier for tracing and source mapping (e.g. node GUID).
 - **Host call**: effectful operation implemented by the embedder.
 - Host-call arguments are passed as borrowed views (bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning).
@@ -44,7 +47,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
 - `Decimal { mantissa: i64, scale: u8 }` (per-value scale; rounding/division TBD)
-- `Bytes` and/or `Str` (alloc-backed; representation TBD)
+- `Bytes` and/or `Str` (alloc-backed; stored by handle into a per-run arena in the VM)
 
 ### Host objects
 - `Obj { host_type: HostTypeId, handle: u64 }`
