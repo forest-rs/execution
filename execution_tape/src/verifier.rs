@@ -23,7 +23,7 @@ use crate::vm::Vm;
 /// A program that has been verified under a particular verifier configuration.
 ///
 /// This is an API affordance for embedders: it allows a VM to expose
-/// [`Vm::run_verified`] and [`Vm::run_verified_traced`], which can assume
+/// [`Vm::run`], which can assume
 /// (and potentially optimize around) verifier-enforced invariants from [`VerifyConfig`], while
 /// still validating host ABI conformance at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]

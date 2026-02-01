@@ -168,7 +168,7 @@ pub struct FunctionSig {
 /// This is primarily intended for tests and prototypes. For production usage you may want a more
 /// structured frontend that emits bytecode with spans and stable ids.
 ///
-/// For execution, see [`Vm::run`] and [`Vm::run_verified`].
+/// For execution, see [`Vm::run`].
 ///
 /// ## Example
 ///
@@ -195,7 +195,7 @@ pub struct FunctionSig {
 ///         reg_count: 4,
 ///     },
 /// )?;
-/// let _program = pb.build_checked()?;
+/// let _program = pb.build_verified()?;
 /// # Ok::<(), execution_tape::asm::BuildError>(())
 /// ```
 #[derive(Clone, Debug, Default)]
