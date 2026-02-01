@@ -202,7 +202,6 @@ fn encode_u32(v: u32) -> [u8; 4] {
 
 fn encode_value_type_tag(t: ValueType) -> u8 {
     match t {
-        ValueType::Any => 11,
         ValueType::Unit => 0,
         ValueType::Bool => 1,
         ValueType::I64 => 2,

@@ -31,21 +31,22 @@ pub(crate) enum RegClass {
     Func,
 }
 
-pub(crate) fn reg_class_of_value_type(t: ValueType) -> Option<RegClass> {
-    Some(match t {
-        ValueType::Any => return None,
-        ValueType::Unit => RegClass::Unit,
-        ValueType::Bool => RegClass::Bool,
-        ValueType::I64 => RegClass::I64,
-        ValueType::U64 => RegClass::U64,
-        ValueType::F64 => RegClass::F64,
-        ValueType::Decimal => RegClass::Decimal,
-        ValueType::Bytes => RegClass::Bytes,
-        ValueType::Str => RegClass::Str,
-        ValueType::Obj(_) => RegClass::Obj,
-        ValueType::Agg => RegClass::Agg,
-        ValueType::Func => RegClass::Func,
-    })
+impl RegClass {
+    pub(crate) fn of(t: ValueType) -> Self {
+        match t {
+            ValueType::Unit => Self::Unit,
+            ValueType::Bool => Self::Bool,
+            ValueType::I64 => Self::I64,
+            ValueType::U64 => Self::U64,
+            ValueType::F64 => Self::F64,
+            ValueType::Decimal => Self::Decimal,
+            ValueType::Bytes => Self::Bytes,
+            ValueType::Str => Self::Str,
+            ValueType::Obj(_) => Self::Obj,
+            ValueType::Agg => Self::Agg,
+            ValueType::Func => Self::Func,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

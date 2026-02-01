@@ -19,7 +19,7 @@ use crate::program::{ConstEntry, ElemTypeId, Function, Program, SpanEntry, TypeI
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
     RegLayout, StrReg, U64Reg, UnitReg, VReg, VerifiedDecodedInstr, VerifiedFunction,
-    VerifiedInstr, instr_writes, reg_class_of_value_type,
+    VerifiedInstr, instr_writes,
 };
 use crate::value::FuncId;
 
@@ -252,7 +252,7 @@ pub enum VerifyError {
         /// Host signature id.
         host_sig: u32,
     },
-    /// A typed use requires a concrete type, but the value is [`ValueType::Any`].
+    /// A typed use requires a concrete type, but the value's type is not known.
     UnknownTypeAtUse {
         /// Function index within the program.
         func: u32,
@@ -263,18 +263,15 @@ pub enum VerifyError {
         /// Expected type.
         expected: ValueType,
     },
-    /// A verified program forbids [`ValueType::Any`] in function signatures.
-    AnyInFunctionSig {
+    /// A `select` operand has no stable concrete type.
+    UnknownTypeAtSelect {
         /// Function index within the program.
         func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Register index.
+        reg: u32,
     },
-    /// A verified program forbids [`ValueType::Any`] in host signatures.
-    AnyInHostSig {
-        /// Host signature id.
-        host_sig: u32,
-    },
-    /// A verified program forbids [`ValueType::Any`] in the type table.
-    AnyInTypeTable,
     /// A register has no stable concrete type across reachable paths.
     UnstableRegType {
         /// Function index within the program.
@@ -412,16 +409,10 @@ impl fmt::Display for VerifyError {
                 f,
                 "function {func} pc={pc} unknown type at use (r{reg}, expected {expected:?})"
             ),
-            Self::AnyInFunctionSig { func } => {
-                write!(
-                    f,
-                    "function {func} signature contains ValueType::Any (forbidden)"
-                )
-            }
-            Self::AnyInHostSig { host_sig } => {
-                write!(f, "host_sig {host_sig} contains ValueType::Any (forbidden)")
-            }
-            Self::AnyInTypeTable => write!(f, "type table contains ValueType::Any (forbidden)"),
+            Self::UnknownTypeAtSelect { func, pc, reg } => write!(
+                f,
+                "function {func} pc={pc} unknown type at select operand (r{reg})"
+            ),
             Self::UnstableRegType { func, reg } => write!(
                 f,
                 "function {func}: reg {reg} has no stable concrete type across reachable paths"
@@ -532,9 +523,6 @@ fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
         let rets = program
             .host_sig_rets(hs)
             .map_err(|_| VerifyError::HostSigMalformed { host_sig })?;
-        if args.contains(&ValueType::Any) || rets.contains(&ValueType::Any) {
-            return Err(VerifyError::AnyInHostSig { host_sig });
-        }
         if hs.sig_hash != sig_hash_slices(args, rets) {
             return Err(VerifyError::HostSigHashMismatch { host_sig });
         }
@@ -548,12 +536,6 @@ fn verify_function_container(
     func: &Function,
     cfg: &VerifyConfig,
 ) -> Result<VerifiedFunction, VerifyError> {
-    if program.types.field_types.contains(&ValueType::Any)
-        || program.types.array_elems.contains(&ValueType::Any)
-    {
-        return Err(VerifyError::AnyInTypeTable);
-    }
-
     if func.reg_count > cfg.max_regs_per_function {
         return Err(VerifyError::RegCountTooLarge {
             func: func_id,
@@ -573,9 +555,6 @@ fn verify_function_container(
     let ret_types = func
         .ret_types(program)
         .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: func_id })?;
-    if arg_types.contains(&ValueType::Any) || ret_types.contains(&ValueType::Any) {
-        return Err(VerifyError::AnyInFunctionSig { func: func_id });
-    }
 
     if u32::try_from(arg_types.len()).ok() != Some(func.arg_count)
         || u32::try_from(ret_types.len()).ok() != Some(func.ret_count)
@@ -678,7 +657,7 @@ fn verify_function_bytecode(
             continue;
         }
         for (r, t) in type_in[b_idx].values.iter().enumerate() {
-            if matches!(t, Some(Some(ValueType::Any))) {
+            if matches!(t, Some(RegType::Ambiguous)) {
                 return Err(VerifyError::UnstableRegType {
                     func: func_id,
                     reg: u32::try_from(r).unwrap_or(u32::MAX),
@@ -686,7 +665,7 @@ fn verify_function_bytecode(
             }
         }
         for (r, t) in type_out[b_idx].values.iter().enumerate() {
-            if matches!(t, Some(Some(ValueType::Any))) {
+            if matches!(t, Some(RegType::Ambiguous)) {
                 return Err(VerifyError::UnstableRegType {
                     func: func_id,
                     reg: u32::try_from(r).unwrap_or(u32::MAX),
@@ -716,15 +695,24 @@ fn verify_function_bytecode(
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
             transfer_types(program, &di.instr, &mut state);
             for w in instr_writes(&di.instr) {
-                let Some(t) = state.values.get(w as usize).copied().flatten().flatten() else {
+                let Some(t) = state.values.get(w as usize).copied().flatten() else {
                     continue;
                 };
-                if t == ValueType::Any {
-                    return Err(VerifyError::UnstableRegType {
-                        func: func_id,
-                        reg: w,
-                    });
-                }
+                let t = match t {
+                    RegType::Concrete(t) => t,
+                    RegType::Uninit => {
+                        return Err(VerifyError::UnstableRegType {
+                            func: func_id,
+                            reg: w,
+                        });
+                    }
+                    RegType::Ambiguous => {
+                        return Err(VerifyError::UnstableRegType {
+                            func: func_id,
+                            reg: w,
+                        });
+                    }
+                };
                 match reg_types.get_mut(w as usize) {
                     Some(slot @ None) => *slot = Some(t),
                     Some(Some(prev)) if *prev == t => {}
@@ -744,12 +732,9 @@ fn verify_function_bytecode(
     // index.
     let mut counts = RegCounts::default();
     let mut reg_map: Vec<VReg> = Vec::with_capacity(reg_count);
-    for (i, t) in reg_types.iter().copied().enumerate() {
+    for t in reg_types.iter().copied() {
         let t = t.unwrap_or(ValueType::Unit);
-        let class = reg_class_of_value_type(t).ok_or(VerifyError::UnstableRegType {
-            func: func_id,
-            reg: u32::try_from(i).unwrap_or(u32::MAX),
-        })?;
+        let class = RegClass::of(t);
         let idx_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         let v = match class {
             RegClass::Unit => {
@@ -1879,9 +1864,16 @@ fn initial_init(reg_count: usize, arg_count: usize) -> BitSet {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AggMeta {
-    Tuple(Vec<ValueType>),
+    Tuple(Vec<Option<ValueType>>),
     Struct(TypeId),
     Array(ElemTypeId),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum RegType {
+    Uninit,
+    Concrete(ValueType),
+    Ambiguous,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1889,42 +1881,39 @@ struct TypeState {
     // `None` means "unknown/top" during fixpoint iteration (used to compute a greatest fixpoint for
     // loop-invariant types without assuming a particular type up front).
     //
-    // `Some(None)` means "definitely uninitialized".
-    //
-    // `Some(Some(t))` means "definitely initialized with type `t`", where `t == Any` is used when
-    // all incoming paths initialize the value but disagree on its concrete type.
-    values: Vec<Option<Option<ValueType>>>,
+    // `Some(RegType::Uninit)` means "definitely uninitialized".
+    // `Some(RegType::Concrete(t))` means "definitely initialized with concrete type `t`".
+    // `Some(RegType::Ambiguous)` means "definitely initialized, but the type is not stable".
+    values: Vec<Option<RegType>>,
     aggs: Vec<Option<AggMeta>>,
 }
 
 fn initial_types(reg_count: usize, arg_types: &[ValueType]) -> TypeState {
-    let mut values: Vec<Option<Option<ValueType>>> = vec![Some(None); reg_count];
+    let mut values: Vec<Option<RegType>> = vec![Some(RegType::Uninit); reg_count];
     let aggs: Vec<Option<AggMeta>> = vec![None; reg_count];
     if reg_count != 0 {
-        values[0] = Some(Some(ValueType::Unit)); // effect token
+        values[0] = Some(RegType::Concrete(ValueType::Unit)); // effect token
         for (i, &t) in arg_types.iter().enumerate() {
             if 1 + i < reg_count {
-                values[1 + i] = Some(Some(t));
+                values[1 + i] = Some(RegType::Concrete(t));
             }
         }
     }
     TypeState { values, aggs }
 }
 
-fn meet_value(
-    a: Option<Option<ValueType>>,
-    b: Option<Option<ValueType>>,
-) -> Option<Option<ValueType>> {
+fn meet_value(a: Option<RegType>, b: Option<RegType>) -> Option<RegType> {
     match (a, b) {
         // Unknown/top (used for initialization) doesn't constrain the result.
         (None, x) | (x, None) => x,
         // Any definitely-uninitialized incoming path makes the value definitely uninitialized.
-        (Some(None), _) | (_, Some(None)) => Some(None),
-        (Some(Some(x)), Some(Some(y))) => {
+        (Some(RegType::Uninit), _) | (_, Some(RegType::Uninit)) => Some(RegType::Uninit),
+        (Some(RegType::Ambiguous), _) | (_, Some(RegType::Ambiguous)) => Some(RegType::Ambiguous),
+        (Some(RegType::Concrete(x)), Some(RegType::Concrete(y))) => {
             if x == y {
-                Some(Some(x))
+                Some(RegType::Concrete(x))
             } else {
-                Some(Some(ValueType::Any))
+                Some(RegType::Ambiguous)
             }
         }
     }
@@ -1957,13 +1946,21 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         }
     }
 
-    fn set_value(state: &mut TypeState, reg: u32, ty: ValueType) {
+    fn set_reg_type(state: &mut TypeState, reg: u32, ty: RegType) {
         if let Some(slot) = state.values.get_mut(reg as usize) {
-            *slot = Some(Some(ty));
+            *slot = Some(ty);
         }
-        if ty != ValueType::Agg {
+        if ty != RegType::Concrete(ValueType::Agg) {
             clear_agg(state, reg);
         }
+    }
+
+    fn set_value(state: &mut TypeState, reg: u32, ty: ValueType) {
+        set_reg_type(state, reg, RegType::Concrete(ty));
+    }
+
+    fn set_ambiguous(state: &mut TypeState, reg: u32) {
+        set_reg_type(state, reg, RegType::Ambiguous);
     }
 
     fn set_agg(state: &mut TypeState, reg: u32, meta: Option<AggMeta>) {
@@ -1974,19 +1971,15 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
     }
 
     fn copy_reg(state: &mut TypeState, dst: u32, src: u32) {
-        let t = state
-            .values
-            .get(src as usize)
-            .copied()
-            .flatten()
-            .flatten()
-            .unwrap_or(ValueType::Any);
-        set_value(state, dst, t);
+        let t = state.values.get(src as usize).copied().unwrap_or(None);
+        if let Some(slot) = state.values.get_mut(dst as usize) {
+            *slot = t;
+        }
         let meta = state.aggs.get(src as usize).cloned().unwrap_or(None);
         if let Some(slot) = state.aggs.get_mut(dst as usize) {
             *slot = meta;
         }
-        if t != ValueType::Agg {
+        if t != Some(RegType::Concrete(ValueType::Agg)) {
             clear_agg(state, dst);
         }
     }
@@ -2009,8 +2002,9 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                 .const_pool
                 .get(idx.0 as usize)
                 .map(const_value_type)
-                .unwrap_or(ValueType::Any);
-            set_value(state, *dst, t);
+                .map(RegType::Concrete)
+                .unwrap_or(RegType::Ambiguous);
+            set_reg_type(state, *dst, t);
         }
         Instr::DecAdd { dst, .. } | Instr::DecSub { dst, .. } | Instr::DecMul { dst, .. } => {
             set_value(state, *dst, ValueType::Decimal);
@@ -2080,14 +2074,16 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             set_value(state, *dst, ValueType::Bool);
         }
         Instr::Select { dst, a, .. } => {
-            let t = state
-                .values
-                .get(*a as usize)
-                .copied()
-                .flatten()
-                .flatten()
-                .unwrap_or(ValueType::Any);
-            set_value(state, *dst, t);
+            let t = state.values.get(*a as usize).copied().unwrap_or(None);
+            match t {
+                Some(t) => set_reg_type(state, *dst, t),
+                None => {
+                    if let Some(slot) = state.values.get_mut(*dst as usize) {
+                        *slot = None;
+                    }
+                    clear_agg(state, *dst);
+                }
+            }
         }
         Instr::BytesConcat { dst, .. }
         | Instr::BytesSlice { dst, .. }
@@ -2116,7 +2112,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                 return;
             }
             for dst in rets {
-                set_value(state, *dst, ValueType::Any);
+                set_ambiguous(state, *dst);
             }
         }
         Instr::HostCall {
@@ -2128,7 +2124,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             set_value(state, *eff_out, ValueType::Unit);
             let Some(hs) = program.host_sig(*host_sig) else {
                 for dst in rets {
-                    set_value(state, *dst, ValueType::Any);
+                    set_ambiguous(state, *dst);
                 }
                 return;
             };
@@ -2138,22 +2134,18 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                 }
             } else {
                 for dst in rets {
-                    set_value(state, *dst, ValueType::Any);
+                    set_ambiguous(state, *dst);
                 }
             }
         }
         Instr::TupleNew { dst, values } => {
-            let mut elems: Vec<ValueType> = Vec::with_capacity(values.len());
+            let mut elems: Vec<Option<ValueType>> = Vec::with_capacity(values.len());
             for &r in values {
-                elems.push(
-                    state
-                        .values
-                        .get(r as usize)
-                        .copied()
-                        .flatten()
-                        .flatten()
-                        .unwrap_or(ValueType::Any),
-                );
+                let t = state.values.get(r as usize).copied().flatten();
+                elems.push(match t {
+                    Some(RegType::Concrete(ty)) => Some(ty),
+                    _ => None,
+                });
             }
             set_agg(state, *dst, Some(AggMeta::Tuple(elems)));
         }
@@ -2167,13 +2159,13 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         }
         Instr::TupleGet { dst, tuple, index } => {
             let out = match state.aggs.get(*tuple as usize).and_then(|m| m.as_ref()) {
-                Some(AggMeta::Tuple(elems)) => elems
-                    .get(*index as usize)
-                    .copied()
-                    .unwrap_or(ValueType::Any),
-                _ => ValueType::Any,
+                Some(AggMeta::Tuple(elems)) => elems.get(*index as usize).and_then(|t| *t),
+                _ => None,
             };
-            set_value(state, *dst, out);
+            match out {
+                Some(t) => set_value(state, *dst, t),
+                None => set_ambiguous(state, *dst),
+            }
         }
         Instr::StructGet {
             dst,
@@ -2188,10 +2180,11 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                     .and_then(|st| program.types.struct_field_types(st).ok())
                     .and_then(|tys| tys.get(*field_index as usize))
                     .copied()
-                    .unwrap_or(ValueType::Any),
-                _ => ValueType::Any,
+                    .map(RegType::Concrete)
+                    .unwrap_or(RegType::Ambiguous),
+                _ => RegType::Ambiguous,
             };
-            set_value(state, *dst, out);
+            set_reg_type(state, *dst, out);
         }
         Instr::ArrayGet { dst, arr, .. } => {
             let out = match state.aggs.get(*arr as usize).and_then(|m| m.as_ref()) {
@@ -2200,10 +2193,11 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                     .array_elems
                     .get(elem_type_id.0 as usize)
                     .copied()
-                    .unwrap_or(ValueType::Any),
-                _ => ValueType::Any,
+                    .map(RegType::Concrete)
+                    .unwrap_or(RegType::Ambiguous),
+                _ => RegType::Ambiguous,
             };
-            set_value(state, *dst, out);
+            set_reg_type(state, *dst, out);
         }
         Instr::ArrayGetImm { dst, arr, .. } => {
             let out = match state.aggs.get(*arr as usize).and_then(|m| m.as_ref()) {
@@ -2212,10 +2206,11 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                     .array_elems
                     .get(elem_type_id.0 as usize)
                     .copied()
-                    .unwrap_or(ValueType::Any),
-                _ => ValueType::Any,
+                    .map(RegType::Concrete)
+                    .unwrap_or(RegType::Ambiguous),
+                _ => RegType::Ambiguous,
             };
-            set_value(state, *dst, out);
+            set_reg_type(state, *dst, out);
         }
         Instr::ArrayLen { dst, .. } => set_value(state, *dst, ValueType::U64),
         Instr::TupleLen { dst, .. }
@@ -2269,7 +2264,7 @@ fn compute_must_types(
                 for p in it {
                     for r in 0..reg_count {
                         new_in.values[r] = meet_value(new_in.values[r], out_sets[p].values[r]);
-                        if matches!(new_in.values[r], Some(Some(ValueType::Agg))) {
+                        if matches!(new_in.values[r], Some(RegType::Concrete(ValueType::Agg))) {
                             new_in.aggs[r] = meet_agg(&new_in.aggs[r], &out_sets[p].aggs[r]);
                         } else {
                             new_in.aggs[r] = None;
@@ -2304,23 +2299,26 @@ fn check_expected(
     func: u32,
     pc: u32,
     reg: u32,
-    actual: Option<ValueType>,
+    actual: Option<RegType>,
     expected: ValueType,
 ) -> Result<(), VerifyError> {
-    if expected == ValueType::Any {
-        return Ok(());
-    }
     let Some(actual) = actual else {
         return Err(VerifyError::UninitializedRead { func, pc, reg });
     };
-    if actual == ValueType::Any {
-        return Err(VerifyError::UnknownTypeAtUse {
-            func,
-            pc,
-            reg,
-            expected,
-        });
-    }
+    let actual = match actual {
+        RegType::Uninit => {
+            return Err(VerifyError::UninitializedRead { func, pc, reg });
+        }
+        RegType::Concrete(t) => t,
+        RegType::Ambiguous => {
+            return Err(VerifyError::UnknownTypeAtUse {
+                func,
+                pc,
+                reg,
+                expected,
+            });
+        }
+    };
     if actual != expected {
         return Err(VerifyError::TypeMismatch {
             func,
@@ -2340,7 +2338,7 @@ fn validate_instr_types(
     state: &TypeState,
     func_ret_types: &[ValueType],
 ) -> Result<(), VerifyError> {
-    let t = |reg: u32| state.values.get(reg as usize).copied().flatten().flatten();
+    let t = |reg: u32| state.values.get(reg as usize).copied().flatten();
     let a = |reg: u32| state.aggs.get(reg as usize).and_then(|m| m.as_ref());
 
     match instr {
@@ -2490,31 +2488,68 @@ fn validate_instr_types(
         }
         Instr::Select { cond, a, b, .. } => {
             check_expected(func_id, pc, *cond, t(*cond), ValueType::Bool)?;
-            let ta = t(*a).ok_or(VerifyError::UninitializedRead {
-                func: func_id,
-                pc,
-                reg: *a,
-            })?;
-            let tb = t(*b).ok_or(VerifyError::UninitializedRead {
-                func: func_id,
-                pc,
-                reg: *b,
-            })?;
-            if ta == ValueType::Any || tb == ValueType::Any {
-                return Err(VerifyError::UnknownTypeAtUse {
+            let ta = t(*a).filter(|t| !matches!(t, RegType::Uninit)).ok_or(
+                VerifyError::UninitializedRead {
                     func: func_id,
                     pc,
-                    reg: if ta == ValueType::Any { *a } else { *b },
-                    expected: ValueType::Any,
-                });
-            }
-            if ta != tb {
-                return Err(VerifyError::TypeMismatch {
+                    reg: *a,
+                },
+            )?;
+            let tb = t(*b).filter(|t| !matches!(t, RegType::Uninit)).ok_or(
+                VerifyError::UninitializedRead {
                     func: func_id,
                     pc,
-                    expected: ta,
-                    actual: tb,
-                });
+                    reg: *b,
+                },
+            )?;
+            match (ta, tb) {
+                (RegType::Uninit, _) => {
+                    return Err(VerifyError::UninitializedRead {
+                        func: func_id,
+                        pc,
+                        reg: *a,
+                    });
+                }
+                (_, RegType::Uninit) => {
+                    return Err(VerifyError::UninitializedRead {
+                        func: func_id,
+                        pc,
+                        reg: *b,
+                    });
+                }
+                (RegType::Ambiguous, RegType::Concrete(expected)) => {
+                    return Err(VerifyError::UnknownTypeAtUse {
+                        func: func_id,
+                        pc,
+                        reg: *a,
+                        expected,
+                    });
+                }
+                (RegType::Concrete(expected), RegType::Ambiguous) => {
+                    return Err(VerifyError::UnknownTypeAtUse {
+                        func: func_id,
+                        pc,
+                        reg: *b,
+                        expected,
+                    });
+                }
+                (RegType::Ambiguous, RegType::Ambiguous) => {
+                    return Err(VerifyError::UnknownTypeAtSelect {
+                        func: func_id,
+                        pc,
+                        reg: *a,
+                    });
+                }
+                (RegType::Concrete(ta), RegType::Concrete(tb)) => {
+                    if ta != tb {
+                        return Err(VerifyError::TypeMismatch {
+                            func: func_id,
+                            pc,
+                            expected: ta,
+                            actual: tb,
+                        });
+                    }
+                }
             }
         }
         Instr::Br { cond, .. } => {

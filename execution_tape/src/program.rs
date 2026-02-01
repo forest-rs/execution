@@ -242,8 +242,6 @@ pub struct HostTypeId(pub u64);
 /// A value type used in signatures and aggregate layouts.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ValueType {
-    /// Any value type (escape hatch).
-    Any,
     /// `()`.
     Unit,
     /// Boolean.
@@ -1187,7 +1185,6 @@ enum ValueTypeTag {
     Obj = 8,
     Agg = 9,
     Func = 10,
-    Any = 11,
 }
 
 impl ValueTypeTag {
@@ -1204,7 +1201,6 @@ impl ValueTypeTag {
             8 => Ok(Self::Obj),
             9 => Ok(Self::Agg),
             10 => Ok(Self::Func),
-            11 => Ok(Self::Any),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -1212,7 +1208,6 @@ impl ValueTypeTag {
 
 fn encode_value_type(w: &mut Writer, t: ValueType) {
     let tag = match t {
-        ValueType::Any => ValueTypeTag::Any,
         ValueType::Unit => ValueTypeTag::Unit,
         ValueType::Bool => ValueTypeTag::Bool,
         ValueType::I64 => ValueTypeTag::I64,
@@ -1234,7 +1229,6 @@ fn encode_value_type(w: &mut Writer, t: ValueType) {
 fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
     let tag = ValueTypeTag::from_u8(r.read_u8()?)?;
     Ok(match tag {
-        ValueTypeTag::Any => ValueType::Any,
         ValueTypeTag::Unit => ValueType::Unit,
         ValueTypeTag::Bool => ValueType::Bool,
         ValueTypeTag::I64 => ValueType::I64,
