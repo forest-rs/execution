@@ -7,13 +7,13 @@ use execution_tape::aggregates::AggError;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostError, HostSig, SigHash};
 use execution_tape::program::{
-    Const, FunctionDef, HostSymbol, StructTypeDef, TypeTableDef, ValueType,
+    Const, FunctionDef, HostSymbol, Program, StructTypeDef, TypeTableDef, ValueType,
 };
+use execution_tape::trace::TraceMask;
 use execution_tape::value::Decimal;
 use execution_tape::value::FuncId;
 use execution_tape::value::Value;
-use execution_tape::verifier::VerifyError;
-use execution_tape::verifier::{VerifyConfig, verify_program};
+use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program, verify_program_owned};
 use execution_tape::vm::{Limits, Trap, Vm};
 
 struct TestHost;
@@ -32,9 +32,13 @@ impl Host for TestHost {
     }
 }
 
+fn verify_owned(program: Program) -> execution_tape::verifier::VerifiedProgram {
+    verify_program_owned(program, &VerifyConfig::default()).unwrap()
+}
+
 #[test]
 fn golden_minimal_program_bytes_v0_0_1() {
-    let p = execution_tape::program::Program::new(
+    let p = Program::new(
         vec![],
         vec![],
         vec![],
@@ -71,7 +75,7 @@ fn golden_minimal_program_bytes_v0_0_1() {
     let bytes = p.encode();
     assert_eq!(bytes, expected);
 
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
+    let back = Program::decode(&bytes).unwrap();
     assert_eq!(back, p);
     verify_program(&back, &VerifyConfig::default()).unwrap();
 }
@@ -94,13 +98,15 @@ fn roundtrip_verify_run_pure_ops() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(16)]);
 }
 
@@ -129,14 +135,16 @@ fn roundtrip_verify_run_cmp_cast_select() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(8)]);
 }
 
@@ -161,13 +169,15 @@ fn roundtrip_verify_run_u64_ops() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(49)]);
 }
 
@@ -190,13 +200,15 @@ fn roundtrip_verify_run_u64_ops_wrap() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(0)]);
 }
 
@@ -227,13 +239,15 @@ fn roundtrip_verify_run_u64_bitwise_and_shifts() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::U64(0b0001), Value::U64(0b0000)]);
 }
 
@@ -258,13 +272,15 @@ fn roundtrip_verify_run_u64_ordering() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(
         out,
         vec![Value::Bool(true), Value::Bool(true), Value::Bool(true)]
@@ -299,13 +315,15 @@ fn roundtrip_verify_run_i64_bitwise_and_shifts() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(0b1011), Value::I64(0b1000)]);
 }
 
@@ -330,13 +348,15 @@ fn roundtrip_verify_run_i64_ordering() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(
         out,
         vec![Value::Bool(true), Value::Bool(true), Value::Bool(true)]
@@ -366,13 +386,15 @@ fn roundtrip_verify_run_decimal_ops() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(
         out,
         vec![Value::Decimal(Decimal {
@@ -400,10 +422,12 @@ fn vm_traps_decimal_scale_mismatch() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::DecimalScaleMismatch);
 }
 
@@ -425,10 +449,12 @@ fn vm_traps_decimal_overflow_on_scale_add() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::DecimalOverflow);
 }
 
@@ -455,13 +481,15 @@ fn roundtrip_verify_run_f64_ops() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::F64(6.5)]);
 }
 
@@ -482,10 +510,12 @@ fn vm_traps_on_cast_overflow() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::IntCastOverflow);
 }
 
@@ -513,19 +543,21 @@ fn roundtrip_verify_run_host_call() {
     )
     .unwrap();
 
-    let p = pb.build_checked().unwrap();
-    let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
-    verify_program(&back, &VerifyConfig::default()).unwrap();
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&back, FuncId(0), &[]).unwrap();
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
     assert_eq!(out, vec![Value::I64(9)]);
 }
 
 #[test]
 fn verifier_rejects_unknown_opcode() {
-    let p = execution_tape::program::Program::new(
+    let p = Program::new(
         vec![],
         vec![],
         vec![],
@@ -556,7 +588,7 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
     a.call(0, f, 0, &[], &[]);
     a.ret(0, &[]);
     pb.define_function(f, a).unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let limits = Limits {
         fuel: 1_000_000,
@@ -564,7 +596,7 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
         max_host_calls: 1_000_000,
     };
     let mut vm = Vm::new(TestHost, limits);
-    let err = vm.run(&p, f, &[]).unwrap_err();
+    let err = vm.run(&p, f, &[], TraceMask::NONE, None).unwrap_err();
     assert_eq!(err.trap, Trap::CallDepthExceeded);
 }
 
@@ -572,7 +604,7 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
 fn roundtrip_decode_preserves_symbols_and_consts_shape() {
     // This test exercises the various arenas (symbols, const blobs, type table packing) without
     // asserting exact bytes.
-    let p = execution_tape::program::Program::new(
+    let p = Program::new(
         vec![HostSymbol {
             symbol: "price.lookup".into(),
         }],
@@ -583,7 +615,7 @@ fn roundtrip_decode_preserves_symbols_and_consts_shape() {
     );
 
     let bytes = p.encode();
-    let back = execution_tape::program::Program::decode(&bytes).unwrap();
+    let back = Program::decode(&bytes).unwrap();
     assert_eq!(back, p);
 }
 
@@ -627,10 +659,10 @@ fn vm_loop_sum_0_to_n_minus_1() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out, vec![Value::I64(10)]);
 }
 
@@ -651,14 +683,16 @@ fn vm_traps_fuel_in_tight_loop() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let limits = Limits {
         fuel: 3,
         ..Limits::default()
     };
     let mut vm = Vm::new(TestHost, limits);
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::FuelExceeded);
 }
 
@@ -702,7 +736,7 @@ fn vm_traps_host_call_limit_in_loop() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let limits = Limits {
         fuel: 100,
@@ -710,7 +744,9 @@ fn vm_traps_host_call_limit_in_loop() {
         ..Limits::default()
     };
     let mut vm = Vm::new(CountingHost { calls: 0 }, limits);
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::HostCallLimitExceeded);
 }
 
@@ -757,10 +793,12 @@ fn vm_traps_on_negative_i64_to_u64() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::IntCastOverflow);
 }
 
@@ -784,10 +822,10 @@ fn roundtrip_verify_run_tuple_len() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out, vec![Value::U64(2), Value::I64(20)]);
 }
 
@@ -817,10 +855,10 @@ fn roundtrip_verify_run_struct_field_count() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out, vec![Value::U64(3), Value::U64(2)]);
 }
 
@@ -846,10 +884,10 @@ fn roundtrip_verify_run_array_get_imm() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out, vec![Value::I64(9)]);
 }
 
@@ -873,10 +911,12 @@ fn vm_traps_array_get_imm_oob() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::AggError(AggError::OutOfBounds));
 }
 
@@ -902,10 +942,10 @@ fn roundtrip_verify_run_bytes_len_and_str_len() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out, vec![Value::U64(4), Value::U64(3)]);
 }
 
@@ -938,10 +978,10 @@ fn roundtrip_verify_run_div_rem() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(
         out,
         vec![Value::I64(6), Value::I64(1), Value::U64(6), Value::U64(1)]
@@ -966,10 +1006,12 @@ fn vm_traps_div_by_zero() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::DivByZero);
 }
 
@@ -991,10 +1033,12 @@ fn vm_traps_i64_div_overflow_min_over_minus_one() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::IntDivOverflow);
 }
 
@@ -1026,10 +1070,10 @@ fn roundtrip_verify_run_int_float_conversions() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
 
     match (&out[0], &out[1]) {
         (Value::F64(a), Value::F64(b)) => {
@@ -1072,10 +1116,10 @@ fn roundtrip_verify_run_f64_div_and_comparisons() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out[0], Value::F64(4.5));
     assert_eq!(out[1], Value::Bool(false));
     assert_eq!(out[2], Value::Bool(true));
@@ -1112,10 +1156,10 @@ fn roundtrip_verify_run_f64_comparisons_nan_are_false() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(
         out,
         vec![
@@ -1145,10 +1189,12 @@ fn vm_traps_f64_to_int_on_nan() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::FloatToIntInvalid);
 }
 
@@ -1169,10 +1215,12 @@ fn vm_traps_f64_to_u64_on_negative() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::IntCastOverflow);
 }
 
@@ -1194,10 +1242,10 @@ fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out[0], Value::I64(42));
     assert_eq!(
         out[1],
@@ -1225,10 +1273,12 @@ fn vm_traps_dec_to_i64_on_nonzero_scale() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::DecimalScaleMismatch);
 }
 
@@ -1276,10 +1326,10 @@ fn roundtrip_verify_run_bytes_and_string_ops() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[]).unwrap();
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out[0], Value::U64(4));
     assert_eq!(out[1], Value::Bytes(vec![2, 3, 4]));
     assert_eq!(out[2], Value::Bool(true));
@@ -1309,10 +1359,12 @@ fn vm_traps_str_slice_on_non_boundary() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::StrNotCharBoundary);
 }
 
@@ -1335,9 +1387,11 @@ fn vm_traps_bytes_to_str_on_invalid_utf8() {
         },
     )
     .unwrap();
-    let p = pb.build_checked().unwrap();
+    let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+    let err = vm
+        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap_err();
     assert_eq!(err.trap, Trap::InvalidUtf8);
 }

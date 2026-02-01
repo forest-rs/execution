@@ -6,7 +6,7 @@
 //! Tracing is optional and is designed to be `no_std` friendly.
 //! The VM only emits events requested by a [`TraceMask`].
 //!
-//! To enable tracing, use [`Vm::run_traced`] or [`Vm::run_verified_traced`] with a [`TraceSink`].
+//! To enable tracing, pass a [`TraceMask`] and [`TraceSink`] to [`Vm::run`].
 
 #[cfg(doc)]
 use crate::vm::Vm;
@@ -54,15 +54,6 @@ impl TraceMask {
     }
 }
 
-/// Execution mode for tracing.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum TraceRunMode {
-    /// Running unverified bytecode with runtime type checks for pure ops.
-    Unverified,
-    /// Running verified bytecode (still validates host call returns).
-    Verified,
-}
-
 /// The kind of scope being entered/exited.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScopeKind {
@@ -89,8 +80,6 @@ pub enum TraceEvent<'a> {
     RunStart {
         /// Entry function id.
         entry: FuncId,
-        /// Execution mode (verified vs unverified).
-        mode: TraceRunMode,
         /// Number of value arguments passed (not including the effect token).
         arg_count: usize,
     },

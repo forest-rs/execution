@@ -23,6 +23,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 
 ## Glossary
 - **`Program`**: serialized artifact containing constants, types, functions, and bytecode.
+- **`VerifiedProgram`**: a `Program` that has passed verifier checks and is safe to execute.
 - **`Frame`**: a call instance with its own register base and program counter.
 - **Register**: a virtual slot holding a `Value`.
 - **`SpanId`**: stable identifier for tracing and source mapping (e.g. node GUID).
@@ -31,6 +32,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 
 ## Execution model (v1)
 - Register-based VM with function frames and recursion.
+- The VM executes `VerifiedProgram` only (verification is a required pre-step).
 - Sync host calls only.
 - Limits: fuel (instruction budget), max host calls, max call depth; host may contribute additional cost.
 - Errors are traps:

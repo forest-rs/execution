@@ -18,6 +18,7 @@
 //! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 //! use execution_tape::host::{Host, HostError, SigHash};
 //! use execution_tape::program::ValueType;
+//! use execution_tape::trace::TraceMask;
 //! use execution_tape::value::{FuncId, Value};
 //! use execution_tape::vm::{Limits, Vm};
 //!
@@ -47,10 +48,10 @@
 //!         reg_count: 2,
 //!     },
 //! )?;
-//! let program = pb.build_checked()?;
+//! let program = pb.build_verified()?;
 //!
 //! let mut vm = Vm::new(NoHost, Limits::default());
-//! let out = vm.run(&program, FuncId(0), &[]).unwrap();
+//! let out = vm.run(&program, FuncId(0), &[], TraceMask::NONE, None).unwrap();
 //! assert_eq!(out, vec![Value::I64(7)]);
 //! # Ok::<(), execution_tape::asm::BuildError>(())
 //! ```

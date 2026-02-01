@@ -5,8 +5,7 @@
 //!
 //! The VM executes programs with explicit limits (fuel, call depth, host calls).
 //!
-//! Prefer [`Vm::run_verified`] (or [`Vm::run_verified_traced`]) with a [`VerifiedProgram`], which
-//! enables a faster interpreter path by eliding many dynamic checks.
+//! The VM executes [`VerifiedProgram`]s only.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -17,7 +16,7 @@ use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::host::{Host, HostError};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
-use crate::trace::{ScopeKind, TraceEvent, TraceMask, TraceOutcome, TraceRunMode, TraceSink};
+use crate::trace::{ScopeKind, TraceEvent, TraceMask, TraceOutcome, TraceSink};
 use crate::value::{AggHandle, Decimal, FuncId, Value};
 use crate::verifier::VerifiedProgram;
 
@@ -206,12 +205,6 @@ pub struct Vm<H: Host> {
     agg: AggHeap,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum RunMode {
-    Unverified,
-    Verified,
-}
-
 impl<H: Host> fmt::Debug for Vm<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Vm")
@@ -242,94 +235,37 @@ impl<H: Host> Vm<H> {
     /// Convention:
     /// - `r0` is the effect token (initialized to [`Value::Unit`] at entry).
     /// - value args are placed in `r1..=rN` where `N = entry.arg_count`.
+    ///
+    /// Tracing is controlled by `trace_mask`; pass `None` for `sink` to disable tracing.
+    ///
+    /// Even for verified bytecode, host calls are a trust boundary, so the VM validates host ABI
+    /// conformance (return arity and return types) at runtime.
     pub fn run(
         &mut self,
-        program: &Program,
-        entry: FuncId,
-        args: &[Value],
-    ) -> Result<Vec<Value>, TrapInfo> {
-        self.run_with_mode(program, entry, args, RunMode::Unverified, None)
-    }
-
-    /// Executes `program` starting at `entry` while emitting trace events to `sink`.
-    pub fn run_traced(
-        &mut self,
-        program: &Program,
-        entry: FuncId,
-        args: &[Value],
-        sink: &mut dyn TraceSink,
-    ) -> Result<Vec<Value>, TrapInfo> {
-        self.run_with_mode(program, entry, args, RunMode::Unverified, Some(sink))
-    }
-
-    /// Executes a previously verified program.
-    ///
-    /// Even for verified bytecode, host calls are a trust boundary, so the VM still validates host
-    /// ABI conformance (return arity and return types) at runtime.
-    pub fn run_verified(
-        &mut self,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
-    ) -> Result<Vec<Value>, TrapInfo> {
-        self.run_with_mode(program.program(), entry, args, RunMode::Verified, None)
-    }
-
-    /// Executes a previously verified program while emitting trace events to `sink`.
-    pub fn run_verified_traced(
-        &mut self,
-        program: &VerifiedProgram,
-        entry: FuncId,
-        args: &[Value],
-        sink: &mut dyn TraceSink,
-    ) -> Result<Vec<Value>, TrapInfo> {
-        self.run_with_mode(
-            program.program(),
-            entry,
-            args,
-            RunMode::Verified,
-            Some(sink),
-        )
-    }
-
-    fn run_with_mode(
-        &mut self,
-        program: &Program,
-        entry: FuncId,
-        args: &[Value],
-        mode: RunMode,
+        trace_mask: TraceMask,
         mut trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
-        let trace_mask = trace.as_ref().map_or(TraceMask::NONE, |t| t.mask());
+        let program = program.program();
         if trace_mask.contains(TraceMask::RUN)
             && let Some(t) = trace.as_mut()
         {
-            let t: &mut dyn TraceSink = &mut **t;
-            let mode = match mode {
-                RunMode::Unverified => TraceRunMode::Unverified,
-                RunMode::Verified => TraceRunMode::Verified,
-            };
             t.event(
                 program,
                 TraceEvent::RunStart {
                     entry,
-                    mode,
                     arg_count: args.len(),
                 },
             );
         }
 
-        let result = match trace.as_mut() {
-            Some(t) => {
-                self.run_with_mode_inner(program, entry, args, mode, Some(&mut **t), trace_mask)
-            }
-            None => self.run_with_mode_inner(program, entry, args, mode, None, trace_mask),
-        };
+        let result = self.run_body(program, entry, args, trace_mask, &mut trace);
 
         if trace_mask.contains(TraceMask::RUN)
             && let Some(t) = trace.as_mut()
         {
-            let t: &mut dyn TraceSink = &mut **t;
             let outcome = match &result {
                 Ok(_) => TraceOutcome::Ok,
                 Err(e) => TraceOutcome::Trap(e),
@@ -340,14 +276,13 @@ impl<H: Host> Vm<H> {
         result
     }
 
-    fn run_with_mode_inner(
+    fn run_body(
         &mut self,
         program: &Program,
         entry: FuncId,
         args: &[Value],
-        mode: RunMode,
-        mut trace: Option<&mut dyn TraceSink>,
         trace_mask: TraceMask,
+        trace: &mut Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         self.frames.clear();
         self.regs.clear();
@@ -500,9 +435,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::DecAdd { dst, a, b } => {
-                    let da = read_decimal_at(mode, &self.regs, base, reg_count, a)
+                    let da = read_decimal_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let db = read_decimal_at(mode, &self.regs, base, reg_count, b)
+                    let db = read_decimal_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if da.scale != db.scale {
                         return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
@@ -526,9 +461,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::DecSub { dst, a, b } => {
-                    let da = read_decimal_at(mode, &self.regs, base, reg_count, a)
+                    let da = read_decimal_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let db = read_decimal_at(mode, &self.regs, base, reg_count, b)
+                    let db = read_decimal_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if da.scale != db.scale {
                         return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
@@ -552,9 +487,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::DecMul { dst, a, b } => {
-                    let da = read_decimal_at(mode, &self.regs, base, reg_count, a)
+                    let da = read_decimal_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let db = read_decimal_at(mode, &self.regs, base, reg_count, b)
+                    let db = read_decimal_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let mantissa = da
                         .mantissa
@@ -575,9 +510,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Add { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::F64(ai + bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -585,9 +520,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Sub { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::F64(ai - bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -595,9 +530,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Mul { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::F64(ai * bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -605,9 +540,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Div { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::F64(ai / bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -615,9 +550,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Add { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
 
                     write_reg_at(
@@ -632,9 +567,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Sub { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(
                         &mut self.regs,
@@ -648,9 +583,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Mul { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(
                         &mut self.regs,
@@ -664,9 +599,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Add { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(
                         &mut self.regs,
@@ -680,9 +615,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Sub { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(
                         &mut self.regs,
@@ -696,9 +631,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Mul { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(
                         &mut self.regs,
@@ -712,9 +647,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64And { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::U64(ai & bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -722,9 +657,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Or { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::U64(ai | bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -732,9 +667,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Eq { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai == bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -742,9 +677,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Lt { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai < bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -752,9 +687,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Eq { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai == bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -762,9 +697,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Lt { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai < bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -772,9 +707,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Xor { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::U64(ai ^ bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -782,9 +717,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Shl { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let sh = (bi & 63) as u32;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::U64(ai << sh))
@@ -793,9 +728,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Shr { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let sh = (bi & 63) as u32;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::U64(ai >> sh))
@@ -804,9 +739,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Gt { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai > bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -821,7 +756,7 @@ impl<H: Host> Vm<H> {
                             func_id,
                             pc,
                             span_id,
-                            trap_expected(mode, ValueType::Bool, &v),
+                            trap_expected(ValueType::Bool, &v),
                         ));
                     };
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(!b))
@@ -830,9 +765,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Eq { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai == bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -840,9 +775,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Lt { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai < bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -850,9 +785,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Gt { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai > bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -860,9 +795,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Le { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai <= bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -870,9 +805,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64Ge { dst, a, b } => {
-                    let ai = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_f64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_f64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai >= bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -880,9 +815,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Le { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai <= bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -890,9 +825,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Ge { dst, a, b } => {
-                    let ai = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai >= bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -900,9 +835,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64And { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::I64(ai & bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -910,7 +845,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64ToI64 { dst, a } => {
-                    let u = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let u = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let i = i64::try_from(u)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
@@ -920,7 +855,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64ToU64 { dst, a } => {
-                    let i = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let i = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let u = u64::try_from(i)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
@@ -930,9 +865,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Or { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::I64(ai | bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -940,9 +875,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Xor { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::I64(ai ^ bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -957,28 +892,13 @@ impl<H: Host> Vm<H> {
                             func_id,
                             pc,
                             span_id,
-                            trap_expected(mode, ValueType::Bool, &c),
+                            trap_expected(ValueType::Bool, &c),
                         ));
                     };
                     let va = read_reg_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let vb = read_reg_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    if mode == RunMode::Unverified {
-                        let ta = value_type_of(&va);
-                        let tb = value_type_of(&vb);
-                        if ta != tb {
-                            return Err(self.trap(
-                                func_id,
-                                pc,
-                                span_id,
-                                Trap::TypeMismatch {
-                                    expected: ta,
-                                    actual: tb,
-                                },
-                            ));
-                        }
-                    }
                     write_reg_at(
                         &mut self.regs,
                         base,
@@ -991,9 +911,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Gt { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai > bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1001,9 +921,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Le { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai <= bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1011,9 +931,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Ge { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(ai >= bi))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1021,9 +941,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Shl { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let sh = (bi as u64 & 63) as u32;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::I64(ai << sh))
@@ -1032,9 +952,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Shr { dst, a, b } => {
-                    let ai = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let ai = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let bi = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let bi = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let sh = (bi as u64 & 63) as u32;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::I64(ai >> sh))
@@ -1184,25 +1104,16 @@ impl<H: Host> Vm<H> {
                         .symbol_str(hs.symbol)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
-                    let arg_types = program
-                        .host_sig_args(hs)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
                     let ret_types = program
                         .host_sig_rets(hs)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
                     let mut call_args = Vec::with_capacity(args.len());
-                    for (i, a) in args.iter().enumerate() {
+                    for a in args {
                         call_args.push(
-                            read_reg_at(&self.regs, base, reg_count, *a)
+                            read_reg_at(&self.regs, base, reg_count, a)
                                 .map_err(|t| self.trap(func_id, pc, span_id, t))?,
                         );
-                        if mode == RunMode::Unverified
-                            && let Some(&expected) = arg_types.get(i)
-                        {
-                            check_value_type(&call_args[i], expected)
-                                .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        }
                     }
 
                     if trace_mask.contains(TraceMask::HOST)
@@ -1297,7 +1208,7 @@ impl<H: Host> Vm<H> {
                             func_id,
                             pc,
                             span_id,
-                            trap_expected(mode, ValueType::Agg, &v),
+                            trap_expected(ValueType::Agg, &v),
                         ));
                     };
                     let out = self
@@ -1328,13 +1239,9 @@ impl<H: Host> Vm<H> {
                     }
 
                     let mut vals = Vec::with_capacity(values.len());
-                    for (reg, &expected) in values.iter().zip(field_types.iter()) {
-                        let v = read_reg_at(&self.regs, base, reg_count, *reg)
+                    for reg in values {
+                        let v = read_reg_at(&self.regs, base, reg_count, reg)
                             .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        if mode == RunMode::Unverified {
-                            check_value_type(&v, expected)
-                                .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        }
                         vals.push(v);
                     }
                     let h = self.agg.struct_new(type_id, vals);
@@ -1355,7 +1262,7 @@ impl<H: Host> Vm<H> {
                             func_id,
                             pc,
                             span_id,
-                            trap_expected(mode, ValueType::Agg, &v),
+                            trap_expected(ValueType::Agg, &v),
                         ));
                     };
                     let out = self
@@ -1373,11 +1280,10 @@ impl<H: Host> Vm<H> {
                     len,
                     values,
                 } => {
-                    let expected = program
+                    program
                         .types
                         .array_elems
                         .get(elem_type_id.0 as usize)
-                        .copied()
                         .ok_or_else(|| {
                             self.trap(func_id, pc, span_id, Trap::ElemTypeIdOutOfBounds)
                         })?;
@@ -1389,10 +1295,6 @@ impl<H: Host> Vm<H> {
                     for reg in &values {
                         let v = read_reg_at(&self.regs, base, reg_count, *reg)
                             .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        if mode == RunMode::Unverified {
-                            check_value_type(&v, expected)
-                                .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        }
                         vals.push(v);
                     }
                     let h = self.agg.array_new(elem_type_id, vals);
@@ -1402,7 +1304,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::ArrayLen { dst, arr } => {
-                    let h = read_agg_handle_at(mode, &self.regs, base, reg_count, arr)
+                    let h = read_agg_handle_at(&self.regs, base, reg_count, arr)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let n = self
                         .agg
@@ -1420,10 +1322,10 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::ArrayGet { dst, arr, index } => {
-                    let h = read_agg_handle_at(mode, &self.regs, base, reg_count, arr)
+                    let h = read_agg_handle_at(&self.regs, base, reg_count, arr)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
 
-                    let ix = read_u64_at(mode, &self.regs, base, reg_count, index)
+                    let ix = read_u64_at(&self.regs, base, reg_count, index)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let ix = usize::try_from(ix).unwrap_or(usize::MAX);
 
@@ -1437,7 +1339,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::ArrayGetImm { dst, arr, index } => {
-                    let h = read_agg_handle_at(mode, &self.regs, base, reg_count, arr)
+                    let h = read_agg_handle_at(&self.regs, base, reg_count, arr)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let ix = usize::try_from(index).unwrap_or(usize::MAX);
                     let out = self
@@ -1450,7 +1352,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::TupleLen { dst, tuple } => {
-                    let h = read_agg_handle_at(mode, &self.regs, base, reg_count, tuple)
+                    let h = read_agg_handle_at(&self.regs, base, reg_count, tuple)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let n = self
                         .agg
@@ -1468,7 +1370,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::StructFieldCount { dst, st } => {
-                    let h = read_agg_handle_at(mode, &self.regs, base, reg_count, st)
+                    let h = read_agg_handle_at(&self.regs, base, reg_count, st)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let n = self
                         .agg
@@ -1493,7 +1395,7 @@ impl<H: Host> Vm<H> {
                             func_id,
                             pc,
                             span_id,
-                            trap_expected(mode, ValueType::Bytes, &v),
+                            trap_expected(ValueType::Bytes, &v),
                         ));
                     };
                     write_reg_at(
@@ -1515,7 +1417,7 @@ impl<H: Host> Vm<H> {
                             func_id,
                             pc,
                             span_id,
-                            trap_expected(mode, ValueType::Str, &v),
+                            trap_expected(ValueType::Str, &v),
                         ));
                     };
                     write_reg_at(
@@ -1530,9 +1432,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Div { dst, a, b } => {
-                    let a = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if b == 0 {
                         return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
@@ -1546,9 +1448,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64Rem { dst, a, b } => {
-                    let a = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_i64_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_i64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if b == 0 {
                         return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
@@ -1562,9 +1464,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Div { dst, a, b } => {
-                    let a = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if b == 0 {
                         return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
@@ -1575,9 +1477,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64Rem { dst, a, b } => {
-                    let a = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_u64_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_u64_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if b == 0 {
                         return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
@@ -1588,7 +1490,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64ToF64 { dst, a } => {
-                    let a = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::F64(a as f64))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1596,7 +1498,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64ToF64 { dst, a } => {
-                    let a = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::F64(a as f64))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1604,7 +1506,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64ToI64 { dst, a } => {
-                    let a = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if !a.is_finite() {
                         return Err(self.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
@@ -1623,7 +1525,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::F64ToU64 { dst, a } => {
-                    let a = read_f64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_f64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if !a.is_finite() {
                         return Err(self.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
@@ -1642,7 +1544,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::DecToI64 { dst, a } => {
-                    let a = read_decimal_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_decimal_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if a.scale != 0 {
                         return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
@@ -1653,7 +1555,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::DecToU64 { dst, a } => {
-                    let a = read_decimal_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_decimal_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     if a.scale != 0 {
                         return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
@@ -1673,7 +1575,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::I64ToDec { dst, a, scale } => {
-                    let a = read_i64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_i64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let mut factor: i64 = 1;
                     for _ in 0..scale {
@@ -1696,7 +1598,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::U64ToDec { dst, a, scale } => {
-                    let a = read_u64_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_u64_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let mut factor: i64 = 1;
                     for _ in 0..scale {
@@ -1720,9 +1622,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::BytesEq { dst, a, b } => {
-                    let a = read_bytes_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_bytes_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_bytes_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_bytes_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(a == b))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1730,9 +1632,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::StrEq { dst, a, b } => {
-                    let a = read_str_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_str_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_str_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_str_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(&mut self.regs, base, reg_count, dst, Value::Bool(a == b))
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
@@ -1740,9 +1642,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::BytesConcat { dst, a, b } => {
-                    let a = read_bytes_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_bytes_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_bytes_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_bytes_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let mut out = Vec::with_capacity(a.len() + b.len());
                     out.extend_from_slice(&a);
@@ -1753,9 +1655,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::StrConcat { dst, a, b } => {
-                    let a = read_str_at(mode, &self.regs, base, reg_count, a)
+                    let a = read_str_at(&self.regs, base, reg_count, a)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = read_str_at(mode, &self.regs, base, reg_count, b)
+                    let b = read_str_at(&self.regs, base, reg_count, b)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let mut out = String::with_capacity(a.len() + b.len());
                     out.push_str(&a);
@@ -1766,9 +1668,9 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::BytesGet { dst, bytes, index } => {
-                    let bytes = read_bytes_at(mode, &self.regs, base, reg_count, bytes)
+                    let bytes = read_bytes_at(&self.regs, base, reg_count, bytes)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let index = read_u64_at(mode, &self.regs, base, reg_count, index)
+                    let index = read_u64_at(&self.regs, base, reg_count, index)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let index = usize::try_from(index).unwrap_or(usize::MAX);
                     let b = bytes
@@ -1786,7 +1688,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::BytesGetImm { dst, bytes, index } => {
-                    let bytes = read_bytes_at(mode, &self.regs, base, reg_count, bytes)
+                    let bytes = read_bytes_at(&self.regs, base, reg_count, bytes)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let index = usize::try_from(index).unwrap_or(usize::MAX);
                     let b = bytes
@@ -1809,11 +1711,11 @@ impl<H: Host> Vm<H> {
                     start,
                     end,
                 } => {
-                    let bytes = read_bytes_at(mode, &self.regs, base, reg_count, bytes)
+                    let bytes = read_bytes_at(&self.regs, base, reg_count, bytes)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let start = read_u64_at(mode, &self.regs, base, reg_count, start)
+                    let start = read_u64_at(&self.regs, base, reg_count, start)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let end = read_u64_at(mode, &self.regs, base, reg_count, end)
+                    let end = read_u64_at(&self.regs, base, reg_count, end)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let start = usize::try_from(start).unwrap_or(usize::MAX);
                     let end = usize::try_from(end).unwrap_or(usize::MAX);
@@ -1832,11 +1734,11 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::StrSlice { dst, s, start, end } => {
-                    let s = read_str_at(mode, &self.regs, base, reg_count, s)
+                    let s = read_str_at(&self.regs, base, reg_count, s)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let start = read_u64_at(mode, &self.regs, base, reg_count, start)
+                    let start = read_u64_at(&self.regs, base, reg_count, start)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let end = read_u64_at(mode, &self.regs, base, reg_count, end)
+                    let end = read_u64_at(&self.regs, base, reg_count, end)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let start = usize::try_from(start).unwrap_or(usize::MAX);
                     let end = usize::try_from(end).unwrap_or(usize::MAX);
@@ -1858,7 +1760,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::StrToBytes { dst, s } => {
-                    let s = read_str_at(mode, &self.regs, base, reg_count, s)
+                    let s = read_str_at(&self.regs, base, reg_count, s)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     write_reg_at(
                         &mut self.regs,
@@ -1872,7 +1774,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 Instr::BytesToStr { dst, bytes } => {
-                    let bytes = read_bytes_at(mode, &self.regs, base, reg_count, bytes)
+                    let bytes = read_bytes_at(&self.regs, base, reg_count, bytes)
                         .map_err(|t| self.trap(func_id, pc, span_id, t))?;
                     let out = String::from_utf8(bytes)
                         .map_err(|_| self.trap(func_id, pc, span_id, Trap::InvalidUtf8))?;
@@ -2058,92 +1960,56 @@ fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -
     Ok(())
 }
 
-fn trap_expected(mode: RunMode, expected: ValueType, actual: &Value) -> Trap {
-    debug_assert!(
-        mode == RunMode::Unverified || value_type_of(actual) == expected,
+fn trap_expected(expected: ValueType, actual: &Value) -> Trap {
+    debug_assert_eq!(
+        value_type_of(actual),
+        expected,
         "verified execution saw unexpected value type"
     );
-    match mode {
-        RunMode::Unverified => Trap::TypeMismatch {
-            expected,
-            actual: value_type_of(actual),
-        },
-        RunMode::Verified => Trap::InvalidPc,
-    }
+    Trap::InvalidPc
 }
 
-fn read_i64_at(
-    mode: RunMode,
-    regs: &[Value],
-    base: usize,
-    reg_count: usize,
-    reg: u32,
-) -> Result<i64, Trap> {
+fn read_i64_at(regs: &[Value], base: usize, reg_count: usize, reg: u32) -> Result<i64, Trap> {
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::I64(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::I64, &other)),
+        other => Err(trap_expected(ValueType::I64, &other)),
     }
 }
 
-fn read_u64_at(
-    mode: RunMode,
-    regs: &[Value],
-    base: usize,
-    reg_count: usize,
-    reg: u32,
-) -> Result<u64, Trap> {
+fn read_u64_at(regs: &[Value], base: usize, reg_count: usize, reg: u32) -> Result<u64, Trap> {
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::U64(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::U64, &other)),
+        other => Err(trap_expected(ValueType::U64, &other)),
     }
 }
 
-fn read_f64_at(
-    mode: RunMode,
-    regs: &[Value],
-    base: usize,
-    reg_count: usize,
-    reg: u32,
-) -> Result<f64, Trap> {
+fn read_f64_at(regs: &[Value], base: usize, reg_count: usize, reg: u32) -> Result<f64, Trap> {
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::F64(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::F64, &other)),
+        other => Err(trap_expected(ValueType::F64, &other)),
     }
 }
 
-fn read_bytes_at(
-    mode: RunMode,
-    regs: &[Value],
-    base: usize,
-    reg_count: usize,
-    reg: u32,
-) -> Result<Vec<u8>, Trap> {
+fn read_bytes_at(regs: &[Value], base: usize, reg_count: usize, reg: u32) -> Result<Vec<u8>, Trap> {
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::Bytes(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::Bytes, &other)),
+        other => Err(trap_expected(ValueType::Bytes, &other)),
     }
 }
 
-fn read_str_at(
-    mode: RunMode,
-    regs: &[Value],
-    base: usize,
-    reg_count: usize,
-    reg: u32,
-) -> Result<String, Trap> {
+fn read_str_at(regs: &[Value], base: usize, reg_count: usize, reg: u32) -> Result<String, Trap> {
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::Str(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::Str, &other)),
+        other => Err(trap_expected(ValueType::Str, &other)),
     }
 }
 
 fn read_agg_handle_at(
-    mode: RunMode,
     regs: &[Value],
     base: usize,
     reg_count: usize,
@@ -2152,12 +2018,11 @@ fn read_agg_handle_at(
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::Agg(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::Agg, &other)),
+        other => Err(trap_expected(ValueType::Agg, &other)),
     }
 }
 
 fn read_decimal_at(
-    mode: RunMode,
     regs: &[Value],
     base: usize,
     reg_count: usize,
@@ -2166,7 +2031,7 @@ fn read_decimal_at(
     let v = read_reg_at(regs, base, reg_count, reg)?;
     match v {
         Value::Decimal(x) => Ok(x),
-        other => Err(trap_expected(mode, ValueType::Decimal, &other)),
+        other => Err(trap_expected(ValueType::Decimal, &other)),
     }
 }
 
@@ -2254,10 +2119,10 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::I64(7)]);
     }
 
@@ -2301,7 +2166,7 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
         let mut trace = CollectingTrace {
@@ -2309,7 +2174,15 @@ mod tests {
             ends: 0,
             instrs: Vec::new(),
         };
-        let out = vm.run_traced(&p, FuncId(0), &[], &mut trace).unwrap();
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[],
+                TraceMask::RUN | TraceMask::INSTR,
+                Some(&mut trace),
+            )
+            .unwrap();
         assert_eq!(out, vec![Value::I64(7)]);
         assert_eq!(trace.starts, 1);
         assert_eq!(trace.ends, 1);
@@ -2367,10 +2240,18 @@ mod tests {
         a0.ret(0, &[1]);
         pb.define_function(f0, a0).unwrap();
 
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(TestHost, Limits::default());
         let mut trace = ScopeTrace { events: Vec::new() };
-        let out = vm.run_traced(&p, f0, &[], &mut trace).unwrap();
+        let out = vm
+            .run(
+                &p,
+                f0,
+                &[],
+                TraceMask::CALL | TraceMask::HOST,
+                Some(&mut trace),
+            )
+            .unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
 
         let f0_kind = ScopeKind::CallFrame { func: f0 };
@@ -2413,7 +2294,7 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run_verified(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
     }
 
@@ -2440,10 +2321,10 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::I64(1)]);
     }
 
@@ -2465,10 +2346,10 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::I64(16)]);
     }
 
@@ -2490,10 +2371,10 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::Bool(true)]);
     }
 
@@ -2521,10 +2402,10 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::Bool(true)]);
     }
 
@@ -2551,10 +2432,10 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[]).unwrap();
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::U64(2), Value::U64(8)]);
     }
 
@@ -2575,14 +2456,16 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let limits = Limits {
             fuel: 3,
             ..Limits::default()
         };
         let mut vm = Vm::new(TestHost, limits);
-        let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
         assert_eq!(err.trap, Trap::FuelExceeded);
         assert_eq!(err.func, FuncId(0));
     }
@@ -2612,7 +2495,7 @@ mod tests {
             },
         )
         .unwrap();
-        let p = pb.build_checked().unwrap();
+        let p = pb.build_verified().unwrap();
 
         let limits = Limits {
             fuel: 100,
@@ -2620,7 +2503,9 @@ mod tests {
             ..Limits::default()
         };
         let mut vm = Vm::new(CountingHost { calls: 0 }, limits);
-        let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
         assert_eq!(err.trap, Trap::HostCallLimitExceeded);
     }
 
@@ -2639,7 +2524,7 @@ mod tests {
                 reg_count: 1,
             })
             .unwrap();
-        let p = Program::new(
+        let program = Program::new(
             vec![],
             vec![],
             vec![],
@@ -2652,15 +2537,22 @@ mod tests {
                 spans: parts.spans,
             }],
         );
+        let p = crate::verifier::verify_program_owned(
+            program,
+            &crate::verifier::VerifyConfig::default(),
+        )
+        .unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let err = vm.run(&p, FuncId(0), &[]).unwrap_err();
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
         assert_eq!(err.trap, Trap::TrapCode(1));
         assert_eq!(err.span_id, Some(9));
     }
 
     #[test]
-    fn vm_run_verified_validates_host_return_types() {
+    fn vm_run_validates_host_return_types() {
         struct BadHost;
 
         impl Host for BadHost {
@@ -2700,7 +2592,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(BadHost, Limits::default());
-        let err = vm.run_verified(&p, FuncId(0), &[]).unwrap_err();
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
         assert_eq!(
             err.trap,
             Trap::TypeMismatch {

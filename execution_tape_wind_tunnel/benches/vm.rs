@@ -29,7 +29,7 @@ fn bench_i64_add_chain(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run_verified(p, FuncId(0), &[]).unwrap();
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
                 black_box(out);
             });
         });
@@ -43,11 +43,10 @@ fn bench_i64_add_chain_traced_instr(c: &mut Criterion) {
         let p = build_i64_add_chain(chain_len);
         let mut vm = Vm::new(NopHost, wide_open_limits());
         let mut sink = CountingInstr::default();
+        let mask = sink.mask();
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
-                let out = vm
-                    .run_verified_traced(p, FuncId(0), &[], &mut sink)
-                    .unwrap();
+                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
                 black_box(out);
             });
         });
@@ -61,7 +60,7 @@ fn bench_call_overhead(c: &mut Criterion) {
 
     c.bench_function("call_overhead_one_call", |b| {
         b.iter(|| {
-            let out = vm.run_verified(&p, FuncId(0), &[]).unwrap();
+            let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
             black_box(out);
         });
     });
@@ -74,7 +73,7 @@ fn bench_call_loop(c: &mut Criterion) {
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run_verified(p, FuncId(0), &[]).unwrap();
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
                 black_box(out);
             });
         });
@@ -88,7 +87,7 @@ fn bench_host_call(c: &mut Criterion) {
 
     c.bench_function("host_call_overhead_one_call", |b| {
         b.iter(|| {
-            let out = vm.run_verified(&p, FuncId(0), &[]).unwrap();
+            let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
             black_box(out);
         });
     });
@@ -101,7 +100,7 @@ fn bench_host_call_loop(c: &mut Criterion) {
         let mut vm = Vm::new(IdentityHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
             b.iter(|| {
-                let out = vm.run_verified(p, FuncId(0), &[]).unwrap();
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
                 black_box(out);
             });
         });
@@ -113,12 +112,11 @@ fn bench_host_call_traced_run(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
     let mut sink = CountingTrace::default();
+    let mask = sink.mask();
 
     c.bench_function("host_call_traced_run_mask_run", |b| {
         b.iter(|| {
-            let out = vm
-                .run_verified_traced(&p, FuncId(0), &[], &mut sink)
-                .unwrap();
+            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
             black_box(out);
         });
     });
@@ -128,12 +126,11 @@ fn bench_host_call_traced_instr(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
     let mut sink = CountingInstr::default();
+    let mask = sink.mask();
 
     c.bench_function("host_call_traced_instr_mask_instr", |b| {
         b.iter(|| {
-            let out = vm
-                .run_verified_traced(&p, FuncId(0), &[], &mut sink)
-                .unwrap();
+            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
             black_box(out);
         });
     });
@@ -143,12 +140,11 @@ fn bench_host_call_traced_host(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
     let mut sink = CountingHostScopes::default();
+    let mask = sink.mask();
 
     c.bench_function("host_call_traced_host_mask_host", |b| {
         b.iter(|| {
-            let out = vm
-                .run_verified_traced(&p, FuncId(0), &[], &mut sink)
-                .unwrap();
+            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
             black_box(out);
         });
     });
