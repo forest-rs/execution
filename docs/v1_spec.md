@@ -274,7 +274,6 @@ Value types are encoded as:
 - additional payload depending on `tag`
 
 Tags:
-- `11 Any` (escape hatch)
 - `0 Unit`
 - `1 Bool`
 - `2 I64`
@@ -600,7 +599,6 @@ encoding or register conventions change.
 - **HostSig table**:
   - `host_sigs[i].symbol_id` must be in-bounds
   - `host_sigs[i].sig_hash` must match the canonical hash of its `(arg_types, ret_types)`
-- **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types (treating `Any` as an escape hatch).
 - **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types.
 
 ## Open items to resolve during implementation
