@@ -713,15 +713,18 @@ pub(crate) struct VerifiedFunction {
 }
 
 impl VerifiedFunction {
-    pub(crate) fn fetch_at_pc(&self, pc: u32) -> Option<(u8, &VerifiedInstr, u32)> {
-        let idx = self.instrs.binary_search_by_key(&pc, |di| di.offset).ok()?;
+    pub(crate) fn instr_ix_at_pc(&self, pc: u32) -> Option<usize> {
+        self.instrs.binary_search_by_key(&pc, |di| di.offset).ok()
+    }
+
+    pub(crate) fn fetch_at_ix(&self, ix: usize) -> Option<(u8, &VerifiedInstr, u32, u32)> {
+        let di = self.instrs.get(ix)?;
         let next_pc = self
             .instrs
-            .get(idx + 1)
+            .get(ix + 1)
             .map(|n| n.offset)
             .unwrap_or(self.byte_len);
-        let di = &self.instrs[idx];
-        Some((di.opcode, &di.instr, next_pc))
+        Some((di.opcode, &di.instr, di.offset, next_pc))
     }
 }
 
