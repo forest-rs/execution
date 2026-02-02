@@ -295,7 +295,7 @@ pub enum VerifyError {
     MissingTerminator {
         /// Function index within the program.
         func: u32,
-        /// Byte offset of the last instruction in the block (or `0` for an empty block).
+        /// Byte offset of the last instruction in the block.
         pc: u32,
     },
     /// Internal inconsistency between decoded instructions and verifier-computed basic blocks.
