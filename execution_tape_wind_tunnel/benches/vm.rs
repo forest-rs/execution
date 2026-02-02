@@ -307,6 +307,7 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     a0.const_u64(3, 1);
     a0.const_i64(4, 0);
 
+    a0.jmp(l_loop);
     a0.place(l_loop).unwrap();
     a0.u64_eq(5, 1, 2);
     a0.br(5, l_done, l_body);
@@ -369,6 +370,7 @@ fn build_host_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram
     a.const_i64(4, 9);
     a.const_i64(5, 0);
 
+    a.jmp(l_loop);
     a.place(l_loop).unwrap();
     a.u64_eq(6, 1, 2);
     a.br(6, l_done, l_body);
