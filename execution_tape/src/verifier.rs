@@ -15,6 +15,7 @@ use core::fmt;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::host::sig_hash_slices;
+use crate::opcode::Opcode;
 use crate::program::{ConstEntry, ElemTypeId, Function, Program, SpanEntry, TypeId, ValueType};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
@@ -654,7 +655,8 @@ fn verify_function_bytecode(
                 pc: block.start_pc,
             });
         };
-        if !last.instr.is_terminator() {
+        let is_terminator = Opcode::from_u8(last.opcode).is_some_and(Opcode::is_terminator);
+        if !is_terminator {
             return Err(VerifyError::MissingTerminator {
                 func: func_id,
                 pc: last.offset,
@@ -3367,6 +3369,7 @@ mod tests {
     use super::*;
     use crate::asm::Asm;
     use crate::asm::{FunctionSig, ProgramBuilder};
+    use crate::opcode::Opcode;
     use crate::program::{Const, FunctionDef, HostSymbol, StructTypeDef, TypeTableDef};
     use crate::value::FuncId;
     use alloc::vec;
@@ -3383,7 +3386,7 @@ mod tests {
                 ret_types: vec![],
                 reg_count: 2,
                 // const_unit r1; ret r0
-                bytecode: vec![0x10, 0x01, 0x51, 0x00, 0x00],
+                bytecode: vec![Opcode::ConstUnit as u8, 0x01, Opcode::Ret as u8, 0x00, 0x00],
                 spans: vec![SpanEntry {
                     pc_delta: 0,
                     span_id: 1,
@@ -3405,7 +3408,7 @@ mod tests {
                 ret_types: vec![],
                 reg_count: 1,
                 // const_bool r1, 1 (non-terminator); block falls through to end (no terminator)
-                bytecode: vec![0x11, 0x01, 0x01],
+                bytecode: vec![Opcode::ConstBool as u8, 0x01, 0x01],
                 spans: vec![],
             }],
         );

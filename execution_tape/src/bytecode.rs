@@ -10,6 +10,7 @@
 use alloc::vec::Vec;
 
 use crate::format::{DecodeError, Reader};
+use crate::opcode::Opcode;
 use crate::program::{ConstId, HostSigId};
 use crate::program::{ElemTypeId, TypeId};
 use crate::value::FuncId;
@@ -301,16 +302,6 @@ pub(crate) enum Instr {
     BytesToStr { dst: u32, bytes: u32 },
 }
 
-impl Instr {
-    #[must_use]
-    pub(crate) fn is_terminator(&self) -> bool {
-        matches!(
-            self,
-            Self::Ret { .. } | Self::Trap { .. } | Self::Jmp { .. } | Self::Br { .. }
-        )
-    }
-}
-
 /// Decodes `bytes` into a list of instructions.
 pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, BytecodeError> {
     let mut r = Reader::new(bytes);
@@ -318,252 +309,253 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
     while r.offset() < bytes.len() {
         let offset = u32::try_from(r.offset()).map_err(|_| DecodeError::OutOfBounds)?;
         let opcode = r.read_u8()?;
-        let instr = match opcode {
-            0x00 => Instr::Nop,
-            0x01 => Instr::Mov {
+        let op = Opcode::from_u8(opcode).ok_or(BytecodeError::UnknownOpcode { opcode })?;
+        let instr = match op {
+            Opcode::Nop => Instr::Nop,
+            Opcode::Mov => Instr::Mov {
                 dst: read_reg(&mut r)?,
                 src: read_reg(&mut r)?,
             },
-            0x02 => Instr::Trap {
+            Opcode::Trap => Instr::Trap {
                 code: read_u32_uleb(&mut r)?,
             },
 
-            0x10 => Instr::ConstUnit {
+            Opcode::ConstUnit => Instr::ConstUnit {
                 dst: read_reg(&mut r)?,
             },
-            0x11 => Instr::ConstBool {
+            Opcode::ConstBool => Instr::ConstBool {
                 dst: read_reg(&mut r)?,
                 imm: r.read_u8()? != 0,
             },
-            0x12 => Instr::ConstI64 {
+            Opcode::ConstI64 => Instr::ConstI64 {
                 dst: read_reg(&mut r)?,
                 imm: r.read_sleb128_i64()?,
             },
-            0x13 => Instr::ConstU64 {
+            Opcode::ConstU64 => Instr::ConstU64 {
                 dst: read_reg(&mut r)?,
                 imm: r.read_uleb128_u64()?,
             },
-            0x14 => Instr::ConstF64 {
+            Opcode::ConstF64 => Instr::ConstF64 {
                 dst: read_reg(&mut r)?,
                 bits: r.read_u64_le()?,
             },
-            0x15 => Instr::ConstDecimal {
+            Opcode::ConstDecimal => Instr::ConstDecimal {
                 dst: read_reg(&mut r)?,
                 mantissa: r.read_sleb128_i64()?,
                 scale: r.read_u8()?,
             },
-            0x16 => Instr::ConstPool {
+            Opcode::ConstPool => Instr::ConstPool {
                 dst: read_reg(&mut r)?,
                 idx: ConstId(read_u32_uleb(&mut r)?),
             },
-            0x17 => Instr::DecAdd {
+            Opcode::DecAdd => Instr::DecAdd {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x18 => Instr::DecSub {
+            Opcode::DecSub => Instr::DecSub {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x19 => Instr::DecMul {
+            Opcode::DecMul => Instr::DecMul {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x1A => Instr::F64Add {
+            Opcode::F64Add => Instr::F64Add {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x1B => Instr::F64Sub {
+            Opcode::F64Sub => Instr::F64Sub {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x1C => Instr::F64Mul {
+            Opcode::F64Mul => Instr::F64Mul {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x20 => Instr::I64Add {
+            Opcode::I64Add => Instr::I64Add {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x21 => Instr::I64Sub {
+            Opcode::I64Sub => Instr::I64Sub {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x22 => Instr::I64Mul {
+            Opcode::I64Mul => Instr::I64Mul {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x23 => Instr::U64Add {
+            Opcode::U64Add => Instr::U64Add {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x24 => Instr::U64Sub {
+            Opcode::U64Sub => Instr::U64Sub {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x25 => Instr::U64Mul {
+            Opcode::U64Mul => Instr::U64Mul {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x26 => Instr::U64And {
+            Opcode::U64And => Instr::U64And {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x27 => Instr::U64Or {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-
-            0x28 => Instr::I64Eq {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x29 => Instr::I64Lt {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x2A => Instr::U64Eq {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x2B => Instr::U64Lt {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x2C => Instr::U64Xor {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x2D => Instr::U64Shl {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x2E => Instr::U64Shr {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-                b: read_reg(&mut r)?,
-            },
-            0x2F => Instr::U64Gt {
+            Opcode::U64Or => Instr::U64Or {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
 
-            0x30 => Instr::BoolNot {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-            },
-            0x88 => Instr::BoolAnd {
+            Opcode::I64Eq => Instr::I64Eq {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x89 => Instr::BoolOr {
+            Opcode::I64Lt => Instr::I64Lt {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x8A => Instr::BoolXor {
+            Opcode::U64Eq => Instr::U64Eq {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x31 => Instr::U64Le {
+            Opcode::U64Lt => Instr::U64Lt {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x32 => Instr::U64Ge {
+            Opcode::U64Xor => Instr::U64Xor {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x33 => Instr::I64And {
+            Opcode::U64Shl => Instr::U64Shl {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-
-            0x34 => Instr::U64ToI64 {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-            },
-            0x35 => Instr::I64ToU64 {
-                dst: read_reg(&mut r)?,
-                a: read_reg(&mut r)?,
-            },
-            0x36 => Instr::I64Or {
+            Opcode::U64Shr => Instr::U64Shr {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x37 => Instr::I64Xor {
+            Opcode::U64Gt => Instr::U64Gt {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
 
-            0x38 => Instr::Select {
+            Opcode::BoolNot => Instr::BoolNot {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+            },
+            Opcode::BoolAnd => Instr::BoolAnd {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::BoolOr => Instr::BoolOr {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::BoolXor => Instr::BoolXor {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::U64Le => Instr::U64Le {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::U64Ge => Instr::U64Ge {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::I64And => Instr::I64And {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+
+            Opcode::U64ToI64 => Instr::U64ToI64 {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+            },
+            Opcode::I64ToU64 => Instr::I64ToU64 {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+            },
+            Opcode::I64Or => Instr::I64Or {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::I64Xor => Instr::I64Xor {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+
+            Opcode::Select => Instr::Select {
                 dst: read_reg(&mut r)?,
                 cond: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x39 => Instr::I64Gt {
+            Opcode::I64Gt => Instr::I64Gt {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x3A => Instr::I64Le {
+            Opcode::I64Le => Instr::I64Le {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x3B => Instr::I64Ge {
+            Opcode::I64Ge => Instr::I64Ge {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x3C => Instr::I64Shl {
+            Opcode::I64Shl => Instr::I64Shl {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x3D => Instr::I64Shr {
+            Opcode::I64Shr => Instr::I64Shr {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
 
-            0x40 => Instr::Br {
+            Opcode::Br => Instr::Br {
                 cond: read_reg(&mut r)?,
                 pc_true: read_u32_uleb(&mut r)?,
                 pc_false: read_u32_uleb(&mut r)?,
             },
-            0x41 => Instr::Jmp {
+            Opcode::Jmp => Instr::Jmp {
                 pc_target: read_u32_uleb(&mut r)?,
             },
 
-            0x50 => {
+            Opcode::Call => {
                 let eff_out = read_reg(&mut r)?;
                 let func_id = FuncId(read_u32_uleb(&mut r)?);
                 let eff_in = read_reg(&mut r)?;
@@ -585,7 +577,7 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                     rets,
                 }
             }
-            0x51 => {
+            Opcode::Ret => {
                 let eff_in = read_reg(&mut r)?;
                 let retc = read_u32_uleb(&mut r)? as usize;
                 let mut rets = Vec::with_capacity(retc);
@@ -594,7 +586,7 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                 }
                 Instr::Ret { eff_in, rets }
             }
-            0x52 => {
+            Opcode::HostCall => {
                 let eff_out = read_reg(&mut r)?;
                 let host_sig = HostSigId(read_u32_uleb(&mut r)?);
                 let eff_in = read_reg(&mut r)?;
@@ -616,7 +608,7 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                     rets,
                 }
             }
-            0x60 => {
+            Opcode::TupleNew => {
                 let dst = read_reg(&mut r)?;
                 let arity = read_u32_uleb(&mut r)? as usize;
                 let mut values = Vec::with_capacity(arity);
@@ -625,12 +617,12 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                 }
                 Instr::TupleNew { dst, values }
             }
-            0x61 => Instr::TupleGet {
+            Opcode::TupleGet => Instr::TupleGet {
                 dst: read_reg(&mut r)?,
                 tuple: read_reg(&mut r)?,
                 index: read_u32_uleb(&mut r)?,
             },
-            0x62 => {
+            Opcode::StructNew => {
                 let dst = read_reg(&mut r)?;
                 let type_id = TypeId(read_u32_uleb(&mut r)?);
                 let field_count = read_u32_uleb(&mut r)? as usize;
@@ -644,12 +636,12 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                     values,
                 }
             }
-            0x63 => Instr::StructGet {
+            Opcode::StructGet => Instr::StructGet {
                 dst: read_reg(&mut r)?,
                 st: read_reg(&mut r)?,
                 field_index: read_u32_uleb(&mut r)?,
             },
-            0x64 => {
+            Opcode::ArrayNew => {
                 let dst = read_reg(&mut r)?;
                 let elem_type_id = ElemTypeId(read_u32_uleb(&mut r)?);
                 let len = read_u32_uleb(&mut r)?;
@@ -664,172 +656,170 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                     values,
                 }
             }
-            0x65 => Instr::ArrayLen {
+            Opcode::ArrayLen => Instr::ArrayLen {
                 dst: read_reg(&mut r)?,
                 arr: read_reg(&mut r)?,
             },
-            0x66 => Instr::ArrayGet {
+            Opcode::ArrayGet => Instr::ArrayGet {
                 dst: read_reg(&mut r)?,
                 arr: read_reg(&mut r)?,
                 index: read_reg(&mut r)?,
             },
-            0x67 => Instr::TupleLen {
+            Opcode::TupleLen => Instr::TupleLen {
                 dst: read_reg(&mut r)?,
                 tuple: read_reg(&mut r)?,
             },
-            0x68 => Instr::StructFieldCount {
+            Opcode::StructFieldCount => Instr::StructFieldCount {
                 dst: read_reg(&mut r)?,
                 st: read_reg(&mut r)?,
             },
-            0x69 => Instr::ArrayGetImm {
+            Opcode::ArrayGetImm => Instr::ArrayGetImm {
                 dst: read_reg(&mut r)?,
                 arr: read_reg(&mut r)?,
                 index: read_u32_uleb(&mut r)?,
             },
-            0x6A => Instr::BytesLen {
+            Opcode::BytesLen => Instr::BytesLen {
                 dst: read_reg(&mut r)?,
                 bytes: read_reg(&mut r)?,
             },
-            0x6B => Instr::StrLen {
+            Opcode::StrLen => Instr::StrLen {
                 dst: read_reg(&mut r)?,
                 s: read_reg(&mut r)?,
             },
-            0x6C => Instr::I64Div {
+            Opcode::I64Div => Instr::I64Div {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x6D => Instr::I64Rem {
+            Opcode::I64Rem => Instr::I64Rem {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x6E => Instr::U64Div {
+            Opcode::U64Div => Instr::U64Div {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x6F => Instr::U64Rem {
+            Opcode::U64Rem => Instr::U64Rem {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x70 => Instr::I64ToF64 {
+            Opcode::I64ToF64 => Instr::I64ToF64 {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
             },
-            0x71 => Instr::U64ToF64 {
+            Opcode::U64ToF64 => Instr::U64ToF64 {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
             },
-            0x72 => Instr::F64ToI64 {
+            Opcode::F64ToI64 => Instr::F64ToI64 {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
             },
-            0x73 => Instr::F64ToU64 {
+            Opcode::F64ToU64 => Instr::F64ToU64 {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
             },
-            0x74 => Instr::DecToI64 {
+            Opcode::DecToI64 => Instr::DecToI64 {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
             },
-            0x75 => Instr::DecToU64 {
+            Opcode::DecToU64 => Instr::DecToU64 {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
             },
-            0x76 => Instr::I64ToDec {
+            Opcode::I64ToDec => Instr::I64ToDec {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 scale: r.read_u8()?,
             },
-            0x77 => Instr::U64ToDec {
+            Opcode::U64ToDec => Instr::U64ToDec {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 scale: r.read_u8()?,
             },
-            0x78 => Instr::BytesEq {
+            Opcode::BytesEq => Instr::BytesEq {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x79 => Instr::StrEq {
+            Opcode::StrEq => Instr::StrEq {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x7A => Instr::BytesConcat {
+            Opcode::BytesConcat => Instr::BytesConcat {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x7B => Instr::StrConcat {
+            Opcode::StrConcat => Instr::StrConcat {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x7C => Instr::BytesGet {
+            Opcode::BytesGet => Instr::BytesGet {
                 dst: read_reg(&mut r)?,
                 bytes: read_reg(&mut r)?,
                 index: read_reg(&mut r)?,
             },
-            0x7D => Instr::BytesGetImm {
+            Opcode::BytesGetImm => Instr::BytesGetImm {
                 dst: read_reg(&mut r)?,
                 bytes: read_reg(&mut r)?,
                 index: read_u32_uleb(&mut r)?,
             },
-            0x7E => Instr::BytesSlice {
+            Opcode::BytesSlice => Instr::BytesSlice {
                 dst: read_reg(&mut r)?,
                 bytes: read_reg(&mut r)?,
                 start: read_reg(&mut r)?,
                 end: read_reg(&mut r)?,
             },
-            0x7F => Instr::StrSlice {
+            Opcode::StrSlice => Instr::StrSlice {
                 dst: read_reg(&mut r)?,
                 s: read_reg(&mut r)?,
                 start: read_reg(&mut r)?,
                 end: read_reg(&mut r)?,
             },
-            0x80 => Instr::StrToBytes {
+            Opcode::StrToBytes => Instr::StrToBytes {
                 dst: read_reg(&mut r)?,
                 s: read_reg(&mut r)?,
             },
-            0x81 => Instr::BytesToStr {
+            Opcode::BytesToStr => Instr::BytesToStr {
                 dst: read_reg(&mut r)?,
                 bytes: read_reg(&mut r)?,
             },
-            0x82 => Instr::F64Div {
+            Opcode::F64Div => Instr::F64Div {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x83 => Instr::F64Eq {
+            Opcode::F64Eq => Instr::F64Eq {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x84 => Instr::F64Lt {
+            Opcode::F64Lt => Instr::F64Lt {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x85 => Instr::F64Gt {
+            Opcode::F64Gt => Instr::F64Gt {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x86 => Instr::F64Le {
+            Opcode::F64Le => Instr::F64Le {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-            0x87 => Instr::F64Ge {
+            Opcode::F64Ge => Instr::F64Ge {
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
             },
-
-            other => return Err(BytecodeError::UnknownOpcode { opcode: other }),
         };
         out.push(DecodedInstr {
             offset,

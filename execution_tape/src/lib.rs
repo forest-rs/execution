@@ -66,6 +66,7 @@ pub mod asm;
 pub(crate) mod bytecode;
 pub mod format;
 pub mod host;
+pub mod opcode;
 pub mod program;
 pub mod trace;
 pub(crate) mod typed;

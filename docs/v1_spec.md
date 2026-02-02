@@ -415,6 +415,9 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 ## Draft encoding for minimal implemented opcodes
 This section documents the encoding currently implemented by the verifier decoder (subject to change).
 
+The single authoritative mapping between instruction names and their opcode bytes lives in
+`execution_tape/src/opcode.rs` as `Opcode`.
+
 All register indices and small integers are ULEB128 unless noted.
 
 - `0x00 nop`

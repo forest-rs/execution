@@ -6,6 +6,7 @@
 use execution_tape::aggregates::AggError;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef};
+use execution_tape::opcode::Opcode;
 use execution_tape::program::{
     Const, FunctionDef, HostSymbol, Program, StructTypeDef, TypeTableDef, ValueType,
 };
@@ -47,7 +48,7 @@ fn golden_minimal_program_bytes_v0_0_1() {
             arg_types: vec![],
             ret_types: vec![],
             reg_count: 1,
-            bytecode: vec![0x51, 0x00, 0x00], // ret r0
+            bytecode: vec![Opcode::Ret as u8, 0x00, 0x00], // ret r0
             spans: vec![],
         }],
     );
@@ -56,21 +57,60 @@ fn golden_minimal_program_bytes_v0_0_1() {
     // as a regression signal for format changes.
     let expected: &[u8] = &[
         // magic "EXTAPE\0\0"
-        0x45, 0x58, 0x54, 0x41, 0x50, 0x45, 0x00, 0x00,
+        0x45,
+        0x58,
+        0x54,
+        0x41,
+        0x50,
+        0x45,
+        0x00,
+        0x00,
         // version_major=0, version_minor=1
-        0x00, 0x00, 0x01, 0x00, // symbols: tag=1, len=1, payload=[0]
-        0x01, 0x01, 0x00, // const_pool: tag=2, len=1, payload=[0]
-        0x02, 0x01, 0x00, // types: tag=3, len=2, payload=[structs=0, array_elems=0]
-        0x03, 0x02, 0x00, 0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x00, // symbols: tag=1, len=1, payload=[0]
+        0x01,
+        0x01,
+        0x00, // const_pool: tag=2, len=1, payload=[0]
+        0x02,
+        0x01,
+        0x00, // types: tag=3, len=2, payload=[structs=0, array_elems=0]
+        0x03,
+        0x02,
+        0x00,
+        0x00,
         // bytecode_blobs: tag=5, len=5, payload=[n=1, len=3, ret r0]
-        0x05, 0x05, 0x01, 0x03, 0x51, 0x00, 0x00,
+        0x05,
+        0x05,
+        0x01,
+        0x03,
+        Opcode::Ret as u8,
+        0x00,
+        0x00,
         // span_tables: tag=6, len=2, payload=[n=1, span_count=0]
-        0x06, 0x02, 0x01, 0x00,
+        0x06,
+        0x02,
+        0x01,
+        0x00,
         // function_table: tag=4, len=6, payload=[n=1, argc=0, retc=0, regc=1, bc=0, sp=0]
-        0x04, 0x06, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x04,
+        0x06,
+        0x01,
+        0x00,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
         // function_sigs: tag=7, len=3, payload=[n=1, argc=0, retc=0]
-        0x07, 0x03, 0x01, 0x00, 0x00, // host_sigs: tag=8, len=1, payload=[0]
-        0x08, 0x01, 0x00,
+        0x07,
+        0x03,
+        0x01,
+        0x00,
+        0x00, // host_sigs: tag=8, len=1, payload=[0]
+        0x08,
+        0x01,
+        0x00,
     ];
     let bytes = p.encode();
     assert_eq!(bytes, expected);
