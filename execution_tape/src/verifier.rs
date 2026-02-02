@@ -1072,6 +1072,47 @@ fn verify_function_bytecode(
                 a: map_f64(*a)?,
                 b: map_f64(*b)?,
             },
+            Instr::F64Neg { dst, a } => VerifiedInstr::F64Neg {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Abs { dst, a } => VerifiedInstr::F64Abs {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Min { dst, a, b } => VerifiedInstr::F64Min {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Max { dst, a, b } => VerifiedInstr::F64Max {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64MinNum { dst, a, b } => VerifiedInstr::F64MinNum {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64MaxNum { dst, a, b } => VerifiedInstr::F64MaxNum {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Rem { dst, a, b } => VerifiedInstr::F64Rem {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64ToBits { dst, a } => VerifiedInstr::F64ToBits {
+                dst: map_u64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64FromBits { dst, a } => VerifiedInstr::F64FromBits {
+                dst: map_f64(*dst)?,
+                a: map_u64(*a)?,
+            },
 
             Instr::I64Add { dst, a, b } => VerifiedInstr::I64Add {
                 dst: map_i64(*dst)?,
@@ -1694,7 +1735,12 @@ fn validate_instr_reads_writes(
         Instr::F64Add { dst, a, b }
         | Instr::F64Sub { dst, a, b }
         | Instr::F64Mul { dst, a, b }
-        | Instr::F64Div { dst, a, b } => {
+        | Instr::F64Div { dst, a, b }
+        | Instr::F64Min { dst, a, b }
+        | Instr::F64Max { dst, a, b }
+        | Instr::F64MinNum { dst, a, b }
+        | Instr::F64MaxNum { dst, a, b }
+        | Instr::F64Rem { dst, a, b } => {
             require_init(*a, state)?;
             require_init(*b, state)?;
             write_reg(*dst, state)?;
@@ -1751,12 +1797,16 @@ fn validate_instr_reads_writes(
             write_reg(*dst, state)?;
         }
         Instr::BoolNot { dst, a }
+        | Instr::F64Neg { dst, a }
+        | Instr::F64Abs { dst, a }
         | Instr::U64ToI64 { dst, a }
         | Instr::I64ToU64 { dst, a }
         | Instr::I64ToF64 { dst, a }
         | Instr::U64ToF64 { dst, a }
         | Instr::F64ToI64 { dst, a }
         | Instr::F64ToU64 { dst, a }
+        | Instr::F64ToBits { dst, a }
+        | Instr::F64FromBits { dst, a }
         | Instr::DecToI64 { dst, a }
         | Instr::DecToU64 { dst, a }
         | Instr::StrToBytes { dst, s: a }
@@ -2082,7 +2132,15 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         Instr::F64Add { dst, .. }
         | Instr::F64Sub { dst, .. }
         | Instr::F64Mul { dst, .. }
-        | Instr::F64Div { dst, .. } => {
+        | Instr::F64Div { dst, .. }
+        | Instr::F64Neg { dst, .. }
+        | Instr::F64Abs { dst, .. }
+        | Instr::F64Min { dst, .. }
+        | Instr::F64Max { dst, .. }
+        | Instr::F64MinNum { dst, .. }
+        | Instr::F64MaxNum { dst, .. }
+        | Instr::F64Rem { dst, .. }
+        | Instr::F64FromBits { dst, .. } => {
             set_value(state, *dst, ValueType::F64);
         }
         Instr::I64Add { dst, .. }
@@ -2111,7 +2169,9 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         | Instr::I64Shr { dst, .. } => {
             set_value(state, *dst, ValueType::I64);
         }
-        Instr::I64ToU64 { dst, .. } => set_value(state, *dst, ValueType::U64),
+        Instr::I64ToU64 { dst, .. } | Instr::F64ToBits { dst, .. } => {
+            set_value(state, *dst, ValueType::U64);
+        }
         Instr::I64ToF64 { dst, .. } | Instr::U64ToF64 { dst, .. } => {
             set_value(state, *dst, ValueType::F64);
         }
@@ -2439,9 +2499,20 @@ fn validate_instr_types(
         Instr::F64Add { a, b, .. }
         | Instr::F64Sub { a, b, .. }
         | Instr::F64Mul { a, b, .. }
-        | Instr::F64Div { a, b, .. } => {
+        | Instr::F64Div { a, b, .. }
+        | Instr::F64Min { a, b, .. }
+        | Instr::F64Max { a, b, .. }
+        | Instr::F64MinNum { a, b, .. }
+        | Instr::F64MaxNum { a, b, .. }
+        | Instr::F64Rem { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::F64)?;
+        }
+        Instr::F64Neg { a, .. } | Instr::F64Abs { a, .. } | Instr::F64ToBits { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::F64FromBits { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
         }
         Instr::I64Add { a, b, .. } | Instr::I64Sub { a, b, .. } | Instr::I64Mul { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
@@ -3188,6 +3259,15 @@ fn compute_block_writes(
                 | Instr::F64Sub { dst, .. }
                 | Instr::F64Mul { dst, .. }
                 | Instr::F64Div { dst, .. }
+                | Instr::F64Neg { dst, .. }
+                | Instr::F64Abs { dst, .. }
+                | Instr::F64Min { dst, .. }
+                | Instr::F64Max { dst, .. }
+                | Instr::F64MinNum { dst, .. }
+                | Instr::F64MaxNum { dst, .. }
+                | Instr::F64Rem { dst, .. }
+                | Instr::F64ToBits { dst, .. }
+                | Instr::F64FromBits { dst, .. }
                 | Instr::I64Add { dst, .. }
                 | Instr::I64Sub { dst, .. }
                 | Instr::I64Mul { dst, .. }

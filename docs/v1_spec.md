@@ -383,9 +383,27 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `f64_add r_dst, r_a, r_b`
 - `f64_sub r_dst, r_a, r_b`
 - `f64_mul r_dst, r_a, r_b`
+- `f64_div r_dst, r_a, r_b`
+- `f64_neg r_dst, r_a`
+- `f64_abs r_dst, r_a`
+- `f64_min r_dst, r_a, r_b` (NaN-propagating)
+- `f64_max r_dst, r_a, r_b` (NaN-propagating)
+- `f64_min_num r_dst, r_a, r_b` (number-favoring)
+- `f64_max_num r_dst, r_a, r_b` (number-favoring)
+- `f64_rem r_dst, r_a, r_b`
+- `f64_to_bits r_dst, r_a` -> `U64`
+- `f64_from_bits r_dst, r_a` -> `F64`
 - `dec_add r_dst, r_a, r_b`
 - `dec_sub r_dst, r_a, r_b`
 - `dec_mul r_dst, r_a, r_b`
+
+#### Floating-point semantics (v1)
+- `f64_min`/`f64_max` propagate NaN: if either input is NaN, the result is NaN.
+- `f64_min_num`/`f64_max_num` are number-favoring: if exactly one input is NaN, the other is returned; if both are NaN, the result is NaN.
+- For `f64_min`/`f64_max`/`f64_min_num`/`f64_max_num`, when both inputs are zero with different signs, `min` returns `-0.0` and `max` returns `+0.0`.
+- `f64_rem` uses the IEEE remainder semantics of Rust's `%` operator.
+- `f64_to_bits`/`f64_from_bits` preserve IEEE 754 bit patterns (including NaN payloads).
+- Rounding and transcendental functions are host-provided in v1 (e.g. `f64_round_even`, `f64_round_away`, `f64_floor`, `f64_ceil`, `f64_trunc`, `f64_sqrt`, `f64_log`, `f64_exp`).
 
 ### Comparisons + branching
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
@@ -466,6 +484,15 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x88 bool_and dst, a, b`
 - `0x89 bool_or dst, a, b`
 - `0x8A bool_xor dst, a, b`
+- `0x8B f64_neg dst, a`
+- `0x8C f64_abs dst, a`
+- `0x8D f64_min dst, a, b` (NaN-propagating)
+- `0x8E f64_max dst, a, b` (NaN-propagating)
+- `0x8F f64_min_num dst, a, b` (number-favoring)
+- `0x90 f64_max_num dst, a, b` (number-favoring)
+- `0x91 f64_rem dst, a, b`
+- `0x92 f64_to_bits dst, a` (`f64` -> `u64`)
+- `0x93 f64_from_bits dst, a` (`u64` -> `f64`)
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`

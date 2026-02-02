@@ -754,6 +754,50 @@ impl<H: Host> Vm<H> {
                     );
                     self.frames[frame_index].pc = next_pc;
                 }
+                VerifiedInstr::F64Neg { dst, a } => {
+                    self.write_f64(base, *dst, -self.read_f64(base, *a));
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64Abs { dst, a } => {
+                    self.write_f64(base, *dst, self.read_f64(base, *a).abs());
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64Min { dst, a, b } => {
+                    let out = f64_min(self.read_f64(base, *a), self.read_f64(base, *b));
+                    self.write_f64(base, *dst, out);
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64Max { dst, a, b } => {
+                    let out = f64_max(self.read_f64(base, *a), self.read_f64(base, *b));
+                    self.write_f64(base, *dst, out);
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64MinNum { dst, a, b } => {
+                    let out = f64_min_num(self.read_f64(base, *a), self.read_f64(base, *b));
+                    self.write_f64(base, *dst, out);
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64MaxNum { dst, a, b } => {
+                    let out = f64_max_num(self.read_f64(base, *a), self.read_f64(base, *b));
+                    self.write_f64(base, *dst, out);
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64Rem { dst, a, b } => {
+                    self.write_f64(
+                        base,
+                        *dst,
+                        self.read_f64(base, *a) % self.read_f64(base, *b),
+                    );
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64ToBits { dst, a } => {
+                    self.write_u64(base, *dst, self.read_f64(base, *a).to_bits());
+                    self.frames[frame_index].pc = next_pc;
+                }
+                VerifiedInstr::F64FromBits { dst, a } => {
+                    self.write_f64(base, *dst, f64::from_bits(self.read_u64(base, *a)));
+                    self.frames[frame_index].pc = next_pc;
+                }
 
                 VerifiedInstr::I64Add { dst, a, b } => {
                     self.write_i64(
@@ -2344,6 +2388,78 @@ fn read_value_ref_at<'a>(
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
         VReg::Func(r) => ValueRef::Func(funcs[base.funcs + r.0 as usize]),
     })
+}
+
+#[inline]
+fn f64_min_basic(a: f64, b: f64) -> f64 {
+    if a < b {
+        a
+    } else if a > b {
+        b
+    } else if a == 0.0 {
+        if a.is_sign_negative() || b.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
+    } else {
+        a
+    }
+}
+
+#[inline]
+fn f64_max_basic(a: f64, b: f64) -> f64 {
+    if a > b {
+        a
+    } else if a < b {
+        b
+    } else if a == 0.0 {
+        if a.is_sign_positive() || b.is_sign_positive() {
+            0.0
+        } else {
+            -0.0
+        }
+    } else {
+        a
+    }
+}
+
+#[inline]
+fn f64_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        f64_min_basic(a, b)
+    }
+}
+
+#[inline]
+fn f64_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        f64_max_basic(a, b)
+    }
+}
+
+#[inline]
+fn f64_min_num(a: f64, b: f64) -> f64 {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => f64::NAN,
+        (true, false) => b,
+        (false, true) => a,
+        (false, false) => f64_min_basic(a, b),
+    }
+}
+
+#[inline]
+fn f64_max_num(a: f64, b: f64) -> f64 {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => f64::NAN,
+        (true, false) => b,
+        (false, true) => a,
+        (false, false) => f64_max_basic(a, b),
+    }
 }
 
 #[cfg(test)]

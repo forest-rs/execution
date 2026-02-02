@@ -693,6 +693,83 @@ impl Asm {
         self
     }
 
+    /// `0x8B f64_neg dst, a`.
+    pub fn f64_neg(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Neg);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// `0x8C f64_abs dst, a`.
+    pub fn f64_abs(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Abs);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// `0x8D f64_min dst, a, b` (NaN-propagating).
+    pub fn f64_min(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64Min);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x8E f64_max dst, a, b` (NaN-propagating).
+    pub fn f64_max(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64Max);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x8F f64_min_num dst, a, b` (number-favoring).
+    pub fn f64_min_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64MinNum);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x90 f64_max_num dst, a, b` (number-favoring).
+    pub fn f64_max_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64MaxNum);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x91 f64_rem dst, a, b`.
+    pub fn f64_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64Rem);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// `0x92 f64_to_bits dst, a`.
+    pub fn f64_to_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToBits);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// `0x93 f64_from_bits dst, a`.
+    pub fn f64_from_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64FromBits);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
     /// `0x20 i64_add dst, a, b`.
     pub fn i64_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::I64Add);

@@ -222,6 +222,76 @@ fn roundtrip_verify_run_u64_ops() {
 }
 
 #[test]
+fn roundtrip_verify_run_f64_ext_ops() {
+    let mut a = Asm::new();
+    a.const_f64(1, 1.25);
+    a.f64_neg(2, 1);
+    a.f64_abs(3, 2);
+
+    a.const_f64(4, f64::NAN);
+    a.const_f64(5, 3.0);
+    a.f64_min(6, 4, 5);
+    a.f64_min_num(7, 4, 5);
+    a.f64_max_num(8, 4, 5);
+
+    a.const_f64(9, 5.5);
+    a.const_f64(10, 2.0);
+    a.f64_rem(11, 9, 10);
+
+    a.const_f64(12, -0.0_f64);
+    a.const_f64(13, 0.0_f64);
+    a.f64_min(14, 12, 13);
+    a.f64_max(15, 12, 13);
+    a.f64_to_bits(16, 14);
+    a.f64_to_bits(17, 15);
+    a.f64_from_bits(18, 16);
+
+    a.ret(0, &[2, 3, 7, 8, 11, 6, 16, 17, 18]);
+
+    let mut pb = ProgramBuilder::new();
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![
+                ValueType::F64,
+                ValueType::F64,
+                ValueType::F64,
+                ValueType::F64,
+                ValueType::F64,
+                ValueType::F64,
+                ValueType::U64,
+                ValueType::U64,
+                ValueType::F64,
+            ],
+            reg_count: 19,
+        },
+    )
+    .unwrap();
+    let p = pb.build_verified().unwrap();
+
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
+
+    let mut vm = Vm::new(TestHost, Limits::default());
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
+
+    assert_eq!(out.len(), 9);
+    assert!(matches!(out[0], Value::F64(v) if v == -1.25));
+    assert!(matches!(out[1], Value::F64(v) if v == 1.25));
+    assert!(matches!(out[2], Value::F64(v) if v == 3.0));
+    assert!(matches!(out[3], Value::F64(v) if v == 3.0));
+    assert!(matches!(out[4], Value::F64(v) if v == 1.5));
+    assert!(matches!(out[5], Value::F64(v) if v.is_nan()));
+    assert!(matches!(out[6], Value::U64(v) if v == (-0.0_f64).to_bits()));
+    assert!(matches!(out[7], Value::U64(v) if v == 0.0_f64.to_bits()));
+    assert!(matches!(out[8], Value::F64(v) if v.to_bits() == (-0.0_f64).to_bits()));
+}
+
+#[test]
 fn roundtrip_verify_run_u64_ops_wrap() {
     // u64 wraps on overflow.
     let mut a = Asm::new();

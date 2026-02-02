@@ -87,6 +87,24 @@ pub(crate) enum Instr {
     F64Mul { dst: u32, a: u32, b: u32 },
     /// `dst = a / b` (`f64`).
     F64Div { dst: u32, a: u32, b: u32 },
+    /// `dst = -a` (`f64`).
+    F64Neg { dst: u32, a: u32 },
+    /// `dst = abs(a)` (`f64`).
+    F64Abs { dst: u32, a: u32 },
+    /// `dst = min(a, b)` (`f64`, NaN-propagating).
+    F64Min { dst: u32, a: u32, b: u32 },
+    /// `dst = max(a, b)` (`f64`, NaN-propagating).
+    F64Max { dst: u32, a: u32, b: u32 },
+    /// `dst = min_num(a, b)` (`f64`, number-favoring).
+    F64MinNum { dst: u32, a: u32, b: u32 },
+    /// `dst = max_num(a, b)` (`f64`, number-favoring).
+    F64MaxNum { dst: u32, a: u32, b: u32 },
+    /// `dst = a % b` (`f64`).
+    F64Rem { dst: u32, a: u32, b: u32 },
+    /// `dst = f64_to_bits(a)` (`f64` -> `u64`).
+    F64ToBits { dst: u32, a: u32 },
+    /// `dst = f64_from_bits(a)` (`u64` -> `f64`).
+    F64FromBits { dst: u32, a: u32 },
 
     /// `dst = a + b` (`i64`).
     I64Add { dst: u32, a: u32, b: u32 },
@@ -332,6 +350,15 @@ impl Instr {
             | Self::F64Sub { dst, .. }
             | Self::F64Mul { dst, .. }
             | Self::F64Div { dst, .. }
+            | Self::F64Neg { dst, .. }
+            | Self::F64Abs { dst, .. }
+            | Self::F64Min { dst, .. }
+            | Self::F64Max { dst, .. }
+            | Self::F64MinNum { dst, .. }
+            | Self::F64MaxNum { dst, .. }
+            | Self::F64Rem { dst, .. }
+            | Self::F64ToBits { dst, .. }
+            | Self::F64FromBits { dst, .. }
             | Self::I64Add { dst, .. }
             | Self::I64Sub { dst, .. }
             | Self::I64Mul { dst, .. }
@@ -946,6 +973,47 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                 dst: read_reg(&mut r)?,
                 a: read_reg(&mut r)?,
                 b: read_reg(&mut r)?,
+            },
+            Opcode::F64Neg => Instr::F64Neg {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+            },
+            Opcode::F64Abs => Instr::F64Abs {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+            },
+            Opcode::F64Min => Instr::F64Min {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::F64Max => Instr::F64Max {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::F64MinNum => Instr::F64MinNum {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::F64MaxNum => Instr::F64MaxNum {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::F64Rem => Instr::F64Rem {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+                b: read_reg(&mut r)?,
+            },
+            Opcode::F64ToBits => Instr::F64ToBits {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
+            },
+            Opcode::F64FromBits => Instr::F64FromBits {
+                dst: read_reg(&mut r)?,
+                a: read_reg(&mut r)?,
             },
             Opcode::F64Eq => Instr::F64Eq {
                 dst: read_reg(&mut r)?,

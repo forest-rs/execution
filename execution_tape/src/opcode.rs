@@ -211,6 +211,25 @@ pub enum Opcode {
     BoolOr = 0x89,
     /// `dst = a ^ b` (`bool`).
     BoolXor = 0x8A,
+
+    /// `dst = -a` (`f64`).
+    F64Neg = 0x8B,
+    /// `dst = abs(a)` (`f64`).
+    F64Abs = 0x8C,
+    /// `dst = min(a, b)` (`f64`, NaN-propagating).
+    F64Min = 0x8D,
+    /// `dst = max(a, b)` (`f64`, NaN-propagating).
+    F64Max = 0x8E,
+    /// `dst = min_num(a, b)` (`f64`, number-favoring).
+    F64MinNum = 0x8F,
+    /// `dst = max_num(a, b)` (`f64`, number-favoring).
+    F64MaxNum = 0x90,
+    /// `dst = a % b` (`f64`).
+    F64Rem = 0x91,
+    /// `dst = f64_to_bits(a)` (`f64` -> `u64`).
+    F64ToBits = 0x92,
+    /// `dst = f64_from_bits(a)` (`u64` -> `f64`).
+    F64FromBits = 0x93,
 }
 
 impl Opcode {
@@ -325,6 +344,16 @@ impl Opcode {
             0x89 => Self::BoolOr,
             0x8A => Self::BoolXor,
 
+            0x8B => Self::F64Neg,
+            0x8C => Self::F64Abs,
+            0x8D => Self::F64Min,
+            0x8E => Self::F64Max,
+            0x8F => Self::F64MinNum,
+            0x90 => Self::F64MaxNum,
+            0x91 => Self::F64Rem,
+            0x92 => Self::F64ToBits,
+            0x93 => Self::F64FromBits,
+
             _ => return None,
         })
     }
@@ -346,6 +375,7 @@ mod tests {
         assert_eq!(Opcode::Ret as u8, 0x51);
         assert_eq!(Opcode::BoolNot as u8, 0x30);
         assert_eq!(Opcode::BoolAnd as u8, 0x88);
+        assert_eq!(Opcode::F64Neg as u8, 0x8B);
     }
 
     #[test]

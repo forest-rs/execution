@@ -265,6 +265,47 @@ pub(crate) enum VerifiedInstr {
         a: F64Reg,
         b: F64Reg,
     },
+    F64Neg {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Abs {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Min {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64Max {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64MinNum {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64MaxNum {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64Rem {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64ToBits {
+        dst: U64Reg,
+        a: F64Reg,
+    },
+    F64FromBits {
+        dst: F64Reg,
+        a: U64Reg,
+    },
 
     I64Add {
         dst: I64Reg,

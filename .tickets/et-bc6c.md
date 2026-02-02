@@ -6,7 +6,7 @@ links: []
 created: 2026-01-31T08:36:29Z
 type: task
 priority: 2
-assignee: Bruce Mitchener
+assignee: no-materials
 ---
 # More float ops (no-std friendly)
 
@@ -22,3 +22,13 @@ Candidates:
 Constraints:
 - avoid adding deps unless necessary; prefer host calls for heavy math.
 - specify NaN semantics explicitly.
+
+## Notes
+
+**2026-02-02T15:51:11Z**
+
+Implemented extended f64 ops as native opcodes (neg/abs/min/max/min_num/max_num/rem/to_bits/from_bits), wired through opcode/bytecode/asm/verifier/VM, and documented NaN/zero semantics; rounding/transcendentals remain host-provided. Added conformance test for new ops. Tests: cargo test -p execution_tape_conformance; cargo test -p execution_tape.
+
+**2026-02-02T16:05:35Z**
+
+Unimplemented from ticket: rounding ops (f64_floor/ceil/round/trunc) are not VM opcodes; they remain host-provided only. Total-order min/max also deferred. Keeping ticket in_progress.
