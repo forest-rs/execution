@@ -47,7 +47,7 @@ fn golden_minimal_program_bytes_v0_0_1() {
             arg_types: vec![],
             ret_types: vec![],
             reg_count: 1,
-            bytecode: vec![0x00], // nop
+            bytecode: vec![0x51, 0x00, 0x00], // ret r0
             spans: vec![],
         }],
     );
@@ -62,8 +62,8 @@ fn golden_minimal_program_bytes_v0_0_1() {
         0x01, 0x01, 0x00, // const_pool: tag=2, len=1, payload=[0]
         0x02, 0x01, 0x00, // types: tag=3, len=2, payload=[structs=0, array_elems=0]
         0x03, 0x02, 0x00, 0x00,
-        // bytecode_blobs: tag=5, len=3, payload=[n=1, len=1, nop]
-        0x05, 0x03, 0x01, 0x01, 0x00,
+        // bytecode_blobs: tag=5, len=5, payload=[n=1, len=3, ret r0]
+        0x05, 0x05, 0x01, 0x03, 0x51, 0x00, 0x00,
         // span_tables: tag=6, len=2, payload=[n=1, span_count=0]
         0x06, 0x02, 0x01, 0x00,
         // function_table: tag=4, len=6, payload=[n=1, argc=0, retc=0, regc=1, bc=0, sp=0]
@@ -670,6 +670,7 @@ fn vm_loop_sum_0_to_n_minus_1() {
     a.const_u64(3, 5); // n
     a.const_i64(4, 1); // one (i64)
 
+    a.jmp(l_loop);
     a.place(l_loop).unwrap();
     a.u64_lt(5, 2, 3); // i < n
     a.br(5, l_body, l_done);

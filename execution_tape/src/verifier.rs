@@ -290,6 +290,22 @@ pub enum VerifyError {
         /// Actual type.
         actual: ValueType,
     },
+    /// A basic block can fall through to the next block without an explicit terminator.
+    MissingTerminator {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the last instruction in the block (or `0` for an empty block).
+        pc: u32,
+    },
+    /// Internal inconsistency between decoded instructions and verifier-computed basic blocks.
+    ///
+    /// This should be impossible for well-formed verifier code; treat as a verifier bug.
+    InternalBlockInconsistent {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the inconsistent block start.
+        pc: u32,
+    },
     /// Bytecode decoding failed.
     BytecodeDecode {
         /// Function index within the program.
@@ -425,6 +441,14 @@ impl fmt::Display for VerifyError {
             } => write!(
                 f,
                 "function {func} pc={pc} type mismatch (expected {expected:?}, got {actual:?})"
+            ),
+            Self::MissingTerminator { func, pc } => write!(
+                f,
+                "function {func} pc={pc} block can fall through without a terminator"
+            ),
+            Self::InternalBlockInconsistent { func, pc } => write!(
+                f,
+                "function {func} pc={pc} internal verifier error: inconsistent basic blocks"
             ),
             Self::BytecodeDecode { func } => write!(f, "function {func} bytecode decode failed"),
             Self::AggKindMismatch {
@@ -611,6 +635,32 @@ fn verify_function_bytecode(
     let blocks = build_basic_blocks(byte_len, decoded, &boundaries)
         .map_err(|pc| VerifyError::InvalidJumpTarget { func: func_id, pc })?;
     let reachable = compute_reachable(&blocks);
+
+    // Reject implicit fallthrough between basic blocks: every reachable block must end in an
+    // explicit terminator.
+    for (b_idx, block) in blocks.iter().enumerate() {
+        if !reachable[b_idx] {
+            continue;
+        }
+        if block.instr_end == 0 || block.instr_end <= block.instr_start {
+            return Err(VerifyError::InternalBlockInconsistent {
+                func: func_id,
+                pc: block.start_pc,
+            });
+        }
+        let Some(last) = decoded.get(block.instr_end - 1) else {
+            return Err(VerifyError::InternalBlockInconsistent {
+                func: func_id,
+                pc: block.start_pc,
+            });
+        };
+        if !last.instr.is_terminator() {
+            return Err(VerifyError::MissingTerminator {
+                func: func_id,
+                pc: last.offset,
+            });
+        }
+    }
 
     // Must-init analysis (writes-only transfer).
     let reg_count = func.reg_count as usize;
@@ -3332,8 +3382,8 @@ mod tests {
                 arg_types: vec![],
                 ret_types: vec![],
                 reg_count: 2,
-                // const_unit r1
-                bytecode: vec![0x10, 0x01],
+                // const_unit r1; ret r0
+                bytecode: vec![0x10, 0x01, 0x51, 0x00, 0x00],
                 spans: vec![SpanEntry {
                     pc_delta: 0,
                     span_id: 1,
@@ -3341,6 +3391,112 @@ mod tests {
             }],
         );
         verify_program(&p, &VerifyConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn verifier_rejects_missing_terminator() {
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 1,
+                // const_bool r1, 1 (non-terminator); block falls through to end (no terminator)
+                bytecode: vec![0x11, 0x01, 0x01],
+                spans: vec![],
+            }],
+        );
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::MissingTerminator { func: 0, pc: 0 })
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_fallthrough_between_blocks() {
+        // Entry branches to either l1 or l2. l1 contains a non-terminator and then falls through
+        // into l2 (since l2 is also a leader). This is now forbidden.
+        let mut a = Asm::new();
+        let l1 = a.label();
+        let l2 = a.label();
+        a.const_bool(1, true);
+        a.br(1, l1, l2);
+
+        a.place(l1).unwrap();
+        let pc_l1_last = a.pc();
+        a.const_i64(2, 1);
+        // No terminator here; block falls through to l2.
+
+        a.place(l2).unwrap();
+        a.ret(0, &[]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 3,
+            },
+        )
+        .unwrap();
+        let p = pb.build();
+
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::MissingTerminator {
+                func: 0,
+                pc: pc_l1_last
+            })
+        );
+    }
+
+    #[test]
+    fn verifier_ignores_missing_terminators_in_unreachable_blocks() {
+        // Entry jumps to l_ret, making the subsequent region unreachable.
+        //
+        // The unreachable region contains multiple blocks and includes an implicit fallthrough
+        // between blocks (missing terminator). This should be ignored because the blocks are not
+        // reachable from entry.
+        let mut a = Asm::new();
+        let l_ret = a.label();
+        let l_unreach_entry = a.label();
+        let l_bad = a.label();
+        let l_next = a.label();
+
+        // Ensure regs used in unreachable blocks still have stable concrete types for the whole
+        // function (the verifier still typechecks and lowers unreachable bytecode).
+        a.const_bool(1, true);
+        a.const_i64(2, 0);
+        a.jmp(l_ret);
+
+        a.place(l_unreach_entry).unwrap();
+        a.br(1, l_bad, l_next);
+
+        a.place(l_bad).unwrap();
+        a.const_i64(2, 1);
+        // Missing terminator: falls through to l_next.
+
+        a.place(l_next).unwrap();
+        a.ret(0, &[]);
+
+        a.place(l_ret).unwrap();
+        a.ret(0, &[]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 3,
+            },
+        )
+        .unwrap();
+        pb.build_checked().unwrap();
     }
 
     #[test]
@@ -3462,10 +3618,11 @@ mod tests {
             arg_types: vec![],
             ret_types: vec![],
             reg_count: 2,
-            // call r0, func=1, r0, argc=0, retc=0
+            // call r0, func=1, r0, argc=0, retc=0; ret r0
             bytecode: {
                 let mut a = Asm::new();
                 a.call(0, FuncId(1), 0, &[], &[]);
+                a.ret(0, &[]);
                 a.finish().unwrap()
             },
             spans: vec![],

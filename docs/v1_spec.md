@@ -600,6 +600,7 @@ encoding or register conventions change.
   - `r0` (effect token) is considered initialized at entry.
   - value arguments are considered initialized at entry in `r1..=r_arg_count`.
 - **Init-before-use**: any read of a register not definitely initialized on all paths to that point is rejected.
+- **No fallthrough between blocks**: every reachable basic block must end in a terminator (`ret`/`trap`/`br`/`jmp`).
 - **Call arity**: `call` must pass exactly `callee.arg_count` value args and list exactly `callee.ret_count` return regs.
 - **Return arity**: `ret` must return exactly `func.ret_count` values.
 - **HostSig table**:

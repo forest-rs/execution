@@ -301,6 +301,16 @@ pub(crate) enum Instr {
     BytesToStr { dst: u32, bytes: u32 },
 }
 
+impl Instr {
+    #[must_use]
+    pub(crate) fn is_terminator(&self) -> bool {
+        matches!(
+            self,
+            Self::Ret { .. } | Self::Trap { .. } | Self::Jmp { .. } | Self::Br { .. }
+        )
+    }
+}
+
 /// Decodes `bytes` into a list of instructions.
 pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, BytecodeError> {
     let mut r = Reader::new(bytes);
