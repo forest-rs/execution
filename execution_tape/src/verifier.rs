@@ -20,7 +20,7 @@ use crate::program::{ConstEntry, ElemTypeId, Function, Program, SpanEntry, TypeI
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
     RegLayout, StrReg, U64Reg, UnitReg, VReg, VerifiedDecodedInstr, VerifiedFunction,
-    VerifiedInstr, instr_writes,
+    VerifiedInstr,
 };
 use crate::value::FuncId;
 
@@ -746,7 +746,7 @@ fn verify_function_bytecode(
         let mut state = type_in[b_idx].clone();
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
             transfer_types(program, &di.instr, &mut state);
-            for w in instr_writes(&di.instr) {
+            for w in di.instr.writes() {
                 let Some(t) = state.values.get(w as usize).copied().flatten() else {
                     continue;
                 };

@@ -10,7 +10,6 @@
 
 use alloc::vec::Vec;
 
-use crate::bytecode::Instr;
 use crate::program::HostSigId;
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, TypeId};
@@ -742,108 +741,4 @@ impl VerifiedFunction {
             .unwrap_or(self.byte_len);
         Some((di.opcode, &di.instr, di.offset, next_pc))
     }
-}
-
-/// Returns the set of virtual registers written by `instr`.
-pub(crate) fn instr_writes(instr: &Instr) -> Vec<u32> {
-    let mut out = Vec::new();
-    match instr {
-        Instr::Nop
-        | Instr::Trap { .. }
-        | Instr::Br { .. }
-        | Instr::Jmp { .. }
-        | Instr::Ret { .. } => {}
-        Instr::Mov { dst, .. }
-        | Instr::ConstUnit { dst }
-        | Instr::ConstBool { dst, .. }
-        | Instr::ConstI64 { dst, .. }
-        | Instr::ConstU64 { dst, .. }
-        | Instr::ConstF64 { dst, .. }
-        | Instr::ConstDecimal { dst, .. }
-        | Instr::ConstPool { dst, .. }
-        | Instr::DecAdd { dst, .. }
-        | Instr::DecSub { dst, .. }
-        | Instr::DecMul { dst, .. }
-        | Instr::F64Add { dst, .. }
-        | Instr::F64Sub { dst, .. }
-        | Instr::F64Mul { dst, .. }
-        | Instr::F64Div { dst, .. }
-        | Instr::I64Add { dst, .. }
-        | Instr::I64Sub { dst, .. }
-        | Instr::I64Mul { dst, .. }
-        | Instr::U64Add { dst, .. }
-        | Instr::U64Sub { dst, .. }
-        | Instr::U64Mul { dst, .. }
-        | Instr::U64And { dst, .. }
-        | Instr::U64Or { dst, .. }
-        | Instr::U64Xor { dst, .. }
-        | Instr::U64Shl { dst, .. }
-        | Instr::U64Shr { dst, .. }
-        | Instr::I64Eq { dst, .. }
-        | Instr::I64Lt { dst, .. }
-        | Instr::U64Eq { dst, .. }
-        | Instr::U64Lt { dst, .. }
-        | Instr::U64Gt { dst, .. }
-        | Instr::U64Le { dst, .. }
-        | Instr::U64Ge { dst, .. }
-        | Instr::BoolNot { dst, .. }
-        | Instr::BoolAnd { dst, .. }
-        | Instr::BoolOr { dst, .. }
-        | Instr::BoolXor { dst, .. }
-        | Instr::I64And { dst, .. }
-        | Instr::I64Or { dst, .. }
-        | Instr::I64Xor { dst, .. }
-        | Instr::I64Shl { dst, .. }
-        | Instr::I64Shr { dst, .. }
-        | Instr::I64Gt { dst, .. }
-        | Instr::I64Le { dst, .. }
-        | Instr::I64Ge { dst, .. }
-        | Instr::F64Eq { dst, .. }
-        | Instr::F64Lt { dst, .. }
-        | Instr::F64Gt { dst, .. }
-        | Instr::F64Le { dst, .. }
-        | Instr::F64Ge { dst, .. }
-        | Instr::U64ToI64 { dst, .. }
-        | Instr::I64ToU64 { dst, .. }
-        | Instr::Select { dst, .. }
-        | Instr::TupleNew { dst, .. }
-        | Instr::TupleGet { dst, .. }
-        | Instr::StructNew { dst, .. }
-        | Instr::StructGet { dst, .. }
-        | Instr::ArrayNew { dst, .. }
-        | Instr::ArrayLen { dst, .. }
-        | Instr::ArrayGet { dst, .. }
-        | Instr::ArrayGetImm { dst, .. }
-        | Instr::TupleLen { dst, .. }
-        | Instr::StructFieldCount { dst, .. }
-        | Instr::BytesLen { dst, .. }
-        | Instr::StrLen { dst, .. }
-        | Instr::I64Div { dst, .. }
-        | Instr::I64Rem { dst, .. }
-        | Instr::U64Div { dst, .. }
-        | Instr::U64Rem { dst, .. }
-        | Instr::I64ToF64 { dst, .. }
-        | Instr::U64ToF64 { dst, .. }
-        | Instr::F64ToI64 { dst, .. }
-        | Instr::F64ToU64 { dst, .. }
-        | Instr::DecToI64 { dst, .. }
-        | Instr::DecToU64 { dst, .. }
-        | Instr::I64ToDec { dst, .. }
-        | Instr::U64ToDec { dst, .. }
-        | Instr::BytesEq { dst, .. }
-        | Instr::StrEq { dst, .. }
-        | Instr::BytesConcat { dst, .. }
-        | Instr::StrConcat { dst, .. }
-        | Instr::BytesGet { dst, .. }
-        | Instr::BytesGetImm { dst, .. }
-        | Instr::BytesSlice { dst, .. }
-        | Instr::StrSlice { dst, .. }
-        | Instr::StrToBytes { dst, .. }
-        | Instr::BytesToStr { dst, .. } => out.push(*dst),
-        Instr::Call { eff_out, rets, .. } | Instr::HostCall { eff_out, rets, .. } => {
-            out.push(*eff_out);
-            out.extend(rets.iter().copied());
-        }
-    }
-    out
 }

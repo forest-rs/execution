@@ -302,6 +302,158 @@ pub(crate) enum Instr {
     BytesToStr { dst: u32, bytes: u32 },
 }
 
+impl Instr {
+    /// Iterates the virtual registers written by this instruction (allocation-free).
+    #[must_use]
+    pub(crate) fn writes(&self) -> WritesIter<'_> {
+        match self {
+            Self::Nop
+            | Self::Trap { .. }
+            | Self::Br { .. }
+            | Self::Jmp { .. }
+            | Self::Ret { .. } => WritesIter::none(),
+
+            Self::Call { eff_out, rets, .. } | Self::HostCall { eff_out, rets, .. } => {
+                WritesIter::one_plus_slice(*eff_out, rets.as_slice())
+            }
+
+            Self::Mov { dst, .. }
+            | Self::ConstUnit { dst }
+            | Self::ConstBool { dst, .. }
+            | Self::ConstI64 { dst, .. }
+            | Self::ConstU64 { dst, .. }
+            | Self::ConstF64 { dst, .. }
+            | Self::ConstDecimal { dst, .. }
+            | Self::ConstPool { dst, .. }
+            | Self::DecAdd { dst, .. }
+            | Self::DecSub { dst, .. }
+            | Self::DecMul { dst, .. }
+            | Self::F64Add { dst, .. }
+            | Self::F64Sub { dst, .. }
+            | Self::F64Mul { dst, .. }
+            | Self::F64Div { dst, .. }
+            | Self::I64Add { dst, .. }
+            | Self::I64Sub { dst, .. }
+            | Self::I64Mul { dst, .. }
+            | Self::U64Add { dst, .. }
+            | Self::U64Sub { dst, .. }
+            | Self::U64Mul { dst, .. }
+            | Self::U64And { dst, .. }
+            | Self::U64Or { dst, .. }
+            | Self::U64Xor { dst, .. }
+            | Self::U64Shl { dst, .. }
+            | Self::U64Shr { dst, .. }
+            | Self::I64Eq { dst, .. }
+            | Self::I64Lt { dst, .. }
+            | Self::U64Eq { dst, .. }
+            | Self::U64Lt { dst, .. }
+            | Self::U64Gt { dst, .. }
+            | Self::U64Le { dst, .. }
+            | Self::U64Ge { dst, .. }
+            | Self::BoolNot { dst, .. }
+            | Self::BoolAnd { dst, .. }
+            | Self::BoolOr { dst, .. }
+            | Self::BoolXor { dst, .. }
+            | Self::I64And { dst, .. }
+            | Self::I64Or { dst, .. }
+            | Self::I64Xor { dst, .. }
+            | Self::I64Shl { dst, .. }
+            | Self::I64Shr { dst, .. }
+            | Self::I64Gt { dst, .. }
+            | Self::I64Le { dst, .. }
+            | Self::I64Ge { dst, .. }
+            | Self::F64Eq { dst, .. }
+            | Self::F64Lt { dst, .. }
+            | Self::F64Gt { dst, .. }
+            | Self::F64Le { dst, .. }
+            | Self::F64Ge { dst, .. }
+            | Self::U64ToI64 { dst, .. }
+            | Self::I64ToU64 { dst, .. }
+            | Self::Select { dst, .. }
+            | Self::TupleNew { dst, .. }
+            | Self::TupleGet { dst, .. }
+            | Self::StructNew { dst, .. }
+            | Self::StructGet { dst, .. }
+            | Self::ArrayNew { dst, .. }
+            | Self::ArrayLen { dst, .. }
+            | Self::ArrayGet { dst, .. }
+            | Self::ArrayGetImm { dst, .. }
+            | Self::TupleLen { dst, .. }
+            | Self::StructFieldCount { dst, .. }
+            | Self::BytesLen { dst, .. }
+            | Self::StrLen { dst, .. }
+            | Self::I64Div { dst, .. }
+            | Self::I64Rem { dst, .. }
+            | Self::U64Div { dst, .. }
+            | Self::U64Rem { dst, .. }
+            | Self::I64ToF64 { dst, .. }
+            | Self::U64ToF64 { dst, .. }
+            | Self::F64ToI64 { dst, .. }
+            | Self::F64ToU64 { dst, .. }
+            | Self::DecToI64 { dst, .. }
+            | Self::DecToU64 { dst, .. }
+            | Self::I64ToDec { dst, .. }
+            | Self::U64ToDec { dst, .. }
+            | Self::BytesEq { dst, .. }
+            | Self::StrEq { dst, .. }
+            | Self::BytesConcat { dst, .. }
+            | Self::StrConcat { dst, .. }
+            | Self::BytesGet { dst, .. }
+            | Self::BytesGetImm { dst, .. }
+            | Self::BytesSlice { dst, .. }
+            | Self::StrSlice { dst, .. }
+            | Self::StrToBytes { dst, .. }
+            | Self::BytesToStr { dst, .. } => WritesIter::one(*dst),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct WritesIter<'a> {
+    first: Option<u32>,
+    rest: &'a [u32],
+    idx: usize,
+}
+
+impl<'a> WritesIter<'a> {
+    const fn none() -> Self {
+        Self {
+            first: None,
+            rest: &[],
+            idx: 0,
+        }
+    }
+
+    const fn one(r: u32) -> Self {
+        Self {
+            first: Some(r),
+            rest: &[],
+            idx: 0,
+        }
+    }
+
+    const fn one_plus_slice(first: u32, rest: &'a [u32]) -> Self {
+        Self {
+            first: Some(first),
+            rest,
+            idx: 0,
+        }
+    }
+}
+
+impl Iterator for WritesIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(r) = self.first.take() {
+            return Some(r);
+        }
+        let r = self.rest.get(self.idx).copied()?;
+        self.idx += 1;
+        Some(r)
+    }
+}
+
 /// Decodes `bytes` into a list of instructions.
 pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, BytecodeError> {
     let mut r = Reader::new(bytes);
