@@ -64,6 +64,7 @@ pub mod aggregates;
 pub(crate) mod arena;
 pub mod asm;
 pub(crate) mod bytecode;
+pub mod disasm;
 pub mod format;
 pub mod host;
 pub mod opcode;

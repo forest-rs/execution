@@ -321,6 +321,130 @@ pub(crate) enum Instr {
 }
 
 impl Instr {
+    /// Iterates the virtual registers read by this instruction (allocation-free).
+    #[must_use]
+    pub(crate) fn reads(&self) -> ReadsIter<'_> {
+        match self {
+            Self::Nop
+            | Self::Trap { .. }
+            | Self::ConstUnit { .. }
+            | Self::ConstBool { .. }
+            | Self::ConstI64 { .. }
+            | Self::ConstU64 { .. }
+            | Self::ConstF64 { .. }
+            | Self::ConstDecimal { .. }
+            | Self::ConstPool { .. }
+            | Self::Jmp { .. } => ReadsIter::none(),
+
+            Self::Mov { src, .. }
+            | Self::F64Neg { a: src, .. }
+            | Self::F64Abs { a: src, .. }
+            | Self::F64ToBits { a: src, .. }
+            | Self::F64FromBits { a: src, .. }
+            | Self::U64ToI64 { a: src, .. }
+            | Self::I64ToU64 { a: src, .. }
+            | Self::I64ToF64 { a: src, .. }
+            | Self::U64ToF64 { a: src, .. }
+            | Self::F64ToI64 { a: src, .. }
+            | Self::F64ToU64 { a: src, .. }
+            | Self::DecToI64 { a: src, .. }
+            | Self::DecToU64 { a: src, .. }
+            | Self::BoolNot { a: src, .. }
+            | Self::ArrayLen { arr: src, .. }
+            | Self::TupleLen { tuple: src, .. }
+            | Self::StructFieldCount { st: src, .. }
+            | Self::BytesLen { bytes: src, .. }
+            | Self::StrLen { s: src, .. }
+            | Self::StrToBytes { s: src, .. }
+            | Self::BytesToStr { bytes: src, .. }
+            | Self::TupleGet { tuple: src, .. }
+            | Self::StructGet { st: src, .. }
+            | Self::ArrayGetImm { arr: src, .. }
+            | Self::BytesGetImm { bytes: src, .. } => ReadsIter::one(*src),
+
+            Self::Br { cond, .. } => ReadsIter::one(*cond),
+
+            Self::I64ToDec { a, .. } | Self::U64ToDec { a, .. } => ReadsIter::one(*a),
+
+            Self::Select { cond, a, b, .. } => ReadsIter::three(*cond, *a, *b),
+
+            Self::DecAdd { a, b, .. }
+            | Self::DecSub { a, b, .. }
+            | Self::DecMul { a, b, .. }
+            | Self::F64Add { a, b, .. }
+            | Self::F64Sub { a, b, .. }
+            | Self::F64Mul { a, b, .. }
+            | Self::F64Div { a, b, .. }
+            | Self::F64Min { a, b, .. }
+            | Self::F64Max { a, b, .. }
+            | Self::F64MinNum { a, b, .. }
+            | Self::F64MaxNum { a, b, .. }
+            | Self::F64Rem { a, b, .. }
+            | Self::I64Add { a, b, .. }
+            | Self::I64Sub { a, b, .. }
+            | Self::I64Mul { a, b, .. }
+            | Self::U64Add { a, b, .. }
+            | Self::U64Sub { a, b, .. }
+            | Self::U64Mul { a, b, .. }
+            | Self::U64And { a, b, .. }
+            | Self::U64Or { a, b, .. }
+            | Self::U64Xor { a, b, .. }
+            | Self::U64Shl { a, b, .. }
+            | Self::U64Shr { a, b, .. }
+            | Self::I64And { a, b, .. }
+            | Self::I64Or { a, b, .. }
+            | Self::I64Xor { a, b, .. }
+            | Self::I64Shl { a, b, .. }
+            | Self::I64Shr { a, b, .. }
+            | Self::U64Div { a, b, .. }
+            | Self::U64Rem { a, b, .. }
+            | Self::I64Div { a, b, .. }
+            | Self::I64Rem { a, b, .. }
+            | Self::U64Eq { a, b, .. }
+            | Self::U64Lt { a, b, .. }
+            | Self::U64Gt { a, b, .. }
+            | Self::U64Le { a, b, .. }
+            | Self::U64Ge { a, b, .. }
+            | Self::I64Eq { a, b, .. }
+            | Self::I64Lt { a, b, .. }
+            | Self::I64Gt { a, b, .. }
+            | Self::I64Le { a, b, .. }
+            | Self::I64Ge { a, b, .. }
+            | Self::F64Eq { a, b, .. }
+            | Self::F64Lt { a, b, .. }
+            | Self::F64Gt { a, b, .. }
+            | Self::F64Le { a, b, .. }
+            | Self::F64Ge { a, b, .. }
+            | Self::BoolAnd { a, b, .. }
+            | Self::BoolOr { a, b, .. }
+            | Self::BoolXor { a, b, .. }
+            | Self::BytesEq { a, b, .. }
+            | Self::StrEq { a, b, .. }
+            | Self::BytesConcat { a, b, .. }
+            | Self::StrConcat { a, b, .. }
+            | Self::ArrayGet {
+                arr: a, index: b, ..
+            }
+            | Self::BytesGet {
+                bytes: a, index: b, ..
+            } => ReadsIter::two(*a, *b),
+
+            Self::BytesSlice {
+                bytes, start, end, ..
+            } => ReadsIter::three(*bytes, *start, *end),
+            Self::StrSlice { s, start, end, .. } => ReadsIter::three(*s, *start, *end),
+
+            Self::TupleNew { values, .. }
+            | Self::StructNew { values, .. }
+            | Self::ArrayNew { values, .. } => ReadsIter::slice(values.as_slice()),
+
+            Self::Call { eff_in, args, .. } | Self::HostCall { eff_in, args, .. } => {
+                ReadsIter::one_plus_slice(*eff_in, args.as_slice())
+            }
+            Self::Ret { eff_in, rets } => ReadsIter::one_plus_slice(*eff_in, rets.as_slice()),
+        }
+    }
+
     /// Iterates the virtual registers written by this instruction (allocation-free).
     #[must_use]
     pub(crate) fn writes(&self) -> WritesIter<'_> {
@@ -436,10 +560,96 @@ impl Instr {
 }
 
 #[derive(Copy, Clone, Debug)]
+pub(crate) struct ReadsIter<'a> {
+    pub(crate) prefix: [u32; 3],
+    pub(crate) prefix_len: u8,
+    pub(crate) prefix_idx: u8,
+    pub(crate) rest: &'a [u32],
+    pub(crate) rest_idx: usize,
+}
+
+impl<'a> ReadsIter<'a> {
+    const fn none() -> Self {
+        Self {
+            prefix: [0, 0, 0],
+            prefix_len: 0,
+            prefix_idx: 0,
+            rest: &[],
+            rest_idx: 0,
+        }
+    }
+
+    const fn one(a: u32) -> Self {
+        Self {
+            prefix: [a, 0, 0],
+            prefix_len: 1,
+            prefix_idx: 0,
+            rest: &[],
+            rest_idx: 0,
+        }
+    }
+
+    const fn two(a: u32, b: u32) -> Self {
+        Self {
+            prefix: [a, b, 0],
+            prefix_len: 2,
+            prefix_idx: 0,
+            rest: &[],
+            rest_idx: 0,
+        }
+    }
+
+    const fn three(a: u32, b: u32, c: u32) -> Self {
+        Self {
+            prefix: [a, b, c],
+            prefix_len: 3,
+            prefix_idx: 0,
+            rest: &[],
+            rest_idx: 0,
+        }
+    }
+
+    const fn slice(rest: &'a [u32]) -> Self {
+        Self {
+            prefix: [0, 0, 0],
+            prefix_len: 0,
+            prefix_idx: 0,
+            rest,
+            rest_idx: 0,
+        }
+    }
+
+    const fn one_plus_slice(first: u32, rest: &'a [u32]) -> Self {
+        Self {
+            prefix: [first, 0, 0],
+            prefix_len: 1,
+            prefix_idx: 0,
+            rest,
+            rest_idx: 0,
+        }
+    }
+}
+
+impl Iterator for ReadsIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.prefix_idx < self.prefix_len {
+            let out = self.prefix[usize::from(self.prefix_idx)];
+            self.prefix_idx += 1;
+            return Some(out);
+        }
+        let out = self.rest.get(self.rest_idx).copied()?;
+        self.rest_idx += 1;
+        Some(out)
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct WritesIter<'a> {
-    first: Option<u32>,
-    rest: &'a [u32],
-    idx: usize,
+    pub(crate) first: Option<u32>,
+    pub(crate) rest: &'a [u32],
+    pub(crate) idx: usize,
 }
 
 impl<'a> WritesIter<'a> {
@@ -1057,4 +1267,61 @@ fn read_u32_uleb(r: &mut Reader<'_>) -> Result<u32, DecodeError> {
 
 fn read_reg(r: &mut Reader<'_>) -> Result<u32, DecodeError> {
     read_u32_uleb(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Instr;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use crate::program::HostSigId;
+    use crate::value::FuncId;
+
+    #[test]
+    fn reads_and_writes_for_arithmetic() {
+        let i = Instr::I64Add { dst: 3, a: 1, b: 2 };
+        assert_eq!(i.reads().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(i.writes().collect::<Vec<_>>(), vec![3]);
+    }
+
+    #[test]
+    fn reads_and_writes_for_aggregate_and_call() {
+        let tuple = Instr::TupleNew {
+            dst: 9,
+            values: vec![1, 2, 3],
+        };
+        assert_eq!(tuple.reads().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(tuple.writes().collect::<Vec<_>>(), vec![9]);
+
+        let call = Instr::Call {
+            eff_out: 0,
+            func_id: FuncId(1),
+            eff_in: 0,
+            args: vec![4, 5],
+            rets: vec![6, 7],
+        };
+        assert_eq!(call.reads().collect::<Vec<_>>(), vec![0, 4, 5]);
+        assert_eq!(call.writes().collect::<Vec<_>>(), vec![0, 6, 7]);
+
+        let host = Instr::HostCall {
+            eff_out: 0,
+            host_sig: HostSigId(2),
+            eff_in: 0,
+            args: vec![],
+            rets: vec![8],
+        };
+        assert_eq!(host.reads().collect::<Vec<_>>(), vec![0]);
+        assert_eq!(host.writes().collect::<Vec<_>>(), vec![0, 8]);
+    }
+
+    #[test]
+    fn reads_and_writes_for_ret() {
+        let r = Instr::Ret {
+            eff_in: 0,
+            rets: vec![1, 2],
+        };
+        assert_eq!(r.reads().collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(r.writes().collect::<Vec<_>>(), vec![]);
+    }
 }
