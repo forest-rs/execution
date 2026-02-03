@@ -109,6 +109,57 @@ impl<'a> FunctionDisassembly<'a> {
             .iter()
             .map(move |di| instr_view(self.program, self.func, di))
     }
+
+    /// Computes label indices for this function.
+    ///
+    /// Labels are derived from control-flow targets (`br`/`jmp`) plus the function entry (`pc=0`).
+    /// If the function failed to decode, this returns an empty label set.
+    #[must_use]
+    pub fn labels(&self) -> Labels {
+        if self.error().is_some() {
+            return Labels { pcs: Vec::new() };
+        }
+
+        let mut pcs: Vec<u32> = Vec::new();
+        pcs.push(0);
+        for iv in self.instrs() {
+            match iv.operands() {
+                Operands::Br {
+                    pc_true, pc_false, ..
+                } => {
+                    pcs.push(pc_true);
+                    pcs.push(pc_false);
+                }
+                Operands::Jmp { pc_target } => {
+                    pcs.push(pc_target);
+                }
+                _ => {}
+            }
+        }
+        pcs.sort_unstable();
+        pcs.dedup();
+        Labels { pcs }
+    }
+}
+
+/// Label indices for a function disassembly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Labels {
+    pcs: Vec<u32>,
+}
+
+impl Labels {
+    /// Returns the sorted label pcs.
+    #[must_use]
+    pub fn pcs(&self) -> &[u32] {
+        &self.pcs
+    }
+
+    /// Returns the label index for `pc` if it is labeled.
+    #[must_use]
+    pub fn label_index(&self, pc: u32) -> Option<usize> {
+        self.pcs.binary_search(&pc).ok()
+    }
 }
 
 /// A program disassembly.
@@ -350,6 +401,12 @@ impl<'a> InstrView<'a> {
     pub fn opcode(&self) -> Opcode {
         // `DecodedInstr` is produced by the decoder, so `opcode` is known.
         Opcode::from_u8(self.decoded.opcode).expect("decoded instruction opcode must be known")
+    }
+
+    /// Returns `true` if this instruction is a terminator (e.g. `br`, `jmp`, `ret`, `trap`).
+    #[must_use]
+    pub fn is_terminator(&self) -> bool {
+        self.opcode().is_terminator()
     }
 
     /// Primary destination register, when the instruction has a clear single `dst`.
@@ -909,33 +966,14 @@ impl fmt::Display for Disassembly<'_> {
                 continue;
             }
 
-            // Label resolution: collect branch/jmp targets and print them as @L{n}.
-            let mut label_pcs: Vec<u32> = Vec::new();
-            label_pcs.push(0);
-            for iv in fd.instrs() {
-                match iv.operands() {
-                    Operands::Br {
-                        pc_true, pc_false, ..
-                    } => {
-                        label_pcs.push(pc_true);
-                        label_pcs.push(pc_false);
-                    }
-                    Operands::Jmp { pc_target } => {
-                        label_pcs.push(pc_target);
-                    }
-                    _ => {}
-                }
-            }
-            label_pcs.sort_unstable();
-            label_pcs.dedup();
+            let labels = fd.labels();
 
             for iv in fd.instrs() {
                 let pc = iv.pc();
-                if label_pcs.binary_search(&pc).is_ok() {
-                    let label_ix = label_pcs.binary_search(&pc).unwrap_or(0);
+                if let Some(label_ix) = labels.label_index(pc) {
                     writeln!(f, "  @L{label_ix}:")?;
                 }
-                fmt_instr_with_labels(f, &iv, &label_pcs)?;
+                fmt_instr_with_labels(f, &iv, labels.pcs())?;
                 writeln!(f)?;
             }
         }
@@ -1319,5 +1357,77 @@ mod tests {
         let text = dis.to_string();
         assert!(text.contains("@L"));
         assert!(text.contains("br"));
+    }
+
+    #[test]
+    fn function_labels_map_pcs_to_indices() {
+        let mut a = Asm::new();
+        let l_then = a.label();
+        let l_else = a.label();
+        a.const_bool(1, true);
+        a.br(1, l_then, l_else);
+        a.place(l_then).unwrap();
+        a.const_i64(2, 1);
+        a.ret(0, &[2]);
+        a.place(l_else).unwrap();
+        a.const_i64(2, 2);
+        a.ret(0, &[2]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 3,
+            },
+        )
+        .unwrap();
+        let vp = pb.build_verified().unwrap();
+
+        let fd = disassemble_function(vp.program(), FuncId(0)).unwrap();
+        let labels = fd.labels();
+        assert_eq!(labels.label_index(0), Some(0));
+
+        let mut targets = None;
+        for iv in fd.instrs() {
+            if let Operands::Br {
+                pc_true, pc_false, ..
+            } = iv.operands()
+            {
+                targets = Some((pc_true, pc_false));
+                break;
+            }
+        }
+        let (pc_true, pc_false) = targets.expect("expected br");
+
+        assert!(labels.label_index(pc_true).is_some());
+        assert!(labels.label_index(pc_false).is_some());
+    }
+
+    #[test]
+    fn instr_view_is_terminator_matches_opcode() {
+        let mut a = Asm::new();
+        a.const_i64(1, 7);
+        a.ret(0, &[1]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 2,
+            },
+        )
+        .unwrap();
+        let vp = pb.build_verified().unwrap();
+
+        let fd = disassemble_function(vp.program(), FuncId(0)).unwrap();
+        let mut it = fd.instrs();
+        let first = it.next().expect("expected const");
+        assert!(!first.is_terminator());
+        let second = it.next().expect("expected ret");
+        assert!(second.is_terminator());
     }
 }
