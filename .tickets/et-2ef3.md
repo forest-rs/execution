@@ -1,6 +1,6 @@
 ---
 id: et-2ef3
-status: in_progress
+status: closed
 deps: [et-8a8d]
 links: []
 created: 2026-01-31T01:32:59Z
@@ -67,3 +67,7 @@ Added typed aggregate metadata to type analysis so tuple_get/struct_get/array_ge
 **2026-01-31T06:51:00Z**
 
 Fixed a verifier false-negative on loops: type analysis now uses an explicit 'unknown/top' state during fixpoint iteration, so loop-invariant register types initialized in a prologue are preserved across back-edges (conformance test vm_loop_sum_0_to_n_minus_1).
+
+**2026-02-03T08:13:50Z**
+
+Reviewed verifier implementation. Control-flow integrity (boundary computation + CFG + jump validation + terminators), init-before-use (must-init + read/write validation), type discipline (type lattice + transfer/validate + host sig validation), bounds checks (regs/consts/host sigs/type ids/aggregate indices/spans), and resource limit (VerifyConfig::max_regs_per_function) are all implemented in execution_tape/src/verifier.rs. Ticket scope appears complete; closing.
