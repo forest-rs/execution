@@ -205,13 +205,16 @@ struct Frame {
     ret_instr_ix: usize,
 }
 
-/// A simple register VM.
-pub struct Vm<H: Host> {
-    host: H,
-    limits: Limits,
+/// Per-run execution context for [`Vm`].
+///
+/// This holds all transient state required to execute a single entrypoint (register file, call
+/// stack, and arena-backed temporaries). Keeping it separate from [`Vm`] makes it possible to
+/// reuse allocations across runs and is a stepping stone towards re-entrant execution.
+#[derive(Debug, Default)]
+pub struct ExecutionContext {
+    fuel: u64,
     host_calls: u64,
 
-    // Per-run storage.
     arena: ValueArena,
 
     // Split register file by class (SoA).
@@ -228,6 +231,44 @@ pub struct Vm<H: Host> {
     funcs: Vec<FuncId>,
 
     frames: Vec<Frame>,
+}
+
+impl ExecutionContext {
+    /// Creates an empty per-run execution context.
+    ///
+    /// Embedders may reuse an [`ExecutionContext`] across multiple [`Vm::run_with_ctx`] calls to
+    /// amortize allocations.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn reset(&mut self, fuel: u64) {
+        self.frames.clear();
+        self.units.clear();
+        self.bools.clear();
+        self.i64s.clear();
+        self.u64s.clear();
+        self.f64s.clear();
+        self.decimals.clear();
+        self.bytes.clear();
+        self.strs.clear();
+        self.objs.clear();
+        self.aggs.clear();
+        self.funcs.clear();
+        self.arena.clear();
+
+        self.fuel = fuel;
+        self.host_calls = 0;
+    }
+}
+
+/// A simple register VM.
+pub struct Vm<H: Host> {
+    host: H,
+    limits: Limits,
+
+    /// Aggregate heap storage. This is VM-owned so embedders can inspect aggregates after a run.
     agg: AggHeap,
 }
 
@@ -235,8 +276,6 @@ impl<H: Host> fmt::Debug for Vm<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Vm")
             .field("limits", &self.limits)
-            .field("host_calls", &self.host_calls)
-            .field("frames_len", &self.frames.len())
             .finish_non_exhaustive()
     }
 }
@@ -248,20 +287,6 @@ impl<H: Host> Vm<H> {
         Self {
             host,
             limits,
-            host_calls: 0,
-            arena: ValueArena::default(),
-            units: Vec::new(),
-            bools: Vec::new(),
-            i64s: Vec::new(),
-            u64s: Vec::new(),
-            f64s: Vec::new(),
-            decimals: Vec::new(),
-            bytes: Vec::new(),
-            strs: Vec::new(),
-            objs: Vec::new(),
-            aggs: Vec::new(),
-            funcs: Vec::new(),
-            frames: Vec::new(),
             agg: AggHeap::new(),
         }
     }
@@ -272,12 +297,28 @@ impl<H: Host> Vm<H> {
     /// - `r0` is the effect token (initialized to `Unit` at entry).
     /// - value args are placed in `r1..=rN` where `N = entry.arg_count`.
     ///
-    /// Tracing is controlled by `trace_mask`; pass `None` for `sink` to disable tracing.
+    /// Tracing is controlled by `trace_mask`; pass `None` for `trace` to disable tracing.
     ///
     /// Even for verified bytecode, host calls are a trust boundary, so the VM validates host ABI
     /// conformance (return arity and return types) at runtime.
     pub fn run(
         &mut self,
+        program: &VerifiedProgram,
+        entry: FuncId,
+        args: &[Value],
+        trace_mask: TraceMask,
+        trace: Option<&mut dyn TraceSink>,
+    ) -> Result<Vec<Value>, TrapInfo> {
+        let mut ctx = ExecutionContext::new();
+        self.run_with_ctx(&mut ctx, program, entry, args, trace_mask, trace)
+    }
+
+    /// Executes `program` starting at `entry` using an explicit per-run [`ExecutionContext`].
+    ///
+    /// Keeping the context separate allows embedders to reuse allocations across runs.
+    pub fn run_with_ctx(
+        &mut self,
+        ctx: &mut ExecutionContext,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
@@ -297,7 +338,7 @@ impl<H: Host> Vm<H> {
             );
         }
 
-        let result = self.run_body(program, entry, args, trace_mask, &mut trace);
+        let result = self.run_body(ctx, program, entry, args, trace_mask, &mut trace);
 
         if trace_mask.contains(TraceMask::RUN)
             && let Some(t) = trace.as_mut()
@@ -314,6 +355,7 @@ impl<H: Host> Vm<H> {
 
     fn run_body(
         &mut self,
+        ctx: &mut ExecutionContext,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
@@ -321,39 +363,27 @@ impl<H: Host> Vm<H> {
         trace: &mut Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let program_ref = program.program();
-
-        self.frames.clear();
-        self.units.clear();
-        self.bools.clear();
-        self.i64s.clear();
-        self.u64s.clear();
-        self.f64s.clear();
-        self.decimals.clear();
-        self.bytes.clear();
-        self.strs.clear();
-        self.objs.clear();
-        self.aggs.clear();
-        self.funcs.clear();
-        self.arena.clear();
-        self.host_calls = 0;
+        let max_call_depth = self.limits.max_call_depth;
+        let max_host_calls = self.limits.max_host_calls;
+        ctx.reset(self.limits.fuel);
 
         let entry_fn = program_ref
             .functions
             .get(entry.0 as usize)
-            .ok_or_else(|| self.trap(entry, 0, None, Trap::InvalidPc))?;
+            .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
         if args.len() != entry_fn.arg_count as usize {
-            return Err(self.trap(entry, 0, None, Trap::InvalidPc));
+            return Err(ctx.trap(entry, 0, None, Trap::InvalidPc));
         }
         validate_entry_args(program_ref, entry_fn, args)
-            .map_err(|t| self.trap(entry, 0, None, t))?;
+            .map_err(|t| ctx.trap(entry, 0, None, t))?;
 
         let entry_vf = program
             .verified(entry)
-            .ok_or_else(|| self.trap(entry, 0, None, Trap::InvalidPc))?;
-        let entry_base = self.alloc_frame(entry_vf);
-        self.init_args(entry_base, entry_vf, args)
-            .map_err(|t| self.trap(entry, 0, None, t))?;
-        self.frames.push(Frame {
+            .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
+        let entry_base = ctx.alloc_frame(entry_vf);
+        ctx.init_args(entry_base, entry_vf, args)
+            .map_err(|t| ctx.trap(entry, 0, None, t))?;
+        ctx.frames.push(Frame {
             func: entry,
             pc: 0,
             instr_ix: 0,
@@ -373,43 +403,43 @@ impl<H: Host> Vm<H> {
                 program_ref,
                 TraceEvent::ScopeEnter {
                     kind: ScopeKind::CallFrame { func: entry },
-                    depth: self.frames.len(),
+                    depth: ctx.frames.len(),
                     func: entry,
                     pc: 0,
-                    span_id: self.span_at(program_ref, entry, 0),
+                    span_id: ctx.span_at(program_ref, entry, 0),
                 },
             );
         }
 
         loop {
-            if self.limits.fuel == 0 {
-                return Err(self.trap(
-                    self.cur_func(),
-                    self.cur_pc(),
-                    self.cur_span(program_ref),
+            if ctx.fuel == 0 {
+                return Err(ctx.trap(
+                    ctx.cur_func(),
+                    ctx.cur_pc(),
+                    ctx.cur_span(program_ref),
                     Trap::FuelExceeded,
                 ));
             }
-            self.limits.fuel -= 1;
+            ctx.fuel -= 1;
 
-            let frame_index = self
+            let frame_index = ctx
                 .frames
                 .len()
                 .checked_sub(1)
-                .ok_or_else(|| self.trap(entry, 0, None, Trap::InvalidPc))?;
+                .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
 
             let (func_id, pc, instr_ix, base, _byte_len) = {
-                let f = &self.frames[frame_index];
+                let f = &ctx.frames[frame_index];
                 (f.func, f.pc, f.instr_ix, f.base, f.byte_len)
             };
-            let span_id = self.span_at(program_ref, func_id, pc);
+            let span_id = ctx.span_at(program_ref, func_id, pc);
 
             let vf = program
                 .verified(func_id)
-                .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
             let (opcode, instr, actual_pc, next_pc) = vf
                 .fetch_at_ix(instr_ix)
-                .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
             debug_assert_eq!(
                 pc, actual_pc,
                 "frame pc must match verified instruction offset"
@@ -433,113 +463,113 @@ impl<H: Host> Vm<H> {
             }
 
             // Default fallthrough: advance to the next decoded instruction.
-            self.frames[frame_index].pc = next_pc;
-            self.frames[frame_index].instr_ix = next_instr_ix;
+            ctx.frames[frame_index].pc = next_pc;
+            ctx.frames[frame_index].instr_ix = next_instr_ix;
 
             match instr {
                 VerifiedInstr::Nop => {}
                 VerifiedInstr::Trap { code } => {
-                    return Err(self.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
+                    return Err(ctx.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
                 }
 
                 VerifiedInstr::MovUnit { dst, src } => {
-                    let v = self.read_unit(base, *src);
-                    self.write_unit(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_unit(base, *src);
+                    ctx.write_unit(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovBool { dst, src } => {
-                    let v = self.read_bool(base, *src);
-                    self.write_bool(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_bool(base, *src);
+                    ctx.write_bool(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovI64 { dst, src } => {
-                    let v = self.read_i64(base, *src);
-                    self.write_i64(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_i64(base, *src);
+                    ctx.write_i64(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovU64 { dst, src } => {
-                    let v = self.read_u64(base, *src);
-                    self.write_u64(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_u64(base, *src);
+                    ctx.write_u64(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovF64 { dst, src } => {
-                    let v = self.read_f64(base, *src);
-                    self.write_f64(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_f64(base, *src);
+                    ctx.write_f64(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovDecimal { dst, src } => {
-                    let v = self.read_decimal(base, *src);
-                    self.write_decimal(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_decimal(base, *src);
+                    ctx.write_decimal(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovBytes { dst, src } => {
-                    let v = self.read_bytes_handle(base, *src);
-                    self.write_bytes_handle(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_bytes_handle(base, *src);
+                    ctx.write_bytes_handle(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovStr { dst, src } => {
-                    let v = self.read_str_handle(base, *src);
-                    self.write_str_handle(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_str_handle(base, *src);
+                    ctx.write_str_handle(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovObj { dst, src } => {
-                    let v = self.read_obj(base, *src);
-                    self.write_obj(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_obj(base, *src);
+                    ctx.write_obj(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovAgg { dst, src } => {
-                    let v = self.read_agg_handle(base, *src);
-                    self.write_agg_handle(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_agg_handle(base, *src);
+                    ctx.write_agg_handle(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::MovFunc { dst, src } => {
-                    let v = self.read_func(base, *src);
-                    self.write_func(base, *dst, v);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    let v = ctx.read_func(base, *src);
+                    ctx.write_func(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
                 VerifiedInstr::ConstUnit { dst } => {
-                    self.write_unit(base, *dst, 0);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    ctx.write_unit(base, *dst, 0);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstBool { dst, imm } => {
-                    self.write_bool(base, *dst, *imm);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    ctx.write_bool(base, *dst, *imm);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstI64 { dst, imm } => {
-                    self.write_i64(base, *dst, *imm);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    ctx.write_i64(base, *dst, *imm);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstU64 { dst, imm } => {
-                    self.write_u64(base, *dst, *imm);
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    ctx.write_u64(base, *dst, *imm);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstF64 { dst, bits } => {
-                    self.write_f64(base, *dst, f64::from_bits(*bits));
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    ctx.write_f64(base, *dst, f64::from_bits(*bits));
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 VerifiedInstr::ConstDecimal {
                     dst,
                     mantissa,
                     scale,
                 } => {
-                    self.write_decimal(
+                    ctx.write_decimal(
                         base,
                         *dst,
                         Decimal {
@@ -547,74 +577,74 @@ impl<H: Host> Vm<H> {
                             scale: *scale,
                         },
                     );
-                    self.frames[frame_index].pc = next_pc;
-                    self.frames[frame_index].instr_ix = next_instr_ix;
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
                 VerifiedInstr::ConstPoolUnit { dst, idx } => {
                     let ConstEntry::Unit = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
-                    self.write_unit(base, *dst, 0);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_unit(base, *dst, 0);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolBool { dst, idx } => {
                     let ConstEntry::Bool(b) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
-                    self.write_bool(base, *dst, *b);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, *b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolI64 { dst, idx } => {
                     let ConstEntry::I64(i) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
-                    self.write_i64(base, *dst, *i);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, *i);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolU64 { dst, idx } => {
                     let ConstEntry::U64(u) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
-                    self.write_u64(base, *dst, *u);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, *u);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolF64 { dst, idx } => {
                     let ConstEntry::F64(bits) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
-                    self.write_f64(base, *dst, f64::from_bits(*bits));
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, f64::from_bits(*bits));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolDecimal { dst, idx } => {
                     let ConstEntry::Decimal { mantissa, scale } = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
-                    self.write_decimal(
+                    ctx.write_decimal(
                         base,
                         *dst,
                         Decimal {
@@ -622,63 +652,63 @@ impl<H: Host> Vm<H> {
                             scale: *scale,
                         },
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolBytes { dst, idx } => {
                     let ConstEntry::Bytes(r) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
                     let start = r.offset as usize;
                     let end = r
                         .end()
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::InvalidPc))?
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
                         as usize;
                     let bytes = program_ref
                         .const_bytes_data
                         .get(start..end)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
                         .to_vec();
-                    let h = self.arena.alloc_bytes(bytes);
-                    self.write_bytes_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_bytes(bytes);
+                    ctx.write_bytes_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::ConstPoolStr { dst, idx } => {
                     let ConstEntry::Str(r) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
                     else {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
                     let start = r.offset as usize;
                     let end = r
                         .end()
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::InvalidPc))?
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
                         as usize;
                     let s = program_ref
                         .const_str_data
                         .get(start..end)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let h = self.arena.alloc_str_from_str(s);
-                    self.write_str_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let h = ctx.arena.alloc_str_from_str(s);
+                    ctx.write_str_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::DecAdd { dst, a, b } => {
-                    let da = self.read_decimal(base, *a);
-                    let db = self.read_decimal(base, *b);
+                    let da = ctx.read_decimal(base, *a);
+                    let db = ctx.read_decimal(base, *b);
                     if da.scale != db.scale {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
                     let mantissa = da
                         .mantissa
                         .checked_add(db.mantissa)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    self.write_decimal(
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    ctx.write_decimal(
                         base,
                         *dst,
                         Decimal {
@@ -686,19 +716,19 @@ impl<H: Host> Vm<H> {
                             scale: da.scale,
                         },
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::DecSub { dst, a, b } => {
-                    let da = self.read_decimal(base, *a);
-                    let db = self.read_decimal(base, *b);
+                    let da = ctx.read_decimal(base, *a);
+                    let db = ctx.read_decimal(base, *b);
                     if da.scale != db.scale {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
                     let mantissa = da
                         .mantissa
                         .checked_sub(db.mantissa)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    self.write_decimal(
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    ctx.write_decimal(
                         base,
                         *dst,
                         Decimal {
@@ -706,488 +736,378 @@ impl<H: Host> Vm<H> {
                             scale: da.scale,
                         },
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::DecMul { dst, a, b } => {
-                    let da = self.read_decimal(base, *a);
-                    let db = self.read_decimal(base, *b);
+                    let da = ctx.read_decimal(base, *a);
+                    let db = ctx.read_decimal(base, *b);
                     let mantissa = da
                         .mantissa
                         .checked_mul(db.mantissa)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     let scale_u16 = u16::from(da.scale) + u16::from(db.scale);
                     let scale = u8::try_from(scale_u16)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    self.write_decimal(base, *dst, Decimal { mantissa, scale });
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    ctx.write_decimal(base, *dst, Decimal { mantissa, scale });
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::F64Add { dst, a, b } => {
-                    self.write_f64(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) + self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a) + ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Sub { dst, a, b } => {
-                    self.write_f64(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) - self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a) - ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Mul { dst, a, b } => {
-                    self.write_f64(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) * self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a) * ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Div { dst, a, b } => {
-                    self.write_f64(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) / self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a) / ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Neg { dst, a } => {
-                    self.write_f64(base, *dst, -self.read_f64(base, *a));
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, -ctx.read_f64(base, *a));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Abs { dst, a } => {
-                    self.write_f64(base, *dst, self.read_f64(base, *a).abs());
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a).abs());
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Min { dst, a, b } => {
-                    let out = f64_min(self.read_f64(base, *a), self.read_f64(base, *b));
-                    self.write_f64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    let out = f64_min(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Max { dst, a, b } => {
-                    let out = f64_max(self.read_f64(base, *a), self.read_f64(base, *b));
-                    self.write_f64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    let out = f64_max(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64MinNum { dst, a, b } => {
-                    let out = f64_min_num(self.read_f64(base, *a), self.read_f64(base, *b));
-                    self.write_f64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    let out = f64_min_num(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64MaxNum { dst, a, b } => {
-                    let out = f64_max_num(self.read_f64(base, *a), self.read_f64(base, *b));
-                    self.write_f64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    let out = f64_max_num(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Rem { dst, a, b } => {
-                    self.write_f64(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) % self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a) % ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64ToBits { dst, a } => {
-                    self.write_u64(base, *dst, self.read_f64(base, *a).to_bits());
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, ctx.read_f64(base, *a).to_bits());
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64FromBits { dst, a } => {
-                    self.write_f64(base, *dst, f64::from_bits(self.read_u64(base, *a)));
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, f64::from_bits(ctx.read_u64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::I64Add { dst, a, b } => {
-                    self.write_i64(
+                    ctx.write_i64(
                         base,
                         *dst,
-                        self.read_i64(base, *a)
-                            .wrapping_add(self.read_i64(base, *b)),
+                        ctx.read_i64(base, *a).wrapping_add(ctx.read_i64(base, *b)),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Sub { dst, a, b } => {
-                    self.write_i64(
+                    ctx.write_i64(
                         base,
                         *dst,
-                        self.read_i64(base, *a)
-                            .wrapping_sub(self.read_i64(base, *b)),
+                        ctx.read_i64(base, *a).wrapping_sub(ctx.read_i64(base, *b)),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Mul { dst, a, b } => {
-                    self.write_i64(
+                    ctx.write_i64(
                         base,
                         *dst,
-                        self.read_i64(base, *a)
-                            .wrapping_mul(self.read_i64(base, *b)),
+                        ctx.read_i64(base, *a).wrapping_mul(ctx.read_i64(base, *b)),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64And { dst, a, b } => {
-                    self.write_i64(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) & self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, ctx.read_i64(base, *a) & ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Or { dst, a, b } => {
-                    self.write_i64(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) | self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, ctx.read_i64(base, *a) | ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Xor { dst, a, b } => {
-                    self.write_i64(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) ^ self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, ctx.read_i64(base, *a) ^ ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Shl { dst, a, b } => {
-                    let sh = (self.read_i64(base, *b) as u64 & 63) as u32;
-                    self.write_i64(base, *dst, self.read_i64(base, *a) << sh);
-                    self.frames[frame_index].pc = next_pc;
+                    let sh = (ctx.read_i64(base, *b) as u64 & 63) as u32;
+                    ctx.write_i64(base, *dst, ctx.read_i64(base, *a) << sh);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Shr { dst, a, b } => {
-                    let sh = (self.read_i64(base, *b) as u64 & 63) as u32;
-                    self.write_i64(base, *dst, self.read_i64(base, *a) >> sh);
-                    self.frames[frame_index].pc = next_pc;
+                    let sh = (ctx.read_i64(base, *b) as u64 & 63) as u32;
+                    ctx.write_i64(base, *dst, ctx.read_i64(base, *a) >> sh);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::U64Add { dst, a, b } => {
-                    self.write_u64(
+                    ctx.write_u64(
                         base,
                         *dst,
-                        self.read_u64(base, *a)
-                            .wrapping_add(self.read_u64(base, *b)),
+                        ctx.read_u64(base, *a).wrapping_add(ctx.read_u64(base, *b)),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Sub { dst, a, b } => {
-                    self.write_u64(
+                    ctx.write_u64(
                         base,
                         *dst,
-                        self.read_u64(base, *a)
-                            .wrapping_sub(self.read_u64(base, *b)),
+                        ctx.read_u64(base, *a).wrapping_sub(ctx.read_u64(base, *b)),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Mul { dst, a, b } => {
-                    self.write_u64(
+                    ctx.write_u64(
                         base,
                         *dst,
-                        self.read_u64(base, *a)
-                            .wrapping_mul(self.read_u64(base, *b)),
+                        ctx.read_u64(base, *a).wrapping_mul(ctx.read_u64(base, *b)),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64And { dst, a, b } => {
-                    self.write_u64(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) & self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a) & ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Or { dst, a, b } => {
-                    self.write_u64(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) | self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a) | ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Xor { dst, a, b } => {
-                    self.write_u64(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) ^ self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a) ^ ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Shl { dst, a, b } => {
-                    let sh = (self.read_u64(base, *b) & 63) as u32;
-                    self.write_u64(base, *dst, self.read_u64(base, *a) << sh);
-                    self.frames[frame_index].pc = next_pc;
+                    let sh = (ctx.read_u64(base, *b) & 63) as u32;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a) << sh);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Shr { dst, a, b } => {
-                    let sh = (self.read_u64(base, *b) & 63) as u32;
-                    self.write_u64(base, *dst, self.read_u64(base, *a) >> sh);
-                    self.frames[frame_index].pc = next_pc;
+                    let sh = (ctx.read_u64(base, *b) & 63) as u32;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a) >> sh);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::I64Eq { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) == self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_i64(base, *a) == ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Lt { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) < self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_i64(base, *a) < ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Gt { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) > self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_i64(base, *a) > ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Le { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) <= self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_i64(base, *a) <= ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Ge { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_i64(base, *a) >= self.read_i64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_i64(base, *a) >= ctx.read_i64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::U64Eq { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) == self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_u64(base, *a) == ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Lt { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) < self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_u64(base, *a) < ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Gt { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) > self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_u64(base, *a) > ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Le { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) <= self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_u64(base, *a) <= ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Ge { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_u64(base, *a) >= self.read_u64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_u64(base, *a) >= ctx.read_u64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::F64Eq { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) == self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_f64(base, *a) == ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Lt { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) < self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_f64(base, *a) < ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Gt { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) > self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_f64(base, *a) > ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Le { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) <= self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_f64(base, *a) <= ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64Ge { dst, a, b } => {
-                    self.write_bool(
-                        base,
-                        *dst,
-                        self.read_f64(base, *a) >= self.read_f64(base, *b),
-                    );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, ctx.read_f64(base, *a) >= ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::BoolNot { dst, a } => {
-                    self.write_bool(base, *dst, !self.read_bool(base, *a));
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, !ctx.read_bool(base, *a));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BoolAnd { dst, a, b } => {
-                    self.write_bool(
+                    ctx.write_bool(
                         base,
                         *dst,
-                        self.read_bool(base, *a) & self.read_bool(base, *b),
+                        ctx.read_bool(base, *a) & ctx.read_bool(base, *b),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BoolOr { dst, a, b } => {
-                    self.write_bool(
+                    ctx.write_bool(
                         base,
                         *dst,
-                        self.read_bool(base, *a) | self.read_bool(base, *b),
+                        ctx.read_bool(base, *a) | ctx.read_bool(base, *b),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BoolXor { dst, a, b } => {
-                    self.write_bool(
+                    ctx.write_bool(
                         base,
                         *dst,
-                        self.read_bool(base, *a) ^ self.read_bool(base, *b),
+                        ctx.read_bool(base, *a) ^ ctx.read_bool(base, *b),
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::U64ToI64 { dst, a } => {
-                    let u = self.read_u64(base, *a);
+                    let u = ctx.read_u64(base, *a);
                     let i = i64::try_from(u)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
-                    self.write_i64(base, *dst, i);
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_i64(base, *dst, i);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64ToU64 { dst, a } => {
-                    let i = self.read_i64(base, *a);
+                    let i = ctx.read_i64(base, *a);
                     let u = u64::try_from(i)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
-                    self.write_u64(base, *dst, u);
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_u64(base, *dst, u);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::SelectUnit { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_unit(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_unit(base, *a)
                     } else {
-                        self.read_unit(base, *b)
+                        ctx.read_unit(base, *b)
                     };
-                    self.write_unit(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_unit(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectBool { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_bool(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_bool(base, *a)
                     } else {
-                        self.read_bool(base, *b)
+                        ctx.read_bool(base, *b)
                     };
-                    self.write_bool(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectI64 { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_i64(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_i64(base, *a)
                     } else {
-                        self.read_i64(base, *b)
+                        ctx.read_i64(base, *b)
                     };
-                    self.write_i64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectU64 { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_u64(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_u64(base, *a)
                     } else {
-                        self.read_u64(base, *b)
+                        ctx.read_u64(base, *b)
                     };
-                    self.write_u64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectF64 { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_f64(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_f64(base, *a)
                     } else {
-                        self.read_f64(base, *b)
+                        ctx.read_f64(base, *b)
                     };
-                    self.write_f64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectDecimal { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_decimal(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_decimal(base, *a)
                     } else {
-                        self.read_decimal(base, *b)
+                        ctx.read_decimal(base, *b)
                     };
-                    self.write_decimal(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_decimal(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectBytes { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_bytes_handle(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_bytes_handle(base, *a)
                     } else {
-                        self.read_bytes_handle(base, *b)
+                        ctx.read_bytes_handle(base, *b)
                     };
-                    self.write_bytes_handle(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_bytes_handle(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectStr { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_str_handle(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_str_handle(base, *a)
                     } else {
-                        self.read_str_handle(base, *b)
+                        ctx.read_str_handle(base, *b)
                     };
-                    self.write_str_handle(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_str_handle(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectObj { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_obj(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_obj(base, *a)
                     } else {
-                        self.read_obj(base, *b)
+                        ctx.read_obj(base, *b)
                     };
-                    self.write_obj(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_obj(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectAgg { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_agg_handle(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_agg_handle(base, *a)
                     } else {
-                        self.read_agg_handle(base, *b)
+                        ctx.read_agg_handle(base, *b)
                     };
-                    self.write_agg_handle(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_agg_handle(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::SelectFunc { dst, cond, a, b } => {
-                    let out = if self.read_bool(base, *cond) {
-                        self.read_func(base, *a)
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_func(base, *a)
                     } else {
-                        self.read_func(base, *b)
+                        ctx.read_func(base, *b)
                     };
-                    self.write_func(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_func(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::Br {
@@ -1195,24 +1115,24 @@ impl<H: Host> Vm<H> {
                     pc_true,
                     pc_false,
                 } => {
-                    let target_pc = if self.read_bool(base, *cond) {
+                    let target_pc = if ctx.read_bool(base, *cond) {
                         *pc_true
                     } else {
                         *pc_false
                     };
                     let target_ix = vf
                         .instr_ix_at_pc(target_pc)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    self.frames[frame_index].pc = target_pc;
-                    self.frames[frame_index].instr_ix = target_ix;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    ctx.frames[frame_index].pc = target_pc;
+                    ctx.frames[frame_index].instr_ix = target_ix;
                 }
                 VerifiedInstr::Jmp { pc_target } => {
                     let target_pc = *pc_target;
                     let target_ix = vf
                         .instr_ix_at_pc(target_pc)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    self.frames[frame_index].pc = target_pc;
-                    self.frames[frame_index].instr_ix = target_ix;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    ctx.frames[frame_index].pc = target_pc;
+                    ctx.frames[frame_index].instr_ix = target_ix;
                 }
 
                 VerifiedInstr::Call {
@@ -1222,39 +1142,39 @@ impl<H: Host> Vm<H> {
                     args,
                     rets,
                 } => {
-                    if self.frames.len() >= self.limits.max_call_depth {
-                        return Err(self.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    if ctx.frames.len() >= max_call_depth {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
                     }
 
                     let callee_fn = program_ref
                         .functions
                         .get(callee.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let callee_vf = program
                         .verified(*callee)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
                     // v1: effect token is `Unit` (stored as 0).
-                    self.write_unit(base, *eff_out, 0);
+                    ctx.write_unit(base, *eff_out, 0);
 
                     let ret_base = base;
                     let ret_pc = next_pc;
                     let ret_instr_ix = next_instr_ix;
 
-                    let callee_base = self.alloc_frame(callee_vf);
+                    let callee_base = ctx.alloc_frame(callee_vf);
                     if args.len() != callee_vf.reg_layout.arg_regs.len() {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     }
                     for (src, dst) in args
                         .iter()
                         .copied()
                         .zip(callee_vf.reg_layout.arg_regs.iter().copied())
                     {
-                        self.copy_vreg(ret_base, src, callee_base, dst)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                        ctx.copy_vreg(ret_base, src, callee_base, dst)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.frames.push(Frame {
+                    ctx.frames.push(Frame {
                         func: *callee,
                         pc: 0,
                         instr_ix: 0,
@@ -1274,10 +1194,10 @@ impl<H: Host> Vm<H> {
                             program_ref,
                             TraceEvent::ScopeEnter {
                                 kind: ScopeKind::CallFrame { func: *callee },
-                                depth: self.frames.len(),
+                                depth: ctx.frames.len(),
                                 func: *callee,
                                 pc: 0,
-                                span_id: self.span_at(program_ref, *callee, 0),
+                                span_id: ctx.span_at(program_ref, *callee, 0),
                             },
                         );
                     }
@@ -1297,7 +1217,7 @@ impl<H: Host> Vm<H> {
                             program_ref,
                             TraceEvent::ScopeExit {
                                 kind: ScopeKind::CallFrame { func: func_id },
-                                depth: self.frames.len(),
+                                depth: ctx.frames.len(),
                                 func: func_id,
                                 pc,
                                 span_id,
@@ -1305,36 +1225,36 @@ impl<H: Host> Vm<H> {
                         );
                     }
 
-                    if self.frames.len() == 1 {
+                    if ctx.frames.len() == 1 {
                         let mut out: Vec<Value> = Vec::with_capacity(rets.len());
                         for &r in rets {
                             out.push(
-                                self.materialize_vreg(base, r)
-                                    .map_err(|t| self.trap(func_id, pc, span_id, t))?,
+                                ctx.materialize_vreg(base, r)
+                                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
                         }
                         return Ok(out);
                     }
 
-                    let finished = self
+                    let finished = ctx
                         .frames
                         .pop()
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
                     if finished.rets.len() != rets.len() {
-                        return Err(self.trap(func_id, pc, span_id, Trap::InvalidPc));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     }
 
                     for (&dst, &src) in finished.rets.iter().zip(rets.iter()) {
-                        self.copy_vreg(base, src, finished.ret_base, dst)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                        ctx.copy_vreg(base, src, finished.ret_base, dst)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.truncate_to(base);
+                    ctx.truncate_to(base);
 
-                    let caller_index = self.frames.len() - 1;
-                    self.frames[caller_index].pc = finished.ret_pc;
-                    self.frames[caller_index].instr_ix = finished.ret_instr_ix;
+                    let caller_index = ctx.frames.len() - 1;
+                    ctx.frames[caller_index].pc = finished.ret_pc;
+                    ctx.frames[caller_index].instr_ix = finished.ret_instr_ix;
                 }
 
                 VerifiedInstr::HostCall {
@@ -1344,42 +1264,42 @@ impl<H: Host> Vm<H> {
                     args,
                     rets,
                 } => {
-                    if self.host_calls >= self.limits.max_host_calls {
-                        return Err(self.trap(func_id, pc, span_id, Trap::HostCallLimitExceeded));
+                    if ctx.host_calls >= max_host_calls {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::HostCallLimitExceeded));
                     }
-                    self.host_calls += 1;
+                    ctx.host_calls += 1;
 
                     let hs = program_ref
                         .host_sig(*host_sig)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
                     let sym = program_ref
                         .symbol_str(hs.symbol)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
                     let ret_types = program_ref
                         .host_sig_rets(hs)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
                     let mut call_args: Vec<ValueRef<'_>> = Vec::with_capacity(args.len());
                     for &a in args {
                         call_args.push(
                             read_value_ref_at(
-                                &self.arena,
-                                &self.units,
-                                &self.bools,
-                                &self.i64s,
-                                &self.u64s,
-                                &self.f64s,
-                                &self.decimals,
-                                &self.bytes,
-                                &self.strs,
-                                &self.objs,
-                                &self.aggs,
-                                &self.funcs,
+                                &ctx.arena,
+                                &ctx.units,
+                                &ctx.bools,
+                                &ctx.i64s,
+                                &ctx.u64s,
+                                &ctx.f64s,
+                                &ctx.decimals,
+                                &ctx.bytes,
+                                &ctx.strs,
+                                &ctx.objs,
+                                &ctx.aggs,
+                                &ctx.funcs,
                                 base,
                                 a,
                             )
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?,
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
 
@@ -1395,7 +1315,7 @@ impl<H: Host> Vm<H> {
                                     symbol: hs.symbol,
                                     sig_hash: hs.sig_hash,
                                 },
-                                depth: self.frames.len(),
+                                depth: ctx.frames.len(),
                                 func: func_id,
                                 pc,
                                 span_id,
@@ -1404,10 +1324,10 @@ impl<H: Host> Vm<H> {
                     }
 
                     let (mut out_vals, extra_fuel) =
-                        self.host.call(sym, hs.sig_hash, &call_args).map_err(|e| {
-                            self.trap(func_id, pc, span_id, Trap::HostCallFailed(e))
-                        })?;
-                    self.limits.fuel = self.limits.fuel.saturating_sub(extra_fuel);
+                        self.host
+                            .call(sym, hs.sig_hash, &call_args)
+                            .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
+                    ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
                     if trace_mask.contains(TraceMask::HOST)
                         && let Some(t) = trace.as_mut()
@@ -1421,7 +1341,7 @@ impl<H: Host> Vm<H> {
                                     symbol: hs.symbol,
                                     sig_hash: hs.sig_hash,
                                 },
-                                depth: self.frames.len(),
+                                depth: ctx.frames.len(),
                                 func: func_id,
                                 pc,
                                 span_id,
@@ -1430,12 +1350,12 @@ impl<H: Host> Vm<H> {
                     }
 
                     // v1: effect token is `Unit`.
-                    self.write_unit(base, *eff_out, 0);
+                    ctx.write_unit(base, *eff_out, 0);
 
                     let expected = u32::try_from(ret_types.len()).unwrap_or(u32::MAX);
                     let actual = u32::try_from(out_vals.len()).unwrap_or(u32::MAX);
                     if out_vals.len() != ret_types.len() || out_vals.len() != rets.len() {
-                        return Err(self.trap(
+                        return Err(ctx.trap(
                             func_id,
                             pc,
                             span_id,
@@ -1444,36 +1364,36 @@ impl<H: Host> Vm<H> {
                     }
                     for (v, &expected) in out_vals.iter().zip(ret_types.iter()) {
                         v.check_type(expected)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
                     for (dst, v) in rets.iter().copied().zip(out_vals.drain(..)) {
-                        self.intern_value_to_vreg(base, dst, &v)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                        ctx.intern_value_to_vreg(base, dst, &v)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::TupleNew { dst, values } => {
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            self.materialize_vreg(base, r)
-                                .map_err(|t| self.trap(func_id, pc, span_id, t))?,
+                            ctx.materialize_vreg(base, r)
+                                .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
                     let h = self.agg.tuple_new(vals);
-                    self.write_agg_handle(base, AggReg(dst.0), h);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_agg_handle(base, AggReg(dst.0), h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::TupleGet { dst, tuple, index } => {
-                    let h = self.read_agg_handle(base, AggReg(tuple.0));
+                    let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let out = self
                         .agg
                         .tuple_get(h, *index as usize)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.intern_value_to_vreg(base, *dst, &out)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::StructNew {
@@ -1485,25 +1405,25 @@ impl<H: Host> Vm<H> {
                         .types
                         .structs
                         .get(type_id.0 as usize)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
                     let field_types = program_ref
                         .types
                         .struct_field_types(st)
-                        .map_err(|_| self.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
                     if field_types.len() != values.len() {
-                        return Err(self.trap(func_id, pc, span_id, Trap::ArityMismatch));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::ArityMismatch));
                     }
 
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            self.materialize_vreg(base, r)
-                                .map_err(|t| self.trap(func_id, pc, span_id, t))?,
+                            ctx.materialize_vreg(base, r)
+                                .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
                     let h = self.agg.struct_new(*type_id, vals);
-                    self.write_agg_handle(base, AggReg(dst.0), h);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_agg_handle(base, AggReg(dst.0), h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::StructGet {
@@ -1511,14 +1431,14 @@ impl<H: Host> Vm<H> {
                     st,
                     field_index,
                 } => {
-                    let h = self.read_agg_handle(base, AggReg(st.0));
+                    let h = ctx.read_agg_handle(base, AggReg(st.0));
                     let out = self
                         .agg
                         .struct_get(h, *field_index as usize)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.intern_value_to_vreg(base, *dst, &out)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::ArrayNew {
@@ -1532,208 +1452,208 @@ impl<H: Host> Vm<H> {
                         .array_elems
                         .get(elem_type_id.0 as usize)
                         .ok_or_else(|| {
-                            self.trap(func_id, pc, span_id, Trap::ElemTypeIdOutOfBounds)
+                            ctx.trap(func_id, pc, span_id, Trap::ElemTypeIdOutOfBounds)
                         })?;
                     if *len as usize != values.len() {
-                        return Err(self.trap(func_id, pc, span_id, Trap::ArityMismatch));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::ArityMismatch));
                     }
 
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            self.materialize_vreg(base, r)
-                                .map_err(|t| self.trap(func_id, pc, span_id, t))?,
+                            ctx.materialize_vreg(base, r)
+                                .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
                     let h = self.agg.array_new(*elem_type_id, vals);
-                    self.write_agg_handle(base, AggReg(dst.0), h);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_agg_handle(base, AggReg(dst.0), h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::ArrayLen { dst, arr } => {
-                    let h = self.read_agg_handle(base, AggReg(arr.0));
+                    let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let n = self
                         .agg
                         .array_len(h)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::ArrayGet { dst, arr, index } => {
-                    let h = self.read_agg_handle(base, AggReg(arr.0));
-                    let ix = usize::try_from(self.read_u64(base, *index)).unwrap_or(usize::MAX);
+                    let h = ctx.read_agg_handle(base, AggReg(arr.0));
+                    let ix = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
                     let out = self
                         .agg
                         .array_get(h, ix)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.intern_value_to_vreg(base, *dst, &out)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::ArrayGetImm { dst, arr, index } => {
-                    let h = self.read_agg_handle(base, AggReg(arr.0));
+                    let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let ix = usize::try_from(*index).unwrap_or(usize::MAX);
                     let out = self
                         .agg
                         .array_get(h, ix)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.intern_value_to_vreg(base, *dst, &out)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::TupleLen { dst, tuple } => {
-                    let h = self.read_agg_handle(base, AggReg(tuple.0));
+                    let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let n = self
                         .agg
                         .tuple_len(h)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::StructFieldCount { dst, st } => {
-                    let h = self.read_agg_handle(base, AggReg(st.0));
+                    let h = ctx.read_agg_handle(base, AggReg(st.0));
                     let n = self
                         .agg
                         .struct_field_count(h)
-                        .map_err(|e| self.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    self.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
+                    ctx.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::BytesLen { dst, bytes } => {
-                    let b = self
+                    let b = ctx
                         .read_bytes(bytes, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.write_u64(base, *dst, u64::try_from(b.len()).unwrap_or(u64::MAX));
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_u64(base, *dst, u64::try_from(b.len()).unwrap_or(u64::MAX));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::StrLen { dst, s } => {
-                    let s = self
+                    let s = ctx
                         .read_str(s, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.write_u64(base, *dst, u64::try_from(s.len()).unwrap_or(u64::MAX));
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_u64(base, *dst, u64::try_from(s.len()).unwrap_or(u64::MAX));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::I64Div { dst, a, b } => {
-                    let a = self.read_i64(base, *a);
-                    let b = self.read_i64(base, *b);
+                    let a = ctx.read_i64(base, *a);
+                    let b = ctx.read_i64(base, *b);
                     if b == 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
                     }
                     if a == i64::MIN && b == -1 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::IntDivOverflow));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntDivOverflow));
                     }
-                    self.write_i64(base, *dst, a / b);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, a / b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64Rem { dst, a, b } => {
-                    let a = self.read_i64(base, *a);
-                    let b = self.read_i64(base, *b);
+                    let a = ctx.read_i64(base, *a);
+                    let b = ctx.read_i64(base, *b);
                     if b == 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
                     }
                     if a == i64::MIN && b == -1 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::IntDivOverflow));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntDivOverflow));
                     }
-                    self.write_i64(base, *dst, a % b);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, a % b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Div { dst, a, b } => {
-                    let a = self.read_u64(base, *a);
-                    let b = self.read_u64(base, *b);
+                    let a = ctx.read_u64(base, *a);
+                    let b = ctx.read_u64(base, *b);
                     if b == 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
                     }
-                    self.write_u64(base, *dst, a / b);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, a / b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64Rem { dst, a, b } => {
-                    let a = self.read_u64(base, *a);
-                    let b = self.read_u64(base, *b);
+                    let a = ctx.read_u64(base, *a);
+                    let b = ctx.read_u64(base, *b);
                     if b == 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DivByZero));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
                     }
-                    self.write_u64(base, *dst, a % b);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, a % b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::I64ToF64 { dst, a } => {
-                    self.write_f64(base, *dst, self.read_i64(base, *a) as f64);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_i64(base, *a) as f64);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64ToF64 { dst, a } => {
-                    self.write_f64(base, *dst, self.read_u64(base, *a) as f64);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_f64(base, *dst, ctx.read_u64(base, *a) as f64);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64ToI64 { dst, a } => {
-                    let a = self.read_f64(base, *a);
+                    let a = ctx.read_f64(base, *a);
                     if !a.is_finite() {
-                        return Err(self.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
                     }
                     if a < i64::MIN as f64 || a > i64::MAX as f64 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::IntCastOverflow));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
                     }
                     #[allow(
                         clippy::cast_possible_truncation,
                         reason = "we implement truncating float-to-int casts after explicit finite/range checks"
                     )]
                     let out = a as i64;
-                    self.write_i64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::F64ToU64 { dst, a } => {
-                    let a = self.read_f64(base, *a);
+                    let a = ctx.read_f64(base, *a);
                     if !a.is_finite() {
-                        return Err(self.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
                     }
                     if a < 0.0 || a > u64::MAX as f64 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::IntCastOverflow));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
                     }
                     #[allow(
                         clippy::cast_possible_truncation,
                         reason = "we implement truncating float-to-int casts after explicit finite/range checks"
                     )]
                     let out = a as u64;
-                    self.write_u64(base, *dst, out);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::DecToI64 { dst, a } => {
-                    let a = self.read_decimal(base, *a);
+                    let a = ctx.read_decimal(base, *a);
                     if a.scale != 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
-                    self.write_i64(base, *dst, a.mantissa);
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_i64(base, *dst, a.mantissa);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::DecToU64 { dst, a } => {
-                    let a = self.read_decimal(base, *a);
+                    let a = ctx.read_decimal(base, *a);
                     if a.scale != 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
                     if a.mantissa < 0 {
-                        return Err(self.trap(func_id, pc, span_id, Trap::IntCastOverflow));
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
                     }
-                    self.write_u64(base, *dst, u64::try_from(a.mantissa).unwrap_or(u64::MAX));
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.write_u64(base, *dst, u64::try_from(a.mantissa).unwrap_or(u64::MAX));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::I64ToDec { dst, a, scale } => {
-                    let a = self.read_i64(base, *a);
+                    let a = ctx.read_i64(base, *a);
                     let mut factor: i64 = 1;
                     for _ in 0..*scale {
-                        factor = factor.checked_mul(10).ok_or_else(|| {
-                            self.trap(func_id, pc, span_id, Trap::DecimalOverflow)
-                        })?;
+                        factor = factor
+                            .checked_mul(10)
+                            .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     }
                     let mantissa = a
                         .checked_mul(factor)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    self.write_decimal(
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    ctx.write_decimal(
                         base,
                         *dst,
                         Decimal {
@@ -1741,21 +1661,21 @@ impl<H: Host> Vm<H> {
                             scale: *scale,
                         },
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::U64ToDec { dst, a, scale } => {
-                    let a = self.read_u64(base, *a);
+                    let a = ctx.read_u64(base, *a);
                     let mut factor: i64 = 1;
                     for _ in 0..*scale {
-                        factor = factor.checked_mul(10).ok_or_else(|| {
-                            self.trap(func_id, pc, span_id, Trap::DecimalOverflow)
-                        })?;
+                        factor = factor
+                            .checked_mul(10)
+                            .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     }
                     let mantissa = i128::from(a)
                         .checked_mul(i128::from(factor))
                         .and_then(|x| i64::try_from(x).ok())
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    self.write_decimal(
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    ctx.write_decimal(
                         base,
                         *dst,
                         Decimal {
@@ -1763,84 +1683,84 @@ impl<H: Host> Vm<H> {
                             scale: *scale,
                         },
                     );
-                    self.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 VerifiedInstr::BytesEq { dst, a, b } => {
-                    let a = self
+                    let a = ctx
                         .read_bytes(a, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = self
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let b = ctx
                         .read_bytes(b, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.write_bool(base, *dst, a == b);
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_bool(base, *dst, a == b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::StrEq { dst, a, b } => {
-                    let a = self
+                    let a = ctx
                         .read_str(a, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let b = self
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let b = ctx
                         .read_str(b, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    self.write_bool(base, *dst, a == b);
-                    self.frames[frame_index].pc = next_pc;
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_bool(base, *dst, a == b);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BytesConcat { dst, a, b } => {
                     let out = {
-                        let a = self
+                        let a = ctx
                             .read_bytes(a, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        let b = self
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        let b = ctx
                             .read_bytes(b, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let mut out = Vec::with_capacity(a.len() + b.len());
                         out.extend_from_slice(a);
                         out.extend_from_slice(b);
                         out
                     };
-                    let h = self.arena.alloc_bytes(out);
-                    self.write_bytes_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_bytes(out);
+                    ctx.write_bytes_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::StrConcat { dst, a, b } => {
                     let out = {
-                        let a = self
+                        let a = ctx
                             .read_str(a, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                        let b = self
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        let b = ctx
                             .read_str(b, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let mut out = String::with_capacity(a.len() + b.len());
                         out.push_str(a);
                         out.push_str(b);
                         out
                     };
-                    let h = self.arena.alloc_str(out);
-                    self.write_str_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_str(out);
+                    ctx.write_str_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BytesGet { dst, bytes, index } => {
-                    let bytes = self
+                    let bytes = ctx
                         .read_bytes(bytes, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
-                    let index = usize::try_from(self.read_u64(base, *index)).unwrap_or(usize::MAX);
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let index = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
                     let b = bytes
                         .get(index)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?;
-                    self.write_u64(base, *dst, u64::from(*b));
-                    self.frames[frame_index].pc = next_pc;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?;
+                    ctx.write_u64(base, *dst, u64::from(*b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BytesGetImm { dst, bytes, index } => {
-                    let bytes = self
+                    let bytes = ctx
                         .read_bytes(bytes, base)
-                        .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let index = usize::try_from(*index).unwrap_or(usize::MAX);
                     let b = bytes
                         .get(index)
-                        .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?;
-                    self.write_u64(base, *dst, u64::from(*b));
-                    self.frames[frame_index].pc = next_pc;
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?;
+                    ctx.write_u64(base, *dst, u64::from(*b));
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BytesSlice {
                     dst,
@@ -1849,63 +1769,63 @@ impl<H: Host> Vm<H> {
                     end,
                 } => {
                     let out = {
-                        let bytes = self
+                        let bytes = ctx
                             .read_bytes(bytes, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let start =
-                            usize::try_from(self.read_u64(base, *start)).unwrap_or(usize::MAX);
-                        let end = usize::try_from(self.read_u64(base, *end)).unwrap_or(usize::MAX);
+                            usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
+                        let end = usize::try_from(ctx.read_u64(base, *end)).unwrap_or(usize::MAX);
                         bytes
                             .get(start..end)
-                            .ok_or_else(|| self.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?
+                            .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?
                             .to_vec()
                     };
-                    let h = self.arena.alloc_bytes(out);
-                    self.write_bytes_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_bytes(out);
+                    ctx.write_bytes_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::StrSlice { dst, s, start, end } => {
                     let out = {
-                        let s = self
+                        let s = ctx
                             .read_str(s, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let start =
-                            usize::try_from(self.read_u64(base, *start)).unwrap_or(usize::MAX);
-                        let end = usize::try_from(self.read_u64(base, *end)).unwrap_or(usize::MAX);
+                            usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
+                        let end = usize::try_from(ctx.read_u64(base, *end)).unwrap_or(usize::MAX);
                         if start > end || end > s.len() {
-                            return Err(self.trap(func_id, pc, span_id, Trap::IndexOutOfBounds));
+                            return Err(ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds));
                         }
                         if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
-                            return Err(self.trap(func_id, pc, span_id, Trap::StrNotCharBoundary));
+                            return Err(ctx.trap(func_id, pc, span_id, Trap::StrNotCharBoundary));
                         }
                         String::from(&s[start..end])
                     };
-                    let h = self.arena.alloc_str(out);
-                    self.write_str_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_str(out);
+                    ctx.write_str_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::StrToBytes { dst, s } => {
                     let out = {
-                        let s = self
+                        let s = ctx
                             .read_str(s, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         s.as_bytes().to_vec()
                     };
-                    let h = self.arena.alloc_bytes(out);
-                    self.write_bytes_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_bytes(out);
+                    ctx.write_bytes_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
                 VerifiedInstr::BytesToStr { dst, bytes } => {
                     let out = {
-                        let bytes = self
+                        let bytes = ctx
                             .read_bytes(bytes, base)
-                            .map_err(|t| self.trap(func_id, pc, span_id, t))?;
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         String::from_utf8(bytes.to_vec())
-                            .map_err(|_| self.trap(func_id, pc, span_id, Trap::InvalidUtf8))?
+                            .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidUtf8))?
                     };
-                    let h = self.arena.alloc_str(out);
-                    self.write_str_handle(base, *dst, h);
-                    self.frames[frame_index].pc = next_pc;
+                    let h = ctx.arena.alloc_str(out);
+                    ctx.write_str_handle(base, *dst, h);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
             }
         }
@@ -1920,7 +1840,9 @@ impl<H: Host> Vm<H> {
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {
         &mut self.agg
     }
+}
 
+impl ExecutionContext {
     fn alloc_frame(&mut self, vf: &VerifiedFunction) -> RegBase {
         let counts = vf.reg_layout.counts;
         let base = RegBase {
