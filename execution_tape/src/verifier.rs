@@ -12,6 +12,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::analysis::cfg::BasicBlock;
+use crate::analysis::liveness;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::host::sig_hash_slices;
@@ -23,6 +25,7 @@ use crate::typed::{
     VerifiedInstr,
 };
 use crate::value::FuncId;
+use crate::{analysis::bitset::BitSet, analysis::cfg};
 
 #[cfg(doc)]
 use crate::vm::Vm;
@@ -40,6 +43,50 @@ use crate::vm::Vm;
 pub struct VerifiedProgram {
     program: Program,
     verified_functions: Vec<VerifiedFunction>,
+}
+
+/// A non-fatal verifier lint warning.
+///
+/// Lints are best-effort: they are intended to help frontend authors diagnose low-quality
+/// bytecode, without changing the acceptance criteria of verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VerifyLint {
+    /// A basic block is unreachable from function entry.
+    UnreachableBlock {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the basic block start.
+        pc: u32,
+    },
+    /// An instruction writes a register whose value is never read.
+    DeadStore {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Written register.
+        reg: u32,
+    },
+    /// A `mov` is redundant (e.g. `mov rX, rX`).
+    RedundantMove {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Destination register.
+        dst: u32,
+        /// Source register.
+        src: u32,
+    },
+    /// A `call`/`host_call` return register is never read.
+    UnusedCallReturn {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Return register.
+        reg: u32,
+    },
 }
 
 impl VerifiedProgram {
@@ -111,7 +158,7 @@ pub enum VerifyError {
         /// Function index within the program.
         func: u32,
     },
-    /// A bytecode jump target is invalid (out of bounds or not an instruction boundary).
+    /// A bytecode jump target is invalid.
     InvalidJumpTarget {
         /// Function index within the program.
         func: u32,
@@ -119,6 +166,8 @@ pub enum VerifyError {
         pc: u32,
         /// Byte offset target.
         target: u32,
+        /// Why the jump target is invalid.
+        reason: InvalidJumpTargetReason,
     },
     /// An effect-token input register was not `r0`.
     EffectInNotR0 {
@@ -374,6 +423,15 @@ pub enum VerifyError {
     },
 }
 
+/// Why a jump target is invalid.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum InvalidJumpTargetReason {
+    /// The target is greater than or equal to the function bytecode length.
+    OutOfRange,
+    /// The target does not land on an instruction boundary.
+    NotInstructionBoundary,
+}
+
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -402,9 +460,15 @@ impl fmt::Display for VerifyError {
             Self::ArgCountExceedsRegs { func } => {
                 write!(f, "function {func} arg_count exceeds reg_count")
             }
-            Self::InvalidJumpTarget { func, pc, target } => {
-                write!(f, "function {func} pc={pc} invalid jump target pc={target}")
-            }
+            Self::InvalidJumpTarget {
+                func,
+                pc,
+                target,
+                reason,
+            } => write!(
+                f,
+                "function {func} pc={pc} invalid jump target pc={target} ({reason:?})"
+            ),
             Self::EffectInNotR0 { func, pc, reg } => {
                 write!(
                     f,
@@ -605,9 +669,25 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
 
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let _ = verify_function_container(program, func_id, func, cfg)?;
+        let _ = verify_function_container(program, func_id, func, cfg)?.verified;
     }
     Ok(())
+}
+
+/// Verifies `program` and also computes non-fatal lint warnings.
+pub fn verify_program_with_lints(
+    program: &Program,
+    cfg: &VerifyConfig,
+) -> Result<Vec<VerifyLint>, VerifyError> {
+    verify_host_sigs(program)?;
+
+    let mut lints: Vec<VerifyLint> = Vec::new();
+    for (i, func) in program.functions.iter().enumerate() {
+        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let out = verify_function_container(program, func_id, func, cfg)?;
+        lints.extend(out.lints);
+    }
+    Ok(lints)
 }
 
 /// Verifies `program` and returns a [`VerifiedProgram`] wrapper on success.
@@ -620,13 +700,43 @@ pub fn verify_program_owned(
     let mut verified_functions: Vec<VerifiedFunction> = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        verified_functions.push(verify_function_container(&program, func_id, func, cfg)?);
+        verified_functions.push(verify_function_container(&program, func_id, func, cfg)?.verified);
     }
 
     Ok(VerifiedProgram {
         program,
         verified_functions,
     })
+}
+
+/// Verifies `program`, returning the [`VerifiedProgram`] plus non-fatal lint warnings.
+pub fn verify_program_owned_with_lints(
+    program: Program,
+    cfg: &VerifyConfig,
+) -> Result<(VerifiedProgram, Vec<VerifyLint>), VerifyError> {
+    verify_host_sigs(&program)?;
+
+    let mut verified_functions: Vec<VerifiedFunction> = Vec::with_capacity(program.functions.len());
+    let mut lints: Vec<VerifyLint> = Vec::new();
+    for (i, func) in program.functions.iter().enumerate() {
+        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let out = verify_function_container(&program, func_id, func, cfg)?;
+        verified_functions.push(out.verified);
+        lints.extend(out.lints);
+    }
+
+    Ok((
+        VerifiedProgram {
+            program,
+            verified_functions,
+        },
+        lints,
+    ))
+}
+
+struct VerifiedFunctionContainer {
+    verified: VerifiedFunction,
+    lints: Vec<VerifyLint>,
 }
 
 fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
@@ -653,7 +763,7 @@ fn verify_function_container(
     func_id: u32,
     func: &Function,
     cfg: &VerifyConfig,
-) -> Result<VerifiedFunction, VerifyError> {
+) -> Result<VerifiedFunctionContainer, VerifyError> {
     if func.reg_count > cfg.max_regs_per_function {
         return Err(VerifyError::RegCountTooLarge {
             func: func_id,
@@ -712,7 +822,7 @@ fn verify_function_bytecode(
     arg_types: &[ValueType],
     ret_types: &[ValueType],
     decoded: &[DecodedInstr],
-) -> Result<VerifiedFunction, VerifyError> {
+) -> Result<VerifiedFunctionContainer, VerifyError> {
     if func.reg_count == 0 {
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
     }
@@ -721,19 +831,25 @@ fn verify_function_bytecode(
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
     }
 
-    let boundaries = compute_boundaries(bytecode.len(), decoded);
+    let boundaries = cfg::compute_boundaries(bytecode.len(), decoded);
 
     // Build CFG blocks and reachability.
     let byte_len =
         u32::try_from(bytecode.len()).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
-    let blocks = build_basic_blocks(byte_len, decoded, &boundaries).map_err(|e| {
+    let blocks = cfg::build_basic_blocks(byte_len, decoded, &boundaries).map_err(|e| {
+        let reason = if e.out_of_range {
+            InvalidJumpTargetReason::OutOfRange
+        } else {
+            InvalidJumpTargetReason::NotInstructionBoundary
+        };
         VerifyError::InvalidJumpTarget {
             func: func_id,
             pc: e.src_pc,
             target: e.target_pc,
+            reason,
         }
     })?;
-    let reachable = compute_reachable(&blocks);
+    let reachable = cfg::compute_reachable(&blocks);
 
     // Reject implicit fallthrough between basic blocks: every reachable block must end in an
     // explicit terminator.
@@ -762,6 +878,8 @@ fn verify_function_bytecode(
             });
         }
     }
+
+    let lints = lint_function_bytecode(func_id, func, decoded, &blocks, &reachable);
 
     // Must-init analysis (writes-only transfer).
     let reg_count = func.reg_count as usize;
@@ -1765,11 +1883,104 @@ fn verify_function_bytecode(
         });
     }
 
-    Ok(VerifiedFunction {
-        byte_len,
-        reg_layout,
-        instrs: verified_instrs,
+    Ok(VerifiedFunctionContainer {
+        verified: VerifiedFunction {
+            byte_len,
+            reg_layout,
+            instrs: verified_instrs,
+        },
+        lints,
     })
+}
+
+fn lint_function_bytecode(
+    func_id: u32,
+    func: &Function,
+    decoded: &[DecodedInstr],
+    blocks: &[BasicBlock],
+    reachable: &[bool],
+) -> Vec<VerifyLint> {
+    let reg_count = func.reg_count as usize;
+    if reg_count == 0 {
+        return Vec::new();
+    }
+
+    let mut lints: Vec<VerifyLint> = Vec::new();
+    for (b_idx, b) in blocks.iter().enumerate() {
+        if !reachable.get(b_idx).copied().unwrap_or(false) {
+            lints.push(VerifyLint::UnreachableBlock {
+                func: func_id,
+                pc: b.start_pc,
+            });
+        }
+    }
+
+    let live = liveness::compute_liveness(reg_count, decoded, blocks, reachable);
+
+    // Report dead stores / unused call returns / redundant moves.
+    for (b_idx, b) in blocks.iter().enumerate() {
+        if !reachable.get(b_idx).copied().unwrap_or(false) {
+            continue;
+        }
+        let mut live = live.live_out[b_idx].clone();
+
+        for di in decoded.iter().take(b.instr_end).skip(b.instr_start).rev() {
+            if let Instr::Mov { dst, src } = di.instr
+                && dst == src
+                && dst != 0
+            {
+                lints.push(VerifyLint::RedundantMove {
+                    func: func_id,
+                    pc: di.offset,
+                    dst,
+                    src,
+                });
+            }
+
+            // Writes.
+            let is_call_like = matches!(di.instr, Instr::Call { .. } | Instr::HostCall { .. });
+            let mut call_rets: Option<&[u32]> = None;
+            if let Instr::Call { rets, .. } = &di.instr {
+                call_rets = Some(rets.as_slice());
+            } else if let Instr::HostCall { rets, .. } = &di.instr {
+                call_rets = Some(rets.as_slice());
+            }
+
+            for w in di.instr.writes() {
+                if w == 0 {
+                    continue;
+                }
+                if !live.get(w as usize) {
+                    if is_call_like
+                        && call_rets.is_some_and(|rs| rs.iter().copied().any(|r| r == w))
+                    {
+                        lints.push(VerifyLint::UnusedCallReturn {
+                            func: func_id,
+                            pc: di.offset,
+                            reg: w,
+                        });
+                    } else {
+                        lints.push(VerifyLint::DeadStore {
+                            func: func_id,
+                            pc: di.offset,
+                            reg: w,
+                        });
+                    }
+                }
+                live.clear(w as usize);
+            }
+
+            // Reads.
+            for r in di.instr.reads() {
+                if r == 0 {
+                    continue;
+                }
+                live.set(r as usize);
+            }
+        }
+    }
+
+    lints
 }
 
 fn validate_instr_reads_writes(
@@ -3207,196 +3418,6 @@ fn validate_instr_types(
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BasicBlock {
-    start_pc: u32,
-    end_pc: u32,
-    instr_start: usize,
-    instr_end: usize,
-    succs: [Option<usize>; 2],
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-struct InvalidJumpTarget {
-    src_pc: u32,
-    target_pc: u32,
-}
-
-fn compute_boundaries(byte_len: usize, decoded: &[DecodedInstr]) -> Vec<bool> {
-    let mut b = vec![false; byte_len + 1];
-    for di in decoded {
-        let o = di.offset as usize;
-        if o <= byte_len {
-            b[o] = true;
-        }
-    }
-    b[byte_len] = true;
-    b
-}
-
-fn build_basic_blocks(
-    byte_len: u32,
-    decoded: &[DecodedInstr],
-    boundaries: &[bool],
-) -> Result<Vec<BasicBlock>, InvalidJumpTarget> {
-    // Leaders are: entry, jump targets, and the next instruction after a terminator.
-    let mut leader = vec![false; (byte_len as usize) + 1];
-    let mut leader_src: Vec<Option<u32>> = vec![None; (byte_len as usize) + 1];
-    leader[0] = true;
-
-    for (i, di) in decoded.iter().enumerate() {
-        let end = if i + 1 < decoded.len() {
-            decoded[i + 1].offset as usize
-        } else {
-            byte_len as usize
-        };
-
-        match &di.instr {
-            Instr::Br {
-                pc_true, pc_false, ..
-            } => {
-                if *pc_true >= byte_len {
-                    return Err(InvalidJumpTarget {
-                        src_pc: di.offset,
-                        target_pc: *pc_true,
-                    });
-                }
-                if *pc_false >= byte_len {
-                    return Err(InvalidJumpTarget {
-                        src_pc: di.offset,
-                        target_pc: *pc_false,
-                    });
-                }
-                leader[*pc_true as usize] = true;
-                leader_src[*pc_true as usize].get_or_insert(di.offset);
-                leader[*pc_false as usize] = true;
-                leader_src[*pc_false as usize].get_or_insert(di.offset);
-                if end <= byte_len as usize {
-                    leader[end] = true;
-                    leader_src[end].get_or_insert(di.offset);
-                }
-            }
-            Instr::Jmp { pc_target } => {
-                if *pc_target >= byte_len {
-                    return Err(InvalidJumpTarget {
-                        src_pc: di.offset,
-                        target_pc: *pc_target,
-                    });
-                }
-                leader[*pc_target as usize] = true;
-                leader_src[*pc_target as usize].get_or_insert(di.offset);
-                if end <= byte_len as usize {
-                    leader[end] = true;
-                    leader_src[end].get_or_insert(di.offset);
-                }
-            }
-            Instr::Ret { .. } | Instr::Trap { .. } => {
-                if end <= byte_len as usize {
-                    leader[end] = true;
-                    leader_src[end].get_or_insert(di.offset);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Validate that all leaders (targets) are instruction boundaries (or end).
-    for (pc, &is_leader) in leader.iter().enumerate() {
-        if is_leader && pc <= byte_len as usize && !boundaries[pc] {
-            let target_pc = u32::try_from(pc).unwrap_or(byte_len);
-            let src_pc = leader_src[pc].unwrap_or(target_pc);
-            return Err(InvalidJumpTarget { src_pc, target_pc });
-        }
-    }
-
-    // Map from pc to instruction index.
-    let mut pc_to_instr = vec![usize::MAX; (byte_len as usize) + 1];
-    for (idx, di) in decoded.iter().enumerate() {
-        pc_to_instr[di.offset as usize] = idx;
-    }
-
-    // Collect leader pcs in order.
-    let mut leader_pcs: Vec<u32> = leader
-        .iter()
-        .enumerate()
-        .filter_map(|(pc, &v)| v.then_some(u32::try_from(pc).unwrap_or(byte_len)))
-        .collect();
-    leader_pcs.sort_unstable();
-    leader_pcs.dedup();
-
-    let mut blocks: Vec<BasicBlock> = Vec::new();
-    for (i, &start_pc) in leader_pcs.iter().enumerate() {
-        if start_pc == byte_len {
-            continue;
-        }
-        let end_pc = leader_pcs.get(i + 1).copied().unwrap_or(byte_len);
-        let instr_start = pc_to_instr[start_pc as usize];
-        let instr_end = if end_pc == byte_len {
-            decoded.len()
-        } else {
-            pc_to_instr[end_pc as usize]
-        };
-        blocks.push(BasicBlock {
-            start_pc,
-            end_pc,
-            instr_start,
-            instr_end,
-            succs: [None, None],
-        });
-    }
-
-    // Map pc -> block index.
-    let mut pc_to_block = vec![usize::MAX; (byte_len as usize) + 1];
-    for (i, b) in blocks.iter().enumerate() {
-        pc_to_block[b.start_pc as usize] = i;
-    }
-
-    // Fill successors.
-    for i in 0..blocks.len() {
-        let last = blocks[i].instr_end.saturating_sub(1);
-        let Some(di) = decoded.get(last) else {
-            continue;
-        };
-        let fallthrough = if blocks[i].end_pc < byte_len {
-            Some(pc_to_block[blocks[i].end_pc as usize])
-        } else {
-            None
-        };
-        blocks[i].succs = match &di.instr {
-            Instr::Br {
-                pc_true, pc_false, ..
-            } => [
-                Some(pc_to_block[*pc_true as usize]),
-                Some(pc_to_block[*pc_false as usize]),
-            ],
-            Instr::Jmp { pc_target } => [Some(pc_to_block[*pc_target as usize]), None],
-            Instr::Ret { .. } | Instr::Trap { .. } => [None, None],
-            _ => [fallthrough, None],
-        };
-    }
-
-    Ok(blocks)
-}
-
-fn compute_reachable(blocks: &[BasicBlock]) -> Vec<bool> {
-    let mut reachable = vec![false; blocks.len()];
-    if blocks.is_empty() {
-        return reachable;
-    }
-    let mut stack = vec![0_usize];
-    reachable[0] = true;
-    while let Some(b) = stack.pop() {
-        for &succ in &blocks[b].succs {
-            let Some(s) = succ else { continue };
-            if s != usize::MAX && !reachable[s] {
-                reachable[s] = true;
-                stack.push(s);
-            }
-        }
-    }
-    reachable
-}
-
 fn compute_must_init(
     blocks: &[BasicBlock],
     reachable: &[bool],
@@ -3610,68 +3631,6 @@ fn compute_block_writes(
         out[i] = s;
     }
     Ok(out)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BitSet {
-    bits: Vec<u64>,
-    len: usize,
-}
-
-impl BitSet {
-    fn new_empty(len: usize) -> Self {
-        let words = len.div_ceil(64);
-        Self {
-            bits: vec![0; words],
-            len,
-        }
-    }
-
-    fn new_full(len: usize) -> Self {
-        let mut s = Self::new_empty(len);
-        for w in &mut s.bits {
-            *w = !0;
-        }
-        // Clear unused bits in last word.
-        let rem = len % 64;
-        if rem != 0 {
-            let mask = (1_u64 << rem) - 1;
-            if let Some(last) = s.bits.last_mut() {
-                *last &= mask;
-            }
-        }
-        s
-    }
-
-    fn get(&self, idx: usize) -> bool {
-        if idx >= self.len {
-            return false;
-        }
-        let w = idx / 64;
-        let b = idx % 64;
-        (self.bits[w] >> b) & 1 == 1
-    }
-
-    fn set(&mut self, idx: usize) {
-        if idx >= self.len {
-            return;
-        }
-        let w = idx / 64;
-        let b = idx % 64;
-        self.bits[w] |= 1_u64 << b;
-    }
-
-    fn intersect_with(&mut self, other: &Self) {
-        for (a, b) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *a &= *b;
-        }
-    }
-
-    fn union_with(&mut self, other: &Self) {
-        for (a, b) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *a |= *b;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3931,7 +3890,42 @@ mod tests {
             Err(VerifyError::InvalidJumpTarget {
                 func: 0,
                 pc: 2,
-                target: 1
+                target: 1,
+                reason: InvalidJumpTargetReason::NotInstructionBoundary,
+            })
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_out_of_range_jump_target() {
+        // const_unit r1; jmp 255 (target is out of range)
+        let mut a = Asm::new();
+        a.const_unit(1);
+
+        let mut bytecode = a.finish().unwrap();
+        bytecode.extend_from_slice(&[0x41, 0xFF, 0x01]); // jmp 255 (uleb128)
+
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 2,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::InvalidJumpTarget {
+                func: 0,
+                pc: 2,
+                target: 255,
+                reason: InvalidJumpTargetReason::OutOfRange,
             })
         );
     }
@@ -4246,5 +4240,90 @@ mod tests {
 
         let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
         assert!(matches!(err, VerifyError::AggKindMismatch { .. }));
+    }
+
+    #[test]
+    fn verifier_lints_unreachable_dead_store_redundant_mov_and_unused_call_ret() {
+        let mut pb = ProgramBuilder::new();
+
+        // f0: returns i64
+        pb.push_function_checked(
+            {
+                let mut a = Asm::new();
+                a.const_i64(1, 5);
+                a.ret(0, &[1]);
+                a
+            },
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 2,
+            },
+        )
+        .unwrap();
+
+        // f1: has redundant mov, dead store, unused call ret, and unreachable block.
+        pb.push_function_checked(
+            {
+                let mut a = Asm::new();
+                let l_ret = a.label();
+                let l_unreach = a.label();
+
+                a.const_i64(1, 1); // dead store
+                a.const_i64(2, 0);
+                a.const_i64(4, 0);
+                a.mov(2, 2); // redundant
+                a.call(0, FuncId(0), 0, &[], &[3]); // unused call ret r3
+                a.jmp(l_ret);
+
+                a.place(l_unreach).unwrap();
+                a.const_i64(4, 99);
+                a.ret(0, &[4]);
+
+                a.place(l_ret).unwrap();
+                a.ret(0, &[]);
+                a
+            },
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 5,
+            },
+        )
+        .unwrap();
+
+        let p = pb.build();
+        let lints = verify_program_with_lints(&p, &VerifyConfig::default()).unwrap();
+
+        assert!(
+            lints
+                .iter()
+                .any(|l| matches!(l, VerifyLint::UnreachableBlock { func: 1, .. }))
+        );
+        assert!(lints.iter().any(|l| matches!(
+            l,
+            VerifyLint::DeadStore {
+                func: 1,
+                reg: 1,
+                ..
+            }
+        )));
+        assert!(lints.iter().any(|l| matches!(
+            l,
+            VerifyLint::RedundantMove {
+                func: 1,
+                dst: 2,
+                src: 2,
+                ..
+            }
+        )));
+        assert!(lints.iter().any(|l| matches!(
+            l,
+            VerifyLint::UnusedCallReturn {
+                func: 1,
+                reg: 3,
+                ..
+            }
+        )));
     }
 }

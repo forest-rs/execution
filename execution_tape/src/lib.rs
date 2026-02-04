@@ -61,6 +61,7 @@
 extern crate alloc;
 
 pub mod aggregates;
+pub(crate) mod analysis;
 pub(crate) mod arena;
 pub mod asm;
 pub(crate) mod bytecode;
