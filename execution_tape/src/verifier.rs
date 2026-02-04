@@ -115,8 +115,28 @@ pub enum VerifyError {
     InvalidJumpTarget {
         /// Function index within the program.
         func: u32,
-        /// Byte offset target.
+        /// Byte offset of the jump instruction.
         pc: u32,
+        /// Byte offset target.
+        target: u32,
+    },
+    /// An effect-token input register was not `r0`.
+    EffectInNotR0 {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// The offending register.
+        reg: u32,
+    },
+    /// An effect-token output register was not `r0`.
+    EffectOutNotR0 {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// The offending register.
+        reg: u32,
     },
     /// A register index is out of bounds for the function's `reg_count`.
     RegOutOfBounds {
@@ -248,6 +268,15 @@ pub enum VerifyError {
         /// Host signature id.
         host_sig: u32,
     },
+    /// A `host_call` referenced a host signature, but that entry was malformed.
+    HostCallSigMalformed {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Host signature id.
+        host_sig: u32,
+    },
     /// The program's host signature hash does not match the canonical hash for its types.
     HostSigHashMismatch {
         /// Host signature id.
@@ -280,6 +309,33 @@ pub enum VerifyError {
         /// Register index.
         reg: u32,
     },
+    /// A register has no stable concrete type (with instruction context).
+    UnstableRegTypeAt {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Register index.
+        reg: u32,
+    },
+    /// A `call` referenced a callee arg type slice that was out of bounds.
+    CallCalleeArgTypesOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Callee function id.
+        callee: u32,
+    },
+    /// A `call` referenced a callee ret type slice that was out of bounds.
+    CallCalleeRetTypesOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Callee function id.
+        callee: u32,
+    },
     /// A typed use saw a concrete type that does not match what was expected.
     TypeMismatch {
         /// Function index within the program.
@@ -306,6 +362,10 @@ pub enum VerifyError {
         func: u32,
         /// Byte offset of the inconsistent block start.
         pc: u32,
+        /// Instruction index range start.
+        instr_start: usize,
+        /// Instruction index range end.
+        instr_end: usize,
     },
     /// Bytecode decoding failed.
     BytecodeDecode {
@@ -342,8 +402,20 @@ impl fmt::Display for VerifyError {
             Self::ArgCountExceedsRegs { func } => {
                 write!(f, "function {func} arg_count exceeds reg_count")
             }
-            Self::InvalidJumpTarget { func, pc } => {
-                write!(f, "function {func} invalid jump target pc={pc}")
+            Self::InvalidJumpTarget { func, pc, target } => {
+                write!(f, "function {func} pc={pc} invalid jump target pc={target}")
+            }
+            Self::EffectInNotR0 { func, pc, reg } => {
+                write!(
+                    f,
+                    "function {func} pc={pc} effect input must be r0 (got r{reg})"
+                )
+            }
+            Self::EffectOutNotR0 { func, pc, reg } => {
+                write!(
+                    f,
+                    "function {func} pc={pc} effect output must be r0 (got r{reg})"
+                )
             }
             Self::RegOutOfBounds { func, pc, reg } => {
                 write!(f, "function {func} pc={pc} register out of bounds: r{reg}")
@@ -414,6 +486,10 @@ impl fmt::Display for VerifyError {
                 )
             }
             Self::HostSigMalformed { host_sig } => write!(f, "host_sig {host_sig} malformed"),
+            Self::HostCallSigMalformed { func, pc, host_sig } => write!(
+                f,
+                "function {func} pc={pc} host_sig {host_sig} malformed (via host_call)"
+            ),
             Self::HostSigHashMismatch { host_sig } => {
                 write!(f, "host_sig {host_sig} sig_hash mismatch")
             }
@@ -434,6 +510,18 @@ impl fmt::Display for VerifyError {
                 f,
                 "function {func}: reg {reg} has no stable concrete type across reachable paths"
             ),
+            Self::UnstableRegTypeAt { func, pc, reg } => write!(
+                f,
+                "function {func} pc={pc}: reg {reg} has no stable concrete type across reachable paths"
+            ),
+            Self::CallCalleeArgTypesOutOfBounds { func, pc, callee } => write!(
+                f,
+                "function {func} pc={pc} callee f{callee} arg types out of bounds"
+            ),
+            Self::CallCalleeRetTypesOutOfBounds { func, pc, callee } => write!(
+                f,
+                "function {func} pc={pc} callee f{callee} ret types out of bounds"
+            ),
             Self::TypeMismatch {
                 func,
                 pc,
@@ -447,9 +535,14 @@ impl fmt::Display for VerifyError {
                 f,
                 "function {func} pc={pc} block can fall through without a terminator"
             ),
-            Self::InternalBlockInconsistent { func, pc } => write!(
+            Self::InternalBlockInconsistent {
+                func,
+                pc,
+                instr_start,
+                instr_end,
+            } => write!(
                 f,
-                "function {func} pc={pc} internal verifier error: inconsistent basic blocks"
+                "function {func} pc={pc} internal verifier error: inconsistent basic blocks (instrs {instr_start}..{instr_end})"
             ),
             Self::BytecodeDecode { func } => write!(f, "function {func} bytecode decode failed"),
             Self::AggKindMismatch {
@@ -633,26 +726,32 @@ fn verify_function_bytecode(
     // Build CFG blocks and reachability.
     let byte_len =
         u32::try_from(bytecode.len()).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
-    let blocks = build_basic_blocks(byte_len, decoded, &boundaries)
-        .map_err(|pc| VerifyError::InvalidJumpTarget { func: func_id, pc })?;
+    let blocks = build_basic_blocks(byte_len, decoded, &boundaries).map_err(|e| {
+        VerifyError::InvalidJumpTarget {
+            func: func_id,
+            pc: e.src_pc,
+            target: e.target_pc,
+        }
+    })?;
     let reachable = compute_reachable(&blocks);
 
     // Reject implicit fallthrough between basic blocks: every reachable block must end in an
     // explicit terminator.
-    for (b_idx, block) in blocks.iter().enumerate() {
-        if !reachable[b_idx] {
-            continue;
-        }
+    for block in &blocks {
         if block.instr_end == 0 || block.instr_end <= block.instr_start {
             return Err(VerifyError::InternalBlockInconsistent {
                 func: func_id,
                 pc: block.start_pc,
+                instr_start: block.instr_start,
+                instr_end: block.instr_end,
             });
         }
         let Some(last) = decoded.get(block.instr_end - 1) else {
             return Err(VerifyError::InternalBlockInconsistent {
                 func: func_id,
                 pc: block.start_pc,
+                instr_start: block.instr_start,
+                instr_end: block.instr_end,
             });
         };
         let is_terminator = Opcode::from_u8(last.opcode).is_some_and(Opcode::is_terminator);
@@ -753,14 +852,16 @@ fn verify_function_bytecode(
                 let t = match t {
                     RegType::Concrete(t) => t,
                     RegType::Uninit => {
-                        return Err(VerifyError::UnstableRegType {
+                        return Err(VerifyError::UnstableRegTypeAt {
                             func: func_id,
+                            pc: di.offset,
                             reg: w,
                         });
                     }
                     RegType::Ambiguous => {
-                        return Err(VerifyError::UnstableRegType {
+                        return Err(VerifyError::UnstableRegTypeAt {
                             func: func_id,
+                            pc: di.offset,
                             reg: w,
                         });
                     }
@@ -769,8 +870,9 @@ fn verify_function_bytecode(
                     Some(slot @ None) => *slot = Some(t),
                     Some(Some(prev)) if *prev == t => {}
                     Some(Some(_prev)) => {
-                        return Err(VerifyError::UnstableRegType {
+                        return Err(VerifyError::UnstableRegTypeAt {
                             func: func_id,
+                            pc: di.offset,
                             reg: w,
                         });
                     }
@@ -862,74 +964,80 @@ fn verify_function_bytecode(
         arg_regs,
     };
 
-    let map = |reg: u32| -> Result<VReg, VerifyError> {
-        reg_layout
-            .reg_map
-            .get(reg as usize)
-            .copied()
-            .ok_or(VerifyError::RegOutOfBounds {
-                func: func_id,
-                pc: 0,
-                reg,
-            })
-    };
-    let map_unit = |reg: u32| -> Result<UnitReg, VerifyError> {
-        match map(reg)? {
-            VReg::Unit(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_bool = |reg: u32| -> Result<BoolReg, VerifyError> {
-        match map(reg)? {
-            VReg::Bool(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_i64 = |reg: u32| -> Result<I64Reg, VerifyError> {
-        match map(reg)? {
-            VReg::I64(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_u64 = |reg: u32| -> Result<U64Reg, VerifyError> {
-        match map(reg)? {
-            VReg::U64(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_f64 = |reg: u32| -> Result<F64Reg, VerifyError> {
-        match map(reg)? {
-            VReg::F64(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_decimal = |reg: u32| -> Result<DecimalReg, VerifyError> {
-        match map(reg)? {
-            VReg::Decimal(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_bytes = |reg: u32| -> Result<BytesReg, VerifyError> {
-        match map(reg)? {
-            VReg::Bytes(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_str = |reg: u32| -> Result<StrReg, VerifyError> {
-        match map(reg)? {
-            VReg::Str(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-    let map_agg = |reg: u32| -> Result<AggReg, VerifyError> {
-        match map(reg)? {
-            VReg::Agg(r) => Ok(r),
-            _ => Err(VerifyError::UnstableRegType { func: func_id, reg }),
-        }
-    };
-
     let mut verified_instrs: Vec<VerifiedDecodedInstr> = Vec::with_capacity(decoded.len());
     for di in decoded {
+        let pc = di.offset;
+        let map = |reg: u32| -> Result<VReg, VerifyError> {
+            reg_layout
+                .reg_map
+                .get(reg as usize)
+                .copied()
+                .ok_or(VerifyError::RegOutOfBounds {
+                    func: func_id,
+                    pc,
+                    reg,
+                })
+        };
+        let unstable = |reg: u32| VerifyError::UnstableRegTypeAt {
+            func: func_id,
+            pc,
+            reg,
+        };
+        let map_unit = |reg: u32| -> Result<UnitReg, VerifyError> {
+            match map(reg)? {
+                VReg::Unit(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_bool = |reg: u32| -> Result<BoolReg, VerifyError> {
+            match map(reg)? {
+                VReg::Bool(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_i64 = |reg: u32| -> Result<I64Reg, VerifyError> {
+            match map(reg)? {
+                VReg::I64(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_u64 = |reg: u32| -> Result<U64Reg, VerifyError> {
+            match map(reg)? {
+                VReg::U64(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_f64 = |reg: u32| -> Result<F64Reg, VerifyError> {
+            match map(reg)? {
+                VReg::F64(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_decimal = |reg: u32| -> Result<DecimalReg, VerifyError> {
+            match map(reg)? {
+                VReg::Decimal(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_bytes = |reg: u32| -> Result<BytesReg, VerifyError> {
+            match map(reg)? {
+                VReg::Bytes(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_str = |reg: u32| -> Result<StrReg, VerifyError> {
+            match map(reg)? {
+                VReg::Str(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+        let map_agg = |reg: u32| -> Result<AggReg, VerifyError> {
+            match map(reg)? {
+                VReg::Agg(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
+
         let vi = match &di.instr {
             Instr::Nop => VerifiedInstr::Nop,
             Instr::Trap { code } => VerifiedInstr::Trap { code: *code },
@@ -949,10 +1057,7 @@ fn verify_function_bytecode(
                 (VReg::Agg(d), VReg::Agg(s)) => VerifiedInstr::MovAgg { dst: d, src: s },
                 (VReg::Func(d), VReg::Func(s)) => VerifiedInstr::MovFunc { dst: d, src: s },
                 _ => {
-                    return Err(VerifyError::UnstableRegType {
-                        func: func_id,
-                        reg: *dst,
-                    });
+                    return Err(unstable(*dst));
                 }
             },
 
@@ -1374,10 +1479,7 @@ fn verify_function_bytecode(
                     b: bb,
                 },
                 _ => {
-                    return Err(VerifyError::UnstableRegType {
-                        func: func_id,
-                        reg: *dst,
-                    });
+                    return Err(unstable(*dst));
                 }
             },
 
@@ -1707,6 +1809,26 @@ fn validate_instr_reads_writes(
         state.set(reg as usize);
         Ok(())
     };
+    let require_eff_in_r0 = |reg: u32| -> Result<(), VerifyError> {
+        if reg != 0 {
+            return Err(VerifyError::EffectInNotR0 {
+                func: func_id,
+                pc,
+                reg,
+            });
+        }
+        Ok(())
+    };
+    let require_eff_out_r0 = |reg: u32| -> Result<(), VerifyError> {
+        if reg != 0 {
+            return Err(VerifyError::EffectOutNotR0 {
+                func: func_id,
+                pc,
+                reg,
+            });
+        }
+        Ok(())
+    };
 
     match instr {
         Instr::Nop => {}
@@ -1867,6 +1989,8 @@ fn validate_instr_reads_writes(
             args,
             rets,
         } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
             require_init(*eff_in, state)?;
             for &a in args {
                 require_init(a, state)?;
@@ -1888,6 +2012,7 @@ fn validate_instr_reads_writes(
         }
 
         Instr::Ret { eff_in, rets } => {
+            require_eff_in_r0(*eff_in)?;
             require_init(*eff_in, state)?;
             for &r in rets {
                 require_init(r, state)?;
@@ -1896,14 +2021,42 @@ fn validate_instr_reads_writes(
 
         Instr::HostCall {
             eff_out,
-            host_sig: _,
+            host_sig,
             eff_in,
             args,
             rets,
         } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
             require_init(*eff_in, state)?;
             for &a in args {
                 require_init(a, state)?;
+            }
+            let hs = program
+                .host_sig(*host_sig)
+                .ok_or(VerifyError::HostSigOutOfBounds {
+                    func: func_id,
+                    pc,
+                    host_sig: host_sig.0,
+                })?;
+            let hs_args =
+                program
+                    .host_sig_args(hs)
+                    .map_err(|_| VerifyError::HostCallSigMalformed {
+                        func: func_id,
+                        pc,
+                        host_sig: host_sig.0,
+                    })?;
+            let hs_rets =
+                program
+                    .host_sig_rets(hs)
+                    .map_err(|_| VerifyError::HostCallSigMalformed {
+                        func: func_id,
+                        pc,
+                        host_sig: host_sig.0,
+                    })?;
+            if args.len() != hs_args.len() || rets.len() != hs_rets.len() {
+                return Err(VerifyError::HostCallArityMismatch { func: func_id, pc });
             }
             write_reg(*eff_out, state)?;
             for &r in rets {
@@ -2463,6 +2616,39 @@ fn check_expected(
     Ok(())
 }
 
+fn check_assignable(
+    func: u32,
+    pc: u32,
+    reg: u32,
+    actual: Option<RegType>,
+    expected: ValueType,
+) -> Result<(), VerifyError> {
+    let Some(actual) = actual else {
+        return Ok(());
+    };
+    match actual {
+        RegType::Uninit => Ok(()),
+        RegType::Concrete(t) => {
+            if t != expected {
+                Err(VerifyError::TypeMismatch {
+                    func,
+                    pc,
+                    expected,
+                    actual: t,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        RegType::Ambiguous => Err(VerifyError::UnknownTypeAtUse {
+            func,
+            pc,
+            reg,
+            expected,
+        }),
+    }
+}
+
 fn validate_instr_types(
     program: &Program,
     func_id: u32,
@@ -2713,17 +2899,28 @@ fn validate_instr_types(
                 .functions
                 .get(callee.0 as usize)
                 .ok_or(VerifyError::CallArityMismatch { func: func_id, pc })?;
-            let callee_args = callee_fn
-                .arg_types(program)
-                .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: callee.0 })?;
-            let callee_rets = callee_fn
-                .ret_types(program)
-                .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: callee.0 })?;
+            let callee_args = callee_fn.arg_types(program).map_err(|_| {
+                VerifyError::CallCalleeArgTypesOutOfBounds {
+                    func: func_id,
+                    pc,
+                    callee: callee.0,
+                }
+            })?;
+            let callee_rets = callee_fn.ret_types(program).map_err(|_| {
+                VerifyError::CallCalleeRetTypesOutOfBounds {
+                    func: func_id,
+                    pc,
+                    callee: callee.0,
+                }
+            })?;
             if args.len() != callee_args.len() || rets.len() != callee_rets.len() {
                 return Err(VerifyError::CallArityMismatch { func: func_id, pc });
             }
             for (&r, &expected) in args.iter().zip(callee_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
+            }
+            for (&r, &expected) in rets.iter().zip(callee_rets.iter()) {
+                check_assignable(func_id, pc, r, t(r), expected)?;
             }
         }
         Instr::Ret { rets, .. } => {
@@ -2747,21 +2944,30 @@ fn validate_instr_types(
                     pc,
                     host_sig: host_sig.0,
                 })?;
-            let hs_args = program
-                .host_sig_args(hs)
-                .map_err(|_| VerifyError::HostSigMalformed {
-                    host_sig: host_sig.0,
-                })?;
-            let hs_rets = program
-                .host_sig_rets(hs)
-                .map_err(|_| VerifyError::HostSigMalformed {
-                    host_sig: host_sig.0,
-                })?;
+            let hs_args =
+                program
+                    .host_sig_args(hs)
+                    .map_err(|_| VerifyError::HostCallSigMalformed {
+                        func: func_id,
+                        pc,
+                        host_sig: host_sig.0,
+                    })?;
+            let hs_rets =
+                program
+                    .host_sig_rets(hs)
+                    .map_err(|_| VerifyError::HostCallSigMalformed {
+                        func: func_id,
+                        pc,
+                        host_sig: host_sig.0,
+                    })?;
             if args.len() != hs_args.len() || rets.len() != hs_rets.len() {
                 return Err(VerifyError::HostCallArityMismatch { func: func_id, pc });
             }
             for (&r, &expected) in args.iter().zip(hs_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
+            }
+            for (&r, &expected) in rets.iter().zip(hs_rets.iter()) {
+                check_assignable(func_id, pc, r, t(r), expected)?;
             }
         }
         Instr::TupleNew { .. } => {}
@@ -3010,6 +3216,12 @@ struct BasicBlock {
     succs: [Option<usize>; 2],
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct InvalidJumpTarget {
+    src_pc: u32,
+    target_pc: u32,
+}
+
 fn compute_boundaries(byte_len: usize, decoded: &[DecodedInstr]) -> Vec<bool> {
     let mut b = vec![false; byte_len + 1];
     for di in decoded {
@@ -3026,9 +3238,10 @@ fn build_basic_blocks(
     byte_len: u32,
     decoded: &[DecodedInstr],
     boundaries: &[bool],
-) -> Result<Vec<BasicBlock>, u32> {
+) -> Result<Vec<BasicBlock>, InvalidJumpTarget> {
     // Leaders are: entry, jump targets, and the next instruction after a terminator.
     let mut leader = vec![false; (byte_len as usize) + 1];
+    let mut leader_src: Vec<Option<u32>> = vec![None; (byte_len as usize) + 1];
     leader[0] = true;
 
     for (i, di) in decoded.iter().enumerate() {
@@ -3042,30 +3255,45 @@ fn build_basic_blocks(
             Instr::Br {
                 pc_true, pc_false, ..
             } => {
-                if *pc_true > byte_len {
-                    return Err(*pc_true);
+                if *pc_true >= byte_len {
+                    return Err(InvalidJumpTarget {
+                        src_pc: di.offset,
+                        target_pc: *pc_true,
+                    });
                 }
-                if *pc_false > byte_len {
-                    return Err(*pc_false);
+                if *pc_false >= byte_len {
+                    return Err(InvalidJumpTarget {
+                        src_pc: di.offset,
+                        target_pc: *pc_false,
+                    });
                 }
                 leader[*pc_true as usize] = true;
+                leader_src[*pc_true as usize].get_or_insert(di.offset);
                 leader[*pc_false as usize] = true;
+                leader_src[*pc_false as usize].get_or_insert(di.offset);
                 if end <= byte_len as usize {
                     leader[end] = true;
+                    leader_src[end].get_or_insert(di.offset);
                 }
             }
             Instr::Jmp { pc_target } => {
-                if *pc_target > byte_len {
-                    return Err(*pc_target);
+                if *pc_target >= byte_len {
+                    return Err(InvalidJumpTarget {
+                        src_pc: di.offset,
+                        target_pc: *pc_target,
+                    });
                 }
                 leader[*pc_target as usize] = true;
+                leader_src[*pc_target as usize].get_or_insert(di.offset);
                 if end <= byte_len as usize {
                     leader[end] = true;
+                    leader_src[end].get_or_insert(di.offset);
                 }
             }
             Instr::Ret { .. } | Instr::Trap { .. } => {
                 if end <= byte_len as usize {
                     leader[end] = true;
+                    leader_src[end].get_or_insert(di.offset);
                 }
             }
             _ => {}
@@ -3075,7 +3303,9 @@ fn build_basic_blocks(
     // Validate that all leaders (targets) are instruction boundaries (or end).
     for (pc, &is_leader) in leader.iter().enumerate() {
         if is_leader && pc <= byte_len as usize && !boundaries[pc] {
-            return Err(u32::try_from(pc).unwrap_or(byte_len));
+            let target_pc = u32::try_from(pc).unwrap_or(byte_len);
+            let src_pc = leader_src[pc].unwrap_or(target_pc);
+            return Err(InvalidJumpTarget { src_pc, target_pc });
         }
     }
 
@@ -3538,12 +3768,12 @@ mod tests {
     }
 
     #[test]
-    fn verifier_ignores_missing_terminators_in_unreachable_blocks() {
+    fn verifier_rejects_missing_terminators_in_unreachable_blocks() {
         // Entry jumps to l_ret, making the subsequent region unreachable.
         //
         // The unreachable region contains multiple blocks and includes an implicit fallthrough
-        // between blocks (missing terminator). This should be ignored because the blocks are not
-        // reachable from entry.
+        // between blocks (missing terminator). This is now rejected: we require explicit
+        // terminators for all blocks, reachable or not.
         let mut a = Asm::new();
         let l_ret = a.label();
         let l_unreach_entry = a.label();
@@ -3560,6 +3790,7 @@ mod tests {
         a.br(1, l_bad, l_next);
 
         a.place(l_bad).unwrap();
+        let pc_bad_last = a.pc();
         a.const_i64(2, 1);
         // Missing terminator: falls through to l_next.
 
@@ -3579,7 +3810,14 @@ mod tests {
             },
         )
         .unwrap();
-        pb.build_checked().unwrap();
+        let p = pb.build();
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::MissingTerminator {
+                func: 0,
+                pc: pc_bad_last
+            })
+        );
     }
 
     #[test]
@@ -3690,7 +3928,56 @@ mod tests {
         );
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::InvalidJumpTarget { func: 0, pc: 1 })
+            Err(VerifyError::InvalidJumpTarget {
+                func: 0,
+                pc: 2,
+                target: 1
+            })
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_call_with_nonzero_effect_reg() {
+        // Enforce the v1 convention: effect token must be `r0`.
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            {
+                let mut callee = Asm::new();
+                callee.ret(0, &[]);
+                callee
+            },
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 1,
+            },
+        )
+        .unwrap();
+
+        pb.push_function_checked(
+            {
+                let mut caller = Asm::new();
+                // eff_in = r1 (invalid), eff_out = r0
+                caller.call(0, FuncId(0), 1, &[], &[]);
+                caller.ret(0, &[]);
+                caller
+            },
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 2,
+            },
+        )
+        .unwrap();
+        let p = pb.build();
+
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::EffectInNotR0 {
+                func: 1,
+                pc: 0,
+                reg: 1
+            })
         );
     }
 
