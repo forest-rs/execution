@@ -1,6 +1,6 @@
 ---
 id: et-e5a1
-status: open
+status: closed
 deps: []
 links: [et-991c]
 created: 2026-01-31T14:47:47Z
