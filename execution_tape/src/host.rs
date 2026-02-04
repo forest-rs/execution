@@ -29,7 +29,7 @@ pub struct HostSig {
 }
 
 /// A stable 64-bit signature hash.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SigHash(pub u64);
 
 /// Computes a stable signature hash for `sig`.
