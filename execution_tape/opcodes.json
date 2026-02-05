@@ -6,6 +6,7 @@
       "mnemonic": "nop",
       "byte": "0x00",
       "terminator": false,
+      "flags": [],
       "doc": "No-op.",
       "operands": []
     },
@@ -14,10 +15,17 @@
       "mnemonic": "mov",
       "byte": "0x01",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = src`.",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "src"
+        }
       ]
     },
     {
@@ -25,9 +33,13 @@
       "mnemonic": "trap",
       "byte": "0x02",
       "terminator": true,
+      "flags": [],
       "doc": "Trap unconditionally with a trap code.",
       "operands": [
-        "imm_u32"
+        {
+          "kind": "imm_u32",
+          "role": "trap_code"
+        }
       ]
     },
     {
@@ -35,9 +47,13 @@
       "mnemonic": "const.unit",
       "byte": "0x10",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = ()`.",
       "operands": [
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        }
       ]
     },
     {
@@ -45,10 +61,17 @@
       "mnemonic": "const.bool",
       "byte": "0x11",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = bool`.",
       "operands": [
-        "reg",
-        "imm_bool"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "imm_bool",
+          "role": "imm"
+        }
       ]
     },
     {
@@ -56,10 +79,17 @@
       "mnemonic": "const.i64",
       "byte": "0x12",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = i64`.",
       "operands": [
-        "reg",
-        "imm_i64"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "imm_i64",
+          "role": "imm"
+        }
       ]
     },
     {
@@ -67,10 +97,17 @@
       "mnemonic": "const.u64",
       "byte": "0x13",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = u64`.",
       "operands": [
-        "reg",
-        "imm_u64"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "imm_u64",
+          "role": "imm"
+        }
       ]
     },
     {
@@ -78,10 +115,17 @@
       "mnemonic": "const.f64",
       "byte": "0x14",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = f64` encoded as raw IEEE bits.",
       "operands": [
-        "reg",
-        "imm_u64"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "imm_u64",
+          "role": "bits"
+        }
       ]
     },
     {
@@ -89,11 +133,21 @@
       "mnemonic": "const.decimal",
       "byte": "0x15",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = Decimal { mantissa, scale }`.",
       "operands": [
-        "reg",
-        "imm_i64",
-        "imm_u8"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "imm_i64",
+          "role": "mantissa"
+        },
+        {
+          "kind": "imm_u8",
+          "role": "scale"
+        }
       ]
     },
     {
@@ -101,10 +155,17 @@
       "mnemonic": "const.pool",
       "byte": "0x16",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = const_pool[idx]`.",
       "operands": [
-        "reg",
-        "const_id"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "const_id",
+          "role": "const"
+        }
       ]
     },
     {
@@ -112,11 +173,21 @@
       "mnemonic": "dec.add",
       "byte": "0x17",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a + b` (`Decimal`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -124,11 +195,21 @@
       "mnemonic": "dec.sub",
       "byte": "0x18",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a - b` (`Decimal`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -136,11 +217,21 @@
       "mnemonic": "dec.mul",
       "byte": "0x19",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a * b` (`Decimal`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -148,11 +239,21 @@
       "mnemonic": "f64.add",
       "byte": "0x1A",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a + b` (`f64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -160,11 +261,21 @@
       "mnemonic": "f64.sub",
       "byte": "0x1B",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a - b` (`f64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -172,11 +283,21 @@
       "mnemonic": "f64.mul",
       "byte": "0x1C",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a * b` (`f64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -184,11 +305,21 @@
       "mnemonic": "i64.add",
       "byte": "0x20",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a + b` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -196,11 +327,21 @@
       "mnemonic": "i64.sub",
       "byte": "0x21",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a - b` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -208,11 +349,21 @@
       "mnemonic": "i64.mul",
       "byte": "0x22",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a * b` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -220,11 +371,21 @@
       "mnemonic": "u64.add",
       "byte": "0x23",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a + b` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -232,11 +393,21 @@
       "mnemonic": "u64.sub",
       "byte": "0x24",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a - b` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -244,11 +415,21 @@
       "mnemonic": "u64.mul",
       "byte": "0x25",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a * b` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -256,11 +437,21 @@
       "mnemonic": "u64.and",
       "byte": "0x26",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a & b` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -268,11 +459,21 @@
       "mnemonic": "u64.or",
       "byte": "0x27",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a | b` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -280,11 +481,21 @@
       "mnemonic": "i64.eq",
       "byte": "0x28",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a == b)` (`i64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -292,11 +503,21 @@
       "mnemonic": "i64.lt",
       "byte": "0x29",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a < b)` (`i64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -304,11 +525,21 @@
       "mnemonic": "u64.eq",
       "byte": "0x2A",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a == b)` (`u64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -316,11 +547,21 @@
       "mnemonic": "u64.lt",
       "byte": "0x2B",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a < b)` (`u64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -328,11 +569,21 @@
       "mnemonic": "u64.xor",
       "byte": "0x2C",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a ^ b` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -340,11 +591,21 @@
       "mnemonic": "u64.shl",
       "byte": "0x2D",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a << (b & 63)` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -352,11 +613,21 @@
       "mnemonic": "u64.shr",
       "byte": "0x2E",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a >> (b & 63)` (`u64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -364,11 +635,21 @@
       "mnemonic": "u64.gt",
       "byte": "0x2F",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a > b)` (`u64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -376,10 +657,17 @@
       "mnemonic": "bool.not",
       "byte": "0x30",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = !a` (`bool`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -387,11 +675,21 @@
       "mnemonic": "u64.le",
       "byte": "0x31",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a <= b)` (`u64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -399,11 +697,21 @@
       "mnemonic": "u64.ge",
       "byte": "0x32",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a >= b)` (`u64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -411,11 +719,21 @@
       "mnemonic": "i64.and",
       "byte": "0x33",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a & b` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -423,10 +741,17 @@
       "mnemonic": "u64.to_i64",
       "byte": "0x34",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = u64_to_i64(a)` (traps on overflow).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -434,10 +759,17 @@
       "mnemonic": "i64.to_u64",
       "byte": "0x35",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = i64_to_u64(a)` (traps on negative).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -445,11 +777,21 @@
       "mnemonic": "i64.or",
       "byte": "0x36",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a | b` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -457,11 +799,21 @@
       "mnemonic": "i64.xor",
       "byte": "0x37",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a ^ b` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -469,12 +821,25 @@
       "mnemonic": "select",
       "byte": "0x38",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = if cond { a } else { b }`.",
       "operands": [
-        "reg",
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "cond"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -482,11 +847,21 @@
       "mnemonic": "i64.gt",
       "byte": "0x39",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a > b)` (`i64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -494,11 +869,21 @@
       "mnemonic": "i64.le",
       "byte": "0x3A",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a <= b)` (`i64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -506,11 +891,21 @@
       "mnemonic": "i64.ge",
       "byte": "0x3B",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a >= b)` (`i64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -518,11 +913,21 @@
       "mnemonic": "i64.shl",
       "byte": "0x3C",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a << (b & 63)` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -530,11 +935,21 @@
       "mnemonic": "i64.shr",
       "byte": "0x3D",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a >> (b & 63)` (`i64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -542,11 +957,21 @@
       "mnemonic": "br",
       "byte": "0x40",
       "terminator": true,
+      "flags": [],
       "doc": "Branch based on `cond` to `pc_true` or `pc_false` (byte offsets).",
       "operands": [
-        "reg",
-        "pc",
-        "pc"
+        {
+          "kind": "reg",
+          "role": "cond"
+        },
+        {
+          "kind": "pc",
+          "role": "pc_true"
+        },
+        {
+          "kind": "pc",
+          "role": "pc_false"
+        }
       ]
     },
     {
@@ -554,9 +979,13 @@
       "mnemonic": "jmp",
       "byte": "0x41",
       "terminator": true,
+      "flags": [],
       "doc": "Jump to `pc_target` (byte offset).",
       "operands": [
-        "pc"
+        {
+          "kind": "pc",
+          "role": "pc_target"
+        }
       ]
     },
     {
@@ -564,13 +993,31 @@
       "mnemonic": "call",
       "byte": "0x50",
       "terminator": false,
+      "flags": [
+        "call_like"
+      ],
       "doc": "Call a function.",
       "operands": [
-        "reg",
-        "func_id",
-        "reg",
-        "reg_list",
-        "reg_list"
+        {
+          "kind": "reg",
+          "role": "eff_out"
+        },
+        {
+          "kind": "func_id",
+          "role": "func"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets"
+        }
       ]
     },
     {
@@ -578,10 +1025,19 @@
       "mnemonic": "ret",
       "byte": "0x51",
       "terminator": true,
+      "flags": [
+        "call_like"
+      ],
       "doc": "Return from the current function.",
       "operands": [
-        "reg",
-        "reg_list"
+        {
+          "kind": "reg",
+          "role": "eff_in"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets"
+        }
       ]
     },
     {
@@ -589,13 +1045,31 @@
       "mnemonic": "host_call",
       "byte": "0x52",
       "terminator": false,
+      "flags": [
+        "call_like"
+      ],
       "doc": "Call a host function.",
       "operands": [
-        "reg",
-        "host_sig_id",
-        "reg",
-        "reg_list",
-        "reg_list"
+        {
+          "kind": "reg",
+          "role": "eff_out"
+        },
+        {
+          "kind": "host_sig_id",
+          "role": "host_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets"
+        }
       ]
     },
     {
@@ -603,10 +1077,17 @@
       "mnemonic": "tuple.new",
       "byte": "0x60",
       "terminator": false,
+      "flags": [],
       "doc": "Allocate a tuple aggregate.",
       "operands": [
-        "reg",
-        "reg_list"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg_list",
+          "role": "values"
+        }
       ]
     },
     {
@@ -614,11 +1095,21 @@
       "mnemonic": "tuple.get",
       "byte": "0x61",
       "terminator": false,
+      "flags": [],
       "doc": "Read tuple element at an immediate index.",
       "operands": [
-        "reg",
-        "reg",
-        "imm_u32"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "tuple"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index"
+        }
       ]
     },
     {
@@ -626,11 +1117,21 @@
       "mnemonic": "struct.new",
       "byte": "0x62",
       "terminator": false,
+      "flags": [],
       "doc": "Allocate a struct aggregate.",
       "operands": [
-        "reg",
-        "type_id",
-        "reg_list"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "type_id",
+          "role": "type"
+        },
+        {
+          "kind": "reg_list",
+          "role": "values"
+        }
       ]
     },
     {
@@ -638,11 +1139,21 @@
       "mnemonic": "struct.get",
       "byte": "0x63",
       "terminator": false,
+      "flags": [],
       "doc": "Read struct field at an immediate index.",
       "operands": [
-        "reg",
-        "reg",
-        "imm_u32"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "st"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "field_index"
+        }
       ]
     },
     {
@@ -650,11 +1161,21 @@
       "mnemonic": "array.new",
       "byte": "0x64",
       "terminator": false,
+      "flags": [],
       "doc": "Allocate an array aggregate.",
       "operands": [
-        "reg",
-        "elem_type_id",
-        "reg_list"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "elem_type_id",
+          "role": "elem_type"
+        },
+        {
+          "kind": "reg_list",
+          "role": "values"
+        }
       ]
     },
     {
@@ -662,10 +1183,17 @@
       "mnemonic": "array.len",
       "byte": "0x65",
       "terminator": false,
+      "flags": [],
       "doc": "Read array length.",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "arr"
+        }
       ]
     },
     {
@@ -673,11 +1201,21 @@
       "mnemonic": "array.get",
       "byte": "0x66",
       "terminator": false,
+      "flags": [],
       "doc": "Read array element at an index register.",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "arr"
+        },
+        {
+          "kind": "reg",
+          "role": "index"
+        }
       ]
     },
     {
@@ -685,10 +1223,17 @@
       "mnemonic": "tuple.len",
       "byte": "0x67",
       "terminator": false,
+      "flags": [],
       "doc": "Read tuple length.",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "tuple"
+        }
       ]
     },
     {
@@ -696,10 +1241,17 @@
       "mnemonic": "struct.field_count",
       "byte": "0x68",
       "terminator": false,
+      "flags": [],
       "doc": "Read struct field count.",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "st"
+        }
       ]
     },
     {
@@ -707,11 +1259,21 @@
       "mnemonic": "array.get_imm",
       "byte": "0x69",
       "terminator": false,
+      "flags": [],
       "doc": "Read array element at an immediate index.",
       "operands": [
-        "reg",
-        "reg",
-        "imm_u32"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "arr"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index"
+        }
       ]
     },
     {
@@ -719,10 +1281,17 @@
       "mnemonic": "bytes.len",
       "byte": "0x6A",
       "terminator": false,
+      "flags": [],
       "doc": "Read byte-string length.",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "bytes"
+        }
       ]
     },
     {
@@ -730,10 +1299,17 @@
       "mnemonic": "str.len",
       "byte": "0x6B",
       "terminator": false,
+      "flags": [],
       "doc": "Read UTF-8 string length (in bytes).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "s"
+        }
       ]
     },
     {
@@ -741,11 +1317,21 @@
       "mnemonic": "i64.div",
       "byte": "0x6C",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a / b` (`i64`, traps on divide-by-zero and `i64::MIN / -1`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -753,11 +1339,21 @@
       "mnemonic": "i64.rem",
       "byte": "0x6D",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a % b` (`i64`, traps on divide-by-zero and `i64::MIN % -1`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -765,11 +1361,21 @@
       "mnemonic": "u64.div",
       "byte": "0x6E",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a / b` (`u64`, traps on divide-by-zero).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -777,11 +1383,21 @@
       "mnemonic": "u64.rem",
       "byte": "0x6F",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a % b` (`u64`, traps on divide-by-zero).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -789,10 +1405,17 @@
       "mnemonic": "i64.to_f64",
       "byte": "0x70",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a as f64)` (`i64` to `f64`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -800,10 +1423,17 @@
       "mnemonic": "u64.to_f64",
       "byte": "0x71",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a as f64)` (`u64` to `f64`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -811,10 +1441,17 @@
       "mnemonic": "f64.to_i64",
       "byte": "0x72",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = trunc(a)` (`f64` to `i64`, traps on NaN/inf/out-of-range).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -822,10 +1459,17 @@
       "mnemonic": "f64.to_u64",
       "byte": "0x73",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -833,10 +1477,17 @@
       "mnemonic": "dec.to_i64",
       "byte": "0x74",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a.mantissa` (`Decimal` to `i64`, traps if `scale != 0`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -844,10 +1495,17 @@
       "mnemonic": "dec.to_u64",
       "byte": "0x75",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a.mantissa` (`Decimal` to `u64`, traps if `scale != 0` or mantissa < 0).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -855,11 +1513,21 @@
       "mnemonic": "i64.to_dec",
       "byte": "0x76",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow).",
       "operands": [
-        "reg",
-        "reg",
-        "imm_u8"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "imm_u8",
+          "role": "scale"
+        }
       ]
     },
     {
@@ -867,11 +1535,21 @@
       "mnemonic": "u64.to_dec",
       "byte": "0x77",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow).",
       "operands": [
-        "reg",
-        "reg",
-        "imm_u8"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "imm_u8",
+          "role": "scale"
+        }
       ]
     },
     {
@@ -879,11 +1557,21 @@
       "mnemonic": "bytes.eq",
       "byte": "0x78",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a == b)` (`bytes` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -891,11 +1579,21 @@
       "mnemonic": "str.eq",
       "byte": "0x79",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a == b)` (`str` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -903,11 +1601,21 @@
       "mnemonic": "bytes.concat",
       "byte": "0x7A",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = concat(a, b)` (`bytes`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -915,11 +1623,21 @@
       "mnemonic": "str.concat",
       "byte": "0x7B",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = concat(a, b)` (`str`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -927,11 +1645,21 @@
       "mnemonic": "bytes.get",
       "byte": "0x7C",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = bytes[index]` (returns `u64` in `0..=255`, traps on OOB).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "bytes"
+        },
+        {
+          "kind": "reg",
+          "role": "index"
+        }
       ]
     },
     {
@@ -939,11 +1667,21 @@
       "mnemonic": "bytes.get_imm",
       "byte": "0x7D",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = bytes[index]` (returns `u64` in `0..=255`, traps on OOB).",
       "operands": [
-        "reg",
-        "reg",
-        "imm_u32"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "bytes"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index"
+        }
       ]
     },
     {
@@ -951,12 +1689,25 @@
       "mnemonic": "bytes.slice",
       "byte": "0x7E",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = bytes[start..end]` (traps on invalid range).",
       "operands": [
-        "reg",
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "bytes"
+        },
+        {
+          "kind": "reg",
+          "role": "start"
+        },
+        {
+          "kind": "reg",
+          "role": "end"
+        }
       ]
     },
     {
@@ -964,12 +1715,25 @@
       "mnemonic": "str.slice",
       "byte": "0x7F",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = s[start..end]` (byte indices; traps on invalid range or non-boundaries).",
       "operands": [
-        "reg",
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "s"
+        },
+        {
+          "kind": "reg",
+          "role": "start"
+        },
+        {
+          "kind": "reg",
+          "role": "end"
+        }
       ]
     },
     {
@@ -977,10 +1741,17 @@
       "mnemonic": "str.to_bytes",
       "byte": "0x80",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = s.as_bytes().to_vec()`.",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "s"
+        }
       ]
     },
     {
@@ -988,10 +1759,17 @@
       "mnemonic": "bytes.to_str",
       "byte": "0x81",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = String::from_utf8(bytes)` (traps on invalid UTF-8).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "bytes"
+        }
       ]
     },
     {
@@ -999,11 +1777,21 @@
       "mnemonic": "f64.div",
       "byte": "0x82",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a / b` (`f64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1011,11 +1799,21 @@
       "mnemonic": "f64.eq",
       "byte": "0x83",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a == b)` (`f64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1023,11 +1821,21 @@
       "mnemonic": "f64.lt",
       "byte": "0x84",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a < b)` (`f64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1035,11 +1843,21 @@
       "mnemonic": "f64.gt",
       "byte": "0x85",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a > b)` (`f64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1047,11 +1865,21 @@
       "mnemonic": "f64.le",
       "byte": "0x86",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a <= b)` (`f64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1059,11 +1887,21 @@
       "mnemonic": "f64.ge",
       "byte": "0x87",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = (a >= b)` (`f64` -> `bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1071,11 +1909,21 @@
       "mnemonic": "bool.and",
       "byte": "0x88",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a & b` (`bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1083,11 +1931,21 @@
       "mnemonic": "bool.or",
       "byte": "0x89",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a | b` (`bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1095,11 +1953,21 @@
       "mnemonic": "bool.xor",
       "byte": "0x8A",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a ^ b` (`bool`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1107,10 +1975,17 @@
       "mnemonic": "f64.neg",
       "byte": "0x8B",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = -a` (`f64`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -1118,10 +1993,17 @@
       "mnemonic": "f64.abs",
       "byte": "0x8C",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = abs(a)` (`f64`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -1129,11 +2011,21 @@
       "mnemonic": "f64.min",
       "byte": "0x8D",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = min(a, b)` (`f64`, NaN-propagating).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1141,11 +2033,21 @@
       "mnemonic": "f64.max",
       "byte": "0x8E",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = max(a, b)` (`f64`, NaN-propagating).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1153,11 +2055,21 @@
       "mnemonic": "f64.min_num",
       "byte": "0x8F",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = min_num(a, b)` (`f64`, number-favoring).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1165,11 +2077,21 @@
       "mnemonic": "f64.max_num",
       "byte": "0x90",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = max_num(a, b)` (`f64`, number-favoring).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1177,11 +2099,21 @@
       "mnemonic": "f64.rem",
       "byte": "0x91",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = a % b` (`f64`).",
       "operands": [
-        "reg",
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        },
+        {
+          "kind": "reg",
+          "role": "b"
+        }
       ]
     },
     {
@@ -1189,10 +2121,17 @@
       "mnemonic": "f64.to_bits",
       "byte": "0x92",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = f64_to_bits(a)` (`f64` -> `u64`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     },
     {
@@ -1200,10 +2139,17 @@
       "mnemonic": "f64.from_bits",
       "byte": "0x93",
       "terminator": false,
+      "flags": [],
       "doc": "`dst = f64_from_bits(a)` (`u64` -> `f64`).",
       "operands": [
-        "reg",
-        "reg"
+        {
+          "kind": "reg",
+          "role": "dst"
+        },
+        {
+          "kind": "reg",
+          "role": "a"
+        }
       ]
     }
   ]

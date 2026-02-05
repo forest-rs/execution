@@ -22,8 +22,15 @@ struct OpcodeSpec {
     mnemonic: String,
     byte: String,
     terminator: bool,
+    flags: Vec<String>,
     doc: Option<String>,
-    operands: Vec<String>,
+    operands: Vec<OperandSpec>,
+}
+
+#[derive(Deserialize)]
+struct OperandSpec {
+    kind: String,
+    role: String,
 }
 
 fn parse_u8_hex(s: &str) -> Result<u8> {
@@ -63,6 +70,25 @@ fn operand_kind_rust(operand: &str) -> Result<&'static str> {
 
         other => bail!("unknown operand kind '{other}'"),
     })
+}
+
+fn operand_role_rust(role: &str) -> Result<String> {
+    let mut s = String::with_capacity("OperandRole::".len() + role.len());
+    s.push_str("OperandRole::");
+    let mut upper_next = true;
+    for ch in role.chars() {
+        if ch == '_' {
+            upper_next = true;
+            continue;
+        }
+        if upper_next {
+            s.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            s.push(ch);
+        }
+    }
+    Ok(s)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -138,6 +164,46 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    ElemTypeId,\n");
     out.push_str("}\n\n");
 
+    out.push_str("/// Operand roles used by the opcode table.\n");
+    out.push_str("///\n");
+    out.push_str("/// Roles are a best-effort description for disassembly/tooling.\n");
+    out.push_str("#[allow(missing_docs, reason = \"generated\")]\n");
+    out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
+    out.push_str("pub enum OperandRole {\n");
+    out.push_str("    Dst,\n");
+    out.push_str("    Src,\n");
+    out.push_str("    A,\n");
+    out.push_str("    B,\n");
+    out.push_str("    Cond,\n");
+    out.push_str("    PcTrue,\n");
+    out.push_str("    PcFalse,\n");
+    out.push_str("    PcTarget,\n");
+    out.push_str("    Imm,\n");
+    out.push_str("    Bits,\n");
+    out.push_str("    Mantissa,\n");
+    out.push_str("    Scale,\n");
+    out.push_str("    TrapCode,\n");
+    out.push_str("    Const,\n");
+    out.push_str("    Func,\n");
+    out.push_str("    HostSig,\n");
+    out.push_str("    Type,\n");
+    out.push_str("    ElemType,\n");
+    out.push_str("    EffIn,\n");
+    out.push_str("    EffOut,\n");
+    out.push_str("    Args,\n");
+    out.push_str("    Rets,\n");
+    out.push_str("    Values,\n");
+    out.push_str("    Tuple,\n");
+    out.push_str("    St,\n");
+    out.push_str("    Arr,\n");
+    out.push_str("    Index,\n");
+    out.push_str("    FieldIndex,\n");
+    out.push_str("    Start,\n");
+    out.push_str("    End,\n");
+    out.push_str("    Bytes,\n");
+    out.push_str("    S,\n");
+    out.push_str("}\n\n");
+
     out.push_str("/// Operand layout for an opcode (indices into `OPERAND_KINDS`).\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("pub struct OperandLayout {\n");
@@ -148,6 +214,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("}\n\n");
 
     let mut operand_kinds: Vec<&'static str> = Vec::new();
+    let mut operand_roles: Vec<String> = Vec::new();
     let mut operand_layout_by_name: Vec<(&str, u16, u8)> = Vec::with_capacity(ops.len());
     for (_, op) in &ops {
         let start: u16 = operand_kinds
@@ -155,7 +222,8 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
             .try_into()
             .context("too many operands to index in u16")?;
         for operand in &op.operands {
-            operand_kinds.push(operand_kind_rust(operand)?);
+            operand_kinds.push(operand_kind_rust(&operand.kind)?);
+            operand_roles.push(operand_role_rust(&operand.role)?);
         }
         let len: u8 = op
             .operands
@@ -182,6 +250,13 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     }
     out.push_str("];\n\n");
 
+    out.push_str("/// Flat operand role table indexed by `OperandLayout`.\n");
+    out.push_str("pub const OPERAND_ROLES: &[OperandRole] = &[\n");
+    for role in &operand_roles {
+        out.push_str(&format!("    {role},\n"));
+    }
+    out.push_str("];\n\n");
+
     out.push_str("/// Per-opcode metadata used by decode, disasm, and verification.\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("pub struct OpcodeInfo {\n");
@@ -189,8 +264,27 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    pub mnemonic: &'static str,\n");
     out.push_str("    /// Whether this opcode terminates the current basic block.\n");
     out.push_str("    pub is_terminator: bool,\n");
+    out.push_str("    /// Optional per-opcode traits.\n");
+    out.push_str("    pub flags: OpcodeFlags,\n");
     out.push_str("    /// Operand layout for this opcode.\n");
     out.push_str("    pub operands: OperandLayout,\n");
+    out.push_str("}\n\n");
+
+    out.push_str("/// Optional per-opcode traits.\n");
+    out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
+    out.push_str("#[repr(transparent)]\n");
+    out.push_str("pub struct OpcodeFlags(u8);\n\n");
+
+    out.push_str("impl OpcodeFlags {\n");
+    out.push_str("    /// No flags set.\n");
+    out.push_str("    pub const NONE: Self = Self(0);\n");
+    out.push_str("    /// Call-like instruction (`call`, `host_call`, `ret`).\n");
+    out.push_str("    pub const CALL_LIKE: Self = Self(1 << 0);\n");
+    out.push_str("\n    /// Returns `true` if `other` is a subset of `self`.\n");
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub const fn contains(self, other: Self) -> bool {\n");
+    out.push_str("        (self.0 & other.0) == other.0\n");
+    out.push_str("    }\n");
     out.push_str("}\n\n");
 
     let mut by_byte: Vec<Option<&OpcodeSpec>> = vec![None; usize::from(max_byte) + 1];
@@ -203,13 +297,18 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     for (i, op) in by_byte.iter().enumerate() {
         if let Some(op) = op {
             let layout = layout_by_byte[i].expect("layout for valid opcode");
+            let flags = if op.flags.iter().any(|f| f == "call_like") {
+                "OpcodeFlags::CALL_LIKE"
+            } else {
+                "OpcodeFlags::NONE"
+            };
             out.push_str(&format!(
-                "    OpcodeInfo {{ mnemonic: \"{}\", is_terminator: {}, operands: OperandLayout {{ start: {}, len: {} }} }}, // 0x{:<02X} {}\n",
-                op.mnemonic, op.terminator, layout.start, layout.len, i, op.name
+                "    OpcodeInfo {{ mnemonic: \"{}\", is_terminator: {}, flags: {}, operands: OperandLayout {{ start: {}, len: {} }} }}, // 0x{:<02X} {}\n",
+                op.mnemonic, op.terminator, flags, layout.start, layout.len, i, op.name
             ));
         } else {
             out.push_str(&format!(
-                "    OpcodeInfo {{ mnemonic: \"<invalid>\", is_terminator: false, operands: OperandLayout {{ start: 0, len: 0 }} }}, // 0x{:<02X}\n",
+                "    OpcodeInfo {{ mnemonic: \"<invalid>\", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout {{ start: 0, len: 0 }} }}, // 0x{:<02X}\n",
                 i
             ));
         }
@@ -268,6 +367,12 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("        &OPCODE_INFO_BY_BYTE[usize::from(self as u8)]\n");
     out.push_str("    }\n");
 
+    out.push_str("\n    /// Returns `true` if this opcode is call-like.\n");
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub fn is_call_like(self) -> bool {\n");
+    out.push_str("        self.info().flags.contains(OpcodeFlags::CALL_LIKE)\n");
+    out.push_str("    }\n");
+
     out.push_str("\n    /// Returns operand kind descriptors for this opcode.\n");
     out.push_str("    #[must_use]\n");
     out.push_str("    pub fn operand_kinds(self) -> &'static [OperandKind] {\n");
@@ -275,6 +380,15 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("        let start = usize::from(layout.start);\n");
     out.push_str("        let end = start + usize::from(layout.len);\n");
     out.push_str("        &OPERAND_KINDS[start..end]\n");
+    out.push_str("    }\n");
+
+    out.push_str("\n    /// Returns operand role descriptors for this opcode.\n");
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub fn operand_roles(self) -> &'static [OperandRole] {\n");
+    out.push_str("        let layout = self.info().operands;\n");
+    out.push_str("        let start = usize::from(layout.start);\n");
+    out.push_str("        let end = start + usize::from(layout.len);\n");
+    out.push_str("        &OPERAND_ROLES[start..end]\n");
     out.push_str("    }\n");
     out.push_str("}\n");
 

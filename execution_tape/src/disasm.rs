@@ -22,7 +22,7 @@ use crate::bytecode::{
     BytecodeError, DecodedInstr, Instr, ReadsIter, WritesIter, decode_instructions,
 };
 use crate::format::DecodeError;
-use crate::opcode::{Opcode, OperandKind};
+use crate::opcode::{Opcode, OperandRole};
 use crate::program::{ConstId, ElemTypeId, HostSigId, Program, TypeId};
 use crate::value::FuncId;
 use crate::verifier::VerifiedProgram;
@@ -418,24 +418,65 @@ impl<'a> InstrView<'a> {
     /// Optional index-like immediate operand (const pool, host sig table, type ids, etc.).
     #[must_use]
     pub fn input_index(&self) -> Option<InputIndex> {
-        match &self.decoded.instr {
-            Instr::Trap { code } => Some(InputIndex::TrapCode(*code)),
-            Instr::ConstPool { idx, .. } => Some(InputIndex::Const(*idx)),
-            Instr::HostCall { host_sig, .. } => Some(InputIndex::HostSig(*host_sig)),
-            Instr::Call { func_id, .. } => Some(InputIndex::Func(*func_id)),
-            Instr::StructNew { type_id, .. } => Some(InputIndex::Type(*type_id)),
-            Instr::ArrayNew { elem_type_id, .. } => Some(InputIndex::ElemType(*elem_type_id)),
-            Instr::TupleGet { index, .. }
-            | Instr::StructGet {
-                field_index: index, ..
-            }
-            | Instr::ArrayGetImm { index, .. }
-            | Instr::BytesGetImm { index, .. } => Some(InputIndex::Index(*index)),
-            Instr::I64ToDec { scale, .. } | Instr::U64ToDec { scale, .. } => {
-                Some(InputIndex::Index(u32::from(*scale)))
-            }
-            _ => None,
+        let roles = self.opcode().operand_roles();
+        // Keep the behavior stable: if there are multiple index-like roles, prefer the first one.
+        if roles.iter().any(|r| matches!(r, OperandRole::TrapCode)) {
+            let Instr::Trap { code } = &self.decoded.instr else {
+                return None;
+            };
+            return Some(InputIndex::TrapCode(*code));
         }
+        if roles.iter().any(|r| matches!(r, OperandRole::Const)) {
+            let Instr::ConstPool { idx, .. } = &self.decoded.instr else {
+                return None;
+            };
+            return Some(InputIndex::Const(*idx));
+        }
+        if roles.iter().any(|r| matches!(r, OperandRole::HostSig)) {
+            let Instr::HostCall { host_sig, .. } = &self.decoded.instr else {
+                return None;
+            };
+            return Some(InputIndex::HostSig(*host_sig));
+        }
+        if roles.iter().any(|r| matches!(r, OperandRole::Func)) {
+            let Instr::Call { func_id, .. } = &self.decoded.instr else {
+                return None;
+            };
+            return Some(InputIndex::Func(*func_id));
+        }
+        if roles.iter().any(|r| matches!(r, OperandRole::Type)) {
+            let Instr::StructNew { type_id, .. } = &self.decoded.instr else {
+                return None;
+            };
+            return Some(InputIndex::Type(*type_id));
+        }
+        if roles.iter().any(|r| matches!(r, OperandRole::ElemType)) {
+            let Instr::ArrayNew { elem_type_id, .. } = &self.decoded.instr else {
+                return None;
+            };
+            return Some(InputIndex::ElemType(*elem_type_id));
+        }
+        if roles
+            .iter()
+            .any(|r| matches!(r, OperandRole::Index | OperandRole::FieldIndex))
+        {
+            let ix: u32 = match &self.decoded.instr {
+                Instr::TupleGet { index, .. } => *index,
+                Instr::StructGet { field_index, .. } => *field_index,
+                Instr::ArrayGetImm { index, .. } => *index,
+                Instr::BytesGetImm { index, .. } => *index,
+                _ => return None,
+            };
+            return Some(InputIndex::Index(ix));
+        }
+        if roles.iter().any(|r| matches!(r, OperandRole::Scale)) {
+            let scale: u8 = match &self.decoded.instr {
+                Instr::I64ToDec { scale, .. } | Instr::U64ToDec { scale, .. } => *scale,
+                _ => return None,
+            };
+            return Some(InputIndex::Index(u32::from(scale)));
+        }
+        None
     }
 
     /// Resolved host symbol for `host_call` (best-effort).
@@ -470,6 +511,40 @@ impl<'a> InstrView<'a> {
     /// Full-fidelity operands for instructions that don't fit the `dst/srcs/input_index` shape.
     #[must_use]
     pub fn operands(&self) -> Operands<'a> {
+        let opcode = self.opcode();
+        if opcode.is_call_like() {
+            return match &self.decoded.instr {
+                Instr::Call {
+                    eff_out,
+                    func_id,
+                    eff_in,
+                    args,
+                    rets,
+                } => Operands::Call(CallOperands {
+                    eff_out: *eff_out,
+                    callee: CallTarget::Func(*func_id),
+                    eff_in: *eff_in,
+                    args,
+                    rets,
+                }),
+                Instr::HostCall {
+                    eff_out,
+                    host_sig,
+                    eff_in,
+                    args,
+                    rets,
+                } => Operands::Call(CallOperands {
+                    eff_out: *eff_out,
+                    callee: CallTarget::HostSig(*host_sig, self.host_op_symbol()),
+                    eff_in: *eff_in,
+                    args,
+                    rets,
+                }),
+                Instr::Ret { eff_in, rets } => Operands::Ret { eff: *eff_in, rets },
+                _ => Operands::Simple,
+            };
+        }
+
         match &self.decoded.instr {
             Instr::Br {
                 cond,
@@ -483,33 +558,6 @@ impl<'a> InstrView<'a> {
             Instr::Jmp { pc_target } => Operands::Jmp {
                 pc_target: *pc_target,
             },
-            Instr::Call {
-                eff_out,
-                func_id,
-                eff_in,
-                args,
-                rets,
-            } => Operands::Call(CallOperands {
-                eff_out: *eff_out,
-                callee: CallTarget::Func(*func_id),
-                eff_in: *eff_in,
-                args,
-                rets,
-            }),
-            Instr::HostCall {
-                eff_out,
-                host_sig,
-                eff_in,
-                args,
-                rets,
-            } => Operands::Call(CallOperands {
-                eff_out: *eff_out,
-                callee: CallTarget::HostSig(*host_sig, self.host_op_symbol()),
-                eff_in: *eff_in,
-                args,
-                rets,
-            }),
-            Instr::Ret { eff_in, rets } => Operands::Ret { eff: *eff_in, rets },
             _ => Operands::Simple,
         }
     }
@@ -1008,9 +1056,9 @@ fn fmt_instr_with_labels(
             if let Some(ix) = iv.input_index() {
                 if iv
                     .opcode()
-                    .operand_kinds()
+                    .operand_roles()
                     .iter()
-                    .any(|k| matches!(k, OperandKind::ConstId))
+                    .any(|r| matches!(r, OperandRole::Const))
                 {
                     write!(f, ", {ix}")?;
                 } else {
@@ -1126,9 +1174,9 @@ impl fmt::Display for InstrView<'_> {
                 if let Some(ix) = self.input_index() {
                     if self
                         .opcode()
-                        .operand_kinds()
+                        .operand_roles()
                         .iter()
-                        .any(|k| matches!(k, OperandKind::ConstId))
+                        .any(|r| matches!(r, OperandRole::Const))
                     {
                         write!(f, ", {ix}")?;
                     } else {

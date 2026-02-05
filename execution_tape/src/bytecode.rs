@@ -1454,6 +1454,10 @@ mod tests {
     use crate::program::{ConstId, ElemTypeId, TypeId};
     use crate::value::FuncId;
 
+    #[allow(
+        dead_code,
+        reason = "kept for now; may be useful when adding role drift checks"
+    )]
     fn inferred_operand_kinds_for_instr(instr: &Instr) -> Vec<OperandKind> {
         match instr {
             Instr::Nop => vec![],
@@ -1732,11 +1736,14 @@ mod tests {
         ];
 
         for (op, instr) in instrs {
-            let inferred = inferred_operand_kinds_for_instr(instr);
-            let from_schema = op.operand_kinds();
             assert_eq!(
-                inferred.as_slice(),
-                from_schema,
+                op.operand_kinds().len(),
+                op.operand_roles().len(),
+                "schema mismatch (kinds vs roles) for {op:?}"
+            );
+            assert_eq!(
+                op.operand_kinds(),
+                instr.operand_kinds(),
                 "opcode operand schema drift for {op:?}"
             );
         }
