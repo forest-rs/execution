@@ -6,721 +6,1205 @@
       "mnemonic": "nop",
       "byte": "0x00",
       "terminator": false,
-      "doc": "No-op."
+      "doc": "No-op.",
+      "operands": []
     },
     {
       "name": "Mov",
       "mnemonic": "mov",
       "byte": "0x01",
       "terminator": false,
-      "doc": "`dst = src`."
+      "doc": "`dst = src`.",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "Trap",
       "mnemonic": "trap",
       "byte": "0x02",
       "terminator": true,
-      "doc": "Trap unconditionally with a trap code."
+      "doc": "Trap unconditionally with a trap code.",
+      "operands": [
+        "imm_u32"
+      ]
     },
     {
       "name": "ConstUnit",
       "mnemonic": "const.unit",
       "byte": "0x10",
       "terminator": false,
-      "doc": "`dst = ()`."
+      "doc": "`dst = ()`.",
+      "operands": [
+        "reg"
+      ]
     },
     {
       "name": "ConstBool",
       "mnemonic": "const.bool",
       "byte": "0x11",
       "terminator": false,
-      "doc": "`dst = bool`."
+      "doc": "`dst = bool`.",
+      "operands": [
+        "reg",
+        "imm_bool"
+      ]
     },
     {
       "name": "ConstI64",
       "mnemonic": "const.i64",
       "byte": "0x12",
       "terminator": false,
-      "doc": "`dst = i64`."
+      "doc": "`dst = i64`.",
+      "operands": [
+        "reg",
+        "imm_i64"
+      ]
     },
     {
       "name": "ConstU64",
       "mnemonic": "const.u64",
       "byte": "0x13",
       "terminator": false,
-      "doc": "`dst = u64`."
+      "doc": "`dst = u64`.",
+      "operands": [
+        "reg",
+        "imm_u64"
+      ]
     },
     {
       "name": "ConstF64",
       "mnemonic": "const.f64",
       "byte": "0x14",
       "terminator": false,
-      "doc": "`dst = f64` encoded as raw IEEE bits."
+      "doc": "`dst = f64` encoded as raw IEEE bits.",
+      "operands": [
+        "reg",
+        "imm_u64"
+      ]
     },
     {
       "name": "ConstDecimal",
       "mnemonic": "const.decimal",
       "byte": "0x15",
       "terminator": false,
-      "doc": "`dst = Decimal { mantissa, scale }`."
+      "doc": "`dst = Decimal { mantissa, scale }`.",
+      "operands": [
+        "reg",
+        "imm_i64",
+        "imm_u8"
+      ]
     },
     {
       "name": "ConstPool",
       "mnemonic": "const.pool",
       "byte": "0x16",
       "terminator": false,
-      "doc": "`dst = const_pool[idx]`."
+      "doc": "`dst = const_pool[idx]`.",
+      "operands": [
+        "reg",
+        "const_id"
+      ]
     },
     {
       "name": "DecAdd",
       "mnemonic": "dec.add",
       "byte": "0x17",
       "terminator": false,
-      "doc": "`dst = a + b` (`Decimal`)."
+      "doc": "`dst = a + b` (`Decimal`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "DecSub",
       "mnemonic": "dec.sub",
       "byte": "0x18",
       "terminator": false,
-      "doc": "`dst = a - b` (`Decimal`)."
+      "doc": "`dst = a - b` (`Decimal`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "DecMul",
       "mnemonic": "dec.mul",
       "byte": "0x19",
       "terminator": false,
-      "doc": "`dst = a * b` (`Decimal`)."
+      "doc": "`dst = a * b` (`Decimal`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Add",
       "mnemonic": "f64.add",
       "byte": "0x1A",
       "terminator": false,
-      "doc": "`dst = a + b` (`f64`)."
+      "doc": "`dst = a + b` (`f64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Sub",
       "mnemonic": "f64.sub",
       "byte": "0x1B",
       "terminator": false,
-      "doc": "`dst = a - b` (`f64`)."
+      "doc": "`dst = a - b` (`f64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Mul",
       "mnemonic": "f64.mul",
       "byte": "0x1C",
       "terminator": false,
-      "doc": "`dst = a * b` (`f64`)."
+      "doc": "`dst = a * b` (`f64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Add",
       "mnemonic": "i64.add",
       "byte": "0x20",
       "terminator": false,
-      "doc": "`dst = a + b` (`i64`)."
+      "doc": "`dst = a + b` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Sub",
       "mnemonic": "i64.sub",
       "byte": "0x21",
       "terminator": false,
-      "doc": "`dst = a - b` (`i64`)."
+      "doc": "`dst = a - b` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Mul",
       "mnemonic": "i64.mul",
       "byte": "0x22",
       "terminator": false,
-      "doc": "`dst = a * b` (`i64`)."
+      "doc": "`dst = a * b` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Add",
       "mnemonic": "u64.add",
       "byte": "0x23",
       "terminator": false,
-      "doc": "`dst = a + b` (`u64`)."
+      "doc": "`dst = a + b` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Sub",
       "mnemonic": "u64.sub",
       "byte": "0x24",
       "terminator": false,
-      "doc": "`dst = a - b` (`u64`)."
+      "doc": "`dst = a - b` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Mul",
       "mnemonic": "u64.mul",
       "byte": "0x25",
       "terminator": false,
-      "doc": "`dst = a * b` (`u64`)."
+      "doc": "`dst = a * b` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64And",
       "mnemonic": "u64.and",
       "byte": "0x26",
       "terminator": false,
-      "doc": "`dst = a & b` (`u64`)."
+      "doc": "`dst = a & b` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Or",
       "mnemonic": "u64.or",
       "byte": "0x27",
       "terminator": false,
-      "doc": "`dst = a | b` (`u64`)."
+      "doc": "`dst = a | b` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Eq",
       "mnemonic": "i64.eq",
       "byte": "0x28",
       "terminator": false,
-      "doc": "`dst = (a == b)` (`i64` -> `bool`)."
+      "doc": "`dst = (a == b)` (`i64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Lt",
       "mnemonic": "i64.lt",
       "byte": "0x29",
       "terminator": false,
-      "doc": "`dst = (a < b)` (`i64` -> `bool`)."
+      "doc": "`dst = (a < b)` (`i64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Eq",
       "mnemonic": "u64.eq",
       "byte": "0x2A",
       "terminator": false,
-      "doc": "`dst = (a == b)` (`u64` -> `bool`)."
+      "doc": "`dst = (a == b)` (`u64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Lt",
       "mnemonic": "u64.lt",
       "byte": "0x2B",
       "terminator": false,
-      "doc": "`dst = (a < b)` (`u64` -> `bool`)."
+      "doc": "`dst = (a < b)` (`u64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Xor",
       "mnemonic": "u64.xor",
       "byte": "0x2C",
       "terminator": false,
-      "doc": "`dst = a ^ b` (`u64`)."
+      "doc": "`dst = a ^ b` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Shl",
       "mnemonic": "u64.shl",
       "byte": "0x2D",
       "terminator": false,
-      "doc": "`dst = a << (b & 63)` (`u64`)."
+      "doc": "`dst = a << (b & 63)` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Shr",
       "mnemonic": "u64.shr",
       "byte": "0x2E",
       "terminator": false,
-      "doc": "`dst = a >> (b & 63)` (`u64`)."
+      "doc": "`dst = a >> (b & 63)` (`u64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Gt",
       "mnemonic": "u64.gt",
       "byte": "0x2F",
       "terminator": false,
-      "doc": "`dst = (a > b)` (`u64` -> `bool`)."
+      "doc": "`dst = (a > b)` (`u64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BoolNot",
       "mnemonic": "bool.not",
       "byte": "0x30",
       "terminator": false,
-      "doc": "`dst = !a` (`bool`)."
+      "doc": "`dst = !a` (`bool`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Le",
       "mnemonic": "u64.le",
       "byte": "0x31",
       "terminator": false,
-      "doc": "`dst = (a <= b)` (`u64` -> `bool`)."
+      "doc": "`dst = (a <= b)` (`u64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Ge",
       "mnemonic": "u64.ge",
       "byte": "0x32",
       "terminator": false,
-      "doc": "`dst = (a >= b)` (`u64` -> `bool`)."
+      "doc": "`dst = (a >= b)` (`u64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64And",
       "mnemonic": "i64.and",
       "byte": "0x33",
       "terminator": false,
-      "doc": "`dst = a & b` (`i64`)."
+      "doc": "`dst = a & b` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64ToI64",
       "mnemonic": "u64.to_i64",
       "byte": "0x34",
       "terminator": false,
-      "doc": "`dst = u64_to_i64(a)` (traps on overflow)."
+      "doc": "`dst = u64_to_i64(a)` (traps on overflow).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64ToU64",
       "mnemonic": "i64.to_u64",
       "byte": "0x35",
       "terminator": false,
-      "doc": "`dst = i64_to_u64(a)` (traps on negative)."
+      "doc": "`dst = i64_to_u64(a)` (traps on negative).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Or",
       "mnemonic": "i64.or",
       "byte": "0x36",
       "terminator": false,
-      "doc": "`dst = a | b` (`i64`)."
+      "doc": "`dst = a | b` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Xor",
       "mnemonic": "i64.xor",
       "byte": "0x37",
       "terminator": false,
-      "doc": "`dst = a ^ b` (`i64`)."
+      "doc": "`dst = a ^ b` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "Select",
       "mnemonic": "select",
       "byte": "0x38",
       "terminator": false,
-      "doc": "`dst = if cond { a } else { b }`."
+      "doc": "`dst = if cond { a } else { b }`.",
+      "operands": [
+        "reg",
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Gt",
       "mnemonic": "i64.gt",
       "byte": "0x39",
       "terminator": false,
-      "doc": "`dst = (a > b)` (`i64` -> `bool`)."
+      "doc": "`dst = (a > b)` (`i64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Le",
       "mnemonic": "i64.le",
       "byte": "0x3A",
       "terminator": false,
-      "doc": "`dst = (a <= b)` (`i64` -> `bool`)."
+      "doc": "`dst = (a <= b)` (`i64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Ge",
       "mnemonic": "i64.ge",
       "byte": "0x3B",
       "terminator": false,
-      "doc": "`dst = (a >= b)` (`i64` -> `bool`)."
+      "doc": "`dst = (a >= b)` (`i64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Shl",
       "mnemonic": "i64.shl",
       "byte": "0x3C",
       "terminator": false,
-      "doc": "`dst = a << (b & 63)` (`i64`)."
+      "doc": "`dst = a << (b & 63)` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Shr",
       "mnemonic": "i64.shr",
       "byte": "0x3D",
       "terminator": false,
-      "doc": "`dst = a >> (b & 63)` (`i64`)."
+      "doc": "`dst = a >> (b & 63)` (`i64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "Br",
       "mnemonic": "br",
       "byte": "0x40",
       "terminator": true,
-      "doc": "Branch based on `cond` to `pc_true` or `pc_false` (byte offsets)."
+      "doc": "Branch based on `cond` to `pc_true` or `pc_false` (byte offsets).",
+      "operands": [
+        "reg",
+        "pc",
+        "pc"
+      ]
     },
     {
       "name": "Jmp",
       "mnemonic": "jmp",
       "byte": "0x41",
       "terminator": true,
-      "doc": "Jump to `pc_target` (byte offset)."
+      "doc": "Jump to `pc_target` (byte offset).",
+      "operands": [
+        "pc"
+      ]
     },
     {
       "name": "Call",
       "mnemonic": "call",
       "byte": "0x50",
       "terminator": false,
-      "doc": "Call a function."
+      "doc": "Call a function.",
+      "operands": [
+        "reg",
+        "func_id",
+        "reg",
+        "reg_list",
+        "reg_list"
+      ]
     },
     {
       "name": "Ret",
       "mnemonic": "ret",
       "byte": "0x51",
       "terminator": true,
-      "doc": "Return from the current function."
+      "doc": "Return from the current function.",
+      "operands": [
+        "reg",
+        "reg_list"
+      ]
     },
     {
       "name": "HostCall",
       "mnemonic": "host_call",
       "byte": "0x52",
       "terminator": false,
-      "doc": "Call a host function."
+      "doc": "Call a host function.",
+      "operands": [
+        "reg",
+        "host_sig_id",
+        "reg",
+        "reg_list",
+        "reg_list"
+      ]
     },
     {
       "name": "TupleNew",
       "mnemonic": "tuple.new",
       "byte": "0x60",
       "terminator": false,
-      "doc": "Allocate a tuple aggregate."
+      "doc": "Allocate a tuple aggregate.",
+      "operands": [
+        "reg",
+        "reg_list"
+      ]
     },
     {
       "name": "TupleGet",
       "mnemonic": "tuple.get",
       "byte": "0x61",
       "terminator": false,
-      "doc": "Read tuple element at an immediate index."
+      "doc": "Read tuple element at an immediate index.",
+      "operands": [
+        "reg",
+        "reg",
+        "imm_u32"
+      ]
     },
     {
       "name": "StructNew",
       "mnemonic": "struct.new",
       "byte": "0x62",
       "terminator": false,
-      "doc": "Allocate a struct aggregate."
+      "doc": "Allocate a struct aggregate.",
+      "operands": [
+        "reg",
+        "type_id",
+        "reg_list"
+      ]
     },
     {
       "name": "StructGet",
       "mnemonic": "struct.get",
       "byte": "0x63",
       "terminator": false,
-      "doc": "Read struct field at an immediate index."
+      "doc": "Read struct field at an immediate index.",
+      "operands": [
+        "reg",
+        "reg",
+        "imm_u32"
+      ]
     },
     {
       "name": "ArrayNew",
       "mnemonic": "array.new",
       "byte": "0x64",
       "terminator": false,
-      "doc": "Allocate an array aggregate."
+      "doc": "Allocate an array aggregate.",
+      "operands": [
+        "reg",
+        "elem_type_id",
+        "reg_list"
+      ]
     },
     {
       "name": "ArrayLen",
       "mnemonic": "array.len",
       "byte": "0x65",
       "terminator": false,
-      "doc": "Read array length."
+      "doc": "Read array length.",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "ArrayGet",
       "mnemonic": "array.get",
       "byte": "0x66",
       "terminator": false,
-      "doc": "Read array element at an index register."
+      "doc": "Read array element at an index register.",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "TupleLen",
       "mnemonic": "tuple.len",
       "byte": "0x67",
       "terminator": false,
-      "doc": "Read tuple length."
+      "doc": "Read tuple length.",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "StructFieldCount",
       "mnemonic": "struct.field_count",
       "byte": "0x68",
       "terminator": false,
-      "doc": "Read struct field count."
+      "doc": "Read struct field count.",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "ArrayGetImm",
       "mnemonic": "array.get_imm",
       "byte": "0x69",
       "terminator": false,
-      "doc": "Read array element at an immediate index."
+      "doc": "Read array element at an immediate index.",
+      "operands": [
+        "reg",
+        "reg",
+        "imm_u32"
+      ]
     },
     {
       "name": "BytesLen",
       "mnemonic": "bytes.len",
       "byte": "0x6A",
       "terminator": false,
-      "doc": "Read byte-string length."
+      "doc": "Read byte-string length.",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "StrLen",
       "mnemonic": "str.len",
       "byte": "0x6B",
       "terminator": false,
-      "doc": "Read UTF-8 string length (in bytes)."
+      "doc": "Read UTF-8 string length (in bytes).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Div",
       "mnemonic": "i64.div",
       "byte": "0x6C",
       "terminator": false,
-      "doc": "`dst = a / b` (`i64`, traps on divide-by-zero and `i64::MIN / -1`)."
+      "doc": "`dst = a / b` (`i64`, traps on divide-by-zero and `i64::MIN / -1`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64Rem",
       "mnemonic": "i64.rem",
       "byte": "0x6D",
       "terminator": false,
-      "doc": "`dst = a % b` (`i64`, traps on divide-by-zero and `i64::MIN % -1`)."
+      "doc": "`dst = a % b` (`i64`, traps on divide-by-zero and `i64::MIN % -1`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Div",
       "mnemonic": "u64.div",
       "byte": "0x6E",
       "terminator": false,
-      "doc": "`dst = a / b` (`u64`, traps on divide-by-zero)."
+      "doc": "`dst = a / b` (`u64`, traps on divide-by-zero).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64Rem",
       "mnemonic": "u64.rem",
       "byte": "0x6F",
       "terminator": false,
-      "doc": "`dst = a % b` (`u64`, traps on divide-by-zero)."
+      "doc": "`dst = a % b` (`u64`, traps on divide-by-zero).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64ToF64",
       "mnemonic": "i64.to_f64",
       "byte": "0x70",
       "terminator": false,
-      "doc": "`dst = (a as f64)` (`i64` to `f64`)."
+      "doc": "`dst = (a as f64)` (`i64` to `f64`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "U64ToF64",
       "mnemonic": "u64.to_f64",
       "byte": "0x71",
       "terminator": false,
-      "doc": "`dst = (a as f64)` (`u64` to `f64`)."
+      "doc": "`dst = (a as f64)` (`u64` to `f64`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64ToI64",
       "mnemonic": "f64.to_i64",
       "byte": "0x72",
       "terminator": false,
-      "doc": "`dst = trunc(a)` (`f64` to `i64`, traps on NaN/inf/out-of-range)."
+      "doc": "`dst = trunc(a)` (`f64` to `i64`, traps on NaN/inf/out-of-range).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64ToU64",
       "mnemonic": "f64.to_u64",
       "byte": "0x73",
       "terminator": false,
-      "doc": "`dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative)."
+      "doc": "`dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "DecToI64",
       "mnemonic": "dec.to_i64",
       "byte": "0x74",
       "terminator": false,
-      "doc": "`dst = a.mantissa` (`Decimal` to `i64`, traps if `scale != 0`)."
+      "doc": "`dst = a.mantissa` (`Decimal` to `i64`, traps if `scale != 0`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "DecToU64",
       "mnemonic": "dec.to_u64",
       "byte": "0x75",
       "terminator": false,
-      "doc": "`dst = a.mantissa` (`Decimal` to `u64`, traps if `scale != 0` or mantissa < 0)."
+      "doc": "`dst = a.mantissa` (`Decimal` to `u64`, traps if `scale != 0` or mantissa < 0).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "I64ToDec",
       "mnemonic": "i64.to_dec",
       "byte": "0x76",
       "terminator": false,
-      "doc": "`dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow)."
+      "doc": "`dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow).",
+      "operands": [
+        "reg",
+        "reg",
+        "imm_u8"
+      ]
     },
     {
       "name": "U64ToDec",
       "mnemonic": "u64.to_dec",
       "byte": "0x77",
       "terminator": false,
-      "doc": "`dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow)."
+      "doc": "`dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow).",
+      "operands": [
+        "reg",
+        "reg",
+        "imm_u8"
+      ]
     },
     {
       "name": "BytesEq",
       "mnemonic": "bytes.eq",
       "byte": "0x78",
       "terminator": false,
-      "doc": "`dst = (a == b)` (`bytes` -> `bool`)."
+      "doc": "`dst = (a == b)` (`bytes` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "StrEq",
       "mnemonic": "str.eq",
       "byte": "0x79",
       "terminator": false,
-      "doc": "`dst = (a == b)` (`str` -> `bool`)."
+      "doc": "`dst = (a == b)` (`str` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BytesConcat",
       "mnemonic": "bytes.concat",
       "byte": "0x7A",
       "terminator": false,
-      "doc": "`dst = concat(a, b)` (`bytes`)."
+      "doc": "`dst = concat(a, b)` (`bytes`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "StrConcat",
       "mnemonic": "str.concat",
       "byte": "0x7B",
       "terminator": false,
-      "doc": "`dst = concat(a, b)` (`str`)."
+      "doc": "`dst = concat(a, b)` (`str`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BytesGet",
       "mnemonic": "bytes.get",
       "byte": "0x7C",
       "terminator": false,
-      "doc": "`dst = bytes[index]` (returns `u64` in `0..=255`, traps on OOB)."
+      "doc": "`dst = bytes[index]` (returns `u64` in `0..=255`, traps on OOB).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BytesGetImm",
       "mnemonic": "bytes.get_imm",
       "byte": "0x7D",
       "terminator": false,
-      "doc": "`dst = bytes[index]` (returns `u64` in `0..=255`, traps on OOB)."
+      "doc": "`dst = bytes[index]` (returns `u64` in `0..=255`, traps on OOB).",
+      "operands": [
+        "reg",
+        "reg",
+        "imm_u32"
+      ]
     },
     {
       "name": "BytesSlice",
       "mnemonic": "bytes.slice",
       "byte": "0x7E",
       "terminator": false,
-      "doc": "`dst = bytes[start..end]` (traps on invalid range)."
+      "doc": "`dst = bytes[start..end]` (traps on invalid range).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "StrSlice",
       "mnemonic": "str.slice",
       "byte": "0x7F",
       "terminator": false,
-      "doc": "`dst = s[start..end]` (byte indices; traps on invalid range or non-boundaries)."
+      "doc": "`dst = s[start..end]` (byte indices; traps on invalid range or non-boundaries).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "StrToBytes",
       "mnemonic": "str.to_bytes",
       "byte": "0x80",
       "terminator": false,
-      "doc": "`dst = s.as_bytes().to_vec()`."
+      "doc": "`dst = s.as_bytes().to_vec()`.",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BytesToStr",
       "mnemonic": "bytes.to_str",
       "byte": "0x81",
       "terminator": false,
-      "doc": "`dst = String::from_utf8(bytes)` (traps on invalid UTF-8)."
+      "doc": "`dst = String::from_utf8(bytes)` (traps on invalid UTF-8).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Div",
       "mnemonic": "f64.div",
       "byte": "0x82",
       "terminator": false,
-      "doc": "`dst = a / b` (`f64`)."
+      "doc": "`dst = a / b` (`f64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Eq",
       "mnemonic": "f64.eq",
       "byte": "0x83",
       "terminator": false,
-      "doc": "`dst = (a == b)` (`f64` -> `bool`)."
+      "doc": "`dst = (a == b)` (`f64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Lt",
       "mnemonic": "f64.lt",
       "byte": "0x84",
       "terminator": false,
-      "doc": "`dst = (a < b)` (`f64` -> `bool`)."
+      "doc": "`dst = (a < b)` (`f64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Gt",
       "mnemonic": "f64.gt",
       "byte": "0x85",
       "terminator": false,
-      "doc": "`dst = (a > b)` (`f64` -> `bool`)."
+      "doc": "`dst = (a > b)` (`f64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Le",
       "mnemonic": "f64.le",
       "byte": "0x86",
       "terminator": false,
-      "doc": "`dst = (a <= b)` (`f64` -> `bool`)."
+      "doc": "`dst = (a <= b)` (`f64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Ge",
       "mnemonic": "f64.ge",
       "byte": "0x87",
       "terminator": false,
-      "doc": "`dst = (a >= b)` (`f64` -> `bool`)."
+      "doc": "`dst = (a >= b)` (`f64` -> `bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BoolAnd",
       "mnemonic": "bool.and",
       "byte": "0x88",
       "terminator": false,
-      "doc": "`dst = a & b` (`bool`)."
+      "doc": "`dst = a & b` (`bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BoolOr",
       "mnemonic": "bool.or",
       "byte": "0x89",
       "terminator": false,
-      "doc": "`dst = a | b` (`bool`)."
+      "doc": "`dst = a | b` (`bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "BoolXor",
       "mnemonic": "bool.xor",
       "byte": "0x8A",
       "terminator": false,
-      "doc": "`dst = a ^ b` (`bool`)."
+      "doc": "`dst = a ^ b` (`bool`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Neg",
       "mnemonic": "f64.neg",
       "byte": "0x8B",
       "terminator": false,
-      "doc": "`dst = -a` (`f64`)."
+      "doc": "`dst = -a` (`f64`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Abs",
       "mnemonic": "f64.abs",
       "byte": "0x8C",
       "terminator": false,
-      "doc": "`dst = abs(a)` (`f64`)."
+      "doc": "`dst = abs(a)` (`f64`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Min",
       "mnemonic": "f64.min",
       "byte": "0x8D",
       "terminator": false,
-      "doc": "`dst = min(a, b)` (`f64`, NaN-propagating)."
+      "doc": "`dst = min(a, b)` (`f64`, NaN-propagating).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Max",
       "mnemonic": "f64.max",
       "byte": "0x8E",
       "terminator": false,
-      "doc": "`dst = max(a, b)` (`f64`, NaN-propagating)."
+      "doc": "`dst = max(a, b)` (`f64`, NaN-propagating).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64MinNum",
       "mnemonic": "f64.min_num",
       "byte": "0x8F",
       "terminator": false,
-      "doc": "`dst = min_num(a, b)` (`f64`, number-favoring)."
+      "doc": "`dst = min_num(a, b)` (`f64`, number-favoring).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64MaxNum",
       "mnemonic": "f64.max_num",
       "byte": "0x90",
       "terminator": false,
-      "doc": "`dst = max_num(a, b)` (`f64`, number-favoring)."
+      "doc": "`dst = max_num(a, b)` (`f64`, number-favoring).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64Rem",
       "mnemonic": "f64.rem",
       "byte": "0x91",
       "terminator": false,
-      "doc": "`dst = a % b` (`f64`)."
+      "doc": "`dst = a % b` (`f64`).",
+      "operands": [
+        "reg",
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64ToBits",
       "mnemonic": "f64.to_bits",
       "byte": "0x92",
       "terminator": false,
-      "doc": "`dst = f64_to_bits(a)` (`f64` -> `u64`)."
+      "doc": "`dst = f64_to_bits(a)` (`f64` -> `u64`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     },
     {
       "name": "F64FromBits",
       "mnemonic": "f64.from_bits",
       "byte": "0x93",
       "terminator": false,
-      "doc": "`dst = f64_from_bits(a)` (`u64` -> `f64`)."
+      "doc": "`dst = f64_from_bits(a)` (`u64` -> `f64`).",
+      "operands": [
+        "reg",
+        "reg"
+      ]
     }
   ]
 }

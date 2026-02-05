@@ -23,6 +23,7 @@ struct OpcodeSpec {
     byte: String,
     terminator: bool,
     doc: Option<String>,
+    operands: Vec<String>,
 }
 
 fn parse_u8_hex(s: &str) -> Result<u8> {
@@ -40,6 +41,34 @@ fn fmt_hex_u8(b: u8) -> String {
 
 fn max_opcode_byte(ops: &[(u8, OpcodeSpec)]) -> u8 {
     ops.iter().map(|(b, _)| *b).max().unwrap_or_default()
+}
+
+fn operand_kind_rust(operand: &str) -> Result<&'static str> {
+    Ok(match operand {
+        "reg" => "OperandKind::Reg",
+        "reg_list" => "OperandKind::RegList",
+        "pc" => "OperandKind::Pc",
+
+        "imm_bool" => "OperandKind::ImmBool",
+        "imm_u8" => "OperandKind::ImmU8",
+        "imm_u32" => "OperandKind::ImmU32",
+        "imm_i64" => "OperandKind::ImmI64",
+        "imm_u64" => "OperandKind::ImmU64",
+
+        "const_id" => "OperandKind::ConstId",
+        "func_id" => "OperandKind::FuncId",
+        "host_sig_id" => "OperandKind::HostSigId",
+        "type_id" => "OperandKind::TypeId",
+        "elem_type_id" => "OperandKind::ElemTypeId",
+
+        other => bail!("unknown operand kind '{other}'"),
+    })
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Layout {
+    start: u16,
+    len: u8,
 }
 
 fn generate(spec: Spec, src: &Path) -> Result<String> {
@@ -78,6 +107,81 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     let _ = src;
     out.push('\n');
 
+    out.push_str("/// Operand kinds used by the opcode table.\n");
+    out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
+    out.push_str("pub enum OperandKind {\n");
+    out.push_str("    /// A single virtual register.\n");
+    out.push_str("    Reg,\n");
+    out.push_str("    /// A list of virtual registers.\n");
+    out.push_str("    RegList,\n");
+    out.push_str("    /// A bytecode PC (byte offset).\n");
+    out.push_str("    Pc,\n");
+    out.push_str("    /// An immediate `bool`.\n");
+    out.push_str("    ImmBool,\n");
+    out.push_str("    /// An immediate `u8`.\n");
+    out.push_str("    ImmU8,\n");
+    out.push_str("    /// An immediate `u32`.\n");
+    out.push_str("    ImmU32,\n");
+    out.push_str("    /// An immediate `i64`.\n");
+    out.push_str("    ImmI64,\n");
+    out.push_str("    /// An immediate `u64`.\n");
+    out.push_str("    ImmU64,\n");
+    out.push_str("    /// A constant pool index.\n");
+    out.push_str("    ConstId,\n");
+    out.push_str("    /// A function index.\n");
+    out.push_str("    FuncId,\n");
+    out.push_str("    /// A host signature index.\n");
+    out.push_str("    HostSigId,\n");
+    out.push_str("    /// A struct type index.\n");
+    out.push_str("    TypeId,\n");
+    out.push_str("    /// An array element type index.\n");
+    out.push_str("    ElemTypeId,\n");
+    out.push_str("}\n\n");
+
+    out.push_str("/// Operand layout for an opcode (indices into `OPERAND_KINDS`).\n");
+    out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
+    out.push_str("pub struct OperandLayout {\n");
+    out.push_str("    /// Start index in `OPERAND_KINDS`.\n");
+    out.push_str("    pub start: u16,\n");
+    out.push_str("    /// Number of operand kind entries.\n");
+    out.push_str("    pub len: u8,\n");
+    out.push_str("}\n\n");
+
+    let mut operand_kinds: Vec<&'static str> = Vec::new();
+    let mut operand_layout_by_name: Vec<(&str, u16, u8)> = Vec::with_capacity(ops.len());
+    for (_, op) in &ops {
+        let start: u16 = operand_kinds
+            .len()
+            .try_into()
+            .context("too many operands to index in u16")?;
+        for operand in &op.operands {
+            operand_kinds.push(operand_kind_rust(operand)?);
+        }
+        let len: u8 = op
+            .operands
+            .len()
+            .try_into()
+            .with_context(|| format!("too many operands for opcode {}", op.name))?;
+        operand_layout_by_name.push((op.name.as_str(), start, len));
+    }
+
+    let max_byte = max_opcode_byte(&ops);
+    let mut layout_by_byte: Vec<Option<Layout>> = vec![None; usize::from(max_byte) + 1];
+    for ((b, op), (name, start, len)) in ops.iter().zip(operand_layout_by_name.iter()) {
+        let _ = (op, name);
+        layout_by_byte[usize::from(*b)] = Some(Layout {
+            start: *start,
+            len: *len,
+        });
+    }
+
+    out.push_str("/// Flat operand kind table indexed by `OperandLayout`.\n");
+    out.push_str("pub const OPERAND_KINDS: &[OperandKind] = &[\n");
+    for kind in &operand_kinds {
+        out.push_str(&format!("    {kind},\n"));
+    }
+    out.push_str("];\n\n");
+
     out.push_str("/// Per-opcode metadata used by decode, disasm, and verification.\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("pub struct OpcodeInfo {\n");
@@ -85,9 +189,10 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    pub mnemonic: &'static str,\n");
     out.push_str("    /// Whether this opcode terminates the current basic block.\n");
     out.push_str("    pub is_terminator: bool,\n");
+    out.push_str("    /// Operand layout for this opcode.\n");
+    out.push_str("    pub operands: OperandLayout,\n");
     out.push_str("}\n\n");
 
-    let max_byte = max_opcode_byte(&ops);
     let mut by_byte: Vec<Option<&OpcodeSpec>> = vec![None; usize::from(max_byte) + 1];
     for (b, op) in &ops {
         by_byte[usize::from(*b)] = Some(op);
@@ -97,13 +202,14 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[\n");
     for (i, op) in by_byte.iter().enumerate() {
         if let Some(op) = op {
+            let layout = layout_by_byte[i].expect("layout for valid opcode");
             out.push_str(&format!(
-                "    OpcodeInfo {{ mnemonic: \"{}\", is_terminator: {} }}, // 0x{:<02X} {}\n",
-                op.mnemonic, op.terminator, i, op.name
+                "    OpcodeInfo {{ mnemonic: \"{}\", is_terminator: {}, operands: OperandLayout {{ start: {}, len: {} }} }}, // 0x{:<02X} {}\n",
+                op.mnemonic, op.terminator, layout.start, layout.len, i, op.name
             ));
         } else {
             out.push_str(&format!(
-                "    OpcodeInfo {{ mnemonic: \"<invalid>\", is_terminator: false }}, // 0x{:<02X}\n",
+                "    OpcodeInfo {{ mnemonic: \"<invalid>\", is_terminator: false, operands: OperandLayout {{ start: 0, len: 0 }} }}, // 0x{:<02X}\n",
                 i
             ));
         }
@@ -160,6 +266,15 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    #[must_use]\n");
     out.push_str("    pub fn info(self) -> &'static OpcodeInfo {\n");
     out.push_str("        &OPCODE_INFO_BY_BYTE[usize::from(self as u8)]\n");
+    out.push_str("    }\n");
+
+    out.push_str("\n    /// Returns operand kind descriptors for this opcode.\n");
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub fn operand_kinds(self) -> &'static [OperandKind] {\n");
+    out.push_str("        let layout = self.info().operands;\n");
+    out.push_str("        let start = usize::from(layout.start);\n");
+    out.push_str("        let end = start + usize::from(layout.len);\n");
+    out.push_str("        &OPERAND_KINDS[start..end]\n");
     out.push_str("    }\n");
     out.push_str("}\n");
 

@@ -10,7 +10,7 @@
 use alloc::vec::Vec;
 
 use crate::format::{DecodeError, Reader};
-use crate::opcode::Opcode;
+use crate::opcode::{Opcode, OperandKind};
 use crate::program::{ConstId, HostSigId};
 use crate::program::{ElemTypeId, TypeId};
 use crate::value::FuncId;
@@ -320,7 +320,173 @@ pub(crate) enum Instr {
     BytesToStr { dst: u32, bytes: u32 },
 }
 
+const OPERANDS_NONE: &[OperandKind] = &[];
+const OPERANDS_REG: &[OperandKind] = &[OperandKind::Reg];
+const OPERANDS_REG_REG: &[OperandKind] = &[OperandKind::Reg, OperandKind::Reg];
+const OPERANDS_REG_REG_REG: &[OperandKind] =
+    &[OperandKind::Reg, OperandKind::Reg, OperandKind::Reg];
+const OPERANDS_REG_REG_REG_REG: &[OperandKind] = &[
+    OperandKind::Reg,
+    OperandKind::Reg,
+    OperandKind::Reg,
+    OperandKind::Reg,
+];
+const OPERANDS_IMM_U32: &[OperandKind] = &[OperandKind::ImmU32];
+const OPERANDS_REG_IMM_BOOL: &[OperandKind] = &[OperandKind::Reg, OperandKind::ImmBool];
+const OPERANDS_REG_IMM_I64: &[OperandKind] = &[OperandKind::Reg, OperandKind::ImmI64];
+const OPERANDS_REG_IMM_U64: &[OperandKind] = &[OperandKind::Reg, OperandKind::ImmU64];
+const OPERANDS_REG_IMM_I64_IMM_U8: &[OperandKind] =
+    &[OperandKind::Reg, OperandKind::ImmI64, OperandKind::ImmU8];
+const OPERANDS_REG_CONST_ID: &[OperandKind] = &[OperandKind::Reg, OperandKind::ConstId];
+const OPERANDS_REG_REG_IMM_U32: &[OperandKind] =
+    &[OperandKind::Reg, OperandKind::Reg, OperandKind::ImmU32];
+const OPERANDS_REG_PC_PC: &[OperandKind] = &[OperandKind::Reg, OperandKind::Pc, OperandKind::Pc];
+const OPERANDS_PC: &[OperandKind] = &[OperandKind::Pc];
+const OPERANDS_REG_REG_IMM_U8: &[OperandKind] =
+    &[OperandKind::Reg, OperandKind::Reg, OperandKind::ImmU8];
+const OPERANDS_REG_FUNC_ID_REG_REG_LIST_REG_LIST: &[OperandKind] = &[
+    OperandKind::Reg,
+    OperandKind::FuncId,
+    OperandKind::Reg,
+    OperandKind::RegList,
+    OperandKind::RegList,
+];
+const OPERANDS_REG_HOST_SIG_ID_REG_REG_LIST_REG_LIST: &[OperandKind] = &[
+    OperandKind::Reg,
+    OperandKind::HostSigId,
+    OperandKind::Reg,
+    OperandKind::RegList,
+    OperandKind::RegList,
+];
+const OPERANDS_REG_REG_LIST: &[OperandKind] = &[OperandKind::Reg, OperandKind::RegList];
+const OPERANDS_REG_TYPE_ID_REG_LIST: &[OperandKind] =
+    &[OperandKind::Reg, OperandKind::TypeId, OperandKind::RegList];
+const OPERANDS_REG_ELEM_TYPE_ID_REG_LIST: &[OperandKind] = &[
+    OperandKind::Reg,
+    OperandKind::ElemTypeId,
+    OperandKind::RegList,
+];
+
 impl Instr {
+    /// Returns operand kind descriptors for this decoded instruction.
+    ///
+    /// This is intended for tooling and debug assertions (e.g. checking the opcode JSON schema
+    /// stays consistent with the decoder). It is not used to drive execution.
+    #[must_use]
+    pub(crate) fn operand_kinds(&self) -> &'static [OperandKind] {
+        match self {
+            Self::Nop => OPERANDS_NONE,
+            Self::Mov { .. } => OPERANDS_REG_REG,
+            Self::Trap { .. } => OPERANDS_IMM_U32,
+
+            Self::ConstUnit { .. } => OPERANDS_REG,
+            Self::ConstBool { .. } => OPERANDS_REG_IMM_BOOL,
+            Self::ConstI64 { .. } => OPERANDS_REG_IMM_I64,
+            Self::ConstU64 { .. } | Self::ConstF64 { .. } => OPERANDS_REG_IMM_U64,
+            Self::ConstDecimal { .. } => OPERANDS_REG_IMM_I64_IMM_U8,
+            Self::ConstPool { .. } => OPERANDS_REG_CONST_ID,
+
+            Self::DecAdd { .. }
+            | Self::DecSub { .. }
+            | Self::DecMul { .. }
+            | Self::F64Add { .. }
+            | Self::F64Sub { .. }
+            | Self::F64Mul { .. }
+            | Self::F64Div { .. }
+            | Self::F64Min { .. }
+            | Self::F64Max { .. }
+            | Self::F64MinNum { .. }
+            | Self::F64MaxNum { .. }
+            | Self::F64Rem { .. }
+            | Self::I64Add { .. }
+            | Self::I64Sub { .. }
+            | Self::I64Mul { .. }
+            | Self::U64Add { .. }
+            | Self::U64Sub { .. }
+            | Self::U64Mul { .. }
+            | Self::U64And { .. }
+            | Self::U64Or { .. }
+            | Self::U64Xor { .. }
+            | Self::U64Shl { .. }
+            | Self::U64Shr { .. }
+            | Self::U64Div { .. }
+            | Self::U64Rem { .. }
+            | Self::I64Div { .. }
+            | Self::I64Rem { .. }
+            | Self::I64Eq { .. }
+            | Self::I64Lt { .. }
+            | Self::I64Gt { .. }
+            | Self::I64Le { .. }
+            | Self::I64Ge { .. }
+            | Self::U64Eq { .. }
+            | Self::U64Lt { .. }
+            | Self::U64Gt { .. }
+            | Self::U64Le { .. }
+            | Self::U64Ge { .. }
+            | Self::F64Eq { .. }
+            | Self::F64Lt { .. }
+            | Self::F64Gt { .. }
+            | Self::F64Le { .. }
+            | Self::F64Ge { .. }
+            | Self::BoolAnd { .. }
+            | Self::BoolOr { .. }
+            | Self::BoolXor { .. }
+            | Self::I64And { .. }
+            | Self::I64Or { .. }
+            | Self::I64Xor { .. }
+            | Self::I64Shl { .. }
+            | Self::I64Shr { .. }
+            | Self::BytesEq { .. }
+            | Self::StrEq { .. }
+            | Self::BytesConcat { .. }
+            | Self::StrConcat { .. }
+            | Self::BytesGet { .. }
+            | Self::ArrayGet { .. } => OPERANDS_REG_REG_REG,
+
+            Self::F64Neg { .. }
+            | Self::F64Abs { .. }
+            | Self::F64ToBits { .. }
+            | Self::F64FromBits { .. }
+            | Self::U64ToI64 { .. }
+            | Self::I64ToU64 { .. }
+            | Self::I64ToF64 { .. }
+            | Self::U64ToF64 { .. }
+            | Self::F64ToI64 { .. }
+            | Self::F64ToU64 { .. }
+            | Self::DecToI64 { .. }
+            | Self::DecToU64 { .. }
+            | Self::BoolNot { .. }
+            | Self::StrToBytes { .. }
+            | Self::BytesToStr { .. }
+            | Self::TupleLen { .. }
+            | Self::StructFieldCount { .. }
+            | Self::ArrayLen { .. }
+            | Self::BytesLen { .. }
+            | Self::StrLen { .. } => OPERANDS_REG_REG,
+
+            Self::I64ToDec { .. } | Self::U64ToDec { .. } => OPERANDS_REG_REG_IMM_U8,
+            Self::Select { .. } | Self::BytesSlice { .. } | Self::StrSlice { .. } => {
+                OPERANDS_REG_REG_REG_REG
+            }
+
+            Self::BytesGetImm { .. } | Self::ArrayGetImm { .. } | Self::TupleGet { .. } => {
+                OPERANDS_REG_REG_IMM_U32
+            }
+            Self::StructGet { .. } => OPERANDS_REG_REG_IMM_U32,
+
+            Self::Br { .. } => OPERANDS_REG_PC_PC,
+            Self::Jmp { .. } => OPERANDS_PC,
+
+            Self::Call { .. } => OPERANDS_REG_FUNC_ID_REG_REG_LIST_REG_LIST,
+            Self::HostCall { .. } => OPERANDS_REG_HOST_SIG_ID_REG_REG_LIST_REG_LIST,
+            Self::Ret { .. } => OPERANDS_REG_REG_LIST,
+
+            Self::TupleNew { .. } => OPERANDS_REG_REG_LIST,
+            Self::StructNew { .. } => OPERANDS_REG_TYPE_ID_REG_LIST,
+            Self::ArrayNew { .. } => OPERANDS_REG_ELEM_TYPE_ID_REG_LIST,
+        }
+    }
+
     /// Iterates the virtual registers read by this instruction (allocation-free).
     #[must_use]
     pub(crate) fn reads(&self) -> ReadsIter<'_> {
@@ -1251,6 +1417,14 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
                 b: read_reg(&mut r)?,
             },
         };
+
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            op.operand_kinds(),
+            instr.operand_kinds(),
+            "opcode schema drift for {op:?} at pc={offset}"
+        );
+
         out.push(DecodedInstr {
             offset,
             opcode,
@@ -1275,8 +1449,298 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use crate::opcode::{Opcode, OperandKind};
     use crate::program::HostSigId;
+    use crate::program::{ConstId, ElemTypeId, TypeId};
     use crate::value::FuncId;
+
+    fn inferred_operand_kinds_for_instr(instr: &Instr) -> Vec<OperandKind> {
+        match instr {
+            Instr::Nop => vec![],
+            Instr::Mov { .. } => vec![OperandKind::Reg, OperandKind::Reg],
+            Instr::Trap { .. } => vec![OperandKind::ImmU32],
+
+            Instr::ConstUnit { .. } => vec![OperandKind::Reg],
+            Instr::ConstBool { .. } => vec![OperandKind::Reg, OperandKind::ImmBool],
+            Instr::ConstI64 { .. } => vec![OperandKind::Reg, OperandKind::ImmI64],
+            Instr::ConstU64 { .. } => vec![OperandKind::Reg, OperandKind::ImmU64],
+            Instr::ConstF64 { .. } => vec![OperandKind::Reg, OperandKind::ImmU64],
+            Instr::ConstDecimal { .. } => {
+                vec![OperandKind::Reg, OperandKind::ImmI64, OperandKind::ImmU8]
+            }
+            Instr::ConstPool { .. } => vec![OperandKind::Reg, OperandKind::ConstId],
+
+            Instr::DecAdd { .. }
+            | Instr::DecSub { .. }
+            | Instr::DecMul { .. }
+            | Instr::F64Add { .. }
+            | Instr::F64Sub { .. }
+            | Instr::F64Mul { .. }
+            | Instr::F64Div { .. }
+            | Instr::F64Min { .. }
+            | Instr::F64Max { .. }
+            | Instr::F64MinNum { .. }
+            | Instr::F64MaxNum { .. }
+            | Instr::F64Rem { .. }
+            | Instr::I64Add { .. }
+            | Instr::I64Sub { .. }
+            | Instr::I64Mul { .. }
+            | Instr::U64Add { .. }
+            | Instr::U64Sub { .. }
+            | Instr::U64Mul { .. }
+            | Instr::U64And { .. }
+            | Instr::U64Or { .. }
+            | Instr::U64Xor { .. }
+            | Instr::U64Shl { .. }
+            | Instr::U64Shr { .. }
+            | Instr::U64Div { .. }
+            | Instr::U64Rem { .. }
+            | Instr::I64Div { .. }
+            | Instr::I64Rem { .. }
+            | Instr::I64Eq { .. }
+            | Instr::I64Lt { .. }
+            | Instr::I64Gt { .. }
+            | Instr::I64Le { .. }
+            | Instr::I64Ge { .. }
+            | Instr::U64Eq { .. }
+            | Instr::U64Lt { .. }
+            | Instr::U64Gt { .. }
+            | Instr::U64Le { .. }
+            | Instr::U64Ge { .. }
+            | Instr::F64Eq { .. }
+            | Instr::F64Lt { .. }
+            | Instr::F64Gt { .. }
+            | Instr::F64Le { .. }
+            | Instr::F64Ge { .. }
+            | Instr::BoolAnd { .. }
+            | Instr::BoolOr { .. }
+            | Instr::BoolXor { .. }
+            | Instr::I64And { .. }
+            | Instr::I64Or { .. }
+            | Instr::I64Xor { .. }
+            | Instr::I64Shl { .. }
+            | Instr::I64Shr { .. }
+            | Instr::BytesEq { .. }
+            | Instr::StrEq { .. }
+            | Instr::BytesConcat { .. }
+            | Instr::StrConcat { .. }
+            | Instr::BytesGet { .. }
+            | Instr::ArrayGet { .. } => vec![OperandKind::Reg, OperandKind::Reg, OperandKind::Reg],
+
+            Instr::F64Neg { .. }
+            | Instr::F64Abs { .. }
+            | Instr::F64ToBits { .. }
+            | Instr::F64FromBits { .. }
+            | Instr::U64ToI64 { .. }
+            | Instr::I64ToU64 { .. }
+            | Instr::I64ToF64 { .. }
+            | Instr::U64ToF64 { .. }
+            | Instr::F64ToI64 { .. }
+            | Instr::F64ToU64 { .. }
+            | Instr::DecToI64 { .. }
+            | Instr::DecToU64 { .. }
+            | Instr::BoolNot { .. }
+            | Instr::StrToBytes { .. }
+            | Instr::BytesToStr { .. }
+            | Instr::TupleLen { .. }
+            | Instr::StructFieldCount { .. }
+            | Instr::ArrayLen { .. }
+            | Instr::BytesLen { .. }
+            | Instr::StrLen { .. } => vec![OperandKind::Reg, OperandKind::Reg],
+
+            Instr::I64ToDec { .. } | Instr::U64ToDec { .. } => {
+                vec![OperandKind::Reg, OperandKind::Reg, OperandKind::ImmU8]
+            }
+
+            Instr::Select { .. } | Instr::BytesSlice { .. } | Instr::StrSlice { .. } => vec![
+                OperandKind::Reg,
+                OperandKind::Reg,
+                OperandKind::Reg,
+                OperandKind::Reg,
+            ],
+
+            Instr::BytesGetImm { .. } | Instr::ArrayGetImm { .. } | Instr::TupleGet { .. } => {
+                vec![OperandKind::Reg, OperandKind::Reg, OperandKind::ImmU32]
+            }
+
+            Instr::StructGet { .. } => {
+                vec![OperandKind::Reg, OperandKind::Reg, OperandKind::ImmU32]
+            }
+
+            Instr::Br { .. } => vec![OperandKind::Reg, OperandKind::Pc, OperandKind::Pc],
+            Instr::Jmp { .. } => vec![OperandKind::Pc],
+
+            Instr::Call { .. } => vec![
+                OperandKind::Reg,
+                OperandKind::FuncId,
+                OperandKind::Reg,
+                OperandKind::RegList,
+                OperandKind::RegList,
+            ],
+            Instr::HostCall { .. } => vec![
+                OperandKind::Reg,
+                OperandKind::HostSigId,
+                OperandKind::Reg,
+                OperandKind::RegList,
+                OperandKind::RegList,
+            ],
+            Instr::Ret { .. } => vec![OperandKind::Reg, OperandKind::RegList],
+
+            Instr::TupleNew { .. } => vec![OperandKind::Reg, OperandKind::RegList],
+            Instr::StructNew { .. } => {
+                vec![OperandKind::Reg, OperandKind::TypeId, OperandKind::RegList]
+            }
+            Instr::ArrayNew { .. } => {
+                vec![
+                    OperandKind::Reg,
+                    OperandKind::ElemTypeId,
+                    OperandKind::RegList,
+                ]
+            }
+        }
+    }
+
+    #[test]
+    fn opcode_schema_matches_decoded_instr_shape_for_smoke_set() {
+        // Chosen to cover all operand kinds, including reg lists and ids.
+        let instrs: &[(Opcode, Instr)] = &[
+            (Opcode::Nop, Instr::Nop),
+            (Opcode::Mov, Instr::Mov { dst: 1, src: 2 }),
+            (Opcode::Trap, Instr::Trap { code: 7 }),
+            (Opcode::ConstBool, Instr::ConstBool { dst: 1, imm: true }),
+            (Opcode::ConstI64, Instr::ConstI64 { dst: 1, imm: -3 }),
+            (Opcode::ConstU64, Instr::ConstU64 { dst: 1, imm: 3 }),
+            (Opcode::ConstF64, Instr::ConstF64 { dst: 1, bits: 42 }),
+            (
+                Opcode::ConstDecimal,
+                Instr::ConstDecimal {
+                    dst: 1,
+                    mantissa: 12,
+                    scale: 2,
+                },
+            ),
+            (
+                Opcode::ConstPool,
+                Instr::ConstPool {
+                    dst: 1,
+                    idx: ConstId(0),
+                },
+            ),
+            (Opcode::I64Add, Instr::I64Add { dst: 1, a: 2, b: 3 }),
+            (Opcode::BoolNot, Instr::BoolNot { dst: 1, a: 2 }),
+            (
+                Opcode::Select,
+                Instr::Select {
+                    dst: 1,
+                    cond: 2,
+                    a: 3,
+                    b: 4,
+                },
+            ),
+            (
+                Opcode::Br,
+                Instr::Br {
+                    cond: 1,
+                    pc_true: 0,
+                    pc_false: 10,
+                },
+            ),
+            (Opcode::Jmp, Instr::Jmp { pc_target: 12 }),
+            (
+                Opcode::Call,
+                Instr::Call {
+                    eff_out: 0,
+                    func_id: FuncId(0),
+                    eff_in: 0,
+                    args: vec![1, 2],
+                    rets: vec![3],
+                },
+            ),
+            (
+                Opcode::HostCall,
+                Instr::HostCall {
+                    eff_out: 0,
+                    host_sig: HostSigId(0),
+                    eff_in: 0,
+                    args: vec![1],
+                    rets: vec![2, 3],
+                },
+            ),
+            (
+                Opcode::Ret,
+                Instr::Ret {
+                    eff_in: 0,
+                    rets: vec![1],
+                },
+            ),
+            (
+                Opcode::TupleNew,
+                Instr::TupleNew {
+                    dst: 1,
+                    values: vec![2, 3],
+                },
+            ),
+            (
+                Opcode::TupleGet,
+                Instr::TupleGet {
+                    dst: 1,
+                    tuple: 2,
+                    index: 0,
+                },
+            ),
+            (
+                Opcode::StructNew,
+                Instr::StructNew {
+                    dst: 1,
+                    type_id: TypeId(0),
+                    values: vec![2],
+                },
+            ),
+            (
+                Opcode::StructGet,
+                Instr::StructGet {
+                    dst: 1,
+                    st: 2,
+                    field_index: 0,
+                },
+            ),
+            (
+                Opcode::ArrayNew,
+                Instr::ArrayNew {
+                    dst: 1,
+                    elem_type_id: ElemTypeId(0),
+                    len: 2,
+                    values: vec![2, 3],
+                },
+            ),
+            (
+                Opcode::ArrayGetImm,
+                Instr::ArrayGetImm {
+                    dst: 1,
+                    arr: 2,
+                    index: 0,
+                },
+            ),
+            (
+                Opcode::BytesGetImm,
+                Instr::BytesGetImm {
+                    dst: 1,
+                    bytes: 2,
+                    index: 0,
+                },
+            ),
+        ];
+
+        for (op, instr) in instrs {
+            let inferred = inferred_operand_kinds_for_instr(instr);
+            let from_schema = op.operand_kinds();
+            assert_eq!(
+                inferred.as_slice(),
+                from_schema,
+                "opcode operand schema drift for {op:?}"
+            );
+        }
+    }
 
     #[test]
     fn reads_and_writes_for_arithmetic() {

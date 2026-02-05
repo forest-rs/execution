@@ -22,7 +22,7 @@ use crate::bytecode::{
     BytecodeError, DecodedInstr, Instr, ReadsIter, WritesIter, decode_instructions,
 };
 use crate::format::DecodeError;
-use crate::opcode::Opcode;
+use crate::opcode::{Opcode, OperandKind};
 use crate::program::{ConstId, ElemTypeId, HostSigId, Program, TypeId};
 use crate::value::FuncId;
 use crate::verifier::VerifiedProgram;
@@ -1006,7 +1006,12 @@ fn fmt_instr_with_labels(
                 fmt_reg_iter(f, reads)?;
             }
             if let Some(ix) = iv.input_index() {
-                if matches!(iv.opcode(), Opcode::ConstPool) {
+                if iv
+                    .opcode()
+                    .operand_kinds()
+                    .iter()
+                    .any(|k| matches!(k, OperandKind::ConstId))
+                {
                     write!(f, ", {ix}")?;
                 } else {
                     write!(f, " ; {ix}")?;
@@ -1015,17 +1020,7 @@ fn fmt_instr_with_labels(
             if let Some(sym) = iv.host_op_symbol() {
                 write!(f, " ; host=\"{sym}\"")?;
             }
-            if matches!(
-                iv.opcode(),
-                Opcode::ConstUnit
-                    | Opcode::ConstBool
-                    | Opcode::ConstI64
-                    | Opcode::ConstU64
-                    | Opcode::ConstF64
-                    | Opcode::ConstDecimal
-                    | Opcode::ConstPool
-            ) && let Some(v) = iv.const_value()
-            {
+            if let Some(v) = iv.const_value() {
                 write!(f, " ; ")?;
                 fmt_const_value(f, v)?;
             }
@@ -1129,7 +1124,12 @@ impl fmt::Display for InstrView<'_> {
                     fmt_reg_iter(f, reads)?;
                 }
                 if let Some(ix) = self.input_index() {
-                    if matches!(self.opcode(), Opcode::ConstPool) {
+                    if self
+                        .opcode()
+                        .operand_kinds()
+                        .iter()
+                        .any(|k| matches!(k, OperandKind::ConstId))
+                    {
                         write!(f, ", {ix}")?;
                     } else {
                         write!(f, " ; {ix}")?;
@@ -1138,17 +1138,7 @@ impl fmt::Display for InstrView<'_> {
                 if let Some(sym) = self.host_op_symbol() {
                     write!(f, " ; host=\"{sym}\"")?;
                 }
-                if matches!(
-                    self.opcode(),
-                    Opcode::ConstUnit
-                        | Opcode::ConstBool
-                        | Opcode::ConstI64
-                        | Opcode::ConstU64
-                        | Opcode::ConstF64
-                        | Opcode::ConstDecimal
-                        | Opcode::ConstPool
-                ) && let Some(v) = self.const_value()
-                {
+                if let Some(v) = self.const_value() {
                     write!(f, " ; ")?;
                     fmt_const_value(f, v)?;
                 }
