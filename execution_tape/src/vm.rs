@@ -531,7 +531,7 @@ impl<H: Host> Vm<H> {
                 ctx.frames.len(),
                 entry,
                 0,
-                ctx.span_at(program_ref, entry, 0),
+                entry_vf.span_at_ix(0),
             );
         }
 
@@ -556,14 +556,17 @@ impl<H: Host> Vm<H> {
                 let f = &ctx.frames[frame_index];
                 (f.func, f.pc, f.instr_ix, f.base, f.byte_len)
             };
-            let span_id = ctx.span_at(program_ref, func_id, pc);
 
-            let vf = program
-                .verified(func_id)
-                .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-            let (opcode, instr, actual_pc, next_pc) = vf
-                .fetch_at_ix(instr_ix)
-                .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+            let vf = program.verified(func_id).ok_or_else(|| {
+                let span_id = ctx.span_at(program_ref, func_id, pc);
+                ctx.trap(func_id, pc, span_id, Trap::InvalidPc)
+            })?;
+            let span_id = vf.span_at_ix(instr_ix);
+            let (opcode, instr, actual_pc, next_pc) =
+                vf.fetch_at_ix(instr_ix).ok_or_else(|| {
+                    let trap_span = span_id.or_else(|| ctx.span_at(program_ref, func_id, pc));
+                    ctx.trap(func_id, pc, trap_span, Trap::InvalidPc)
+                })?;
             debug_assert_eq!(
                 pc, actual_pc,
                 "frame pc must match verified instruction offset"
@@ -1310,7 +1313,7 @@ impl<H: Host> Vm<H> {
                             ctx.frames.len(),
                             *callee,
                             0,
-                            ctx.span_at(program_ref, *callee, 0),
+                            callee_vf.span_at_ix(0),
                         );
                     }
 

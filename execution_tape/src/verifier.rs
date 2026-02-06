@@ -838,7 +838,7 @@ fn verify_function_container(
     }
     verify_id_operands_in_bounds(program, func_id, &decoded)?;
     verify_function_bytecode(
-        program, func_id, func, bytecode, arg_types, ret_types, &decoded,
+        program, func_id, func, bytecode, spans, arg_types, ret_types, &decoded,
     )
 }
 
@@ -935,11 +935,35 @@ fn verify_span_table(bytecode_len: u64, spans: &[SpanEntry]) -> Result<(), ()> {
     Ok(())
 }
 
+fn build_span_by_instr_ix(decoded: &[DecodedInstr], spans: &[SpanEntry]) -> Vec<Option<u64>> {
+    let mut by_ix: Vec<Option<u64>> = Vec::with_capacity(decoded.len());
+    let mut span_ix: usize = 0;
+    let mut span_pc: u64 = 0;
+    let mut cur_span: Option<u64> = None;
+
+    for di in decoded {
+        let instr_pc = u64::from(di.offset);
+        while let Some(s) = spans.get(span_ix) {
+            let next_pc = span_pc.saturating_add(s.pc_delta);
+            if next_pc > instr_pc {
+                break;
+            }
+            span_pc = next_pc;
+            cur_span = Some(s.span_id);
+            span_ix += 1;
+        }
+        by_ix.push(cur_span);
+    }
+
+    by_ix
+}
+
 fn verify_function_bytecode(
     program: &Program,
     func_id: u32,
     func: &Function,
     bytecode: &[u8],
+    spans: &[SpanEntry],
     arg_types: &[ValueType],
     ret_types: &[ValueType],
     decoded: &[DecodedInstr],
@@ -1966,6 +1990,7 @@ fn verify_function_bytecode(
             instr: vi,
         });
     }
+    let span_by_instr_ix = build_span_by_instr_ix(decoded, spans);
 
     Ok(VerifiedFunctionContainer {
         verified: VerifiedFunction {
@@ -1973,6 +1998,7 @@ fn verify_function_bytecode(
             reg_layout,
             operands,
             instrs: verified_instrs,
+            span_by_instr_ix,
         },
         lints,
     })

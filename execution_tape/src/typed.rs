@@ -784,12 +784,22 @@ pub(crate) struct VerifiedFunction {
     pub(crate) reg_layout: RegLayout,
     pub(crate) operands: Vec<VReg>,
     pub(crate) instrs: Vec<VerifiedDecodedInstr>,
+    /// Optional source span id for each decoded instruction index.
+    ///
+    /// This is precomputed by the verifier from the function span table so VM execution can do
+    /// O(1) span lookup in hot paths.
+    pub(crate) span_by_instr_ix: Vec<Option<u64>>,
 }
 
 impl VerifiedFunction {
     #[inline(always)]
     pub(crate) fn vregs(&self, s: VRegSlice) -> &[VReg] {
         s.as_slice(&self.operands)
+    }
+
+    #[inline]
+    pub(crate) fn span_at_ix(&self, ix: usize) -> Option<u64> {
+        self.span_by_instr_ix.get(ix).copied().flatten()
     }
 
     pub(crate) fn instr_ix_at_pc(&self, pc: u32) -> Option<usize> {
