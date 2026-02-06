@@ -17,8 +17,8 @@ use crate::format::{write_sleb128_i64, write_uleb128_u64};
 use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
-    Const, ConstId, ElemTypeId, FunctionDef, HostSigDef, HostSigId, HostSymbol, Program, SpanEntry,
-    StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
+    Const, ConstId, ElemTypeId, FunctionDef, FunctionNameEntry, HostSigDef, HostSigId, HostSymbol,
+    LabelNameEntry, Program, SpanEntry, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -79,6 +79,17 @@ pub struct AsmParts {
     pub bytecode: Vec<u8>,
     /// Span table entries, encoded as `(pc_delta, span_id)`.
     pub spans: Vec<SpanEntry>,
+    /// Optional named labels placed within the function.
+    pub labels: Vec<NamedLabel>,
+}
+
+/// A named label placed within a function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedLabel {
+    /// Bytecode pc (byte offset within the function).
+    pub pc: u32,
+    /// Label name.
+    pub name: alloc::string::String,
 }
 
 impl From<UnresolvedLabel> for AsmError {
@@ -206,6 +217,9 @@ pub struct ProgramBuilder {
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
     functions: Vec<FunctionDef>,
+    program_name: Option<SymbolId>,
+    function_names: Vec<FunctionNameEntry>,
+    labels: Vec<LabelNameEntry>,
 }
 
 impl ProgramBuilder {
@@ -216,6 +230,8 @@ impl ProgramBuilder {
     }
 
     /// Interns a host symbol and returns its [`SymbolId`].
+    ///
+    /// This symbol table is also used for optional debug metadata (program/function/label names).
     pub fn symbol(&mut self, symbol: &str) -> SymbolId {
         if let Some(i) = self.symbols.iter().position(|s| s.symbol == symbol) {
             return SymbolId(u32::try_from(i).unwrap_or(u32::MAX));
@@ -225,6 +241,57 @@ impl ProgramBuilder {
             symbol: symbol.into(),
         });
         id
+    }
+
+    /// Sets a human-readable program name (stored as a symbol id).
+    pub fn set_program_name(&mut self, name: &str) -> SymbolId {
+        let sym = self.symbol(name);
+        self.program_name = Some(sym);
+        sym
+    }
+
+    /// Sets a human-readable function name (stored as a symbol id).
+    pub fn set_function_name(&mut self, func: FuncId, name: &str) -> Result<SymbolId, BuildError> {
+        if self.functions.get(func.0 as usize).is_none() {
+            return Err(BuildError::BadFuncId { func: func.0 });
+        }
+        let sym = self.symbol(name);
+        if let Some(entry) = self.function_names.iter_mut().find(|e| e.func == func.0) {
+            entry.name = sym;
+        } else {
+            self.function_names.push(FunctionNameEntry {
+                func: func.0,
+                name: sym,
+            });
+        }
+        Ok(sym)
+    }
+
+    /// Sets a human-readable label name for `pc` in `func` (stored as a symbol id).
+    pub fn set_label_name_pc(
+        &mut self,
+        func: FuncId,
+        pc: u32,
+        name: &str,
+    ) -> Result<SymbolId, BuildError> {
+        if self.functions.get(func.0 as usize).is_none() {
+            return Err(BuildError::BadFuncId { func: func.0 });
+        }
+        let sym = self.symbol(name);
+        if let Some(entry) = self
+            .labels
+            .iter_mut()
+            .find(|e| e.func == func.0 && e.pc == pc)
+        {
+            entry.name = sym;
+        } else {
+            self.labels.push(LabelNameEntry {
+                func: func.0,
+                pc,
+                name: sym,
+            });
+        }
+        Ok(sym)
     }
 
     /// Interns a constant and returns its [`ConstId`].
@@ -308,6 +375,14 @@ impl ProgramBuilder {
         };
         slot.bytecode = parts.bytecode;
         slot.spans = parts.spans;
+        for l in parts.labels {
+            let sym = self.symbol(&l.name);
+            self.labels.push(LabelNameEntry {
+                func: func.0,
+                pc: l.pc,
+                name: sym,
+            });
+        }
         Ok(())
     }
 
@@ -318,11 +393,20 @@ impl ProgramBuilder {
         a: Asm,
         spans: Vec<SpanEntry>,
     ) -> Result<(), BuildError> {
+        let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
-        slot.bytecode = a.finish_parts()?.bytecode;
+        slot.bytecode = parts.bytecode;
         slot.spans = spans;
+        for l in parts.labels {
+            let sym = self.symbol(&l.name);
+            self.labels.push(LabelNameEntry {
+                func: func.0,
+                pc: l.pc,
+                name: sym,
+            });
+        }
         Ok(())
     }
 
@@ -340,19 +424,31 @@ impl ProgramBuilder {
             bytecode: parts.bytecode,
             spans: parts.spans,
         });
+        for l in parts.labels {
+            let sym = self.symbol(&l.name);
+            self.labels.push(LabelNameEntry {
+                func: id.0,
+                pc: l.pc,
+                name: sym,
+            });
+        }
         Ok(id)
     }
 
     /// Builds the [`Program`].
     #[must_use]
     pub fn build(self) -> Program {
-        Program::new(
+        let mut p = Program::new(
             self.symbols,
             self.const_pool,
             self.host_sigs,
             self.types,
             self.functions,
-        )
+        );
+        p.program_name = self.program_name;
+        p.function_names = self.function_names;
+        p.labels = self.labels;
+        p
     }
 
     /// Builds the [`Program`], then verifies it.
@@ -399,6 +495,7 @@ pub struct Asm {
     bytes: Vec<u8>,
     next_label: u32,
     labels: Vec<Option<u32>>,
+    label_names: Vec<Option<alloc::string::String>>,
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, u64)>,
 }
@@ -434,7 +531,27 @@ impl Asm {
         let id = self.next_label;
         self.next_label = self.next_label.wrapping_add(1);
         self.labels.push(None);
+        self.label_names.push(None);
         Label(id)
+    }
+
+    /// Allocates a new label and assigns it a human-readable name.
+    #[must_use]
+    pub fn label_named(&mut self, name: &str) -> Label {
+        let l = self.label();
+        // Fresh labels are always in range.
+        self.label_names[l.0 as usize] = Some(name.into());
+        l
+    }
+
+    /// Assigns a human-readable name to an existing label.
+    pub fn name_label(&mut self, label: Label, name: &str) -> Result<(), UnresolvedLabel> {
+        let slot = self
+            .label_names
+            .get_mut(label.0 as usize)
+            .ok_or(UnresolvedLabel)?;
+        *slot = Some(name.into());
+        Ok(())
     }
 
     /// Places `label` at the current `pc`.
@@ -446,6 +563,12 @@ impl Asm {
             .ok_or(UnresolvedLabel)?;
         *slot = Some(pc);
         Ok(())
+    }
+
+    /// Assigns a name to `label`, then places it at the current `pc`.
+    pub fn place_named(&mut self, label: Label, name: &str) -> Result<(), UnresolvedLabel> {
+        self.name_label(label, name)?;
+        self.place(label)
     }
 
     /// Records that subsequent instructions map to `span_id` (until overwritten).
@@ -490,9 +613,21 @@ impl Asm {
             spans.push(SpanEntry { pc_delta, span_id });
         }
 
+        let mut labels_out: Vec<NamedLabel> = Vec::new();
+        for (i, name) in self.label_names.into_iter().enumerate() {
+            let Some(name) = name else {
+                continue;
+            };
+            let Some(pc) = self.labels.get(i).and_then(|x| *x) else {
+                return Err(UnresolvedLabel);
+            };
+            labels_out.push(NamedLabel { pc, name });
+        }
+
         Ok(AsmParts {
             bytecode: self.bytes,
             spans,
+            labels: labels_out,
         })
     }
 

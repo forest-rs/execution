@@ -247,11 +247,12 @@ crate) can be built as adapters without adding any dependency to the `execution_
 - `6 = span_tables`
 - `7 = function_sigs`
 - `8 = host_sigs`
+- `9 = names` (optional)
 
-All of the above sections are required in v1.
+Sections `1..=8` are required in v1. Unknown section tags are skipped for forward compatibility.
 
 ## Symbols
-The symbol table stores host-call targets:
+The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
 - `count: ULEB128`
 - repeated `count` times:
   - `len: ULEB128`
@@ -349,6 +350,23 @@ Host call targets are keyed by a stable `(symbol_id, sig_hash)` pair, but byteco
   - `ret_types[ret_count]: ValueType...`
 
 The verifier recomputes `sig_hash` from the canonical encoding of `(arg_types, ret_types)` and requires it to match.
+
+## Names (optional)
+This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
+
+Payload:
+- `has_program_name: u8` (`0` or `1`)
+- if `has_program_name == 1`:
+  - `program_name_symbol_id: ULEB128`
+- `function_name_count: ULEB128`
+- repeated `function_name_count` times:
+  - `func_id: ULEB128`
+  - `name_symbol_id: ULEB128`
+- `label_name_count: ULEB128`
+- repeated `label_name_count` times:
+  - `func_id: ULEB128`
+  - `pc: ULEB128` (byte offset within the function)
+  - `name_symbol_id: ULEB128`
 
 ## Opcode set (v1)
 This is the minimal set to support loops + recursion + host calls + aggregates.

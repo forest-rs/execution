@@ -175,7 +175,7 @@ pub struct HostSigDef {
 /// A decoded `execution_tape` program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
-    /// Host-call symbol table.
+    /// Symbol table (host-call symbols and optional debug metadata names).
     pub symbols: Vec<SymbolEntry>,
     /// Packed UTF-8 symbol data.
     pub symbol_data: String,
@@ -197,6 +197,38 @@ pub struct Program {
     pub spans: Vec<SpanEntry>,
     /// Program functions.
     pub functions: Vec<Function>,
+    /// Optional program name.
+    pub program_name: Option<SymbolId>,
+    /// Optional function-name entries.
+    ///
+    /// Frontends may emit these for debugging, profiling, and diagnostics. These are not required
+    /// for execution.
+    pub function_names: Vec<FunctionNameEntry>,
+    /// Optional label-name entries (per-function pc -> name).
+    ///
+    /// Frontends may emit these for debugging, profiling, and diagnostics. These are not required
+    /// for execution.
+    pub labels: Vec<LabelNameEntry>,
+}
+
+/// A function-name entry.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FunctionNameEntry {
+    /// Function index within the program.
+    pub func: u32,
+    /// Symbol id naming the function.
+    pub name: SymbolId,
+}
+
+/// A label-name entry (per-function pc -> name).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LabelNameEntry {
+    /// Function index within the program.
+    pub func: u32,
+    /// Bytecode pc (byte offset within the function).
+    pub pc: u32,
+    /// Symbol id naming the label.
+    pub name: SymbolId,
 }
 
 /// A constant-pool entry stored in a compact representation.
@@ -519,7 +551,34 @@ impl Program {
             bytecode_data,
             spans,
             functions: packed_functions,
+            program_name: None,
+            function_names: Vec::new(),
+            labels: Vec::new(),
         }
+    }
+
+    /// Returns the program name, if present.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.program_name.and_then(|id| self.symbol_str(id).ok())
+    }
+
+    /// Returns the function name for `func`, if present.
+    #[must_use]
+    pub fn function_name(&self, func: u32) -> Option<&str> {
+        self.function_names
+            .iter()
+            .find(|e| e.func == func)
+            .and_then(|e| self.symbol_str(e.name).ok())
+    }
+
+    /// Returns the label name for `func` at `pc`, if present.
+    #[must_use]
+    pub fn label_name(&self, func: u32, pc: u32) -> Option<&str> {
+        self.labels
+            .iter()
+            .find(|e| e.func == func && e.pc == pc)
+            .and_then(|e| self.symbol_str(e.name).ok())
     }
 
     /// Returns a host-call symbol string for `id`.
@@ -755,6 +814,44 @@ impl Program {
             write_section(&mut w, SectionTag::HostSigs, payload.as_slice());
         }
 
+        if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
+        {
+            let mut payload = Writer::new();
+
+            match self.program_name {
+                None => payload.write_u8(0),
+                Some(name) => {
+                    payload.write_u8(1);
+                    payload.write_uleb128_u64(u64::from(name.0));
+                }
+            }
+
+            let mut function_names = self.function_names.clone();
+            function_names
+                .sort_by(|a, b| a.func.cmp(&b.func).then_with(|| a.name.0.cmp(&b.name.0)));
+            payload.write_uleb128_u64(function_names.len() as u64);
+            for e in &function_names {
+                payload.write_uleb128_u64(u64::from(e.func));
+                payload.write_uleb128_u64(u64::from(e.name.0));
+            }
+
+            let mut labels = self.labels.clone();
+            labels.sort_by(|a, b| {
+                a.func
+                    .cmp(&b.func)
+                    .then_with(|| a.pc.cmp(&b.pc))
+                    .then_with(|| a.name.0.cmp(&b.name.0))
+            });
+            payload.write_uleb128_u64(labels.len() as u64);
+            for e in &labels {
+                payload.write_uleb128_u64(u64::from(e.func));
+                payload.write_uleb128_u64(u64::from(e.pc));
+                payload.write_uleb128_u64(u64::from(e.name.0));
+            }
+
+            write_section(&mut w, SectionTag::Names, payload.as_slice());
+        }
+
         w.into_vec()
     }
 
@@ -789,6 +886,7 @@ enum SectionTag {
     SpanTables = 6,
     FunctionSigs = 7,
     HostSigs = 8,
+    Names = 9,
 }
 
 impl SectionTag {
@@ -802,6 +900,7 @@ impl SectionTag {
             6 => Some(Self::SpanTables),
             7 => Some(Self::FunctionSigs),
             8 => Some(Self::HostSigs),
+            9 => Some(Self::Names),
             _ => None,
         }
     }
@@ -811,6 +910,62 @@ fn write_section(w: &mut Writer, tag: SectionTag, payload: &[u8]) {
     w.write_u8(tag as u8);
     w.write_uleb128_u64(payload.len() as u64);
     w.write_bytes(payload);
+}
+
+#[derive(Clone, Debug, Default)]
+struct NamesDef {
+    program_name: Option<SymbolId>,
+    function_names: Vec<FunctionNameEntry>,
+    labels: Vec<LabelNameEntry>,
+}
+
+fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
+    let mut r = Reader::new(payload);
+    let has_program_name = r.read_u8()?;
+    let program_name = if has_program_name == 0 {
+        None
+    } else if has_program_name == 1 {
+        let raw = r.read_uleb128_u64()?;
+        Some(SymbolId(
+            u32::try_from(raw).map_err(|_| DecodeError::OutOfBounds)?,
+        ))
+    } else {
+        return Err(DecodeError::OutOfBounds);
+    };
+
+    let n_funcs = read_usize(&mut r)?;
+    let mut function_names = Vec::with_capacity(n_funcs);
+    for _ in 0..n_funcs {
+        let func = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        let name = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        function_names.push(FunctionNameEntry {
+            func,
+            name: SymbolId(name),
+        });
+    }
+
+    let n_labels = read_usize(&mut r)?;
+    let mut labels = Vec::with_capacity(n_labels);
+    for _ in 0..n_labels {
+        let func = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        let pc = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        let name = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        labels.push(LabelNameEntry {
+            func,
+            pc,
+            name: SymbolId(name),
+        });
+    }
+
+    if r.offset() != payload.len() {
+        return Err(DecodeError::OutOfBounds);
+    }
+
+    Ok(NamesDef {
+        program_name,
+        function_names,
+        labels,
+    })
 }
 
 fn decode_symbols(payload: &[u8]) -> Result<(Vec<SymbolEntry>, String), DecodeError> {
@@ -843,6 +998,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut function_sig_defs: Vec<(Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut bytecode_blobs: Vec<Vec<u8>> = Vec::new();
     let mut span_tables: Vec<Vec<SpanEntry>> = Vec::new();
+    let mut names: NamesDef = NamesDef::default();
 
     let mut saw_symbols = false;
     let mut saw_const_pool = false;
@@ -852,6 +1008,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_function_sigs = false;
     let mut saw_bytecode_blobs = false;
     let mut saw_span_tables = false;
+    let mut saw_names = false;
 
     while r.offset() < bytes.len() {
         let tag = SectionTag::from_u8_opt(r.read_u8()?);
@@ -914,6 +1071,13 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_host_sigs = true;
                 host_sig_defs = decode_host_sigs(payload)?;
+            }
+            Some(SectionTag::Names) => {
+                if saw_names {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                saw_names = true;
+                names = decode_names(payload)?;
             }
             None => {
                 // Forward-compat: skip unknown section tags.
@@ -1040,6 +1204,47 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         });
     }
 
+    // Validate optional name metadata.
+    if let Some(name) = names.program_name
+        && usize::try_from(name.0)
+            .ok()
+            .and_then(|i| symbols.get(i))
+            .is_none()
+    {
+        return Err(DecodeError::OutOfBounds);
+    }
+    for e in &names.function_names {
+        if usize::try_from(e.func)
+            .ok()
+            .and_then(|i| functions.get(i))
+            .is_none()
+        {
+            return Err(DecodeError::OutOfBounds);
+        }
+        if usize::try_from(e.name.0)
+            .ok()
+            .and_then(|i| symbols.get(i))
+            .is_none()
+        {
+            return Err(DecodeError::OutOfBounds);
+        }
+    }
+    for e in &names.labels {
+        let Some(func) = usize::try_from(e.func).ok().and_then(|i| functions.get(i)) else {
+            return Err(DecodeError::OutOfBounds);
+        };
+        if e.pc > func.bytecode.len {
+            return Err(DecodeError::OutOfBounds);
+        }
+        if usize::try_from(e.name.0)
+            .ok()
+            .and_then(|i| symbols.get(i))
+            .is_none()
+        {
+            return Err(DecodeError::OutOfBounds);
+        }
+    }
+
     Ok(Program {
         symbols,
         symbol_data,
@@ -1052,6 +1257,9 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         bytecode_data,
         spans,
         functions,
+        program_name: names.program_name,
+        function_names: names.function_names,
+        labels: names.labels,
     })
 }
 
@@ -1474,6 +1682,51 @@ mod tests {
         let bytes = p.encode();
         let back = Program::decode(&bytes).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn program_names_roundtrip() {
+        let mut p = Program::new(
+            vec![
+                HostSymbol {
+                    symbol: "my_program".into(),
+                },
+                HostSymbol {
+                    symbol: "main".into(),
+                },
+                HostSymbol {
+                    symbol: "entry".into(),
+                },
+            ],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![],
+                ret_types: vec![],
+                reg_count: 1,
+                bytecode: vec![0x51, 0x00, 0x00], // ret r0, []
+                spans: vec![],
+            }],
+        );
+        p.program_name = Some(SymbolId(0));
+        p.function_names = vec![FunctionNameEntry {
+            func: 0,
+            name: SymbolId(1),
+        }];
+        p.labels = vec![LabelNameEntry {
+            func: 0,
+            pc: 0,
+            name: SymbolId(2),
+        }];
+
+        let bytes = p.encode();
+        let back = Program::decode(&bytes).unwrap();
+        assert_eq!(back, p);
+
+        assert_eq!(back.name(), Some("my_program"));
+        assert_eq!(back.function_name(0), Some("main"));
+        assert_eq!(back.label_name(0, 0), Some("entry"));
     }
 
     #[test]

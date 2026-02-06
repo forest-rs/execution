@@ -1019,11 +1019,19 @@ fn fmt_reg_iter(w: &mut fmt::Formatter<'_>, mut regs: RegIter<'_>) -> fmt::Resul
 
 impl fmt::Display for Disassembly<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(name) = self.program.name() {
+            writeln!(f, "; program=\"{name}\"")?;
+            writeln!(f)?;
+        }
         for (i, fd) in self.functions.iter().enumerate() {
             if i != 0 {
                 writeln!(f)?;
             }
-            writeln!(f, "func f{}:", fd.func().0)?;
+            write!(f, "func f{}:", fd.func().0)?;
+            if let Some(name) = self.program.function_name(fd.func().0) {
+                write!(f, " ; name=\"{name}\"")?;
+            }
+            writeln!(f)?;
             if let Some(e) = fd.error() {
                 writeln!(f, "  <decode error: {e:?}>")?;
                 continue;
@@ -1034,7 +1042,11 @@ impl fmt::Display for Disassembly<'_> {
             for iv in fd.instrs() {
                 let pc = iv.pc();
                 if let Some(label_ix) = labels.label_index(pc) {
-                    writeln!(f, "  @L{label_ix}:")?;
+                    write!(f, "  @L{label_ix}:")?;
+                    if let Some(name) = self.program.label_name(fd.func().0, pc) {
+                        write!(f, " ; name=\"{name}\"")?;
+                    }
+                    writeln!(f)?;
                 }
                 fmt_instr_with_labels(f, &iv, labels.pcs())?;
                 writeln!(f)?;
@@ -1301,6 +1313,42 @@ mod tests {
         let text = dis.to_string();
         assert!(text.contains("@L"));
         assert!(text.contains("br"));
+    }
+
+    #[test]
+    fn disasm_includes_program_and_function_and_label_names() {
+        let mut a = Asm::new();
+        let l_then = a.label_named("then");
+        let l_else = a.label_named("else");
+        a.const_bool(1, true);
+        a.br(1, l_then, l_else);
+        a.place(l_then).unwrap();
+        a.const_i64(2, 1);
+        a.ret(0, &[2]);
+        a.place(l_else).unwrap();
+        a.const_i64(2, 2);
+        a.ret(0, &[2]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.set_program_name("my_program");
+        let func = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 3,
+                },
+            )
+            .unwrap();
+        pb.set_function_name(func, "main").unwrap();
+        let vp = pb.build_verified().unwrap();
+
+        let text = disassemble(vp.program()).to_string();
+        assert!(text.contains("; program=\"my_program\""));
+        assert!(text.contains("func f0: ; name=\"main\""));
+        assert!(text.contains("; name=\"then\""));
+        assert!(text.contains("; name=\"else\""));
     }
 
     #[test]
