@@ -337,8 +337,8 @@ pub struct TypeTableDef {
 /// A packed struct type definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructType {
-    /// Field name ids (range into [`TypeTable::field_names`]).
-    pub field_names: ByteRange,
+    /// Field name ids (range into [`TypeTable::field_name_ids`]).
+    pub field_name_ids: ByteRange,
     /// Field types (range into [`TypeTable::field_types`]).
     pub field_types: ByteRange,
 }
@@ -351,7 +351,7 @@ pub struct TypeTable {
     /// Interned field name ranges (indexed by [`FieldNameId`], each range is into `name_data`).
     pub field_name_ranges: Vec<ByteRange>,
     /// Packed per-field field name ids.
-    pub field_names: Vec<FieldNameId>,
+    pub field_name_ids: Vec<FieldNameId>,
     /// Packed struct field types.
     pub field_types: Vec<ValueType>,
     /// Struct definitions. [`TypeId`] is the index into this vector.
@@ -382,7 +382,7 @@ impl TypeTable {
     fn pack(def: TypeTableDef) -> Self {
         let mut name_data: Vec<u8> = Vec::new();
         let mut field_name_ranges: Vec<ByteRange> = Vec::new();
-        let mut field_names: Vec<FieldNameId> = Vec::new();
+        let mut field_name_ids: Vec<FieldNameId> = Vec::new();
         let mut field_types: Vec<ValueType> = Vec::new();
         let mut structs: Vec<StructType> = Vec::with_capacity(def.structs.len());
         let mut interned_field_names: BTreeMap<String, FieldNameId> = BTreeMap::new();
@@ -395,7 +395,7 @@ impl TypeTable {
                 "StructTypeDef field_names/field_types length mismatch"
             );
 
-            let names_off = u32::try_from(field_names.len()).unwrap_or(u32::MAX);
+            let names_off = u32::try_from(field_name_ids.len()).unwrap_or(u32::MAX);
             for n in st.field_names.iter().take(field_count) {
                 let id = intern_field(
                     &mut interned_field_names,
@@ -403,7 +403,7 @@ impl TypeTable {
                     &mut field_name_ranges,
                     n,
                 );
-                field_names.push(id);
+                field_name_ids.push(id);
             }
             let names_len = u32::try_from(field_count).unwrap_or(u32::MAX);
 
@@ -412,7 +412,7 @@ impl TypeTable {
             let types_len = u32::try_from(field_count).unwrap_or(u32::MAX);
 
             structs.push(StructType {
-                field_names: ByteRange {
+                field_name_ids: ByteRange {
                     offset: names_off,
                     len: names_len,
                 },
@@ -426,19 +426,34 @@ impl TypeTable {
         Self {
             name_data,
             field_name_ranges,
-            field_names,
+            field_name_ids,
             field_types,
             structs,
             array_elems: def.array_elems,
         }
     }
 
-    fn field_name_bytes(&self, id: FieldNameId) -> Option<&[u8]> {
+    /// Returns the UTF-8 bytes for an interned field name id.
+    pub fn field_name_bytes(&self, id: FieldNameId) -> Option<&[u8]> {
         let idx = usize::try_from(id.0).ok()?;
         let name = self.field_name_ranges.get(idx)?;
         let start = name.offset as usize;
         let end = name.end().ok()? as usize;
         self.name_data.get(start..end)
+    }
+
+    /// Returns the UTF-8 string slice for an interned field name id.
+    pub fn field_name_str(&self, id: FieldNameId) -> Option<&str> {
+        core::str::from_utf8(self.field_name_bytes(id)?).ok()
+    }
+
+    /// Returns the field-name ids for a packed struct definition.
+    pub fn struct_field_name_ids(&self, st: &StructType) -> Result<&[FieldNameId], DecodeError> {
+        let start = st.field_name_ids.offset as usize;
+        let end = st.field_name_ids.end()? as usize;
+        self.field_name_ids
+            .get(start..end)
+            .ok_or(DecodeError::OutOfBounds)
     }
 
     /// Returns the field types for a packed struct definition.
@@ -1492,11 +1507,9 @@ fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
 fn encode_types(w: &mut Writer, t: &TypeTable) {
     w.write_uleb128_u64(t.structs.len() as u64);
     for s in &t.structs {
-        let field_count = s.field_names.len as usize;
+        let field_count = s.field_name_ids.len as usize;
         w.write_uleb128_u64(field_count as u64);
-        let start = s.field_names.offset as usize;
-        let end = s.field_names.end().unwrap_or(0) as usize;
-        let names = t.field_names.get(start..end).unwrap_or(&[]);
+        let names = t.struct_field_name_ids(s).unwrap_or(&[]);
 
         let types = t.struct_field_types(s).unwrap_or(&[]);
         for (name_id, ty) in names.iter().zip(types.iter()) {
