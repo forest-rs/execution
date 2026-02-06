@@ -1199,6 +1199,7 @@ impl<H: Host> Vm<H> {
                     let call_instr_ix = instr_ix;
 
                     let callee_base = ctx.alloc_frame(callee_vf);
+                    let args = vf.vregs(*args);
                     if args.len() != callee_vf.reg_layout.arg_regs.len() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     }
@@ -1262,6 +1263,7 @@ impl<H: Host> Vm<H> {
                     }
 
                     if ctx.frames.len() == 1 {
+                        let rets = vf.vregs(*rets);
                         let mut out: Vec<Value> = Vec::with_capacity(rets.len());
                         for &r in rets {
                             out.push(
@@ -1281,6 +1283,8 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
 
+                    let rets = vf.vregs(*rets);
+
                     // Recover the call's destination registers from the verified instruction
                     // stream. This avoids storing/cloning the return register list on every call.
                     let caller_vf = program
@@ -1292,6 +1296,7 @@ impl<H: Host> Vm<H> {
                     let VerifiedInstr::Call { rets: dst_rets, .. } = caller_instr else {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
+                    let dst_rets = caller_vf.vregs(*dst_rets);
 
                     if dst_rets.len() != rets.len() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
@@ -1332,6 +1337,7 @@ impl<H: Host> Vm<H> {
                         .host_sig_rets(hs)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
+                    let args = vf.vregs(*args);
                     let mut call_args: Vec<ValueRef<'_>> = Vec::with_capacity(args.len());
                     for &a in args {
                         call_args.push(
@@ -1400,6 +1406,7 @@ impl<H: Host> Vm<H> {
                     // v1: effect token is `Unit`.
                     ctx.write_unit(base, *eff_out, 0);
 
+                    let rets = vf.vregs(*rets);
                     let expected = u32::try_from(ret_types.len()).unwrap_or(u32::MAX);
                     let actual = u32::try_from(out_vals.len()).unwrap_or(u32::MAX);
                     if out_vals.len() != ret_types.len() || out_vals.len() != rets.len() {
@@ -1422,6 +1429,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 VerifiedInstr::TupleNew { dst, values } => {
+                    let values = vf.vregs(*values);
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
@@ -1449,6 +1457,7 @@ impl<H: Host> Vm<H> {
                     type_id,
                     values,
                 } => {
+                    let values = vf.vregs(*values);
                     let st = program_ref
                         .types
                         .structs
@@ -1495,6 +1504,7 @@ impl<H: Host> Vm<H> {
                     len,
                     values,
                 } => {
+                    let values = vf.vregs(*values);
                     program_ref
                         .types
                         .array_elems

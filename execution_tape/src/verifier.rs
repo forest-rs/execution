@@ -22,7 +22,7 @@ use crate::opcode::Opcode;
 use crate::program::{ConstEntry, ElemTypeId, Function, Program, SpanEntry, TypeId, ValueType};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
-    RegLayout, StrReg, U64Reg, UnitReg, VReg, VerifiedDecodedInstr, VerifiedFunction,
+    RegLayout, StrReg, U64Reg, UnitReg, VReg, VRegSlice, VerifiedDecodedInstr, VerifiedFunction,
     VerifiedInstr,
 };
 use crate::value::FuncId;
@@ -1203,6 +1203,7 @@ fn verify_function_bytecode(
         arg_regs,
     };
 
+    let mut operands: Vec<VReg> = Vec::new();
     let mut verified_instrs: Vec<VerifiedDecodedInstr> = Vec::with_capacity(decoded.len());
     for di in decoded {
         let pc = di.offset;
@@ -1275,6 +1276,18 @@ fn verify_function_bytecode(
                 VReg::Agg(r) => Ok(r),
                 _ => Err(unstable(reg)),
             }
+        };
+
+        let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
+            let start = operands.len();
+            operands.reserve(regs.len());
+            for &r in regs {
+                operands.push(map(r)?);
+            }
+            Ok(VRegSlice {
+                start,
+                len: regs.len(),
+            })
         };
 
         let vi = match &di.instr {
@@ -1735,67 +1748,35 @@ fn verify_function_bytecode(
                 eff_in,
                 args,
                 rets,
-            } => {
-                let mut call_args = Vec::with_capacity(args.len());
-                for r in args {
-                    call_args.push(map(*r)?);
-                }
-                let mut call_rets = Vec::with_capacity(rets.len());
-                for r in rets {
-                    call_rets.push(map(*r)?);
-                }
-                VerifiedInstr::Call {
-                    eff_out: map_unit(*eff_out)?,
-                    func_id: *callee,
-                    eff_in: map_unit(*eff_in)?,
-                    args: call_args,
-                    rets: call_rets,
-                }
-            }
-            Instr::Ret { eff_in, rets } => {
-                let mut out = Vec::with_capacity(rets.len());
-                for r in rets {
-                    out.push(map(*r)?);
-                }
-                VerifiedInstr::Ret {
-                    eff_in: map_unit(*eff_in)?,
-                    rets: out,
-                }
-            }
+            } => VerifiedInstr::Call {
+                eff_out: map_unit(*eff_out)?,
+                func_id: *callee,
+                eff_in: map_unit(*eff_in)?,
+                args: push_vregs(args)?,
+                rets: push_vregs(rets)?,
+            },
+            Instr::Ret { eff_in, rets } => VerifiedInstr::Ret {
+                eff_in: map_unit(*eff_in)?,
+                rets: push_vregs(rets)?,
+            },
             Instr::HostCall {
                 eff_out,
                 host_sig,
                 eff_in,
                 args,
                 rets,
-            } => {
-                let mut call_args = Vec::with_capacity(args.len());
-                for r in args {
-                    call_args.push(map(*r)?);
-                }
-                let mut call_rets = Vec::with_capacity(rets.len());
-                for r in rets {
-                    call_rets.push(map(*r)?);
-                }
-                VerifiedInstr::HostCall {
-                    eff_out: map_unit(*eff_out)?,
-                    host_sig: *host_sig,
-                    eff_in: map_unit(*eff_in)?,
-                    args: call_args,
-                    rets: call_rets,
-                }
-            }
+            } => VerifiedInstr::HostCall {
+                eff_out: map_unit(*eff_out)?,
+                host_sig: *host_sig,
+                eff_in: map_unit(*eff_in)?,
+                args: push_vregs(args)?,
+                rets: push_vregs(rets)?,
+            },
 
-            Instr::TupleNew { dst, values } => {
-                let mut vs = Vec::with_capacity(values.len());
-                for r in values {
-                    vs.push(map(*r)?);
-                }
-                VerifiedInstr::TupleNew {
-                    dst: map_agg(*dst)?,
-                    values: vs,
-                }
-            }
+            Instr::TupleNew { dst, values } => VerifiedInstr::TupleNew {
+                dst: map_agg(*dst)?,
+                values: push_vregs(values)?,
+            },
             Instr::TupleGet { dst, tuple, index } => VerifiedInstr::TupleGet {
                 dst: map(*dst)?,
                 tuple: map_agg(*tuple)?,
@@ -1806,17 +1787,11 @@ fn verify_function_bytecode(
                 dst,
                 type_id,
                 values,
-            } => {
-                let mut vs = Vec::with_capacity(values.len());
-                for r in values {
-                    vs.push(map(*r)?);
-                }
-                VerifiedInstr::StructNew {
-                    dst: map_agg(*dst)?,
-                    type_id: *type_id,
-                    values: vs,
-                }
-            }
+            } => VerifiedInstr::StructNew {
+                dst: map_agg(*dst)?,
+                type_id: *type_id,
+                values: push_vregs(values)?,
+            },
             Instr::StructGet {
                 dst,
                 st,
@@ -1832,18 +1807,12 @@ fn verify_function_bytecode(
                 elem_type_id,
                 len,
                 values,
-            } => {
-                let mut vs = Vec::with_capacity(values.len());
-                for r in values {
-                    vs.push(map(*r)?);
-                }
-                VerifiedInstr::ArrayNew {
-                    dst: map_agg(*dst)?,
-                    elem_type_id: *elem_type_id,
-                    len: *len,
-                    values: vs,
-                }
-            }
+            } => VerifiedInstr::ArrayNew {
+                dst: map_agg(*dst)?,
+                elem_type_id: *elem_type_id,
+                len: *len,
+                values: push_vregs(values)?,
+            },
             Instr::ArrayLen { dst, arr } => VerifiedInstr::ArrayLen {
                 dst: map_u64(*dst)?,
                 arr: map_agg(*arr)?,
@@ -2002,6 +1971,7 @@ fn verify_function_bytecode(
         verified: VerifiedFunction {
             byte_len,
             reg_layout,
+            operands,
             instrs: verified_instrs,
         },
         lints,
