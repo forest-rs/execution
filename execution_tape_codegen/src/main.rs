@@ -507,7 +507,9 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            let {field} = read_reg(r)?;\n"));
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::read_reg(r)?;\n"
+                    ));
                 }
                 "pc" | "imm_u32" => {
                     if operand.encoding.as_str() != "u32_uleb" {
@@ -517,7 +519,9 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            let {field} = read_u32_uleb(r)?;\n"));
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::read_u32_uleb(r)?;\n"
+                    ));
                 }
                 "imm_u8" => {
                     if operand.encoding.as_str() != "u8_raw" {
@@ -527,7 +531,9 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            let {field} = r.read_u8()?;\n"));
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::read_u8_raw(r)?;\n"
+                    ));
                 }
                 "imm_bool" => {
                     if operand.encoding.as_str() != "bool_u8" {
@@ -537,7 +543,9 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            let {field} = r.read_u8()? != 0;\n"));
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::read_bool_u8(r)?;\n"
+                    ));
                 }
                 "imm_i64" => {
                     if operand.encoding.as_str() != "i64_sleb" {
@@ -548,17 +556,19 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = r.read_sleb128_i64()?;\n"
+                        "            let {field} = crate::codec_primitives::read_i64_sleb(r)?;\n"
                     ));
                 }
                 "imm_u64" => match operand.encoding.as_str() {
                     "u64_uleb" => {
                         out.push_str(&format!(
-                            "            let {field} = r.read_uleb128_u64()?;\n"
+                            "            let {field} = crate::codec_primitives::read_u64_uleb(r)?;\n"
                         ));
                     }
                     "u64_le" => {
-                        out.push_str(&format!("            let {field} = r.read_u64_le()?;\n"));
+                        out.push_str(&format!(
+                            "            let {field} = crate::codec_primitives::read_u64_le(r)?;\n"
+                        ));
                     }
                     other => bail!(
                         "unsupported imm_u64 encoding '{other}' for opcode {}",
@@ -575,7 +585,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = ConstId(read_u32_uleb(r)?);\n"
+                        "            let {field} = ConstId(crate::codec_primitives::read_u32_uleb(r)?);\n"
                     ));
                 }
                 "func_id" => {
@@ -587,7 +597,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = FuncId(read_u32_uleb(r)?);\n"
+                        "            let {field} = FuncId(crate::codec_primitives::read_u32_uleb(r)?);\n"
                     ));
                 }
                 "host_sig_id" => {
@@ -599,7 +609,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = HostSigId(read_u32_uleb(r)?);\n"
+                        "            let {field} = HostSigId(crate::codec_primitives::read_u32_uleb(r)?);\n"
                     ));
                 }
                 "type_id" => {
@@ -611,7 +621,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = TypeId(read_u32_uleb(r)?);\n"
+                        "            let {field} = TypeId(crate::codec_primitives::read_u32_uleb(r)?);\n"
                     ));
                 }
                 "elem_type_id" => {
@@ -623,7 +633,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = ElemTypeId(read_u32_uleb(r)?);\n"
+                        "            let {field} = ElemTypeId(crate::codec_primitives::read_u32_uleb(r)?);\n"
                     ));
                 }
 
@@ -636,7 +646,6 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         );
                     }
 
-                    let count_var = format!("{field}_count");
                     let count_field = operand.count_field.as_deref();
                     if let Some(cf) = count_field {
                         let _ = rust_field_name(cf).with_context(|| {
@@ -644,18 +653,25 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         })?;
                     }
 
-                    out.push_str(&format!(
-                        "            let {count_var} = read_u32_uleb(r)?;\n"
-                    ));
-                    out.push_str(&format!(
-                        "            let mut {field} = Vec::with_capacity({count_var} as usize);\n"
-                    ));
-                    out.push_str(&format!(
-                        "            for _ in 0..({count_var} as usize) {{\n                {field}.push(read_reg(r)?);\n            }}\n"
-                    ));
-                    if let Some(cf) = count_field {
-                        out.push_str(&format!("            let {cf} = {count_var};\n"));
-                        field_names.push(cf);
+                    if count_field.is_some() {
+                        let count_var = format!("{field}_count");
+                        out.push_str(&format!(
+                            "            let {count_var} = crate::codec_primitives::read_u32_uleb(r)?;\n"
+                        ));
+                        out.push_str(&format!(
+                            "            let mut {field} = Vec::with_capacity({count_var} as usize);\n"
+                        ));
+                        out.push_str(&format!(
+                            "            for _ in 0..({count_var} as usize) {{\n                {field}.push(crate::codec_primitives::read_reg(r)?);\n            }}\n"
+                        ));
+                        if let Some(cf) = count_field {
+                            out.push_str(&format!("            let {cf} = {count_var};\n"));
+                            field_names.push(cf);
+                        }
+                    } else {
+                        out.push_str(&format!(
+                            "            let {field} = crate::codec_primitives::read_reg_list(r)?;\n"
+                        ));
                     }
                 }
 
@@ -753,7 +769,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_reg(out, *{field});\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_reg(out, *{field});\n"
+                    ));
                 }
                 "pc" | "imm_u32" => {
                     if operand.encoding.as_str() != "u32_uleb" {
@@ -763,7 +781,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_u32_uleb(out, *{field});\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u32_uleb(out, *{field});\n"
+                    ));
                 }
                 "imm_u8" => {
                     if operand.encoding.as_str() != "u8_raw" {
@@ -773,7 +793,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            out.push(*{field});\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u8_raw(out, *{field});\n"
+                    ));
                 }
                 "imm_bool" => {
                     if operand.encoding.as_str() != "bool_u8" {
@@ -783,7 +805,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            out.push(u8::from(*{field}));\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_bool_u8(out, *{field});\n"
+                    ));
                 }
                 "imm_i64" => {
                     if operand.encoding.as_str() != "i64_sleb" {
@@ -793,15 +817,19 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_sleb128_i64(out, *{field});\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_i64_sleb(out, *{field});\n"
+                    ));
                 }
                 "imm_u64" => match operand.encoding.as_str() {
                     "u64_uleb" => {
-                        out.push_str(&format!("            write_uleb128_u64(out, *{field});\n"));
+                        out.push_str(&format!(
+                            "            crate::codec_primitives::write_u64_uleb(out, *{field});\n"
+                        ));
                     }
                     "u64_le" => {
                         out.push_str(&format!(
-                            "            out.extend_from_slice(&{field}.to_le_bytes());\n"
+                            "            crate::codec_primitives::write_u64_le(out, *{field});\n"
                         ));
                     }
                     other => bail!(
@@ -818,7 +846,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_u32_uleb(out, {field}.0);\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u32_uleb(out, {field}.0);\n"
+                    ));
                 }
                 "func_id" => {
                     if operand.encoding.as_str() != "u32_uleb" {
@@ -828,7 +858,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_u32_uleb(out, {field}.0);\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u32_uleb(out, {field}.0);\n"
+                    ));
                 }
                 "host_sig_id" => {
                     if operand.encoding.as_str() != "u32_uleb" {
@@ -838,7 +870,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_u32_uleb(out, {field}.0);\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u32_uleb(out, {field}.0);\n"
+                    ));
                 }
                 "type_id" => {
                     if operand.encoding.as_str() != "u32_uleb" {
@@ -848,7 +882,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_u32_uleb(out, {field}.0);\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u32_uleb(out, {field}.0);\n"
+                    ));
                 }
                 "elem_type_id" => {
                     if operand.encoding.as_str() != "u32_uleb" {
@@ -858,7 +894,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name
                         );
                     }
-                    out.push_str(&format!("            write_u32_uleb(out, {field}.0);\n"));
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_u32_uleb(out, {field}.0);\n"
+                    ));
                 }
 
                 "reg_list" => {
@@ -881,12 +919,16 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                             op.name, field, cf, field
                         ));
                         out.push_str("            }\n");
-                        out.push_str(&format!("            write_u32_uleb(out, *{cf});\n"));
                         out.push_str(&format!(
-                            "            for &r in {field}.iter() {{ write_reg(out, r); }}\n"
+                            "            crate::codec_primitives::write_u32_uleb(out, *{cf});\n"
+                        ));
+                        out.push_str(&format!(
+                            "            for &r in {field}.iter() {{ crate::codec_primitives::write_reg(out, r); }}\n"
                         ));
                     } else {
-                        out.push_str(&format!("            write_reg_list(out, {field})?;\n"));
+                        out.push_str(&format!(
+                            "            crate::codec_primitives::write_reg_list(out, {field}).map_err(|_| EncodeError::OutOfBounds)?;\n"
+                        ));
                     }
                 }
 

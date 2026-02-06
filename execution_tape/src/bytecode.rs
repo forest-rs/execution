@@ -10,7 +10,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::format::{DecodeError, Reader, write_sleb128_i64, write_uleb128_u64};
+use crate::format::{DecodeError, Reader};
 use crate::opcode::{Opcode, OperandEncoding, OperandKind};
 use crate::program::{ConstId, HostSigId};
 use crate::program::{ElemTypeId, TypeId};
@@ -1035,37 +1035,7 @@ pub(crate) fn encode_instructions(instrs: &[Instr]) -> Result<Vec<u8>, EncodeErr
     Ok(out)
 }
 
-fn read_u32_uleb(r: &mut Reader<'_>) -> Result<u32, DecodeError> {
-    let v = r.read_uleb128_u64()?;
-    u32::try_from(v).map_err(|_| DecodeError::OutOfBounds)
-}
-
-fn read_reg(r: &mut Reader<'_>) -> Result<u32, DecodeError> {
-    read_u32_uleb(r)
-}
-
-#[allow(dead_code, reason = "used by generated encoder")]
-fn write_u32_uleb(out: &mut Vec<u8>, v: u32) {
-    write_uleb128_u64(out, u64::from(v));
-}
-
-#[allow(dead_code, reason = "used by generated encoder")]
-fn write_reg(out: &mut Vec<u8>, r: u32) {
-    write_u32_uleb(out, r);
-}
-
-#[allow(dead_code, reason = "used by generated encoder")]
-fn write_reg_list(out: &mut Vec<u8>, regs: &[u32]) -> Result<(), EncodeError> {
-    let n: u32 = regs
-        .len()
-        .try_into()
-        .map_err(|_| EncodeError::OutOfBounds)?;
-    write_u32_uleb(out, n);
-    for &r in regs {
-        write_reg(out, r);
-    }
-    Ok(())
-}
+// (operand encoding/decoding helpers live in `crate::codec_primitives`)
 
 // Generated decoder; single source of truth is `execution_tape/opcodes.json`.
 include!("bytecode_decode_gen.rs");

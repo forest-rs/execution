@@ -65,6 +65,8 @@ pub(crate) mod analysis;
 pub(crate) mod arena;
 pub mod asm;
 pub(crate) mod bytecode;
+pub mod codec;
+pub(crate) mod codec_primitives;
 pub mod disasm;
 pub mod format;
 pub mod host;

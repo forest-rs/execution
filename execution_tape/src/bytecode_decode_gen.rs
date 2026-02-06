@@ -8,61 +8,61 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
     Ok(match opcode {
         Opcode::Nop => Instr::Nop,
         Opcode::Mov => {
-            let dst = read_reg(r)?;
-            let src = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let src = crate::codec_primitives::read_reg(r)?;
             Instr::Mov {
                 dst,
                 src,
             }
         },
         Opcode::Trap => {
-            let code = read_u32_uleb(r)?;
+            let code = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::Trap {
                 code,
             }
         },
         Opcode::ConstUnit => {
-            let dst = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
             Instr::ConstUnit {
                 dst,
             }
         },
         Opcode::ConstBool => {
-            let dst = read_reg(r)?;
-            let imm = r.read_u8()? != 0;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let imm = crate::codec_primitives::read_bool_u8(r)?;
             Instr::ConstBool {
                 dst,
                 imm,
             }
         },
         Opcode::ConstI64 => {
-            let dst = read_reg(r)?;
-            let imm = r.read_sleb128_i64()?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let imm = crate::codec_primitives::read_i64_sleb(r)?;
             Instr::ConstI64 {
                 dst,
                 imm,
             }
         },
         Opcode::ConstU64 => {
-            let dst = read_reg(r)?;
-            let imm = r.read_uleb128_u64()?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let imm = crate::codec_primitives::read_u64_uleb(r)?;
             Instr::ConstU64 {
                 dst,
                 imm,
             }
         },
         Opcode::ConstF64 => {
-            let dst = read_reg(r)?;
-            let bits = r.read_u64_le()?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bits = crate::codec_primitives::read_u64_le(r)?;
             Instr::ConstF64 {
                 dst,
                 bits,
             }
         },
         Opcode::ConstDecimal => {
-            let dst = read_reg(r)?;
-            let mantissa = r.read_sleb128_i64()?;
-            let scale = r.read_u8()?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let mantissa = crate::codec_primitives::read_i64_sleb(r)?;
+            let scale = crate::codec_primitives::read_u8_raw(r)?;
             Instr::ConstDecimal {
                 dst,
                 mantissa,
@@ -70,17 +70,17 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::ConstPool => {
-            let dst = read_reg(r)?;
-            let idx = ConstId(read_u32_uleb(r)?);
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let idx = ConstId(crate::codec_primitives::read_u32_uleb(r)?);
             Instr::ConstPool {
                 dst,
                 idx,
             }
         },
         Opcode::DecAdd => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::DecAdd {
                 dst,
                 a,
@@ -88,9 +88,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::DecSub => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::DecSub {
                 dst,
                 a,
@@ -98,9 +98,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::DecMul => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::DecMul {
                 dst,
                 a,
@@ -108,9 +108,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Add => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Add {
                 dst,
                 a,
@@ -118,9 +118,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Sub => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Sub {
                 dst,
                 a,
@@ -128,9 +128,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Mul => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Mul {
                 dst,
                 a,
@@ -138,9 +138,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Add => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Add {
                 dst,
                 a,
@@ -148,9 +148,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Sub => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Sub {
                 dst,
                 a,
@@ -158,9 +158,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Mul => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Mul {
                 dst,
                 a,
@@ -168,9 +168,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Add => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Add {
                 dst,
                 a,
@@ -178,9 +178,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Sub => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Sub {
                 dst,
                 a,
@@ -188,9 +188,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Mul => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Mul {
                 dst,
                 a,
@@ -198,9 +198,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64And => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64And {
                 dst,
                 a,
@@ -208,9 +208,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Or => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Or {
                 dst,
                 a,
@@ -218,9 +218,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Eq => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Eq {
                 dst,
                 a,
@@ -228,9 +228,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Lt => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Lt {
                 dst,
                 a,
@@ -238,9 +238,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Eq => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Eq {
                 dst,
                 a,
@@ -248,9 +248,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Lt => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Lt {
                 dst,
                 a,
@@ -258,9 +258,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Xor => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Xor {
                 dst,
                 a,
@@ -268,9 +268,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Shl => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Shl {
                 dst,
                 a,
@@ -278,9 +278,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Shr => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Shr {
                 dst,
                 a,
@@ -288,9 +288,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Gt => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Gt {
                 dst,
                 a,
@@ -298,17 +298,17 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BoolNot => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::BoolNot {
                 dst,
                 a,
             }
         },
         Opcode::U64Le => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Le {
                 dst,
                 a,
@@ -316,9 +316,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Ge => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Ge {
                 dst,
                 a,
@@ -326,9 +326,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64And => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64And {
                 dst,
                 a,
@@ -336,25 +336,25 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64ToI64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::U64ToI64 {
                 dst,
                 a,
             }
         },
         Opcode::I64ToU64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::I64ToU64 {
                 dst,
                 a,
             }
         },
         Opcode::I64Or => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Or {
                 dst,
                 a,
@@ -362,9 +362,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Xor => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Xor {
                 dst,
                 a,
@@ -372,10 +372,10 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::Select => {
-            let dst = read_reg(r)?;
-            let cond = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let cond = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::Select {
                 dst,
                 cond,
@@ -384,9 +384,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Gt => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Gt {
                 dst,
                 a,
@@ -394,9 +394,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Le => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Le {
                 dst,
                 a,
@@ -404,9 +404,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Ge => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Ge {
                 dst,
                 a,
@@ -414,9 +414,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Shl => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Shl {
                 dst,
                 a,
@@ -424,9 +424,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Shr => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Shr {
                 dst,
                 a,
@@ -434,9 +434,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::Br => {
-            let cond = read_reg(r)?;
-            let pc_true = read_u32_uleb(r)?;
-            let pc_false = read_u32_uleb(r)?;
+            let cond = crate::codec_primitives::read_reg(r)?;
+            let pc_true = crate::codec_primitives::read_u32_uleb(r)?;
+            let pc_false = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::Br {
                 cond,
                 pc_true,
@@ -444,25 +444,17 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::Jmp => {
-            let pc_target = read_u32_uleb(r)?;
+            let pc_target = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::Jmp {
                 pc_target,
             }
         },
         Opcode::Call => {
-            let eff_out = read_reg(r)?;
-            let func_id = FuncId(read_u32_uleb(r)?);
-            let eff_in = read_reg(r)?;
-            let args_count = read_u32_uleb(r)?;
-            let mut args = Vec::with_capacity(args_count as usize);
-            for _ in 0..(args_count as usize) {
-                args.push(read_reg(r)?);
-            }
-            let rets_count = read_u32_uleb(r)?;
-            let mut rets = Vec::with_capacity(rets_count as usize);
-            for _ in 0..(rets_count as usize) {
-                rets.push(read_reg(r)?);
-            }
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let func_id = FuncId(crate::codec_primitives::read_u32_uleb(r)?);
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            let rets = crate::codec_primitives::read_reg_list(r)?;
             Instr::Call {
                 eff_out,
                 func_id,
@@ -472,31 +464,19 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::Ret => {
-            let eff_in = read_reg(r)?;
-            let rets_count = read_u32_uleb(r)?;
-            let mut rets = Vec::with_capacity(rets_count as usize);
-            for _ in 0..(rets_count as usize) {
-                rets.push(read_reg(r)?);
-            }
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let rets = crate::codec_primitives::read_reg_list(r)?;
             Instr::Ret {
                 eff_in,
                 rets,
             }
         },
         Opcode::HostCall => {
-            let eff_out = read_reg(r)?;
-            let host_sig = HostSigId(read_u32_uleb(r)?);
-            let eff_in = read_reg(r)?;
-            let args_count = read_u32_uleb(r)?;
-            let mut args = Vec::with_capacity(args_count as usize);
-            for _ in 0..(args_count as usize) {
-                args.push(read_reg(r)?);
-            }
-            let rets_count = read_u32_uleb(r)?;
-            let mut rets = Vec::with_capacity(rets_count as usize);
-            for _ in 0..(rets_count as usize) {
-                rets.push(read_reg(r)?);
-            }
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let host_sig = HostSigId(crate::codec_primitives::read_u32_uleb(r)?);
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            let rets = crate::codec_primitives::read_reg_list(r)?;
             Instr::HostCall {
                 eff_out,
                 host_sig,
@@ -506,21 +486,17 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::TupleNew => {
-            let dst = read_reg(r)?;
-            let values_count = read_u32_uleb(r)?;
-            let mut values = Vec::with_capacity(values_count as usize);
-            for _ in 0..(values_count as usize) {
-                values.push(read_reg(r)?);
-            }
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let values = crate::codec_primitives::read_reg_list(r)?;
             Instr::TupleNew {
                 dst,
                 values,
             }
         },
         Opcode::TupleGet => {
-            let dst = read_reg(r)?;
-            let tuple = read_reg(r)?;
-            let index = read_u32_uleb(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let tuple = crate::codec_primitives::read_reg(r)?;
+            let index = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::TupleGet {
                 dst,
                 tuple,
@@ -528,13 +504,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::StructNew => {
-            let dst = read_reg(r)?;
-            let type_id = TypeId(read_u32_uleb(r)?);
-            let values_count = read_u32_uleb(r)?;
-            let mut values = Vec::with_capacity(values_count as usize);
-            for _ in 0..(values_count as usize) {
-                values.push(read_reg(r)?);
-            }
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let type_id = TypeId(crate::codec_primitives::read_u32_uleb(r)?);
+            let values = crate::codec_primitives::read_reg_list(r)?;
             Instr::StructNew {
                 dst,
                 type_id,
@@ -542,9 +514,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::StructGet => {
-            let dst = read_reg(r)?;
-            let st = read_reg(r)?;
-            let field_index = read_u32_uleb(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let st = crate::codec_primitives::read_reg(r)?;
+            let field_index = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::StructGet {
                 dst,
                 st,
@@ -552,12 +524,12 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::ArrayNew => {
-            let dst = read_reg(r)?;
-            let elem_type_id = ElemTypeId(read_u32_uleb(r)?);
-            let values_count = read_u32_uleb(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let elem_type_id = ElemTypeId(crate::codec_primitives::read_u32_uleb(r)?);
+            let values_count = crate::codec_primitives::read_u32_uleb(r)?;
             let mut values = Vec::with_capacity(values_count as usize);
             for _ in 0..(values_count as usize) {
-                values.push(read_reg(r)?);
+                values.push(crate::codec_primitives::read_reg(r)?);
             }
             let len = values_count;
             Instr::ArrayNew {
@@ -568,17 +540,17 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::ArrayLen => {
-            let dst = read_reg(r)?;
-            let arr = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let arr = crate::codec_primitives::read_reg(r)?;
             Instr::ArrayLen {
                 dst,
                 arr,
             }
         },
         Opcode::ArrayGet => {
-            let dst = read_reg(r)?;
-            let arr = read_reg(r)?;
-            let index = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let arr = crate::codec_primitives::read_reg(r)?;
+            let index = crate::codec_primitives::read_reg(r)?;
             Instr::ArrayGet {
                 dst,
                 arr,
@@ -586,25 +558,25 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::TupleLen => {
-            let dst = read_reg(r)?;
-            let tuple = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let tuple = crate::codec_primitives::read_reg(r)?;
             Instr::TupleLen {
                 dst,
                 tuple,
             }
         },
         Opcode::StructFieldCount => {
-            let dst = read_reg(r)?;
-            let st = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let st = crate::codec_primitives::read_reg(r)?;
             Instr::StructFieldCount {
                 dst,
                 st,
             }
         },
         Opcode::ArrayGetImm => {
-            let dst = read_reg(r)?;
-            let arr = read_reg(r)?;
-            let index = read_u32_uleb(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let arr = crate::codec_primitives::read_reg(r)?;
+            let index = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::ArrayGetImm {
                 dst,
                 arr,
@@ -612,25 +584,25 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BytesLen => {
-            let dst = read_reg(r)?;
-            let bytes = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bytes = crate::codec_primitives::read_reg(r)?;
             Instr::BytesLen {
                 dst,
                 bytes,
             }
         },
         Opcode::StrLen => {
-            let dst = read_reg(r)?;
-            let s = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let s = crate::codec_primitives::read_reg(r)?;
             Instr::StrLen {
                 dst,
                 s,
             }
         },
         Opcode::I64Div => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Div {
                 dst,
                 a,
@@ -638,9 +610,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64Rem => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::I64Rem {
                 dst,
                 a,
@@ -648,9 +620,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Div => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Div {
                 dst,
                 a,
@@ -658,9 +630,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64Rem => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::U64Rem {
                 dst,
                 a,
@@ -668,57 +640,57 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::I64ToF64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::I64ToF64 {
                 dst,
                 a,
             }
         },
         Opcode::U64ToF64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::U64ToF64 {
                 dst,
                 a,
             }
         },
         Opcode::F64ToI64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::F64ToI64 {
                 dst,
                 a,
             }
         },
         Opcode::F64ToU64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::F64ToU64 {
                 dst,
                 a,
             }
         },
         Opcode::DecToI64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::DecToI64 {
                 dst,
                 a,
             }
         },
         Opcode::DecToU64 => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::DecToU64 {
                 dst,
                 a,
             }
         },
         Opcode::I64ToDec => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let scale = r.read_u8()?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let scale = crate::codec_primitives::read_u8_raw(r)?;
             Instr::I64ToDec {
                 dst,
                 a,
@@ -726,9 +698,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::U64ToDec => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let scale = r.read_u8()?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let scale = crate::codec_primitives::read_u8_raw(r)?;
             Instr::U64ToDec {
                 dst,
                 a,
@@ -736,9 +708,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BytesEq => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::BytesEq {
                 dst,
                 a,
@@ -746,9 +718,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::StrEq => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::StrEq {
                 dst,
                 a,
@@ -756,9 +728,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BytesConcat => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::BytesConcat {
                 dst,
                 a,
@@ -766,9 +738,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::StrConcat => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::StrConcat {
                 dst,
                 a,
@@ -776,9 +748,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BytesGet => {
-            let dst = read_reg(r)?;
-            let bytes = read_reg(r)?;
-            let index = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bytes = crate::codec_primitives::read_reg(r)?;
+            let index = crate::codec_primitives::read_reg(r)?;
             Instr::BytesGet {
                 dst,
                 bytes,
@@ -786,9 +758,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BytesGetImm => {
-            let dst = read_reg(r)?;
-            let bytes = read_reg(r)?;
-            let index = read_u32_uleb(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bytes = crate::codec_primitives::read_reg(r)?;
+            let index = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::BytesGetImm {
                 dst,
                 bytes,
@@ -796,10 +768,10 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BytesSlice => {
-            let dst = read_reg(r)?;
-            let bytes = read_reg(r)?;
-            let start = read_reg(r)?;
-            let end = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bytes = crate::codec_primitives::read_reg(r)?;
+            let start = crate::codec_primitives::read_reg(r)?;
+            let end = crate::codec_primitives::read_reg(r)?;
             Instr::BytesSlice {
                 dst,
                 bytes,
@@ -808,10 +780,10 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::StrSlice => {
-            let dst = read_reg(r)?;
-            let s = read_reg(r)?;
-            let start = read_reg(r)?;
-            let end = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let s = crate::codec_primitives::read_reg(r)?;
+            let start = crate::codec_primitives::read_reg(r)?;
+            let end = crate::codec_primitives::read_reg(r)?;
             Instr::StrSlice {
                 dst,
                 s,
@@ -820,25 +792,25 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::StrToBytes => {
-            let dst = read_reg(r)?;
-            let s = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let s = crate::codec_primitives::read_reg(r)?;
             Instr::StrToBytes {
                 dst,
                 s,
             }
         },
         Opcode::BytesToStr => {
-            let dst = read_reg(r)?;
-            let bytes = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bytes = crate::codec_primitives::read_reg(r)?;
             Instr::BytesToStr {
                 dst,
                 bytes,
             }
         },
         Opcode::F64Div => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Div {
                 dst,
                 a,
@@ -846,9 +818,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Eq => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Eq {
                 dst,
                 a,
@@ -856,9 +828,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Lt => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Lt {
                 dst,
                 a,
@@ -866,9 +838,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Gt => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Gt {
                 dst,
                 a,
@@ -876,9 +848,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Le => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Le {
                 dst,
                 a,
@@ -886,9 +858,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Ge => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Ge {
                 dst,
                 a,
@@ -896,9 +868,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BoolAnd => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::BoolAnd {
                 dst,
                 a,
@@ -906,9 +878,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BoolOr => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::BoolOr {
                 dst,
                 a,
@@ -916,9 +888,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::BoolXor => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::BoolXor {
                 dst,
                 a,
@@ -926,25 +898,25 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Neg => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::F64Neg {
                 dst,
                 a,
             }
         },
         Opcode::F64Abs => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::F64Abs {
                 dst,
                 a,
             }
         },
         Opcode::F64Min => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Min {
                 dst,
                 a,
@@ -952,9 +924,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Max => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Max {
                 dst,
                 a,
@@ -962,9 +934,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64MinNum => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64MinNum {
                 dst,
                 a,
@@ -972,9 +944,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64MaxNum => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64MaxNum {
                 dst,
                 a,
@@ -982,9 +954,9 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64Rem => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
-            let b = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
             Instr::F64Rem {
                 dst,
                 a,
@@ -992,16 +964,16 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             }
         },
         Opcode::F64ToBits => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::F64ToBits {
                 dst,
                 a,
             }
         },
         Opcode::F64FromBits => {
-            let dst = read_reg(r)?;
-            let a = read_reg(r)?;
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
             Instr::F64FromBits {
                 dst,
                 a,

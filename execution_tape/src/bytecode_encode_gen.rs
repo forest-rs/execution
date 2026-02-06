@@ -9,693 +9,693 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
         Instr::Nop => { out.push(Opcode::Nop as u8); Ok(()) },
         Instr::Mov { dst, src } => {
             out.push(Opcode::Mov as u8);
-            write_reg(out, *dst);
-            write_reg(out, *src);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *src);
             Ok(())
         },
         Instr::Trap { code } => {
             out.push(Opcode::Trap as u8);
-            write_u32_uleb(out, *code);
+            crate::codec_primitives::write_u32_uleb(out, *code);
             Ok(())
         },
         Instr::ConstUnit { dst } => {
             out.push(Opcode::ConstUnit as u8);
-            write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *dst);
             Ok(())
         },
         Instr::ConstBool { dst, imm } => {
             out.push(Opcode::ConstBool as u8);
-            write_reg(out, *dst);
-            out.push(u8::from(*imm));
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_bool_u8(out, *imm);
             Ok(())
         },
         Instr::ConstI64 { dst, imm } => {
             out.push(Opcode::ConstI64 as u8);
-            write_reg(out, *dst);
-            write_sleb128_i64(out, *imm);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_i64_sleb(out, *imm);
             Ok(())
         },
         Instr::ConstU64 { dst, imm } => {
             out.push(Opcode::ConstU64 as u8);
-            write_reg(out, *dst);
-            write_uleb128_u64(out, *imm);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u64_uleb(out, *imm);
             Ok(())
         },
         Instr::ConstF64 { bits, dst } => {
             out.push(Opcode::ConstF64 as u8);
-            write_reg(out, *dst);
-            out.extend_from_slice(&bits.to_le_bytes());
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u64_le(out, *bits);
             Ok(())
         },
         Instr::ConstDecimal { dst, mantissa, scale } => {
             out.push(Opcode::ConstDecimal as u8);
-            write_reg(out, *dst);
-            write_sleb128_i64(out, *mantissa);
-            out.push(*scale);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_i64_sleb(out, *mantissa);
+            crate::codec_primitives::write_u8_raw(out, *scale);
             Ok(())
         },
         Instr::ConstPool { dst, idx } => {
             out.push(Opcode::ConstPool as u8);
-            write_reg(out, *dst);
-            write_u32_uleb(out, idx.0);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, idx.0);
             Ok(())
         },
         Instr::DecAdd { a, b, dst } => {
             out.push(Opcode::DecAdd as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::DecSub { a, b, dst } => {
             out.push(Opcode::DecSub as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::DecMul { a, b, dst } => {
             out.push(Opcode::DecMul as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Add { a, b, dst } => {
             out.push(Opcode::F64Add as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Sub { a, b, dst } => {
             out.push(Opcode::F64Sub as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Mul { a, b, dst } => {
             out.push(Opcode::F64Mul as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Add { a, b, dst } => {
             out.push(Opcode::I64Add as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Sub { a, b, dst } => {
             out.push(Opcode::I64Sub as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Mul { a, b, dst } => {
             out.push(Opcode::I64Mul as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Add { a, b, dst } => {
             out.push(Opcode::U64Add as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Sub { a, b, dst } => {
             out.push(Opcode::U64Sub as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Mul { a, b, dst } => {
             out.push(Opcode::U64Mul as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64And { a, b, dst } => {
             out.push(Opcode::U64And as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Or { a, b, dst } => {
             out.push(Opcode::U64Or as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Eq { a, b, dst } => {
             out.push(Opcode::I64Eq as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Lt { a, b, dst } => {
             out.push(Opcode::I64Lt as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Eq { a, b, dst } => {
             out.push(Opcode::U64Eq as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Lt { a, b, dst } => {
             out.push(Opcode::U64Lt as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Xor { a, b, dst } => {
             out.push(Opcode::U64Xor as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Shl { a, b, dst } => {
             out.push(Opcode::U64Shl as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Shr { a, b, dst } => {
             out.push(Opcode::U64Shr as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Gt { a, b, dst } => {
             out.push(Opcode::U64Gt as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::BoolNot { a, dst } => {
             out.push(Opcode::BoolNot as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::U64Le { a, b, dst } => {
             out.push(Opcode::U64Le as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Ge { a, b, dst } => {
             out.push(Opcode::U64Ge as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64And { a, b, dst } => {
             out.push(Opcode::I64And as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64ToI64 { a, dst } => {
             out.push(Opcode::U64ToI64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::I64ToU64 { a, dst } => {
             out.push(Opcode::I64ToU64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::I64Or { a, b, dst } => {
             out.push(Opcode::I64Or as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Xor { a, b, dst } => {
             out.push(Opcode::I64Xor as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::Select { a, b, cond, dst } => {
             out.push(Opcode::Select as u8);
-            write_reg(out, *dst);
-            write_reg(out, *cond);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *cond);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Gt { a, b, dst } => {
             out.push(Opcode::I64Gt as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Le { a, b, dst } => {
             out.push(Opcode::I64Le as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Ge { a, b, dst } => {
             out.push(Opcode::I64Ge as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Shl { a, b, dst } => {
             out.push(Opcode::I64Shl as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Shr { a, b, dst } => {
             out.push(Opcode::I64Shr as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::Br { cond, pc_false, pc_true } => {
             out.push(Opcode::Br as u8);
-            write_reg(out, *cond);
-            write_u32_uleb(out, *pc_true);
-            write_u32_uleb(out, *pc_false);
+            crate::codec_primitives::write_reg(out, *cond);
+            crate::codec_primitives::write_u32_uleb(out, *pc_true);
+            crate::codec_primitives::write_u32_uleb(out, *pc_false);
             Ok(())
         },
         Instr::Jmp { pc_target } => {
             out.push(Opcode::Jmp as u8);
-            write_u32_uleb(out, *pc_target);
+            crate::codec_primitives::write_u32_uleb(out, *pc_target);
             Ok(())
         },
         Instr::Call { args, eff_in, eff_out, func_id, rets } => {
             out.push(Opcode::Call as u8);
-            write_reg(out, *eff_out);
-            write_u32_uleb(out, func_id.0);
-            write_reg(out, *eff_in);
-            write_reg_list(out, args)?;
-            write_reg_list(out, rets)?;
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_u32_uleb(out, func_id.0);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::Ret { eff_in, rets } => {
             out.push(Opcode::Ret as u8);
-            write_reg(out, *eff_in);
-            write_reg_list(out, rets)?;
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::HostCall { args, eff_in, eff_out, host_sig, rets } => {
             out.push(Opcode::HostCall as u8);
-            write_reg(out, *eff_out);
-            write_u32_uleb(out, host_sig.0);
-            write_reg(out, *eff_in);
-            write_reg_list(out, args)?;
-            write_reg_list(out, rets)?;
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_u32_uleb(out, host_sig.0);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::TupleNew { dst, values } => {
             out.push(Opcode::TupleNew as u8);
-            write_reg(out, *dst);
-            write_reg_list(out, values)?;
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg_list(out, values).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::TupleGet { dst, index, tuple } => {
             out.push(Opcode::TupleGet as u8);
-            write_reg(out, *dst);
-            write_reg(out, *tuple);
-            write_u32_uleb(out, *index);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *tuple);
+            crate::codec_primitives::write_u32_uleb(out, *index);
             Ok(())
         },
         Instr::StructNew { dst, type_id, values } => {
             out.push(Opcode::StructNew as u8);
-            write_reg(out, *dst);
-            write_u32_uleb(out, type_id.0);
-            write_reg_list(out, values)?;
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, type_id.0);
+            crate::codec_primitives::write_reg_list(out, values).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::StructGet { dst, field_index, st } => {
             out.push(Opcode::StructGet as u8);
-            write_reg(out, *dst);
-            write_reg(out, *st);
-            write_u32_uleb(out, *field_index);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *st);
+            crate::codec_primitives::write_u32_uleb(out, *field_index);
             Ok(())
         },
         Instr::ArrayNew { dst, elem_type_id, len, values } => {
             out.push(Opcode::ArrayNew as u8);
-            write_reg(out, *dst);
-            write_u32_uleb(out, elem_type_id.0);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, elem_type_id.0);
             if values.len() != (*len as usize) {
                 return Err(EncodeError::RegListCountMismatch { opcode: Opcode::ArrayNew, field: "values", count: *len, actual: values.len() });
             }
-            write_u32_uleb(out, *len);
-            for &r in values.iter() { write_reg(out, r); }
+            crate::codec_primitives::write_u32_uleb(out, *len);
+            for &r in values.iter() { crate::codec_primitives::write_reg(out, r); }
             Ok(())
         },
         Instr::ArrayLen { arr, dst } => {
             out.push(Opcode::ArrayLen as u8);
-            write_reg(out, *dst);
-            write_reg(out, *arr);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *arr);
             Ok(())
         },
         Instr::ArrayGet { arr, dst, index } => {
             out.push(Opcode::ArrayGet as u8);
-            write_reg(out, *dst);
-            write_reg(out, *arr);
-            write_reg(out, *index);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *arr);
+            crate::codec_primitives::write_reg(out, *index);
             Ok(())
         },
         Instr::TupleLen { dst, tuple } => {
             out.push(Opcode::TupleLen as u8);
-            write_reg(out, *dst);
-            write_reg(out, *tuple);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *tuple);
             Ok(())
         },
         Instr::StructFieldCount { dst, st } => {
             out.push(Opcode::StructFieldCount as u8);
-            write_reg(out, *dst);
-            write_reg(out, *st);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *st);
             Ok(())
         },
         Instr::ArrayGetImm { arr, dst, index } => {
             out.push(Opcode::ArrayGetImm as u8);
-            write_reg(out, *dst);
-            write_reg(out, *arr);
-            write_u32_uleb(out, *index);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *arr);
+            crate::codec_primitives::write_u32_uleb(out, *index);
             Ok(())
         },
         Instr::BytesLen { bytes, dst } => {
             out.push(Opcode::BytesLen as u8);
-            write_reg(out, *dst);
-            write_reg(out, *bytes);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *bytes);
             Ok(())
         },
         Instr::StrLen { dst, s } => {
             out.push(Opcode::StrLen as u8);
-            write_reg(out, *dst);
-            write_reg(out, *s);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *s);
             Ok(())
         },
         Instr::I64Div { a, b, dst } => {
             out.push(Opcode::I64Div as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64Rem { a, b, dst } => {
             out.push(Opcode::I64Rem as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Div { a, b, dst } => {
             out.push(Opcode::U64Div as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::U64Rem { a, b, dst } => {
             out.push(Opcode::U64Rem as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::I64ToF64 { a, dst } => {
             out.push(Opcode::I64ToF64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::U64ToF64 { a, dst } => {
             out.push(Opcode::U64ToF64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::F64ToI64 { a, dst } => {
             out.push(Opcode::F64ToI64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::F64ToU64 { a, dst } => {
             out.push(Opcode::F64ToU64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::DecToI64 { a, dst } => {
             out.push(Opcode::DecToI64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::DecToU64 { a, dst } => {
             out.push(Opcode::DecToU64 as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::I64ToDec { a, dst, scale } => {
             out.push(Opcode::I64ToDec as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            out.push(*scale);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_u8_raw(out, *scale);
             Ok(())
         },
         Instr::U64ToDec { a, dst, scale } => {
             out.push(Opcode::U64ToDec as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            out.push(*scale);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_u8_raw(out, *scale);
             Ok(())
         },
         Instr::BytesEq { a, b, dst } => {
             out.push(Opcode::BytesEq as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::StrEq { a, b, dst } => {
             out.push(Opcode::StrEq as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::BytesConcat { a, b, dst } => {
             out.push(Opcode::BytesConcat as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::StrConcat { a, b, dst } => {
             out.push(Opcode::StrConcat as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::BytesGet { bytes, dst, index } => {
             out.push(Opcode::BytesGet as u8);
-            write_reg(out, *dst);
-            write_reg(out, *bytes);
-            write_reg(out, *index);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *bytes);
+            crate::codec_primitives::write_reg(out, *index);
             Ok(())
         },
         Instr::BytesGetImm { bytes, dst, index } => {
             out.push(Opcode::BytesGetImm as u8);
-            write_reg(out, *dst);
-            write_reg(out, *bytes);
-            write_u32_uleb(out, *index);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *bytes);
+            crate::codec_primitives::write_u32_uleb(out, *index);
             Ok(())
         },
         Instr::BytesSlice { bytes, dst, end, start } => {
             out.push(Opcode::BytesSlice as u8);
-            write_reg(out, *dst);
-            write_reg(out, *bytes);
-            write_reg(out, *start);
-            write_reg(out, *end);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *bytes);
+            crate::codec_primitives::write_reg(out, *start);
+            crate::codec_primitives::write_reg(out, *end);
             Ok(())
         },
         Instr::StrSlice { dst, end, s, start } => {
             out.push(Opcode::StrSlice as u8);
-            write_reg(out, *dst);
-            write_reg(out, *s);
-            write_reg(out, *start);
-            write_reg(out, *end);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *s);
+            crate::codec_primitives::write_reg(out, *start);
+            crate::codec_primitives::write_reg(out, *end);
             Ok(())
         },
         Instr::StrToBytes { dst, s } => {
             out.push(Opcode::StrToBytes as u8);
-            write_reg(out, *dst);
-            write_reg(out, *s);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *s);
             Ok(())
         },
         Instr::BytesToStr { bytes, dst } => {
             out.push(Opcode::BytesToStr as u8);
-            write_reg(out, *dst);
-            write_reg(out, *bytes);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *bytes);
             Ok(())
         },
         Instr::F64Div { a, b, dst } => {
             out.push(Opcode::F64Div as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Eq { a, b, dst } => {
             out.push(Opcode::F64Eq as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Lt { a, b, dst } => {
             out.push(Opcode::F64Lt as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Gt { a, b, dst } => {
             out.push(Opcode::F64Gt as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Le { a, b, dst } => {
             out.push(Opcode::F64Le as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Ge { a, b, dst } => {
             out.push(Opcode::F64Ge as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::BoolAnd { a, b, dst } => {
             out.push(Opcode::BoolAnd as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::BoolOr { a, b, dst } => {
             out.push(Opcode::BoolOr as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::BoolXor { a, b, dst } => {
             out.push(Opcode::BoolXor as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Neg { a, dst } => {
             out.push(Opcode::F64Neg as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::F64Abs { a, dst } => {
             out.push(Opcode::F64Abs as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::F64Min { a, b, dst } => {
             out.push(Opcode::F64Min as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Max { a, b, dst } => {
             out.push(Opcode::F64Max as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64MinNum { a, b, dst } => {
             out.push(Opcode::F64MinNum as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64MaxNum { a, b, dst } => {
             out.push(Opcode::F64MaxNum as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64Rem { a, b, dst } => {
             out.push(Opcode::F64Rem as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
-            write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
         Instr::F64ToBits { a, dst } => {
             out.push(Opcode::F64ToBits as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
         Instr::F64FromBits { a, dst } => {
             out.push(Opcode::F64FromBits as u8);
-            write_reg(out, *dst);
-            write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
     }
