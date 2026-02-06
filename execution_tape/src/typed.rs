@@ -87,6 +87,23 @@ pub(crate) enum VReg {
     Func(FuncReg),
 }
 
+/// A slice of typed registers stored in a per-function operand pool.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VRegSlice {
+    pub(crate) start: usize,
+    pub(crate) len: usize,
+}
+
+impl VRegSlice {
+    #[inline(always)]
+    pub(crate) fn as_slice(self, pool: &[VReg]) -> &[VReg] {
+        let start = self.start;
+        let end = start + self.len;
+        debug_assert!(end <= pool.len(), "VRegSlice out of bounds");
+        &pool[start..end]
+    }
+}
+
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RegCounts {
     pub(crate) unit: usize,
@@ -576,25 +593,25 @@ pub(crate) enum VerifiedInstr {
         eff_out: UnitReg,
         func_id: FuncId,
         eff_in: UnitReg,
-        args: Vec<VReg>,
-        rets: Vec<VReg>,
+        args: VRegSlice,
+        rets: VRegSlice,
     },
     Ret {
         eff_in: UnitReg,
-        rets: Vec<VReg>,
+        rets: VRegSlice,
     },
 
     HostCall {
         eff_out: UnitReg,
         host_sig: HostSigId,
         eff_in: UnitReg,
-        args: Vec<VReg>,
-        rets: Vec<VReg>,
+        args: VRegSlice,
+        rets: VRegSlice,
     },
 
     TupleNew {
         dst: AggReg,
-        values: Vec<VReg>,
+        values: VRegSlice,
     },
     TupleGet {
         dst: VReg,
@@ -605,7 +622,7 @@ pub(crate) enum VerifiedInstr {
     StructNew {
         dst: AggReg,
         type_id: TypeId,
-        values: Vec<VReg>,
+        values: VRegSlice,
     },
     StructGet {
         dst: VReg,
@@ -617,7 +634,7 @@ pub(crate) enum VerifiedInstr {
         dst: AggReg,
         elem_type_id: ElemTypeId,
         len: u32,
-        values: Vec<VReg>,
+        values: VRegSlice,
     },
     ArrayLen {
         dst: U64Reg,
@@ -765,10 +782,16 @@ pub(crate) enum VerifiedInstr {
 pub(crate) struct VerifiedFunction {
     pub(crate) byte_len: u32,
     pub(crate) reg_layout: RegLayout,
+    pub(crate) operands: Vec<VReg>,
     pub(crate) instrs: Vec<VerifiedDecodedInstr>,
 }
 
 impl VerifiedFunction {
+    #[inline(always)]
+    pub(crate) fn vregs(&self, s: VRegSlice) -> &[VReg] {
+        s.as_slice(&self.operands)
+    }
+
     pub(crate) fn instr_ix_at_pc(&self, pc: u32) -> Option<usize> {
         self.instrs.binary_search_by_key(&pc, |di| di.offset).ok()
     }
