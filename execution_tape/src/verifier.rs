@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::analysis::cfg::BasicBlock;
+use crate::analysis::dataflow;
 use crate::analysis::liveness;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
@@ -2830,69 +2831,36 @@ fn compute_must_types(
     entry_types: &TypeState,
     decoded: &[DecodedInstr],
 ) -> Result<(Vec<TypeState>, Vec<TypeState>), VerifyError> {
-    // Precompute preds.
-    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
-    for (i, b) in blocks.iter().enumerate() {
-        for succ in b.succs {
-            if let Some(s) = succ.filter(|&s| s != usize::MAX) {
-                preds[s].push(i);
-            }
-        }
-    }
-
-    let empty = TypeState {
+    // Must-type analysis: forward, meet-at-joins, transfer through each block. We compute a stable
+    // type assignment for each register (or reject instability later).
+    let bottom = TypeState {
         values: vec![None; reg_count],
         aggs: vec![None; reg_count],
     };
-    let mut in_sets: Vec<TypeState> = vec![empty.clone(); blocks.len()];
-    let mut out_sets: Vec<TypeState> = vec![empty; blocks.len()];
-    if !blocks.is_empty() {
-        in_sets[0] = entry_types.clone();
-    }
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for i in 0..blocks.len() {
-            if !reachable[i] {
-                continue;
-            }
-            if i != 0 {
-                let mut it = preds[i].iter().copied().filter(|&p| reachable[p]);
-                let Some(first) = it.next() else {
-                    continue;
-                };
-                let mut new_in = out_sets[first].clone();
-                for p in it {
-                    for r in 0..reg_count {
-                        new_in.values[r] = meet_value(new_in.values[r], out_sets[p].values[r]);
-                        if matches!(new_in.values[r], Some(RegType::Concrete(ValueType::Agg))) {
-                            new_in.aggs[r] = meet_agg(&new_in.aggs[r], &out_sets[p].aggs[r]);
-                        } else {
-                            new_in.aggs[r] = None;
-                        }
-                    }
-                }
-                if new_in != in_sets[i] {
-                    in_sets[i] = new_in;
-                    changed = true;
+    let (in_sets, out_sets) = dataflow::solve_forward(
+        blocks,
+        reachable,
+        entry_types.clone(),
+        bottom,
+        |acc, incoming| {
+            for r in 0..reg_count {
+                acc.values[r] = meet_value(acc.values[r], incoming.values[r]);
+                if matches!(acc.values[r], Some(RegType::Concrete(ValueType::Agg))) {
+                    acc.aggs[r] = meet_agg(&acc.aggs[r], &incoming.aggs[r]);
+                } else {
+                    acc.aggs[r] = None;
                 }
             }
-
-            let mut out = in_sets[i].clone();
-            for di in decoded
-                .iter()
-                .take(blocks[i].instr_end)
-                .skip(blocks[i].instr_start)
-            {
+        },
+        |_b_idx, b, in_state| {
+            let mut out = in_state.clone();
+            for di in decoded.iter().take(b.instr_end).skip(b.instr_start) {
                 transfer_types(program, &di.instr, &mut out);
             }
-            if out != out_sets[i] {
-                out_sets[i] = out;
-                changed = true;
-            }
-        }
-    }
+            out
+        },
+    );
 
     Ok((in_sets, out_sets))
 }
@@ -3513,58 +3481,23 @@ fn compute_must_init(
     entry_init: &BitSet,
     decoded: &[DecodedInstr],
 ) -> Result<(Vec<BitSet>, Vec<BitSet>), VerifyError> {
-    // Precompute preds.
-    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
-    for (i, b) in blocks.iter().enumerate() {
-        for succ in b.succs {
-            if let Some(s) = succ.filter(|&s| s != usize::MAX) {
-                preds[s].push(i);
-            }
-        }
-    }
-
+    // Must-init analysis: forward, meet-at-joins via intersection. OUT is a "writes-only" transfer:
+    // OUT = IN ∪ WRITES(block).
     let top = BitSet::new_full(reg_count);
-    let mut in_sets = vec![top.clone(); blocks.len()];
-    let mut out_sets = vec![top.clone(); blocks.len()];
-
-    if !blocks.is_empty() {
-        in_sets[0] = entry_init.clone();
-    }
-
     let writes = compute_block_writes(blocks, reachable, reg_count, decoded)?;
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for i in 0..blocks.len() {
-            if !reachable[i] {
-                continue;
-            }
-            if i == 0 {
-                // Entry block IN is fixed.
-            } else {
-                let mut new_in = top.clone();
-                for &p in &preds[i] {
-                    if !reachable[p] {
-                        continue;
-                    }
-                    new_in.intersect_with(&out_sets[p]);
-                }
-                if new_in != in_sets[i] {
-                    in_sets[i] = new_in;
-                    changed = true;
-                }
-            }
-
-            // OUT = IN + writes in block (writes-only transfer).
-            let mut out = in_sets[i].clone();
-            out.union_with(&writes[i]);
-            if out != out_sets[i] {
-                out_sets[i] = out;
-                changed = true;
-            }
-        }
-    }
+    let (in_sets, out_sets) = dataflow::solve_forward(
+        blocks,
+        reachable,
+        entry_init.clone(),
+        top,
+        |acc, incoming| acc.intersect_with(incoming),
+        |b_idx, _b, in_state| {
+            let mut out = in_state.clone();
+            out.union_with(&writes[b_idx]);
+            out
+        },
+    );
 
     Ok((in_sets, out_sets))
 }

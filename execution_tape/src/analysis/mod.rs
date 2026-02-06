@@ -8,4 +8,5 @@
 
 pub(crate) mod bitset;
 pub(crate) mod cfg;
+pub(crate) mod dataflow;
 pub(crate) mod liveness;
