@@ -1751,6 +1751,77 @@ mod tests {
     }
 
     #[test]
+    fn type_table_interns_duplicate_field_names_across_structs() {
+        let types = TypeTable::pack(TypeTableDef {
+            structs: vec![
+                StructTypeDef {
+                    field_names: vec!["x".into(), "y".into()],
+                    field_types: vec![ValueType::I64, ValueType::U64],
+                },
+                StructTypeDef {
+                    field_names: vec!["y".into(), "x".into()],
+                    field_types: vec![ValueType::U64, ValueType::I64],
+                },
+            ],
+            array_elems: vec![],
+        });
+
+        assert_eq!(types.field_name_ranges.len(), 2);
+        assert_eq!(types.field_name_ids.len(), 4);
+        assert_eq!(types.name_data.len(), 2);
+
+        let names0 = types.struct_field_name_ids(&types.structs[0]).unwrap();
+        let names1 = types.struct_field_name_ids(&types.structs[1]).unwrap();
+        assert_eq!(names0.len(), 2);
+        assert_eq!(names1.len(), 2);
+        assert_eq!(names0[0], names1[1]);
+        assert_eq!(names0[1], names1[0]);
+        assert_eq!(types.field_name_str(names0[0]), Some("x"));
+        assert_eq!(types.field_name_str(names0[1]), Some("y"));
+    }
+
+    #[test]
+    fn program_roundtrips_with_repeated_field_names_across_structs() {
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef {
+                structs: vec![
+                    StructTypeDef {
+                        field_names: vec!["id".into(), "value".into(), "id".into()],
+                        field_types: vec![ValueType::I64, ValueType::U64, ValueType::I64],
+                    },
+                    StructTypeDef {
+                        field_names: vec!["value".into(), "meta".into(), "id".into()],
+                        field_types: vec![ValueType::U64, ValueType::Bool, ValueType::I64],
+                    },
+                ],
+                array_elems: vec![ValueType::I64],
+            },
+            vec![],
+        );
+
+        let bytes = p.encode();
+        let back = Program::decode(&bytes).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn decode_types_rejects_out_of_range_field_name_id() {
+        let mut p = Writer::new();
+        p.write_uleb128_u64(1); // field_name_count
+        p.write_uleb128_u64(1); // field_name[0].len
+        p.write_bytes(b"a");
+        p.write_uleb128_u64(1); // struct_count
+        p.write_uleb128_u64(1); // field_count
+        p.write_uleb128_u64(1); // field_name_id (OOB; valid is only 0)
+        encode_value_type(&mut p, ValueType::I64);
+        p.write_uleb128_u64(0); // array elem_count
+        assert_eq!(decode_types(p.as_slice()), Err(DecodeError::OutOfBounds));
+    }
+
+    #[test]
     fn program_names_roundtrip() {
         let mut p = Program::new(
             vec![
