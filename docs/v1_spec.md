@@ -288,12 +288,17 @@ Tags:
 - `10 Func`
 
 ### Struct types
+Field names are interned once per Types payload; each struct field references that table by id.
+
+- `field_name_count: ULEB128`
+- repeated `field_name_count` times:
+  - `name_len: ULEB128`
+  - `name_utf8[name_len]`
 - `struct_count: ULEB128`
 - repeated `struct_count` times:
   - `field_count: ULEB128`
   - repeated `field_count` times:
-    - `name_len: ULEB128`
-    - `name_utf8[name_len]`
+    - `field_name_id: ULEB128` (index into the field-name table above)
     - `field_type: ValueType`
 
 ### Array element types
