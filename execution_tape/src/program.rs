@@ -7,6 +7,7 @@
 //! type semantics. That is the job of a verifier layer (v1 ticket `et-2ef3`; see
 //! [`verifier`]).
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -261,6 +262,10 @@ pub enum ConstEntry {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeId(pub u32);
 
+/// Field-name id index into [`TypeTable::field_name_ranges`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FieldNameId(pub u32);
+
 /// Element type id index into [`TypeTable::array_elems`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ElemTypeId(pub u32);
@@ -332,7 +337,7 @@ pub struct TypeTableDef {
 /// A packed struct type definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructType {
-    /// Field name ranges (range into [`TypeTable::field_names`]).
+    /// Field name ids (range into [`TypeTable::field_names`]).
     pub field_names: ByteRange,
     /// Field types (range into [`TypeTable::field_types`]).
     pub field_types: ByteRange,
@@ -341,10 +346,12 @@ pub struct StructType {
 /// A program type table.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct TypeTable {
-    /// UTF-8 field name bytes.
+    /// UTF-8 interned field name bytes.
     pub name_data: Vec<u8>,
-    /// Packed field name ranges (each entry is a range into `name_data`).
-    pub field_names: Vec<ByteRange>,
+    /// Interned field name ranges (indexed by [`FieldNameId`], each range is into `name_data`).
+    pub field_name_ranges: Vec<ByteRange>,
+    /// Packed per-field field name ids.
+    pub field_names: Vec<FieldNameId>,
     /// Packed struct field types.
     pub field_types: Vec<ValueType>,
     /// Struct definitions. [`TypeId`] is the index into this vector.
@@ -353,12 +360,32 @@ pub struct TypeTable {
     pub array_elems: Vec<ValueType>,
 }
 
+fn intern_field(
+    map: &mut BTreeMap<String, FieldNameId>,
+    arena: &mut Vec<u8>,
+    interned_ranges: &mut Vec<ByteRange>,
+    s: &str,
+) -> FieldNameId {
+    if let Some(&id) = map.get(s) {
+        return id;
+    }
+    let offset = u32::try_from(arena.len()).unwrap_or(u32::MAX);
+    arena.extend_from_slice(s.as_bytes());
+    let len = u32::try_from(s.len()).unwrap_or(u32::MAX);
+    let id = FieldNameId(u32::try_from(interned_ranges.len()).unwrap_or(u32::MAX));
+    interned_ranges.push(ByteRange { offset, len });
+    map.insert(String::from(s), id);
+    id
+}
+
 impl TypeTable {
     fn pack(def: TypeTableDef) -> Self {
         let mut name_data: Vec<u8> = Vec::new();
-        let mut field_names: Vec<ByteRange> = Vec::new();
+        let mut field_name_ranges: Vec<ByteRange> = Vec::new();
+        let mut field_names: Vec<FieldNameId> = Vec::new();
         let mut field_types: Vec<ValueType> = Vec::new();
         let mut structs: Vec<StructType> = Vec::with_capacity(def.structs.len());
+        let mut interned_field_names: BTreeMap<String, FieldNameId> = BTreeMap::new();
 
         for st in def.structs {
             let field_count = core::cmp::min(st.field_names.len(), st.field_types.len());
@@ -370,11 +397,13 @@ impl TypeTable {
 
             let names_off = u32::try_from(field_names.len()).unwrap_or(u32::MAX);
             for n in st.field_names.iter().take(field_count) {
-                let bytes = n.as_bytes();
-                let offset = u32::try_from(name_data.len()).unwrap_or(u32::MAX);
-                name_data.extend_from_slice(bytes);
-                let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-                field_names.push(ByteRange { offset, len });
+                let id = intern_field(
+                    &mut interned_field_names,
+                    &mut name_data,
+                    &mut field_name_ranges,
+                    n,
+                );
+                field_names.push(id);
             }
             let names_len = u32::try_from(field_count).unwrap_or(u32::MAX);
 
@@ -396,11 +425,20 @@ impl TypeTable {
 
         Self {
             name_data,
+            field_name_ranges,
             field_names,
             field_types,
             structs,
             array_elems: def.array_elems,
         }
+    }
+
+    fn field_name_bytes(&self, id: FieldNameId) -> Option<&[u8]> {
+        let idx = usize::try_from(id.0).ok()?;
+        let name = self.field_name_ranges.get(idx)?;
+        let start = name.offset as usize;
+        let end = name.end().ok()? as usize;
+        self.name_data.get(start..end)
     }
 
     /// Returns the field types for a packed struct definition.
@@ -1461,10 +1499,8 @@ fn encode_types(w: &mut Writer, t: &TypeTable) {
         let names = t.field_names.get(start..end).unwrap_or(&[]);
 
         let types = t.struct_field_types(s).unwrap_or(&[]);
-        for (name, ty) in names.iter().zip(types.iter()) {
-            let start = name.offset as usize;
-            let end = name.end().unwrap_or(0) as usize;
-            let b = t.name_data.get(start..end).unwrap_or(&[]);
+        for (name_id, ty) in names.iter().zip(types.iter()) {
+            let b = t.field_name_bytes(*name_id).unwrap_or(&[]);
             w.write_uleb128_u64(b.len() as u64);
             w.write_bytes(b);
             encode_value_type(w, *ty);
