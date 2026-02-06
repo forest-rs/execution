@@ -71,6 +71,7 @@ pub mod disasm;
 pub mod format;
 pub mod host;
 pub mod host_catalog;
+pub(crate) mod instr_operands;
 pub mod opcode;
 pub mod program;
 pub mod trace;

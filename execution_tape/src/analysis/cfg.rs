@@ -8,7 +8,9 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::bytecode::{DecodedInstr, Instr};
+use crate::bytecode::DecodedInstr;
+use crate::instr_operands;
+use crate::opcode::Opcode;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BasicBlock {
@@ -56,55 +58,31 @@ pub(crate) fn build_basic_blocks(
             byte_len as usize
         };
 
-        match &di.instr {
-            Instr::Br {
-                pc_true, pc_false, ..
-            } => {
-                if *pc_true >= byte_len {
-                    return Err(InvalidJumpTarget {
-                        src_pc: di.offset,
-                        target_pc: *pc_true,
-                        out_of_range: true,
-                    });
-                }
-                if *pc_false >= byte_len {
-                    return Err(InvalidJumpTarget {
-                        src_pc: di.offset,
-                        target_pc: *pc_false,
-                        out_of_range: true,
-                    });
-                }
-                leader[*pc_true as usize] = true;
-                leader_src[*pc_true as usize].get_or_insert(di.offset);
-                leader[*pc_false as usize] = true;
-                leader_src[*pc_false as usize].get_or_insert(di.offset);
-                if end <= byte_len as usize {
-                    leader[end] = true;
-                    leader_src[end].get_or_insert(di.offset);
-                }
+        let op = Opcode::from_u8(di.opcode).expect("decoded instruction opcode must be known");
+
+        let mut err: Option<InvalidJumpTarget> = None;
+        instr_operands::visit_pcs(&di.instr, |target_pc| {
+            if err.is_some() {
+                return;
             }
-            Instr::Jmp { pc_target } => {
-                if *pc_target >= byte_len {
-                    return Err(InvalidJumpTarget {
-                        src_pc: di.offset,
-                        target_pc: *pc_target,
-                        out_of_range: true,
-                    });
-                }
-                leader[*pc_target as usize] = true;
-                leader_src[*pc_target as usize].get_or_insert(di.offset);
-                if end <= byte_len as usize {
-                    leader[end] = true;
-                    leader_src[end].get_or_insert(di.offset);
-                }
+            if target_pc >= byte_len {
+                err = Some(InvalidJumpTarget {
+                    src_pc: di.offset,
+                    target_pc,
+                    out_of_range: true,
+                });
+                return;
             }
-            Instr::Ret { .. } | Instr::Trap { .. } => {
-                if end <= byte_len as usize {
-                    leader[end] = true;
-                    leader_src[end].get_or_insert(di.offset);
-                }
-            }
-            _ => {}
+            leader[target_pc as usize] = true;
+            leader_src[target_pc as usize].get_or_insert(di.offset);
+        });
+        if let Some(err) = err {
+            return Err(err);
+        }
+
+        if op.is_terminator() && end <= byte_len as usize {
+            leader[end] = true;
+            leader_src[end].get_or_insert(di.offset);
         }
     }
 
@@ -169,22 +147,30 @@ pub(crate) fn build_basic_blocks(
         let Some(di) = decoded.get(last) else {
             continue;
         };
+        let op = Opcode::from_u8(di.opcode).expect("decoded instruction opcode must be known");
         let fallthrough = if blocks[i].end_pc < byte_len {
             Some(pc_to_block[blocks[i].end_pc as usize])
         } else {
             None
         };
-        blocks[i].succs = match &di.instr {
-            Instr::Br {
-                pc_true, pc_false, ..
-            } => [
-                Some(pc_to_block[*pc_true as usize]),
-                Some(pc_to_block[*pc_false as usize]),
-            ],
-            Instr::Jmp { pc_target } => [Some(pc_to_block[*pc_target as usize]), None],
-            Instr::Ret { .. } | Instr::Trap { .. } => [None, None],
-            _ => [fallthrough, None],
-        };
+
+        if !op.is_terminator() {
+            blocks[i].succs = [fallthrough, None];
+            continue;
+        }
+
+        let mut pcs: [Option<u32>; 2] = [None, None];
+        let mut pc_len: usize = 0;
+        instr_operands::visit_pcs(&di.instr, |pc| {
+            if pc_len < pcs.len() {
+                pcs[pc_len] = Some(pc);
+                pc_len += 1;
+            }
+        });
+        blocks[i].succs = [
+            pcs[0].map(|pc| pc_to_block[pc as usize]),
+            pcs[1].map(|pc| pc_to_block[pc as usize]),
+        ];
     }
 
     Ok(blocks)
