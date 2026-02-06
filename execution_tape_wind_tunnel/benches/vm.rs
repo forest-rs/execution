@@ -5,8 +5,9 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn};
+use execution_tape::program::Program;
 use execution_tape::program::{Const, ValueType};
-use execution_tape::trace::{TraceEvent, TraceMask, TraceSink};
+use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 
@@ -455,8 +456,12 @@ impl TraceSink for CountingTrace {
         TraceMask::RUN
     }
 
-    fn event(&mut self, _program: &execution_tape::program::Program, _event: TraceEvent<'_>) {
+    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {
         // Intentionally minimal: we want to measure VM overhead, not sink work.
+        self._count = self._count.wrapping_add(1);
+    }
+
+    fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {
         self._count = self._count.wrapping_add(1);
     }
 }
@@ -471,13 +476,28 @@ impl TraceSink for CountingHostScopes {
         TraceMask::HOST
     }
 
-    fn event(&mut self, _program: &execution_tape::program::Program, event: TraceEvent<'_>) {
-        if matches!(
-            event,
-            TraceEvent::ScopeEnter { .. } | TraceEvent::ScopeExit { .. }
-        ) {
-            self._count = self._count.wrapping_add(1);
-        }
+    fn scope_enter(
+        &mut self,
+        _program: &Program,
+        _kind: ScopeKind,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+        self._count = self._count.wrapping_add(1);
+    }
+
+    fn scope_exit(
+        &mut self,
+        _program: &Program,
+        _kind: ScopeKind,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+        self._count = self._count.wrapping_add(1);
     }
 }
 
@@ -491,10 +511,16 @@ impl TraceSink for CountingInstr {
         TraceMask::INSTR
     }
 
-    fn event(&mut self, _program: &execution_tape::program::Program, event: TraceEvent<'_>) {
-        if matches!(event, TraceEvent::Instr { .. }) {
-            self._count = self._count.wrapping_add(1);
-        }
+    fn instr(
+        &mut self,
+        _program: &Program,
+        _func: FuncId,
+        _pc: u32,
+        _next_pc: u32,
+        _span_id: Option<u64>,
+        _opcode: u8,
+    ) {
+        self._count = self._count.wrapping_add(1);
     }
 }
 

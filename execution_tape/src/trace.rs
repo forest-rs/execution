@@ -38,13 +38,28 @@ impl core::ops::BitOrAssign for TraceMask {
 impl TraceMask {
     /// No tracing.
     pub const NONE: Self = Self(0);
-    /// Emit [`TraceEvent::RunStart`] and [`TraceEvent::RunEnd`].
+    /// Trace run boundaries.
+    ///
+    /// Enables:
+    /// - [`TraceSink::run_start`]
+    /// - [`TraceSink::run_end`]
     pub const RUN: Self = Self(1 << 0);
-    /// Emit [`TraceEvent::Instr`] for each executed instruction.
+    /// Trace each executed instruction.
+    ///
+    /// Enables:
+    /// - [`TraceSink::instr`]
     pub const INSTR: Self = Self(1 << 1);
-    /// Emit [`TraceEvent::ScopeEnter`] and [`TraceEvent::ScopeExit`] for call frames.
+    /// Trace call frames.
+    ///
+    /// Enables (for [`ScopeKind::CallFrame`]):
+    /// - [`TraceSink::scope_enter`]
+    /// - [`TraceSink::scope_exit`]
     pub const CALL: Self = Self(1 << 2);
-    /// Emit [`TraceEvent::ScopeEnter`] and [`TraceEvent::ScopeExit`] for host calls.
+    /// Trace host calls.
+    ///
+    /// Enables (for [`ScopeKind::HostCall`]):
+    /// - [`TraceSink::scope_enter`]
+    /// - [`TraceSink::scope_exit`]
     pub const HOST: Self = Self(1 << 3);
 
     /// Returns `true` if this mask includes all bits in `other`.
@@ -73,66 +88,6 @@ pub enum ScopeKind {
     },
 }
 
-/// A trace event emitted by the VM.
-#[derive(Clone, Debug)]
-pub enum TraceEvent<'a> {
-    /// Start of a VM run.
-    RunStart {
-        /// Entry function id.
-        entry: FuncId,
-        /// Number of value arguments passed (not including the effect token).
-        arg_count: usize,
-    },
-    /// A single instruction step.
-    Instr {
-        /// Current function id.
-        func: FuncId,
-        /// Current instruction pc (byte offset).
-        pc: u32,
-        /// Next instruction pc (byte offset).
-        next_pc: u32,
-        /// Best-effort span id for tracing/source mapping.
-        span_id: Option<u64>,
-        /// Opcode byte.
-        opcode: u8,
-    },
-    /// Enter a profiling scope.
-    ///
-    /// Scope events are emitted for:
-    /// - call frames (when [`TraceMask::CALL`] is requested)
-    /// - host calls (when [`TraceMask::HOST`] is requested)
-    ScopeEnter {
-        /// Scope kind.
-        kind: ScopeKind,
-        /// Current stack depth (frames) after entering the scope.
-        depth: usize,
-        /// Function id at the scope boundary.
-        func: FuncId,
-        /// Program counter at the scope boundary.
-        pc: u32,
-        /// Best-effort span id at the scope boundary.
-        span_id: Option<u64>,
-    },
-    /// Exit a profiling scope.
-    ScopeExit {
-        /// Scope kind.
-        kind: ScopeKind,
-        /// Current stack depth (frames) before exiting the scope.
-        depth: usize,
-        /// Function id at the scope boundary.
-        func: FuncId,
-        /// Program counter at the scope boundary.
-        pc: u32,
-        /// Best-effort span id at the scope boundary.
-        span_id: Option<u64>,
-    },
-    /// End of a VM run.
-    RunEnd {
-        /// Run outcome.
-        outcome: TraceOutcome<'a>,
-    },
-}
-
 /// Run outcome for tracing.
 #[derive(Clone, Debug)]
 pub enum TraceOutcome<'a> {
@@ -149,6 +104,87 @@ pub trait TraceSink {
         TraceMask::NONE
     }
 
-    /// Receives a trace event.
-    fn event(&mut self, program: &Program, event: TraceEvent<'_>);
+    /// Called at the start of a VM run.
+    ///
+    /// Called only if `mask()` includes [`TraceMask::RUN`].
+    ///
+    /// - `program`: program being executed (unverified container data)
+    /// - `entry`: entry function id
+    /// - `arg_count`: number of value arguments passed (not including the effect token)
+    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {}
+
+    /// Called for each executed instruction.
+    ///
+    /// Called only if `mask()` includes [`TraceMask::INSTR`].
+    ///
+    /// - `program`: program being executed (unverified container data)
+    /// - `func`: current function id
+    /// - `pc`: current instruction pc (byte offset)
+    /// - `next_pc`: next instruction pc (byte offset)
+    /// - `span_id`: best-effort span id for tracing/source mapping
+    /// - `opcode`: opcode byte
+    fn instr(
+        &mut self,
+        _program: &Program,
+        _func: FuncId,
+        _pc: u32,
+        _next_pc: u32,
+        _span_id: Option<u64>,
+        _opcode: u8,
+    ) {
+    }
+
+    /// Called when entering a profiling scope.
+    ///
+    /// Called only if `mask()` includes:
+    /// - [`TraceMask::CALL`] (for [`ScopeKind::CallFrame`])
+    /// - [`TraceMask::HOST`] (for [`ScopeKind::HostCall`])
+    ///
+    /// - `program`: program being executed (unverified container data)
+    /// - `kind`: the kind of scope being entered
+    /// - `depth`: stack depth (frames) after entering the scope
+    /// - `func`: function id at the scope boundary
+    /// - `pc`: program counter at the scope boundary
+    /// - `span_id`: best-effort span id at the scope boundary
+    fn scope_enter(
+        &mut self,
+        _program: &Program,
+        _kind: ScopeKind,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+    }
+
+    /// Called when exiting a profiling scope.
+    ///
+    /// Called only if `mask()` includes:
+    /// - [`TraceMask::CALL`] (for [`ScopeKind::CallFrame`])
+    /// - [`TraceMask::HOST`] (for [`ScopeKind::HostCall`])
+    ///
+    /// - `program`: program being executed (unverified container data)
+    /// - `kind`: the kind of scope being exited
+    /// - `depth`: stack depth (frames) before exiting the scope
+    /// - `func`: function id at the scope boundary
+    /// - `pc`: program counter at the scope boundary
+    /// - `span_id`: best-effort span id at the scope boundary
+    fn scope_exit(
+        &mut self,
+        _program: &Program,
+        _kind: ScopeKind,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+    }
+
+    /// Called at the end of a VM run.
+    ///
+    /// Called only if `mask()` includes [`TraceMask::RUN`].
+    ///
+    /// - `program`: program being executed (unverified container data)
+    /// - `outcome`: whether the run ended successfully or trapped
+    fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {}
 }

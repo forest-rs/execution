@@ -16,7 +16,7 @@ use crate::arena::{BytesHandle, StrHandle, ValueArena};
 use crate::host::{Host, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
-use crate::trace::{ScopeKind, TraceEvent, TraceMask, TraceOutcome, TraceSink};
+use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, StrReg, U64Reg,
     UnitReg, VReg, VerifiedFunction, VerifiedInstr,
@@ -329,13 +329,8 @@ impl<H: Host> Vm<H> {
         if trace_mask.contains(TraceMask::RUN)
             && let Some(t) = trace.as_mut()
         {
-            t.event(
-                program_ref,
-                TraceEvent::RunStart {
-                    entry,
-                    arg_count: args.len(),
-                },
-            );
+            let t: &mut dyn TraceSink = &mut **t;
+            t.run_start(program_ref, entry, args.len());
         }
 
         let result = self.run_body(ctx, program, entry, args, trace_mask, &mut trace);
@@ -347,7 +342,8 @@ impl<H: Host> Vm<H> {
                 Ok(_) => TraceOutcome::Ok,
                 Err(e) => TraceOutcome::Trap(e),
             };
-            t.event(program_ref, TraceEvent::RunEnd { outcome });
+            let t: &mut dyn TraceSink = &mut **t;
+            t.run_end(program_ref, outcome);
         }
 
         result
@@ -399,15 +395,13 @@ impl<H: Host> Vm<H> {
             && let Some(t) = trace.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
-            t.event(
+            t.scope_enter(
                 program_ref,
-                TraceEvent::ScopeEnter {
-                    kind: ScopeKind::CallFrame { func: entry },
-                    depth: ctx.frames.len(),
-                    func: entry,
-                    pc: 0,
-                    span_id: ctx.span_at(program_ref, entry, 0),
-                },
+                ScopeKind::CallFrame { func: entry },
+                ctx.frames.len(),
+                entry,
+                0,
+                ctx.span_at(program_ref, entry, 0),
             );
         }
 
@@ -450,16 +444,7 @@ impl<H: Host> Vm<H> {
                 && let Some(t) = trace.as_mut()
             {
                 let t: &mut dyn TraceSink = &mut **t;
-                t.event(
-                    program_ref,
-                    TraceEvent::Instr {
-                        func: func_id,
-                        pc,
-                        next_pc,
-                        span_id,
-                        opcode,
-                    },
-                );
+                t.instr(program_ref, func_id, pc, next_pc, span_id, opcode);
             }
 
             // Default fallthrough: advance to the next decoded instruction.
@@ -1190,15 +1175,13 @@ impl<H: Host> Vm<H> {
                         && let Some(t) = trace.as_mut()
                     {
                         let t: &mut dyn TraceSink = &mut **t;
-                        t.event(
+                        t.scope_enter(
                             program_ref,
-                            TraceEvent::ScopeEnter {
-                                kind: ScopeKind::CallFrame { func: *callee },
-                                depth: ctx.frames.len(),
-                                func: *callee,
-                                pc: 0,
-                                span_id: ctx.span_at(program_ref, *callee, 0),
-                            },
+                            ScopeKind::CallFrame { func: *callee },
+                            ctx.frames.len(),
+                            *callee,
+                            0,
+                            ctx.span_at(program_ref, *callee, 0),
                         );
                     }
 
@@ -1213,15 +1196,13 @@ impl<H: Host> Vm<H> {
                         && let Some(t) = trace.as_mut()
                     {
                         let t: &mut dyn TraceSink = &mut **t;
-                        t.event(
+                        t.scope_exit(
                             program_ref,
-                            TraceEvent::ScopeExit {
-                                kind: ScopeKind::CallFrame { func: func_id },
-                                depth: ctx.frames.len(),
-                                func: func_id,
-                                pc,
-                                span_id,
-                            },
+                            ScopeKind::CallFrame { func: func_id },
+                            ctx.frames.len(),
+                            func_id,
+                            pc,
+                            span_id,
                         );
                     }
 
@@ -1307,19 +1288,17 @@ impl<H: Host> Vm<H> {
                         && let Some(t) = trace.as_mut()
                     {
                         let t: &mut dyn TraceSink = &mut **t;
-                        t.event(
+                        t.scope_enter(
                             program_ref,
-                            TraceEvent::ScopeEnter {
-                                kind: ScopeKind::HostCall {
-                                    host_sig: *host_sig,
-                                    symbol: hs.symbol,
-                                    sig_hash: hs.sig_hash,
-                                },
-                                depth: ctx.frames.len(),
-                                func: func_id,
-                                pc,
-                                span_id,
+                            ScopeKind::HostCall {
+                                host_sig: *host_sig,
+                                symbol: hs.symbol,
+                                sig_hash: hs.sig_hash,
                             },
+                            ctx.frames.len(),
+                            func_id,
+                            pc,
+                            span_id,
                         );
                     }
 
@@ -1333,19 +1312,17 @@ impl<H: Host> Vm<H> {
                         && let Some(t) = trace.as_mut()
                     {
                         let t: &mut dyn TraceSink = &mut **t;
-                        t.event(
+                        t.scope_exit(
                             program_ref,
-                            TraceEvent::ScopeExit {
-                                kind: ScopeKind::HostCall {
-                                    host_sig: *host_sig,
-                                    symbol: hs.symbol,
-                                    sig_hash: hs.sig_hash,
-                                },
-                                depth: ctx.frames.len(),
-                                func: func_id,
-                                pc,
-                                span_id,
+                            ScopeKind::HostCall {
+                                host_sig: *host_sig,
+                                symbol: hs.symbol,
+                                sig_hash: hs.sig_hash,
                             },
+                            ctx.frames.len(),
+                            func_id,
+                            pc,
+                            span_id,
                         );
                     }
 
@@ -2390,7 +2367,7 @@ mod tests {
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
     use crate::host::{HostSig, SigHash};
     use crate::program::{Program, ValueType};
-    use crate::trace::{TraceEvent, TraceMask, TraceOutcome, TraceSink};
+    use crate::trace::{TraceMask, TraceOutcome, TraceSink};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -2447,16 +2424,25 @@ mod tests {
                 TraceMask::RUN | TraceMask::INSTR
             }
 
-            fn event(&mut self, _program: &Program, event: TraceEvent<'_>) {
-                match event {
-                    TraceEvent::RunStart { .. } => self.starts += 1,
-                    TraceEvent::Instr { opcode, .. } => self.instrs.push(opcode),
-                    TraceEvent::RunEnd { outcome } => {
-                        self.ends += 1;
-                        assert!(matches!(outcome, TraceOutcome::Ok));
-                    }
-                    _ => {}
-                }
+            fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {
+                self.starts += 1;
+            }
+
+            fn instr(
+                &mut self,
+                _program: &Program,
+                _func: FuncId,
+                _pc: u32,
+                _next_pc: u32,
+                _span_id: Option<u64>,
+                opcode: u8,
+            ) {
+                self.instrs.push(opcode);
+            }
+
+            fn run_end(&mut self, _program: &Program, outcome: TraceOutcome<'_>) {
+                self.ends += 1;
+                assert!(matches!(outcome, TraceOutcome::Ok));
             }
         }
 
