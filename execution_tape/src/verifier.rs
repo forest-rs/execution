@@ -2154,158 +2154,8 @@ fn validate_instr_reads_writes(
         Ok(())
     };
 
+    // Instruction-specific invariants that are *not* captured by the generic read/write sets.
     match instr {
-        Instr::Nop => {}
-        Instr::Mov { dst, src } => {
-            require_init(*src, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::Trap { .. } => {}
-
-        Instr::ConstUnit { dst }
-        | Instr::ConstBool { dst, .. }
-        | Instr::ConstI64 { dst, .. }
-        | Instr::ConstU64 { dst, .. }
-        | Instr::ConstF64 { dst, .. }
-        | Instr::ConstDecimal { dst, .. }
-        | Instr::ConstPool { dst, .. } => {
-            write_reg(*dst, state)?;
-        }
-
-        Instr::DecAdd { dst, a, b } | Instr::DecSub { dst, a, b } | Instr::DecMul { dst, a, b } => {
-            require_init(*a, state)?;
-            require_init(*b, state)?;
-            write_reg(*dst, state)?;
-        }
-
-        Instr::F64Add { dst, a, b }
-        | Instr::F64Sub { dst, a, b }
-        | Instr::F64Mul { dst, a, b }
-        | Instr::F64Div { dst, a, b }
-        | Instr::F64Min { dst, a, b }
-        | Instr::F64Max { dst, a, b }
-        | Instr::F64MinNum { dst, a, b }
-        | Instr::F64MaxNum { dst, a, b }
-        | Instr::F64Rem { dst, a, b } => {
-            require_init(*a, state)?;
-            require_init(*b, state)?;
-            write_reg(*dst, state)?;
-        }
-
-        Instr::I64Add { dst, a, b }
-        | Instr::I64Sub { dst, a, b }
-        | Instr::I64Mul { dst, a, b }
-        | Instr::I64Div { dst, a, b }
-        | Instr::I64Rem { dst, a, b }
-        | Instr::U64Add { dst, a, b }
-        | Instr::U64Sub { dst, a, b }
-        | Instr::U64Mul { dst, a, b }
-        | Instr::U64Div { dst, a, b }
-        | Instr::U64Rem { dst, a, b }
-        | Instr::U64And { dst, a, b }
-        | Instr::U64Or { dst, a, b }
-        | Instr::U64Xor { dst, a, b }
-        | Instr::U64Shl { dst, a, b }
-        | Instr::U64Shr { dst, a, b }
-        | Instr::I64And { dst, a, b }
-        | Instr::I64Or { dst, a, b }
-        | Instr::I64Xor { dst, a, b }
-        | Instr::I64Shl { dst, a, b }
-        | Instr::I64Shr { dst, a, b }
-        | Instr::I64Eq { dst, a, b }
-        | Instr::I64Lt { dst, a, b }
-        | Instr::U64Eq { dst, a, b }
-        | Instr::U64Lt { dst, a, b }
-        | Instr::F64Eq { dst, a, b }
-        | Instr::F64Lt { dst, a, b }
-        | Instr::F64Gt { dst, a, b }
-        | Instr::F64Le { dst, a, b }
-        | Instr::F64Ge { dst, a, b }
-        | Instr::BoolAnd { dst, a, b }
-        | Instr::BoolOr { dst, a, b }
-        | Instr::BoolXor { dst, a, b }
-        | Instr::BytesEq { dst, a, b }
-        | Instr::StrEq { dst, a, b }
-        | Instr::BytesConcat { dst, a, b }
-        | Instr::StrConcat { dst, a, b } => {
-            require_init(*a, state)?;
-            require_init(*b, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::U64Gt { dst, a, b }
-        | Instr::U64Le { dst, a, b }
-        | Instr::U64Ge { dst, a, b }
-        | Instr::I64Gt { dst, a, b }
-        | Instr::I64Le { dst, a, b }
-        | Instr::I64Ge { dst, a, b } => {
-            require_init(*a, state)?;
-            require_init(*b, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::BoolNot { dst, a }
-        | Instr::F64Neg { dst, a }
-        | Instr::F64Abs { dst, a }
-        | Instr::U64ToI64 { dst, a }
-        | Instr::I64ToU64 { dst, a }
-        | Instr::I64ToF64 { dst, a }
-        | Instr::U64ToF64 { dst, a }
-        | Instr::F64ToI64 { dst, a }
-        | Instr::F64ToU64 { dst, a }
-        | Instr::F64ToBits { dst, a }
-        | Instr::F64FromBits { dst, a }
-        | Instr::DecToI64 { dst, a }
-        | Instr::DecToU64 { dst, a }
-        | Instr::StrToBytes { dst, s: a }
-        | Instr::BytesToStr { dst, bytes: a } => {
-            require_init(*a, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::I64ToDec { dst, a, .. } | Instr::U64ToDec { dst, a, .. } => {
-            require_init(*a, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::BytesGet { dst, bytes, index } => {
-            require_init(*bytes, state)?;
-            require_init(*index, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::BytesGetImm { dst, bytes, .. } => {
-            require_init(*bytes, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::BytesSlice {
-            dst,
-            bytes,
-            start,
-            end,
-        } => {
-            require_init(*bytes, state)?;
-            require_init(*start, state)?;
-            require_init(*end, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::StrSlice { dst, s, start, end } => {
-            require_init(*s, state)?;
-            require_init(*start, state)?;
-            require_init(*end, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::Select { dst, cond, a, b } => {
-            require_init(*cond, state)?;
-            require_init(*a, state)?;
-            require_init(*b, state)?;
-            write_reg(*dst, state)?;
-        }
-
-        Instr::Br {
-            cond,
-            pc_true: _,
-            pc_false: _,
-        } => {
-            require_init(*cond, state)?;
-        }
-        Instr::Jmp { .. } => {}
-
         Instr::Call {
             eff_out,
             func_id: callee,
@@ -2315,10 +2165,7 @@ fn validate_instr_reads_writes(
         } => {
             require_eff_in_r0(*eff_in)?;
             require_eff_out_r0(*eff_out)?;
-            require_init(*eff_in, state)?;
-            for &a in args {
-                require_init(a, state)?;
-            }
+
             // Signature check (counts only for now).
             let callee = &program.functions[callee.0 as usize];
             if u32::try_from(args.len()).ok() != Some(callee.arg_count)
@@ -2326,20 +2173,13 @@ fn validate_instr_reads_writes(
             {
                 return Err(VerifyError::CallArityMismatch { func: func_id, pc });
             }
-            write_reg(*eff_out, state)?;
-            for &r in rets {
-                write_reg(r, state)?;
-            }
         }
-
         Instr::Ret { eff_in, rets } => {
             require_eff_in_r0(*eff_in)?;
-            require_init(*eff_in, state)?;
-            for &r in rets {
-                require_init(r, state)?;
+            if u32::try_from(rets.len()).ok() != Some(func.ret_count) {
+                return Err(VerifyError::ReturnArityMismatch { func: func_id, pc });
             }
         }
-
         Instr::HostCall {
             eff_out,
             host_sig,
@@ -2349,10 +2189,7 @@ fn validate_instr_reads_writes(
         } => {
             require_eff_in_r0(*eff_in)?;
             require_eff_out_r0(*eff_out)?;
-            require_init(*eff_in, state)?;
-            for &a in args {
-                require_init(a, state)?;
-            }
+
             let hs = program
                 .host_sig(*host_sig)
                 .expect("validated by verify_id_operands_in_bounds");
@@ -2375,67 +2212,16 @@ fn validate_instr_reads_writes(
             if args.len() != hs_args.len() || rets.len() != hs_rets.len() {
                 return Err(VerifyError::HostCallArityMismatch { func: func_id, pc });
             }
-            write_reg(*eff_out, state)?;
-            for &r in rets {
-                write_reg(r, state)?;
-            }
         }
+        _ => {}
+    }
 
-        Instr::TupleNew { dst, values } => {
-            for &v in values {
-                require_init(v, state)?;
-            }
-            write_reg(*dst, state)?;
-        }
-        Instr::TupleGet { dst, tuple, .. } => {
-            require_init(*tuple, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::TupleLen { dst, tuple } => {
-            require_init(*tuple, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::StructNew { dst, values, .. } => {
-            for &v in values {
-                require_init(v, state)?;
-            }
-            write_reg(*dst, state)?;
-        }
-        Instr::StructGet { dst, st, .. } => {
-            require_init(*st, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::StructFieldCount { dst, st } => {
-            require_init(*st, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::ArrayNew { dst, values, .. } => {
-            for &v in values {
-                require_init(v, state)?;
-            }
-            write_reg(*dst, state)?;
-        }
-        Instr::ArrayLen { dst, arr } => {
-            require_init(*arr, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::ArrayGet { dst, arr, index } => {
-            require_init(*arr, state)?;
-            require_init(*index, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::ArrayGetImm { dst, arr, .. } => {
-            require_init(*arr, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::BytesLen { dst, bytes } => {
-            require_init(*bytes, state)?;
-            write_reg(*dst, state)?;
-        }
-        Instr::StrLen { dst, s } => {
-            require_init(*s, state)?;
-            write_reg(*dst, state)?;
-        }
+    // Generic init-before-use + writes-only transfer.
+    for r in instr.reads() {
+        require_init(r, state)?;
+    }
+    for w in instr.writes() {
+        write_reg(w, state)?;
     }
 
     Ok(())
