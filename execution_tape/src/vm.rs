@@ -334,6 +334,95 @@ impl<H: Host> fmt::Debug for Vm<H> {
     }
 }
 
+/// Stack-only helper that centralizes trace mask checks and sink dispatch.
+///
+/// Keeping this out of [`ExecutionContext`] avoids storing borrowed trace state in the long-lived
+/// per-run context while still flattening VM hot-loop tracing code.
+struct TraceCtx<'a> {
+    mask: TraceMask,
+    sink: Option<&'a mut dyn TraceSink>,
+}
+
+impl<'a> TraceCtx<'a> {
+    #[inline]
+    fn new(mask: TraceMask, sink: Option<&'a mut dyn TraceSink>) -> Self {
+        Self { mask, sink }
+    }
+
+    #[inline(always)]
+    fn enabled(&self, mask: TraceMask) -> bool {
+        self.mask.contains(mask) && self.sink.is_some()
+    }
+
+    #[inline]
+    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+        if self.enabled(TraceMask::RUN)
+            && let Some(t) = self.sink.as_mut()
+        {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.run_start(program, entry, arg_count);
+        }
+    }
+
+    #[inline]
+    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        if self.enabled(TraceMask::RUN)
+            && let Some(t) = self.sink.as_mut()
+        {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.run_end(program, outcome);
+        }
+    }
+
+    #[inline]
+    fn instr(
+        &mut self,
+        program: &Program,
+        func: FuncId,
+        pc: u32,
+        next_pc: u32,
+        span_id: Option<u64>,
+        opcode: u8,
+    ) {
+        if let Some(t) = self.sink.as_mut() {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.instr(program, func, pc, next_pc, span_id, opcode);
+        }
+    }
+
+    #[inline]
+    fn scope_enter(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        if let Some(t) = self.sink.as_mut() {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.scope_enter(program, kind, depth, func, pc, span_id);
+        }
+    }
+
+    #[inline]
+    fn scope_exit(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        if let Some(t) = self.sink.as_mut() {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.scope_exit(program, kind, depth, func, pc, span_id);
+        }
+    }
+}
+
 impl<H: Host> Vm<H> {
     /// Creates a new VM with `host` and `limits`.
     #[must_use]
@@ -377,28 +466,19 @@ impl<H: Host> Vm<H> {
         entry: FuncId,
         args: &[Value],
         trace_mask: TraceMask,
-        mut trace: Option<&mut dyn TraceSink>,
+        trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let program_ref = program.program();
-        if trace_mask.contains(TraceMask::RUN)
-            && let Some(t) = trace.as_mut()
-        {
-            let t: &mut dyn TraceSink = &mut **t;
-            t.run_start(program_ref, entry, args.len());
-        }
+        let mut trace = TraceCtx::new(trace_mask, trace);
+        trace.run_start(program_ref, entry, args.len());
 
-        let result = self.run_body(ctx, program, entry, args, trace_mask, &mut trace);
+        let result = self.run_body(ctx, program, entry, args, &mut trace);
 
-        if trace_mask.contains(TraceMask::RUN)
-            && let Some(t) = trace.as_mut()
-        {
-            let outcome = match &result {
-                Ok(_) => TraceOutcome::Ok,
-                Err(e) => TraceOutcome::Trap(e),
-            };
-            let t: &mut dyn TraceSink = &mut **t;
-            t.run_end(program_ref, outcome);
-        }
+        let outcome = match &result {
+            Ok(_) => TraceOutcome::Ok,
+            Err(e) => TraceOutcome::Trap(e),
+        };
+        trace.run_end(program_ref, outcome);
 
         result
     }
@@ -409,12 +489,14 @@ impl<H: Host> Vm<H> {
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
-        trace_mask: TraceMask,
-        trace: &mut Option<&mut dyn TraceSink>,
+        trace: &mut TraceCtx<'_>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
+        let trace_instr = trace.enabled(TraceMask::INSTR);
+        let trace_call = trace.enabled(TraceMask::CALL);
+        let trace_host = trace.enabled(TraceMask::HOST);
         ctx.reset(self.limits.fuel);
 
         let entry_fn = program_ref
@@ -442,11 +524,8 @@ impl<H: Host> Vm<H> {
             return_to: None,
         });
 
-        if trace_mask.contains(TraceMask::CALL)
-            && let Some(t) = trace.as_mut()
-        {
-            let t: &mut dyn TraceSink = &mut **t;
-            t.scope_enter(
+        if trace_call {
+            trace.scope_enter(
                 program_ref,
                 ScopeKind::CallFrame { func: entry },
                 ctx.frames.len(),
@@ -491,11 +570,8 @@ impl<H: Host> Vm<H> {
             );
             let next_instr_ix = instr_ix.saturating_add(1);
 
-            if trace_mask.contains(TraceMask::INSTR)
-                && let Some(t) = trace.as_mut()
-            {
-                let t: &mut dyn TraceSink = &mut **t;
-                t.instr(program_ref, func_id, pc, next_pc, span_id, opcode);
+            if trace_instr {
+                trace.instr(program_ref, func_id, pc, next_pc, span_id, opcode);
             }
 
             // Default fallthrough: advance to the next decoded instruction.
@@ -1227,11 +1303,8 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if trace_mask.contains(TraceMask::CALL)
-                        && let Some(t) = trace.as_mut()
-                    {
-                        let t: &mut dyn TraceSink = &mut **t;
-                        t.scope_enter(
+                    if trace_call {
+                        trace.scope_enter(
                             program_ref,
                             ScopeKind::CallFrame { func: *callee },
                             ctx.frames.len(),
@@ -1248,11 +1321,8 @@ impl<H: Host> Vm<H> {
                 }
 
                 VerifiedInstr::Ret { eff_in: _, rets } => {
-                    if trace_mask.contains(TraceMask::CALL)
-                        && let Some(t) = trace.as_mut()
-                    {
-                        let t: &mut dyn TraceSink = &mut **t;
-                        t.scope_exit(
+                    if trace_call {
+                        trace.scope_exit(
                             program_ref,
                             ScopeKind::CallFrame { func: func_id },
                             ctx.frames.len(),
@@ -1361,11 +1431,8 @@ impl<H: Host> Vm<H> {
                         );
                     }
 
-                    if trace_mask.contains(TraceMask::HOST)
-                        && let Some(t) = trace.as_mut()
-                    {
-                        let t: &mut dyn TraceSink = &mut **t;
-                        t.scope_enter(
+                    if trace_host {
+                        trace.scope_enter(
                             program_ref,
                             ScopeKind::HostCall {
                                 host_sig: *host_sig,
@@ -1385,11 +1452,8 @@ impl<H: Host> Vm<H> {
                             .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
-                    if trace_mask.contains(TraceMask::HOST)
-                        && let Some(t) = trace.as_mut()
-                    {
-                        let t: &mut dyn TraceSink = &mut **t;
-                        t.scope_exit(
+                    if trace_host {
+                        trace.scope_exit(
                             program_ref,
                             ScopeKind::HostCall {
                                 host_sig: *host_sig,
