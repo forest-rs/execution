@@ -788,6 +788,8 @@ pub(crate) struct VerifiedFunction {
     ///
     /// This is precomputed by the verifier from the function span table so VM execution can do
     /// O(1) span lookup in hot paths.
+    ///
+    /// TODO: Remove this once execution instructions are introduced.
     pub(crate) span_by_instr_ix: Vec<Option<u64>>,
 }
 
