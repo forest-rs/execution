@@ -360,11 +360,6 @@ pub(crate) enum Instr {
     BytesToStr { dst: u32, bytes: u32 },
 }
 
-impl Instr {
-    // Generated impls for `reads()`/`writes()`; single source of truth is
-    // `execution_tape/opcodes.json` operand `access` metadata.
-}
-
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ReadsIter<'a> {
     pub(crate) prefix: [u32; 3],
@@ -498,6 +493,7 @@ impl Iterator for WritesIter<'_> {
 }
 
 // Generated impls for `Instr::reads()`/`Instr::writes()`.
+include!("bytecode_instr_gen.rs");
 include!("bytecode_reads_writes_gen.rs");
 
 /// Decodes `bytes` into a list of instructions.
@@ -577,9 +573,10 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-	use crate::program::HostSigId;
-	use crate::program::{ConstId, ElemTypeId, TypeId};
-	use crate::value::FuncId;
+    use crate::opcode::Opcode;
+    use crate::program::HostSigId;
+    use crate::program::{ConstId, ElemTypeId, TypeId};
+    use crate::value::FuncId;
 
     #[test]
     fn opcode_schema_matches_decoded_instr_shape_for_smoke_set() {

@@ -114,6 +114,18 @@ impl VerifiedProgram {
 pub enum VerifyError {
     /// The program failed to decode.
     Decode(DecodeError),
+    /// Internal error: opcode schema does not match the decoded instruction shape.
+    ///
+    /// This should never occur for valid `execution_tape` builds, and indicates drift between
+    /// opcode metadata and the bytecode decoder.
+    InternalOpcodeSchemaMismatch {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Opcode byte.
+        opcode: u8,
+    },
     /// A function references an out-of-bounds byte range.
     FunctionBytecodeOutOfBounds {
         /// Function index within the program.
@@ -437,6 +449,10 @@ impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Decode(e) => write!(f, "decode failed: {e}"),
+            Self::InternalOpcodeSchemaMismatch { func, pc, opcode } => write!(
+                f,
+                "internal opcode schema mismatch: function {func} pc={pc} opcode=0x{opcode:02X}"
+            ),
             Self::FunctionBytecodeOutOfBounds { func } => {
                 write!(f, "function {func} bytecode out of bounds")
             }
