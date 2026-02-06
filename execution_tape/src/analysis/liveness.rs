@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Backwards liveness analysis for bytecode.
+//!
+//! We currently track liveness only for "general" registers (`RegId != 0`). Register 0 is reserved
+//! by convention (effect token plumbing), and treating it as a normal value reg would add noise to
+//! liveness results without enabling useful optimizations.
 
 extern crate alloc;
 
@@ -9,6 +13,7 @@ use alloc::vec::Vec;
 
 use crate::analysis::bitset::BitSet;
 use crate::analysis::cfg::BasicBlock;
+use crate::analysis::dataflow;
 use crate::bytecode::DecodedInstr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,41 +64,21 @@ pub(crate) fn compute_liveness(
 ) -> Liveness {
     let (use_sets, def_sets) = compute_use_def(reg_count, decoded, blocks);
 
-    let mut live_in: Vec<BitSet> = (0..blocks.len())
-        .map(|_| BitSet::new_empty(reg_count))
-        .collect();
-    let mut live_out: Vec<BitSet> = (0..blocks.len())
-        .map(|_| BitSet::new_empty(reg_count))
-        .collect();
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for b_idx in (0..blocks.len()).rev() {
-            if !reachable.get(b_idx).copied().unwrap_or(false) {
-                continue;
-            }
-
-            let mut out = BitSet::new_empty(reg_count);
-            for succ in blocks[b_idx].succs.iter().copied().flatten() {
-                out.union_with(&live_in[succ]);
-            }
-
+    let bottom = BitSet::new_empty(reg_count);
+    let (live_in, live_out) = dataflow::solve_backward(
+        blocks,
+        reachable,
+        bottom,
+        |acc, succ_in| acc.union_with(succ_in),
+        |b_idx, _b, out_state| {
+            // IN = USE ∪ (OUT \ DEF)
             let mut in_set = use_sets[b_idx].clone();
-            let mut tmp = out.clone();
+            let mut tmp = out_state.clone();
             tmp.subtract_with(&def_sets[b_idx]);
             in_set.union_with(&tmp);
-
-            if out != live_out[b_idx] {
-                live_out[b_idx] = out;
-                changed = true;
-            }
-            if in_set != live_in[b_idx] {
-                live_in[b_idx] = in_set;
-                changed = true;
-            }
-        }
-    }
+            in_set
+        },
+    );
 
     Liveness { live_in, live_out }
 }
