@@ -59,6 +59,7 @@ impl Instr {
             Self::Call { .. } => Opcode::Call,
             Self::Ret { .. } => Opcode::Ret,
             Self::HostCall { .. } => Opcode::HostCall,
+            Self::ConstFunc { .. } => Opcode::ConstFunc,
             Self::TupleNew { .. } => Opcode::TupleNew,
             Self::TupleGet { .. } => Opcode::TupleGet,
             Self::StructNew { .. } => Opcode::StructNew,

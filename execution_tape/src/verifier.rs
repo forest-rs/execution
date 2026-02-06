@@ -240,6 +240,17 @@ pub enum VerifyError {
         /// Byte offset of the instruction.
         pc: u32,
     },
+    /// An instruction references an out-of-bounds function id.
+    ///
+    /// This applies to any instruction carrying a `FuncId` immediate (e.g. `call`, `const.func`).
+    FuncIdOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Referenced function id.
+        func_id: u32,
+    },
     /// A `struct_new` references an unknown struct `type_id`.
     StructTypeOutOfBounds {
         /// Function index within the program.
@@ -513,6 +524,12 @@ impl fmt::Display for VerifyError {
             }
             Self::HostCallArityMismatch { func, pc } => {
                 write!(f, "function {func} pc={pc} host_call arity mismatch")
+            }
+            Self::FuncIdOutOfBounds { func, pc, func_id } => {
+                write!(
+                    f,
+                    "function {func} pc={pc} function id out of bounds: func#{func_id}"
+                )
             }
             Self::StructTypeOutOfBounds { func, pc, type_id } => {
                 write!(
@@ -910,7 +927,11 @@ fn verify_id_operands_in_bounds(
                 return;
             }
             if program.functions.get(id.0 as usize).is_none() {
-                err = Some(VerifyError::CallArityMismatch { func, pc });
+                err = Some(VerifyError::FuncIdOutOfBounds {
+                    func,
+                    pc,
+                    func_id: id.0,
+                });
             }
         });
 
@@ -1302,6 +1323,12 @@ fn verify_function_bytecode(
                 _ => Err(unstable(reg)),
             }
         };
+        let map_func = |reg: u32| -> Result<FuncReg, VerifyError> {
+            match map(reg)? {
+                VReg::Func(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
 
         let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
             let start = operands.len();
@@ -1365,6 +1392,10 @@ fn verify_function_bytecode(
                 dst: map_decimal(*dst)?,
                 mantissa: *mantissa,
                 scale: *scale,
+            },
+            Instr::ConstFunc { dst, func_id } => VerifiedInstr::ConstFunc {
+                dst: map_func(*dst)?,
+                func_id: *func_id,
             },
 
             Instr::ConstPool { dst, idx } => {
@@ -2373,6 +2404,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         Instr::ConstU64 { dst, .. } => set_value(state, *dst, ValueType::U64),
         Instr::ConstF64 { dst, .. } => set_value(state, *dst, ValueType::F64),
         Instr::ConstDecimal { dst, .. } => set_value(state, *dst, ValueType::Decimal),
+        Instr::ConstFunc { dst, .. } => set_value(state, *dst, ValueType::Func),
         Instr::ConstPool { dst, idx } => {
             let t = program
                 .const_pool
@@ -2738,7 +2770,8 @@ fn validate_instr_types(
         | Instr::ConstI64 { .. }
         | Instr::ConstU64 { .. }
         | Instr::ConstF64 { .. }
-        | Instr::ConstDecimal { .. } => {}
+        | Instr::ConstDecimal { .. }
+        | Instr::ConstFunc { .. } => {}
         Instr::ConstPool { .. } => {}
         Instr::DecAdd { a, b, .. } | Instr::DecSub { a, b, .. } | Instr::DecMul { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::Decimal)?;
@@ -3687,6 +3720,44 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::CallArityMismatch { func: 0, pc: 0 })
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_func_id_out_of_bounds() {
+        let caller = FunctionDef {
+            arg_types: vec![],
+            ret_types: vec![],
+            reg_count: 2,
+            bytecode: {
+                let mut a = Asm::new();
+                a.call(0, FuncId(99), 0, &[], &[]);
+                a.ret(0, &[]);
+                a.finish().unwrap()
+            },
+            spans: vec![],
+        };
+        let callee0 = FunctionDef {
+            arg_types: vec![],
+            ret_types: vec![],
+            reg_count: 1,
+            bytecode: vec![],
+            spans: vec![],
+        };
+        let p = Program::new(
+            vec![],
+            vec![Const::Unit],
+            vec![],
+            TypeTableDef::default(),
+            vec![caller, callee0],
+        );
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::FuncIdOutOfBounds {
+                func: 0,
+                pc: 0,
+                func_id: 99
+            })
         );
     }
 

@@ -765,6 +765,14 @@ impl Asm {
         self
     }
 
+    /// Encodes `const.func dst, func_id`.
+    pub fn const_func(&mut self, dst: u32, func_id: FuncId) -> &mut Self {
+        self.opcode(Opcode::ConstFunc);
+        self.reg(dst);
+        self.uleb(func_id.0);
+        self
+    }
+
     /// Encodes `dec_add dst, a, b`.
     pub fn dec_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::DecAdd);

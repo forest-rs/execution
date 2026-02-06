@@ -212,6 +212,10 @@ pub(crate) enum VerifiedInstr {
         mantissa: i64,
         scale: u8,
     },
+    ConstFunc {
+        dst: FuncReg,
+        func_id: FuncId,
+    },
 
     ConstPoolUnit {
         dst: UnitReg,

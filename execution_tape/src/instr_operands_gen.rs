@@ -30,8 +30,14 @@ pub(crate) fn visit_const_ids(instr: &Instr, mut f: impl FnMut(ConstId)) {
 
 #[rustfmt::skip]
 pub(crate) fn visit_func_ids(instr: &Instr, mut f: impl FnMut(FuncId)) {
-    if let Instr::Call { func_id, .. } = instr {
-        f(*func_id);
+    match instr {
+        Instr::Call { func_id, .. } => {
+            f(*func_id);
+        }
+        Instr::ConstFunc { func_id, .. } => {
+            f(*func_id);
+        }
+        _ => {}
     }
 }
 

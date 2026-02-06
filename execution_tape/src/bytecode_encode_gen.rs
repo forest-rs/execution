@@ -346,6 +346,12 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
+        Instr::ConstFunc { dst, func_id } => {
+            out.push(Opcode::ConstFunc as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, func_id.0);
+            Ok(())
+        },
         Instr::TupleNew { dst, values } => {
             out.push(Opcode::TupleNew as u8);
             crate::codec_primitives::write_reg(out, *dst);

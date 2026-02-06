@@ -485,6 +485,14 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 rets,
             }
         },
+        Opcode::ConstFunc => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let func_id = FuncId(crate::codec_primitives::read_u32_uleb(r)?);
+            Instr::ConstFunc {
+                dst,
+                func_id,
+            }
+        },
         Opcode::TupleNew => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let values = crate::codec_primitives::read_reg_list(r)?;

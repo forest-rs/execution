@@ -111,6 +111,8 @@ pub(crate) enum Instr {
     ConstDecimal { dst: u32, mantissa: i64, scale: u8 },
     /// `dst = const_pool[idx]`.
     ConstPool { dst: u32, idx: ConstId },
+    /// `dst = func#func_id`.
+    ConstFunc { dst: u32, func_id: FuncId },
 
     /// `dst = a + b` ([`Decimal`]).
     DecAdd { dst: u32, a: u32, b: u32 },
@@ -604,6 +606,13 @@ mod tests {
                     idx: ConstId(0),
                 },
             ),
+            (
+                Opcode::ConstFunc,
+                Instr::ConstFunc {
+                    dst: 1,
+                    func_id: FuncId(0),
+                },
+            ),
             (Opcode::I64Add, Instr::I64Add { dst: 1, a: 2, b: 3 }),
             (Opcode::BoolNot, Instr::BoolNot { dst: 1, a: 2 }),
             (
@@ -783,6 +792,16 @@ mod tests {
     }
 
     #[test]
+    fn reads_and_writes_for_const_func() {
+        let i = Instr::ConstFunc {
+            dst: 3,
+            func_id: FuncId(7),
+        };
+        assert_eq!(i.reads().collect::<Vec<_>>(), vec![]);
+        assert_eq!(i.writes().collect::<Vec<_>>(), vec![3]);
+    }
+
+    #[test]
     fn encode_decode_roundtrip_for_smoke_set() {
         let smoke: Vec<Instr> = vec![
             Instr::Nop,
@@ -804,6 +823,10 @@ mod tests {
             Instr::ConstPool {
                 dst: 1,
                 idx: ConstId(0),
+            },
+            Instr::ConstFunc {
+                dst: 2,
+                func_id: FuncId(1),
             },
             Instr::Br {
                 cond: 1,

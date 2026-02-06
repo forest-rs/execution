@@ -266,6 +266,8 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::RegList, OperandRole::Args, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::RegList, OperandRole::Rets, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::FuncId, OperandRole::Func, OperandEncoding::U32Uleb, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::RegList, OperandRole::Values, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Tuple, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
@@ -523,7 +525,7 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "call", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 127, len: 5 } }, // 0x50 Call
     OpcodeInfo { mnemonic: "ret", is_terminator: true, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 132, len: 2 } }, // 0x51 Ret
     OpcodeInfo { mnemonic: "host_call", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 134, len: 5 } }, // 0x52 HostCall
-    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x53
+    OpcodeInfo { mnemonic: "const.func", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 139, len: 2 } }, // 0x53 ConstFunc
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x54
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x55
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x56
@@ -536,58 +538,58 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x5D
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x5E
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x5F
-    OpcodeInfo { mnemonic: "tuple.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 139, len: 2 } }, // 0x60 TupleNew
-    OpcodeInfo { mnemonic: "tuple.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 141, len: 3 } }, // 0x61 TupleGet
-    OpcodeInfo { mnemonic: "struct.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 144, len: 3 } }, // 0x62 StructNew
-    OpcodeInfo { mnemonic: "struct.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 147, len: 3 } }, // 0x63 StructGet
-    OpcodeInfo { mnemonic: "array.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 150, len: 3 } }, // 0x64 ArrayNew
-    OpcodeInfo { mnemonic: "array.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 153, len: 2 } }, // 0x65 ArrayLen
-    OpcodeInfo { mnemonic: "array.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 155, len: 3 } }, // 0x66 ArrayGet
-    OpcodeInfo { mnemonic: "tuple.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 158, len: 2 } }, // 0x67 TupleLen
-    OpcodeInfo { mnemonic: "struct.field_count", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 160, len: 2 } }, // 0x68 StructFieldCount
-    OpcodeInfo { mnemonic: "array.get_imm", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 162, len: 3 } }, // 0x69 ArrayGetImm
-    OpcodeInfo { mnemonic: "bytes.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 165, len: 2 } }, // 0x6A BytesLen
-    OpcodeInfo { mnemonic: "str.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 167, len: 2 } }, // 0x6B StrLen
-    OpcodeInfo { mnemonic: "i64.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 169, len: 3 } }, // 0x6C I64Div
-    OpcodeInfo { mnemonic: "i64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 172, len: 3 } }, // 0x6D I64Rem
-    OpcodeInfo { mnemonic: "u64.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 175, len: 3 } }, // 0x6E U64Div
-    OpcodeInfo { mnemonic: "u64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 178, len: 3 } }, // 0x6F U64Rem
-    OpcodeInfo { mnemonic: "i64.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 181, len: 2 } }, // 0x70 I64ToF64
-    OpcodeInfo { mnemonic: "u64.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 183, len: 2 } }, // 0x71 U64ToF64
-    OpcodeInfo { mnemonic: "f64.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 185, len: 2 } }, // 0x72 F64ToI64
-    OpcodeInfo { mnemonic: "f64.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 187, len: 2 } }, // 0x73 F64ToU64
-    OpcodeInfo { mnemonic: "dec.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 189, len: 2 } }, // 0x74 DecToI64
-    OpcodeInfo { mnemonic: "dec.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 191, len: 2 } }, // 0x75 DecToU64
-    OpcodeInfo { mnemonic: "i64.to_dec", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 193, len: 3 } }, // 0x76 I64ToDec
-    OpcodeInfo { mnemonic: "u64.to_dec", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 196, len: 3 } }, // 0x77 U64ToDec
-    OpcodeInfo { mnemonic: "bytes.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 199, len: 3 } }, // 0x78 BytesEq
-    OpcodeInfo { mnemonic: "str.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 202, len: 3 } }, // 0x79 StrEq
-    OpcodeInfo { mnemonic: "bytes.concat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 205, len: 3 } }, // 0x7A BytesConcat
-    OpcodeInfo { mnemonic: "str.concat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 208, len: 3 } }, // 0x7B StrConcat
-    OpcodeInfo { mnemonic: "bytes.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 211, len: 3 } }, // 0x7C BytesGet
-    OpcodeInfo { mnemonic: "bytes.get_imm", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 214, len: 3 } }, // 0x7D BytesGetImm
-    OpcodeInfo { mnemonic: "bytes.slice", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 217, len: 4 } }, // 0x7E BytesSlice
-    OpcodeInfo { mnemonic: "str.slice", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 221, len: 4 } }, // 0x7F StrSlice
-    OpcodeInfo { mnemonic: "str.to_bytes", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 225, len: 2 } }, // 0x80 StrToBytes
-    OpcodeInfo { mnemonic: "bytes.to_str", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 227, len: 2 } }, // 0x81 BytesToStr
-    OpcodeInfo { mnemonic: "f64.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 229, len: 3 } }, // 0x82 F64Div
-    OpcodeInfo { mnemonic: "f64.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 232, len: 3 } }, // 0x83 F64Eq
-    OpcodeInfo { mnemonic: "f64.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 235, len: 3 } }, // 0x84 F64Lt
-    OpcodeInfo { mnemonic: "f64.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 238, len: 3 } }, // 0x85 F64Gt
-    OpcodeInfo { mnemonic: "f64.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 241, len: 3 } }, // 0x86 F64Le
-    OpcodeInfo { mnemonic: "f64.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 244, len: 3 } }, // 0x87 F64Ge
-    OpcodeInfo { mnemonic: "bool.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 247, len: 3 } }, // 0x88 BoolAnd
-    OpcodeInfo { mnemonic: "bool.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 250, len: 3 } }, // 0x89 BoolOr
-    OpcodeInfo { mnemonic: "bool.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 253, len: 3 } }, // 0x8A BoolXor
-    OpcodeInfo { mnemonic: "f64.neg", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 256, len: 2 } }, // 0x8B F64Neg
-    OpcodeInfo { mnemonic: "f64.abs", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 258, len: 2 } }, // 0x8C F64Abs
-    OpcodeInfo { mnemonic: "f64.min", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 260, len: 3 } }, // 0x8D F64Min
-    OpcodeInfo { mnemonic: "f64.max", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 263, len: 3 } }, // 0x8E F64Max
-    OpcodeInfo { mnemonic: "f64.min_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 266, len: 3 } }, // 0x8F F64MinNum
-    OpcodeInfo { mnemonic: "f64.max_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 269, len: 3 } }, // 0x90 F64MaxNum
-    OpcodeInfo { mnemonic: "f64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 272, len: 3 } }, // 0x91 F64Rem
-    OpcodeInfo { mnemonic: "f64.to_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 275, len: 2 } }, // 0x92 F64ToBits
-    OpcodeInfo { mnemonic: "f64.from_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 277, len: 2 } }, // 0x93 F64FromBits
+    OpcodeInfo { mnemonic: "tuple.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 141, len: 2 } }, // 0x60 TupleNew
+    OpcodeInfo { mnemonic: "tuple.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 143, len: 3 } }, // 0x61 TupleGet
+    OpcodeInfo { mnemonic: "struct.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 146, len: 3 } }, // 0x62 StructNew
+    OpcodeInfo { mnemonic: "struct.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 149, len: 3 } }, // 0x63 StructGet
+    OpcodeInfo { mnemonic: "array.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 152, len: 3 } }, // 0x64 ArrayNew
+    OpcodeInfo { mnemonic: "array.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 155, len: 2 } }, // 0x65 ArrayLen
+    OpcodeInfo { mnemonic: "array.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 157, len: 3 } }, // 0x66 ArrayGet
+    OpcodeInfo { mnemonic: "tuple.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 160, len: 2 } }, // 0x67 TupleLen
+    OpcodeInfo { mnemonic: "struct.field_count", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 162, len: 2 } }, // 0x68 StructFieldCount
+    OpcodeInfo { mnemonic: "array.get_imm", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 164, len: 3 } }, // 0x69 ArrayGetImm
+    OpcodeInfo { mnemonic: "bytes.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 167, len: 2 } }, // 0x6A BytesLen
+    OpcodeInfo { mnemonic: "str.len", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 169, len: 2 } }, // 0x6B StrLen
+    OpcodeInfo { mnemonic: "i64.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 171, len: 3 } }, // 0x6C I64Div
+    OpcodeInfo { mnemonic: "i64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 174, len: 3 } }, // 0x6D I64Rem
+    OpcodeInfo { mnemonic: "u64.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 177, len: 3 } }, // 0x6E U64Div
+    OpcodeInfo { mnemonic: "u64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 180, len: 3 } }, // 0x6F U64Rem
+    OpcodeInfo { mnemonic: "i64.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 183, len: 2 } }, // 0x70 I64ToF64
+    OpcodeInfo { mnemonic: "u64.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 185, len: 2 } }, // 0x71 U64ToF64
+    OpcodeInfo { mnemonic: "f64.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 187, len: 2 } }, // 0x72 F64ToI64
+    OpcodeInfo { mnemonic: "f64.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 189, len: 2 } }, // 0x73 F64ToU64
+    OpcodeInfo { mnemonic: "dec.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 191, len: 2 } }, // 0x74 DecToI64
+    OpcodeInfo { mnemonic: "dec.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 193, len: 2 } }, // 0x75 DecToU64
+    OpcodeInfo { mnemonic: "i64.to_dec", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 195, len: 3 } }, // 0x76 I64ToDec
+    OpcodeInfo { mnemonic: "u64.to_dec", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 198, len: 3 } }, // 0x77 U64ToDec
+    OpcodeInfo { mnemonic: "bytes.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 201, len: 3 } }, // 0x78 BytesEq
+    OpcodeInfo { mnemonic: "str.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 204, len: 3 } }, // 0x79 StrEq
+    OpcodeInfo { mnemonic: "bytes.concat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 207, len: 3 } }, // 0x7A BytesConcat
+    OpcodeInfo { mnemonic: "str.concat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 210, len: 3 } }, // 0x7B StrConcat
+    OpcodeInfo { mnemonic: "bytes.get", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 213, len: 3 } }, // 0x7C BytesGet
+    OpcodeInfo { mnemonic: "bytes.get_imm", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 216, len: 3 } }, // 0x7D BytesGetImm
+    OpcodeInfo { mnemonic: "bytes.slice", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 219, len: 4 } }, // 0x7E BytesSlice
+    OpcodeInfo { mnemonic: "str.slice", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 223, len: 4 } }, // 0x7F StrSlice
+    OpcodeInfo { mnemonic: "str.to_bytes", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 227, len: 2 } }, // 0x80 StrToBytes
+    OpcodeInfo { mnemonic: "bytes.to_str", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 229, len: 2 } }, // 0x81 BytesToStr
+    OpcodeInfo { mnemonic: "f64.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 231, len: 3 } }, // 0x82 F64Div
+    OpcodeInfo { mnemonic: "f64.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 234, len: 3 } }, // 0x83 F64Eq
+    OpcodeInfo { mnemonic: "f64.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 237, len: 3 } }, // 0x84 F64Lt
+    OpcodeInfo { mnemonic: "f64.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 240, len: 3 } }, // 0x85 F64Gt
+    OpcodeInfo { mnemonic: "f64.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 243, len: 3 } }, // 0x86 F64Le
+    OpcodeInfo { mnemonic: "f64.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 246, len: 3 } }, // 0x87 F64Ge
+    OpcodeInfo { mnemonic: "bool.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 249, len: 3 } }, // 0x88 BoolAnd
+    OpcodeInfo { mnemonic: "bool.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 252, len: 3 } }, // 0x89 BoolOr
+    OpcodeInfo { mnemonic: "bool.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 255, len: 3 } }, // 0x8A BoolXor
+    OpcodeInfo { mnemonic: "f64.neg", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 258, len: 2 } }, // 0x8B F64Neg
+    OpcodeInfo { mnemonic: "f64.abs", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 260, len: 2 } }, // 0x8C F64Abs
+    OpcodeInfo { mnemonic: "f64.min", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 262, len: 3 } }, // 0x8D F64Min
+    OpcodeInfo { mnemonic: "f64.max", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 265, len: 3 } }, // 0x8E F64Max
+    OpcodeInfo { mnemonic: "f64.min_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 268, len: 3 } }, // 0x8F F64MinNum
+    OpcodeInfo { mnemonic: "f64.max_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 271, len: 3 } }, // 0x90 F64MaxNum
+    OpcodeInfo { mnemonic: "f64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 274, len: 3 } }, // 0x91 F64Rem
+    OpcodeInfo { mnemonic: "f64.to_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 277, len: 2 } }, // 0x92 F64ToBits
+    OpcodeInfo { mnemonic: "f64.from_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 279, len: 2 } }, // 0x93 F64FromBits
 ];
 
 /// Bytecode opcode byte for the v1 instruction set.
@@ -696,6 +698,8 @@ pub enum Opcode {
     Ret = 0x51,
     /// Call a host function.
     HostCall = 0x52,
+    /// `dst = func#func_id`.
+    ConstFunc = 0x53,
     /// Allocate a tuple aggregate.
     TupleNew = 0x60,
     /// Read tuple element at an immediate index.
@@ -858,6 +862,7 @@ impl Opcode {
             0x50 => Self::Call,
             0x51 => Self::Ret,
             0x52 => Self::HostCall,
+            0x53 => Self::ConstFunc,
             0x60 => Self::TupleNew,
             0x61 => Self::TupleGet,
             0x62 => Self::StructNew,

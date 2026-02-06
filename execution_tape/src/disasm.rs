@@ -448,10 +448,12 @@ impl<'a> InstrView<'a> {
             return Some(InputIndex::HostSig(*host_sig));
         }
         if operands.iter().any(|o| matches!(o.role, OperandRole::Func)) {
-            let Instr::Call { func_id, .. } = &self.decoded.instr else {
-                return None;
+            let func_id: FuncId = match &self.decoded.instr {
+                Instr::Call { func_id, .. } => *func_id,
+                Instr::ConstFunc { func_id, .. } => *func_id,
+                _ => return None,
             };
-            return Some(InputIndex::Func(*func_id));
+            return Some(InputIndex::Func(func_id));
         }
         if operands.iter().any(|o| matches!(o.role, OperandRole::Type)) {
             let Instr::StructNew { type_id, .. } = &self.decoded.instr else {

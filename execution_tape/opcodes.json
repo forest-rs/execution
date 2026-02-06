@@ -212,6 +212,29 @@
       ]
     },
     {
+      "name": "ConstFunc",
+      "mnemonic": "const.func",
+      "byte": "0x53",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = func#func_id`.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "func_id",
+          "role": "func",
+          "encoding": "u32_uleb",
+          "field": "func_id"
+        }
+      ]
+    },
+    {
       "name": "DecAdd",
       "mnemonic": "dec.add",
       "byte": "0x17",

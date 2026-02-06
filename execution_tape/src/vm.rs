@@ -695,6 +695,11 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
+                VerifiedInstr::ConstFunc { dst, func_id } => {
+                    ctx.write_func(base, *dst, *func_id);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
 
                 VerifiedInstr::ConstPoolUnit { dst, idx } => {
                     let ConstEntry::Unit = program_ref
