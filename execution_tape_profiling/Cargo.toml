@@ -1,0 +1,18 @@
+[package]
+name = "execution_tape_profiling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Profiling adapters for execution_tape (currently Tracy)."
+readme = "README.md"
+keywords = ["profiling", "tracing", "vm"]
+categories = ["development-tools::profiling"]
+
+[dependencies]
+execution_tape = { path = "../execution_tape" }
+tracy-client = "0.18"
+
+[lints]
+workspace = true

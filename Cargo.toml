@@ -4,6 +4,7 @@ members = [
   "execution_tape",
   "execution_tape_codegen",
   "execution_tape_conformance",
+  "execution_tape_profiling",
   "execution_tape_wind_tunnel",
 ]
 
