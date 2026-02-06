@@ -75,9 +75,10 @@ fn golden_minimal_program_bytes_v0_0_1() {
         0x00, // const_pool: tag=2, len=1, payload=[0]
         0x02,
         0x01,
-        0x00, // types: tag=3, len=2, payload=[structs=0, array_elems=0]
+        0x00, // types: tag=3, len=3, payload=[field_names=0, structs=0, array_elems=0]
         0x03,
-        0x02,
+        0x03,
+        0x00,
         0x00,
         0x00,
         // bytecode_blobs: tag=5, len=5, payload=[n=1, len=3, ret r0]

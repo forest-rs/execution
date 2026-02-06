@@ -1505,6 +1505,15 @@ fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
 }
 
 fn encode_types(w: &mut Writer, t: &TypeTable) {
+    w.write_uleb128_u64(t.field_name_ranges.len() as u64);
+    for name in &t.field_name_ranges {
+        let start = name.offset as usize;
+        let end = name.end().unwrap_or(0) as usize;
+        let b = t.name_data.get(start..end).unwrap_or(&[]);
+        w.write_uleb128_u64(b.len() as u64);
+        w.write_bytes(b);
+    }
+
     w.write_uleb128_u64(t.structs.len() as u64);
     for s in &t.structs {
         let field_count = s.field_name_ids.len as usize;
@@ -1513,9 +1522,7 @@ fn encode_types(w: &mut Writer, t: &TypeTable) {
 
         let types = t.struct_field_types(s).unwrap_or(&[]);
         for (name_id, ty) in names.iter().zip(types.iter()) {
-            let b = t.field_name_bytes(*name_id).unwrap_or(&[]);
-            w.write_uleb128_u64(b.len() as u64);
-            w.write_bytes(b);
+            w.write_uleb128_u64(u64::from(name_id.0));
             encode_value_type(w, *ty);
         }
     }
@@ -1527,6 +1534,13 @@ fn encode_types(w: &mut Writer, t: &TypeTable) {
 
 fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
     let mut r = Reader::new(payload);
+    let field_name_count = read_usize(&mut r)?;
+    let mut interned_field_names = Vec::with_capacity(field_name_count);
+    for _ in 0..field_name_count {
+        let len = read_usize(&mut r)?;
+        interned_field_names.push(String::from(r.read_str(len)?));
+    }
+
     let struct_count = read_usize(&mut r)?;
     let mut structs = Vec::with_capacity(struct_count);
     for _ in 0..struct_count {
@@ -1534,8 +1548,11 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
         let mut field_names = Vec::with_capacity(field_count);
         let mut field_types = Vec::with_capacity(field_count);
         for _ in 0..field_count {
-            let len = read_usize(&mut r)?;
-            field_names.push(String::from(r.read_str(len)?));
+            let field_name_id = read_usize(&mut r)?;
+            let field_name = interned_field_names
+                .get(field_name_id)
+                .ok_or(DecodeError::OutOfBounds)?;
+            field_names.push(field_name.clone());
             field_types.push(decode_value_type(&mut r)?);
         }
         structs.push(StructTypeDef {
