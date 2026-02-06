@@ -34,6 +34,8 @@ struct OperandSpec {
     encoding: String,
     field: String,
     #[serde(default)]
+    access: Option<String>,
+    #[serde(default)]
     count_field: Option<String>,
 }
 
@@ -70,6 +72,41 @@ fn sort_and_validate_ops(ops: &mut [(u8, OpcodeSpec)]) -> Result<()> {
         }
         if o0.name == o1.name {
             bail!("duplicate opcode name '{}'", o0.name);
+        }
+    }
+    Ok(())
+}
+
+fn validate_operand_access(ops: &[(u8, OpcodeSpec)]) -> Result<()> {
+    for (_b, op) in ops {
+        for operand in &op.operands {
+            match operand.kind.as_str() {
+                "reg" | "reg_list" => match operand.access.as_deref() {
+                    Some("read") | Some("write") => {}
+                    Some(other) => bail!(
+                        "invalid operand access '{}' for opcode {} field {}",
+                        other,
+                        op.name,
+                        operand.field
+                    ),
+                    None => bail!(
+                        "missing operand access for opcode {} field {} (kind={})",
+                        op.name,
+                        operand.field,
+                        operand.kind
+                    ),
+                },
+                _ => {
+                    if operand.access.is_some() {
+                        bail!(
+                            "unexpected operand access for opcode {} field {} (kind={})",
+                            op.name,
+                            operand.field,
+                            operand.kind
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -132,6 +169,14 @@ fn operand_encoding_rust(enc: &str) -> Result<&'static str> {
     })
 }
 
+fn operand_access_rust(access: &str) -> Result<&'static str> {
+    Ok(match access {
+        "read" => "OperandAccess::Read",
+        "write" => "OperandAccess::Write",
+        other => bail!("unknown operand access '{other}'"),
+    })
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Layout {
     start: u16,
@@ -150,6 +195,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     }
 
     sort_and_validate_ops(&mut ops)?;
+    validate_operand_access(&ops)?;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -243,6 +289,14 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    U64Le,\n");
     out.push_str("}\n\n");
 
+    out.push_str("/// Operand access for register operands.\n");
+    out.push_str("#[allow(missing_docs, reason = \"generated\")]\n");
+    out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
+    out.push_str("pub enum OperandAccess {\n");
+    out.push_str("    Read,\n");
+    out.push_str("    Write,\n");
+    out.push_str("}\n\n");
+
     out.push_str("/// Operand schema metadata (kind/role/encoding).\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("pub struct OperandSchema {\n");
@@ -252,11 +306,13 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    pub role: OperandRole,\n");
     out.push_str("    /// Operand encoding used by the bytecode codec.\n");
     out.push_str("    pub encoding: OperandEncoding,\n");
+    out.push_str("    /// Operand access, if this is a register operand.\n");
+    out.push_str("    pub access: Option<OperandAccess>,\n");
     out.push_str("}\n\n");
 
     out.push_str("impl OperandSchema {\n");
-    out.push_str("    const fn new(kind: OperandKind, role: OperandRole, encoding: OperandEncoding) -> Self {\n");
-    out.push_str("        Self { kind, role, encoding }\n");
+    out.push_str("    const fn new(kind: OperandKind, role: OperandRole, encoding: OperandEncoding, access: Option<OperandAccess>) -> Self {\n");
+    out.push_str("        Self { kind, role, encoding, access }\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
@@ -280,7 +336,19 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
             let kind = operand_kind_rust(&operand.kind)?;
             let role = operand_role_rust(&operand.role)?;
             let encoding = operand_encoding_rust(&operand.encoding)?;
-            operands.push(format!("OperandSchema::new({kind}, {role}, {encoding})"));
+            let access = if operand.kind == "reg" || operand.kind == "reg_list" {
+                let a = operand
+                    .access
+                    .as_deref()
+                    .expect("validated by validate_operand_access");
+                let a = operand_access_rust(a)?;
+                format!("Some({a})")
+            } else {
+                "None".to_string()
+            };
+            operands.push(format!(
+                "OperandSchema::new({kind}, {role}, {encoding}, {access})"
+            ));
         }
         let len: u8 = op
             .operands
@@ -469,6 +537,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
         ops.push((b, op));
     }
     sort_and_validate_ops(&mut ops)?;
+    validate_operand_access(&ops)?;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -706,6 +775,7 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
         ops.push((b, op));
     }
     sort_and_validate_ops(&mut ops)?;
+    validate_operand_access(&ops)?;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -957,6 +1027,7 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
         ops.push((b, op));
     }
     sort_and_validate_ops(&mut ops)?;
+    validate_operand_access(&ops)?;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -1124,6 +1195,199 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
     Ok(out)
 }
 
+fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
+    if spec.version != 1 {
+        bail!("unsupported opcodes.json version {}", spec.version);
+    }
+
+    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
+    for op in spec.opcodes {
+        let b = parse_u8_hex(&op.byte)?;
+        ops.push((b, op));
+    }
+    sort_and_validate_ops(&mut ops)?;
+    validate_operand_access(&ops)?;
+
+    let mut out = String::new();
+    out.push_str("// Copyright 2026 the Execution Tape Authors\n");
+    out.push_str("// SPDX-License-Identifier: Apache-2.0 OR MIT\n\n");
+    out.push_str("// @generated by execution_tape_codegen. Do not edit by hand.\n");
+    let _ = src;
+    out.push('\n');
+
+    out.push_str("impl Instr {\n");
+    out.push_str(
+        "    /// Iterates the virtual registers read by this instruction (allocation-free).\n",
+    );
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub(crate) fn reads(&self) -> ReadsIter<'_> {\n");
+    out.push_str("        match self {\n");
+    for (_b, op) in &ops {
+        let mut scalar_reads: Vec<&str> = Vec::new();
+        let mut list_read: Option<&str> = None;
+
+        for operand in &op.operands {
+            match (operand.kind.as_str(), operand.access.as_deref()) {
+                ("reg", Some("read")) => {
+                    scalar_reads
+                        .push(rust_field_name(&operand.field).with_context(|| {
+                            format!("bad operand field for opcode {}", op.name)
+                        })?);
+                }
+                ("reg_list", Some("read")) => {
+                    let field = rust_field_name(&operand.field)
+                        .with_context(|| format!("bad operand field for opcode {}", op.name))?;
+                    if list_read.replace(field).is_some() {
+                        bail!("opcode {} has multiple reg_list reads", op.name);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if list_read.is_some() && scalar_reads.len() > 1 {
+            bail!(
+                "opcode {} has reg_list reads plus {} scalar reads (only 0 or 1 supported)",
+                op.name,
+                scalar_reads.len()
+            );
+        }
+        if scalar_reads.len() > 3 {
+            bail!(
+                "opcode {} has {} scalar reads (max 3 supported)",
+                op.name,
+                scalar_reads.len()
+            );
+        }
+
+        if op.operands.is_empty() {
+            out.push_str(&format!("            Self::{} => ", op.name));
+        } else {
+            out.push_str(&format!("            Self::{} ", op.name));
+            if scalar_reads.is_empty() && list_read.is_none() {
+                out.push_str("{ .. } => ");
+            } else {
+                out.push_str("{ ");
+                let mut first = true;
+                for field in &scalar_reads {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    out.push_str(field);
+                }
+                if let Some(field) = list_read {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    out.push_str(field);
+                    out.push_str(": rest");
+                }
+                out.push_str(", .. } => ");
+            }
+        }
+
+        match (scalar_reads.as_slice(), list_read) {
+            ([], None) => out.push_str("ReadsIter::none(),\n"),
+            ([a], None) => out.push_str(&format!("ReadsIter::one(*{a}),\n")),
+            ([a, b], None) => out.push_str(&format!("ReadsIter::two(*{a}, *{b}),\n")),
+            ([a, b, c], None) => out.push_str(&format!("ReadsIter::three(*{a}, *{b}, *{c}),\n")),
+            ([], Some(_)) => out.push_str("ReadsIter::slice(rest.as_slice()),\n"),
+            ([a], Some(_)) => out.push_str(&format!(
+                "ReadsIter::one_plus_slice(*{a}, rest.as_slice()),\n"
+            )),
+            _ => bail!("unhandled reads shape for opcode {}", op.name),
+        }
+    }
+    out.push_str("        }\n");
+    out.push_str("    }\n\n");
+
+    out.push_str(
+        "    /// Iterates the virtual registers written by this instruction (allocation-free).\n",
+    );
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub(crate) fn writes(&self) -> WritesIter<'_> {\n");
+    out.push_str("        match self {\n");
+    for (_b, op) in &ops {
+        let mut scalar_writes: Vec<&str> = Vec::new();
+        let mut list_write: Option<&str> = None;
+
+        for operand in &op.operands {
+            match (operand.kind.as_str(), operand.access.as_deref()) {
+                ("reg", Some("write")) => {
+                    scalar_writes
+                        .push(rust_field_name(&operand.field).with_context(|| {
+                            format!("bad operand field for opcode {}", op.name)
+                        })?);
+                }
+                ("reg_list", Some("write")) => {
+                    let field = rust_field_name(&operand.field)
+                        .with_context(|| format!("bad operand field for opcode {}", op.name))?;
+                    if list_write.replace(field).is_some() {
+                        bail!("opcode {} has multiple reg_list writes", op.name);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if scalar_writes.len() > 1 {
+            bail!(
+                "opcode {} has {} scalar writes (max 1 supported)",
+                op.name,
+                scalar_writes.len()
+            );
+        }
+        if list_write.is_some() && scalar_writes.is_empty() {
+            bail!(
+                "opcode {} has reg_list writes but no scalar write (not supported)",
+                op.name
+            );
+        }
+
+        if op.operands.is_empty() {
+            out.push_str(&format!("            Self::{} => ", op.name));
+        } else {
+            out.push_str(&format!("            Self::{} ", op.name));
+            if scalar_writes.is_empty() && list_write.is_none() {
+                out.push_str("{ .. } => ");
+            } else {
+                out.push_str("{ ");
+                let mut first = true;
+                for field in &scalar_writes {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    out.push_str(field);
+                }
+                if let Some(field) = list_write {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    out.push_str(field);
+                    out.push_str(": rest");
+                }
+                out.push_str(", .. } => ");
+            }
+        }
+
+        match (scalar_writes.as_slice(), list_write) {
+            ([], None) => out.push_str("WritesIter::none(),\n"),
+            ([a], None) => out.push_str(&format!("WritesIter::one(*{a}),\n")),
+            ([a], Some(_)) => out.push_str(&format!(
+                "WritesIter::one_plus_slice(*{a}, rest.as_slice()),\n"
+            )),
+            _ => bail!("unhandled writes shape for opcode {}", op.name),
+        }
+    }
+    out.push_str("        }\n");
+    out.push_str("    }\n");
+    out.push_str("}\n");
+
+    Ok(out)
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let spec_path: PathBuf = args
@@ -1146,9 +1410,13 @@ fn main() -> Result<()> {
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("execution_tape/src/instr_operands_gen.rs"));
+    let reads_writes_out_path: PathBuf = args
+        .next()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("execution_tape/src/bytecode_reads_writes_gen.rs"));
     if args.next().is_some() {
         bail!(
-            "usage: execution_tape_codegen [spec.json] [opcodes_out.rs] [decode_out.rs] [encode_out.rs] [instr_operands_out.rs]"
+            "usage: execution_tape_codegen [spec.json] [opcodes_out.rs] [decode_out.rs] [encode_out.rs] [instr_operands_out.rs] [reads_writes_out.rs]"
         );
     }
 
@@ -1160,7 +1428,8 @@ fn main() -> Result<()> {
     let opcode_rendered = generate(spec.clone(), &spec_path)?;
     let decode_rendered = generate_bytecode_decode(spec.clone(), &spec_path)?;
     let encode_rendered = generate_bytecode_encode(spec.clone(), &spec_path)?;
-    let instr_operands_rendered = generate_instr_operands(spec, &spec_path)?;
+    let instr_operands_rendered = generate_instr_operands(spec.clone(), &spec_path)?;
+    let reads_writes_rendered = generate_reads_writes(spec, &spec_path)?;
 
     if let Some(parent) = opcode_out_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -1177,13 +1446,16 @@ fn main() -> Result<()> {
         .with_context(|| format!("write {}", encode_out_path.display()))?;
     fs::write(&instr_operands_out_path, instr_operands_rendered.as_bytes())
         .with_context(|| format!("write {}", instr_operands_out_path.display()))?;
+    fs::write(&reads_writes_out_path, reads_writes_rendered.as_bytes())
+        .with_context(|| format!("write {}", reads_writes_out_path.display()))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Spec, generate, generate_bytecode_decode, generate_bytecode_encode, generate_instr_operands,
+        Spec, generate, generate_bytecode_decode, generate_bytecode_encode,
+        generate_instr_operands, generate_reads_writes,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1205,6 +1477,8 @@ mod tests {
         let encode_out_path = workspace_root.join("execution_tape/src/bytecode_encode_gen.rs");
         let instr_operands_out_path =
             workspace_root.join("execution_tape/src/instr_operands_gen.rs");
+        let reads_writes_out_path =
+            workspace_root.join("execution_tape/src/bytecode_reads_writes_gen.rs");
 
         let json = fs::read_to_string(&spec_path).expect("read opcodes.json");
         let spec: Spec = serde_json::from_str(&json).expect("parse opcodes.json");
@@ -1214,8 +1488,10 @@ mod tests {
             .expect("render bytecode_decode_gen.rs");
         let encode_rendered = generate_bytecode_encode(spec.clone(), &spec_path)
             .expect("render bytecode_encode_gen.rs");
-        let instr_operands_rendered =
-            generate_instr_operands(spec, &spec_path).expect("render instr_operands_gen.rs");
+        let instr_operands_rendered = generate_instr_operands(spec.clone(), &spec_path)
+            .expect("render instr_operands_gen.rs");
+        let reads_writes_rendered =
+            generate_reads_writes(spec, &spec_path).expect("render bytecode_reads_writes_gen.rs");
 
         let opcode_existing = fs::read_to_string(&opcode_out_path).expect("read opcodes_gen.rs");
         let decode_existing =
@@ -1224,6 +1500,8 @@ mod tests {
             fs::read_to_string(&encode_out_path).expect("read bytecode_encode_gen.rs");
         let instr_operands_existing =
             fs::read_to_string(&instr_operands_out_path).expect("read instr_operands_gen.rs");
+        let reads_writes_existing =
+            fs::read_to_string(&reads_writes_out_path).expect("read bytecode_reads_writes_gen.rs");
 
         assert_eq!(
             normalize_newlines(&opcode_rendered),
@@ -1242,6 +1520,10 @@ mod tests {
         );
         assert_eq!(
             instr_operands_rendered, instr_operands_existing,
+            "generated file is out of date; re-run: cargo run -p execution_tape_codegen"
+        );
+        assert_eq!(
+            reads_writes_rendered, reads_writes_existing,
             "generated file is out of date; re-run: cargo run -p execution_tape_codegen"
         );
     }

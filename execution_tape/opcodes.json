@@ -22,13 +22,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "src",
           "encoding": "reg_u32_uleb",
-          "field": "src"
+          "field": "src",
+          "access": "read"
         }
       ]
     },
@@ -60,7 +62,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         }
       ]
     },
@@ -76,7 +79,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "imm_bool",
@@ -98,7 +102,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "imm_i64",
@@ -120,7 +125,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "imm_u64",
@@ -142,7 +148,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "imm_u64",
@@ -164,7 +171,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "imm_i64",
@@ -192,7 +200,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "const_id",
@@ -214,19 +223,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -242,19 +254,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -270,19 +285,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -298,19 +316,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -326,19 +347,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -354,19 +378,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -382,19 +409,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -410,19 +440,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -438,19 +471,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -466,19 +502,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -494,19 +533,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -522,19 +564,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -550,19 +595,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -578,19 +626,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -606,19 +657,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -634,19 +688,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -662,19 +719,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -690,19 +750,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -718,19 +781,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -746,19 +812,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -774,19 +843,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -802,19 +874,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -830,13 +905,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -852,19 +929,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -880,19 +960,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -908,19 +991,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -936,13 +1022,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -958,13 +1046,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -980,19 +1070,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1008,19 +1101,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1036,25 +1132,29 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "cond",
           "encoding": "reg_u32_uleb",
-          "field": "cond"
+          "field": "cond",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1070,19 +1170,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1098,19 +1201,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1126,19 +1232,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1154,19 +1263,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1182,19 +1294,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1210,7 +1325,8 @@
           "kind": "reg",
           "role": "cond",
           "encoding": "reg_u32_uleb",
-          "field": "cond"
+          "field": "cond",
+          "access": "read"
         },
         {
           "kind": "pc",
@@ -1256,7 +1372,8 @@
           "kind": "reg",
           "role": "eff_out",
           "encoding": "reg_u32_uleb",
-          "field": "eff_out"
+          "field": "eff_out",
+          "access": "write"
         },
         {
           "kind": "func_id",
@@ -1268,19 +1385,22 @@
           "kind": "reg",
           "role": "eff_in",
           "encoding": "reg_u32_uleb",
-          "field": "eff_in"
+          "field": "eff_in",
+          "access": "read"
         },
         {
           "kind": "reg_list",
           "role": "args",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "args"
+          "field": "args",
+          "access": "read"
         },
         {
           "kind": "reg_list",
           "role": "rets",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "rets"
+          "field": "rets",
+          "access": "write"
         }
       ]
     },
@@ -1298,13 +1418,15 @@
           "kind": "reg",
           "role": "eff_in",
           "encoding": "reg_u32_uleb",
-          "field": "eff_in"
+          "field": "eff_in",
+          "access": "read"
         },
         {
           "kind": "reg_list",
           "role": "rets",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "rets"
+          "field": "rets",
+          "access": "read"
         }
       ]
     },
@@ -1322,7 +1444,8 @@
           "kind": "reg",
           "role": "eff_out",
           "encoding": "reg_u32_uleb",
-          "field": "eff_out"
+          "field": "eff_out",
+          "access": "write"
         },
         {
           "kind": "host_sig_id",
@@ -1334,19 +1457,22 @@
           "kind": "reg",
           "role": "eff_in",
           "encoding": "reg_u32_uleb",
-          "field": "eff_in"
+          "field": "eff_in",
+          "access": "read"
         },
         {
           "kind": "reg_list",
           "role": "args",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "args"
+          "field": "args",
+          "access": "read"
         },
         {
           "kind": "reg_list",
           "role": "rets",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "rets"
+          "field": "rets",
+          "access": "write"
         }
       ]
     },
@@ -1362,13 +1488,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg_list",
           "role": "values",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "values"
+          "field": "values",
+          "access": "read"
         }
       ]
     },
@@ -1384,13 +1512,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "tuple",
           "encoding": "reg_u32_uleb",
-          "field": "tuple"
+          "field": "tuple",
+          "access": "read"
         },
         {
           "kind": "imm_u32",
@@ -1412,7 +1542,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "type_id",
@@ -1424,7 +1555,8 @@
           "kind": "reg_list",
           "role": "values",
           "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "values"
+          "field": "values",
+          "access": "read"
         }
       ]
     },
@@ -1440,13 +1572,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "st",
           "encoding": "reg_u32_uleb",
-          "field": "st"
+          "field": "st",
+          "access": "read"
         },
         {
           "kind": "imm_u32",
@@ -1468,7 +1602,8 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "elem_type_id",
@@ -1481,7 +1616,8 @@
           "role": "values",
           "encoding": "reg_list_u32_uleb_count_then_regs",
           "field": "values",
-          "count_field": "len"
+          "count_field": "len",
+          "access": "read"
         }
       ]
     },
@@ -1497,13 +1633,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "arr",
           "encoding": "reg_u32_uleb",
-          "field": "arr"
+          "field": "arr",
+          "access": "read"
         }
       ]
     },
@@ -1519,19 +1657,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "arr",
           "encoding": "reg_u32_uleb",
-          "field": "arr"
+          "field": "arr",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "index",
           "encoding": "reg_u32_uleb",
-          "field": "index"
+          "field": "index",
+          "access": "read"
         }
       ]
     },
@@ -1547,13 +1688,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "tuple",
           "encoding": "reg_u32_uleb",
-          "field": "tuple"
+          "field": "tuple",
+          "access": "read"
         }
       ]
     },
@@ -1569,13 +1712,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "st",
           "encoding": "reg_u32_uleb",
-          "field": "st"
+          "field": "st",
+          "access": "read"
         }
       ]
     },
@@ -1591,13 +1736,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "arr",
           "encoding": "reg_u32_uleb",
-          "field": "arr"
+          "field": "arr",
+          "access": "read"
         },
         {
           "kind": "imm_u32",
@@ -1619,13 +1766,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "bytes",
           "encoding": "reg_u32_uleb",
-          "field": "bytes"
+          "field": "bytes",
+          "access": "read"
         }
       ]
     },
@@ -1641,13 +1790,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "s",
           "encoding": "reg_u32_uleb",
-          "field": "s"
+          "field": "s",
+          "access": "read"
         }
       ]
     },
@@ -1663,19 +1814,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1691,19 +1845,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1719,19 +1876,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1747,19 +1907,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1775,13 +1938,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -1797,13 +1962,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -1819,13 +1986,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -1841,13 +2010,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -1863,13 +2034,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -1885,13 +2058,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -1907,13 +2082,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "imm_u8",
@@ -1935,13 +2112,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "imm_u8",
@@ -1963,19 +2142,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -1991,19 +2173,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2019,19 +2204,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2047,19 +2235,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2075,19 +2266,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "bytes",
           "encoding": "reg_u32_uleb",
-          "field": "bytes"
+          "field": "bytes",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "index",
           "encoding": "reg_u32_uleb",
-          "field": "index"
+          "field": "index",
+          "access": "read"
         }
       ]
     },
@@ -2103,13 +2297,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "bytes",
           "encoding": "reg_u32_uleb",
-          "field": "bytes"
+          "field": "bytes",
+          "access": "read"
         },
         {
           "kind": "imm_u32",
@@ -2131,25 +2327,29 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "bytes",
           "encoding": "reg_u32_uleb",
-          "field": "bytes"
+          "field": "bytes",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "start",
           "encoding": "reg_u32_uleb",
-          "field": "start"
+          "field": "start",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "end",
           "encoding": "reg_u32_uleb",
-          "field": "end"
+          "field": "end",
+          "access": "read"
         }
       ]
     },
@@ -2165,25 +2365,29 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "s",
           "encoding": "reg_u32_uleb",
-          "field": "s"
+          "field": "s",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "start",
           "encoding": "reg_u32_uleb",
-          "field": "start"
+          "field": "start",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "end",
           "encoding": "reg_u32_uleb",
-          "field": "end"
+          "field": "end",
+          "access": "read"
         }
       ]
     },
@@ -2199,13 +2403,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "s",
           "encoding": "reg_u32_uleb",
-          "field": "s"
+          "field": "s",
+          "access": "read"
         }
       ]
     },
@@ -2221,13 +2427,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "bytes",
           "encoding": "reg_u32_uleb",
-          "field": "bytes"
+          "field": "bytes",
+          "access": "read"
         }
       ]
     },
@@ -2243,19 +2451,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2271,19 +2482,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2299,19 +2513,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2327,19 +2544,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2355,19 +2575,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2383,19 +2606,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2411,19 +2637,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2439,19 +2668,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2467,19 +2699,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2495,13 +2730,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -2517,13 +2754,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -2539,19 +2778,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2567,19 +2809,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2595,19 +2840,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2623,19 +2871,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2651,19 +2902,22 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         },
         {
           "kind": "reg",
           "role": "b",
           "encoding": "reg_u32_uleb",
-          "field": "b"
+          "field": "b",
+          "access": "read"
         }
       ]
     },
@@ -2679,13 +2933,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     },
@@ -2701,13 +2957,15 @@
           "kind": "reg",
           "role": "dst",
           "encoding": "reg_u32_uleb",
-          "field": "dst"
+          "field": "dst",
+          "access": "write"
         },
         {
           "kind": "reg",
           "role": "a",
           "encoding": "reg_u32_uleb",
-          "field": "a"
+          "field": "a",
+          "access": "read"
         }
       ]
     }
