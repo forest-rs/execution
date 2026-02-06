@@ -14,6 +14,9 @@ use execution_tape::vm::{Limits, Vm};
 fn bench_vm(c: &mut Criterion) {
     bench_i64_add_chain(c);
     bench_i64_add_chain_traced_instr(c);
+    bench_i64_add_chain_traced_instr_span_dense(c);
+    bench_i64_add_chain_traced_instr_span_sparse(c);
+    bench_i64_add_chain_no_trace_span_dense(c);
     bench_bytes_const_len(c);
     bench_str_const_len(c);
     bench_call_overhead(c);
@@ -50,6 +53,55 @@ fn bench_i64_add_chain_traced_instr(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
             b.iter(|| {
                 let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_i64_add_chain_traced_instr_span_dense(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i64_add_chain_traced_instr_span_dense");
+    for &chain_len in &[10_u32, 50, 200] {
+        let p = build_i64_add_chain_with_spans(chain_len, 1);
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        let mut sink = CountingInstr::default();
+        let mask = sink.mask();
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+            b.iter(|| {
+                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_i64_add_chain_traced_instr_span_sparse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i64_add_chain_traced_instr_span_sparse");
+    for &chain_len in &[10_u32, 50, 200] {
+        let p = build_i64_add_chain_with_spans(chain_len, 16);
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        let mut sink = CountingInstr::default();
+        let mask = sink.mask();
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+            b.iter(|| {
+                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_i64_add_chain_no_trace_span_dense(c: &mut Criterion) {
+    let mut group = c.benchmark_group("i64_add_chain_no_trace_span_dense");
+    for &chain_len in &[10_u32, 50, 200, 1000] {
+        let p = build_i64_add_chain_with_spans(chain_len, 1);
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+            b.iter(|| {
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
                 black_box(out);
             });
         });
@@ -189,6 +241,40 @@ fn build_i64_add_chain(chain_len: u32) -> execution_tape::verifier::VerifiedProg
     a.const_i64(2, 2);
     let mut cur = 3;
     for _ in 0..chain_len {
+        a.i64_add(cur, cur - 1, 2);
+        cur += 1;
+    }
+    a.ret(0, &[cur - 1]);
+
+    let mut pb = ProgramBuilder::new();
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+            reg_count: cur,
+        },
+    )
+    .unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_i64_add_chain_with_spans(
+    chain_len: u32,
+    span_every: u32,
+) -> execution_tape::verifier::VerifiedProgram {
+    assert_ne!(span_every, 0, "span_every must be non-zero");
+
+    let mut a = Asm::new();
+    a.const_i64(1, 1);
+    a.const_i64(2, 2);
+    let mut cur = 3;
+    let mut next_span_id = 1_u64;
+    for i in 0..chain_len {
+        if i % span_every == 0 {
+            a.span(next_span_id);
+            next_span_id = next_span_id.saturating_add(1);
+        }
         a.i64_add(cur, cur - 1, 2);
         cur += 1;
     }
