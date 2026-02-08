@@ -70,8 +70,9 @@ fn golden_minimal_program_bytes_v0_0_1() {
         0x00,
         0x00,
         0x01,
-        0x00, // symbols: tag=1, len=1, payload=[0]
+        0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
+        0x02,
         0x01,
         0x00, // const_pool: tag=2, len=1, payload=[0]
         0x02,
