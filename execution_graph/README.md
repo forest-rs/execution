@@ -24,10 +24,12 @@ Host state invalidation uses the same key space: if a host op records a
 via `ExecutionGraph::invalidate_tape_key(...)` (or by constructing the corresponding owned
 `execution_graph::ResourceKey` and calling `ExecutionGraph::invalidate(...)`).
 
+## Execution behavior
+
+`run_node` drains and executes only the dirty work within the dependency closure of the target
+node’s outputs, leaving unrelated dirty work dirty to be handled by a later `run_all`.
+
 ## Current limitations
 
-- `run_node` currently computes the node’s dependency-closure, performs a global drain, runs only
-  nodes in that closure, then restores unrelated dirty keys. This is correct but not optimized for
-  large graphs yet.
 - Error reporting is intentionally minimal (`GraphError::Trap` is opaque); richer error surfaces
   and “why re-ran” reporting are expected to be layered on in follow-up PRs.
