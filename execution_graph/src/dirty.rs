@@ -26,8 +26,7 @@ use alloc::vec::Vec;
 use understory_dirty::intern::Interner;
 use understory_dirty::trace::OneParentRecorder;
 use understory_dirty::{
-    Channel, CycleHandling, DirtySet, DirtyTracker, EagerPolicy, InternId, LazyPolicy,
-    TraversalScratch,
+    Channel, CycleHandling, DirtyTracker, InternId, LazyPolicy, TraversalScratch,
 };
 
 use crate::access::ResourceKey;
@@ -100,6 +99,25 @@ impl DirtyEngine {
             .filter_map(move |id| keys.get(id).map(|k| (id, k)))
     }
 
+    /// Drains dirty work in a deterministic order, recording one plausible cause path.
+    ///
+    /// The provided `scratch` and `trace` are reused for traversal and recording.
+    #[inline]
+    pub(crate) fn drain_traced<'a>(
+        &'a mut self,
+        scratch: &'a mut TraversalScratch<DirtyKey>,
+        trace: &'a mut OneParentRecorder<DirtyKey>,
+    ) -> impl Iterator<Item = (DirtyKey, &'a ResourceKey)> + 'a {
+        let keys = &self.keys;
+        self.tracker
+            .drain(EXECUTION_GRAPH_CHANNEL)
+            .affected()
+            .deterministic()
+            .trace(scratch, trace)
+            .run()
+            .filter_map(move |id| keys.get(id).map(|k| (id, k)))
+    }
+
     /// Drains dirty work, restricted to keys within the dependency closure of `key`.
     ///
     /// This yields only dirty/affected keys that are (transitively) upstream dependencies of
@@ -116,6 +134,28 @@ impl DirtyEngine {
             .affected()
             .within_dependencies_of(key)
             .deterministic()
+            .run()
+            .filter_map(move |id| keys.get(id).map(|k| (id, k)))
+    }
+
+    /// Drains dirty work within the dependency closure of `key`, recording one plausible cause
+    /// path.
+    ///
+    /// The provided `scratch` and `trace` are reused for traversal and recording.
+    #[inline]
+    pub(crate) fn drain_within_dependencies_of_traced<'a>(
+        &'a mut self,
+        key: DirtyKey,
+        scratch: &'a mut TraversalScratch<DirtyKey>,
+        trace: &'a mut OneParentRecorder<DirtyKey>,
+    ) -> impl Iterator<Item = (DirtyKey, &'a ResourceKey)> + 'a {
+        let keys = &self.keys;
+        self.tracker
+            .drain(EXECUTION_GRAPH_CHANNEL)
+            .affected()
+            .within_dependencies_of(key)
+            .deterministic()
+            .trace(scratch, trace)
             .run()
             .filter_map(move |id| keys.get(id).map(|k| (id, k)))
     }
@@ -149,39 +189,19 @@ impl DirtyEngine {
             .add_dependency(from, to, EXECUTION_GRAPH_CHANNEL);
     }
 
-    #[allow(dead_code, reason = "used by follow-up PRs (why-reran)")]
-    /// Records one “parent pointer” per visited key for explaining propagation.
-    ///
-    /// This is intended for “why re-ran” reporting: given a set of root dirty keys, compute the
-    /// set of affected keys (using eager propagation) and record *one* plausible parent edge per
-    /// visited key. The resulting spanning forest can be queried for a single cause path, not all
-    /// causes.
-    ///
-    /// This does not mutate the live dirty state; it only traverses the current dependency graph.
-    pub(crate) fn record_one_parent_causes(
+    /// Translates a traced cause path into owned [`ResourceKey`] values.
+    #[must_use]
+    pub(crate) fn explain_path(
         &self,
-        roots: &[DirtyKey],
-    ) -> OneParentRecorder<DirtyKey> {
-        let mut roots: Vec<DirtyKey> = roots.to_vec();
-        roots.sort();
-        roots.dedup();
-
-        let mut dirty = DirtySet::<DirtyKey>::new();
-        let mut scratch = TraversalScratch::new();
-        let mut rec = OneParentRecorder::<DirtyKey>::new();
-
-        for r in roots {
-            EagerPolicy.propagate_with_trace(
-                r,
-                EXECUTION_GRAPH_CHANNEL,
-                self.tracker.graph(),
-                &mut dirty,
-                &mut scratch,
-                &mut rec,
-            );
+        trace: &OneParentRecorder<DirtyKey>,
+        key: DirtyKey,
+    ) -> Option<Vec<ResourceKey>> {
+        let ids = trace.explain_path(key, EXECUTION_GRAPH_CHANNEL)?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            out.push(self.keys.get(id)?.clone());
         }
-
-        rec
+        Some(out)
     }
 }
 

@@ -21,7 +21,9 @@ extern crate alloc;
 mod access;
 mod dirty;
 mod graph;
+mod report;
 mod tape_access;
 
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 pub use graph::{ExecutionGraph, GraphError, NodeOutputs};
+pub use report::{NodeRunReport, RunReport};
