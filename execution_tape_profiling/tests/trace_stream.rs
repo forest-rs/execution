@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef, sig_hash};
+use execution_tape::host::{AccessSink, Host, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceSink;
 use execution_tape::value::{FuncId, Value};
@@ -60,6 +60,7 @@ impl Host for EchoHost {
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        _access: Option<&mut dyn AccessSink>,
     ) -> Result<(Vec<Value>, u64), HostError> {
         if symbol != "trace.echo" {
             return Err(HostError::UnknownSymbol);
