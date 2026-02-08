@@ -258,6 +258,8 @@ The symbol table stores UTF-8 strings used by the program, including host-call t
   - `len: ULEB128`
   - `utf8_bytes[len]`
 
+Symbol id `0` is reserved and is encoded as an empty string (`len = 0`). All referenced symbol ids must be non-zero.
+
 ## Constant pool
 The program constant pool stores immutable literals referenced by index:
 - `I64/U64/F64/Bool/Unit/Decimal`
@@ -338,8 +340,14 @@ Typed signatures are mandatory in v1 and stored separately from `function_table`
 - repeated `count` times:
   - `arg_count: ULEB128`
   - `arg_types[arg_count]: ValueType...`
+  - `has_arg_names: u8` (`0` or `1`)
+  - if `has_arg_names == 1`:
+    - `arg_name_symbol_ids[arg_count]: ULEB128...` (`0` means “no name”; otherwise a non-zero `symbol_id`)
   - `ret_count: ULEB128`
   - `ret_types[ret_count]: ValueType...`
+  - `has_ret_names: u8` (`0` or `1`)
+  - if `has_ret_names == 1`:
+    - `ret_name_symbol_ids[ret_count]: ULEB128...` (`0` means “no name”; otherwise a non-zero `symbol_id`)
 
 The `arg_count`/`ret_count` must match the corresponding `function_table` entry.
 

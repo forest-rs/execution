@@ -105,10 +105,12 @@ fn golden_minimal_program_bytes_v0_0_1() {
         0x01,
         0x00,
         0x00,
-        // function_sigs: tag=7, len=3, payload=[n=1, argc=0, retc=0]
+        // function_sigs: tag=7, len=5, payload=[n=1, argc=0, has_arg_names=0, retc=0, has_ret_names=0]
         0x07,
-        0x03,
+        0x05,
         0x01,
+        0x00,
+        0x00,
         0x00,
         0x00, // host_sigs: tag=8, len=1, payload=[0]
         0x08,

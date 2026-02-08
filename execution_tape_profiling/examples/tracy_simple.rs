@@ -57,6 +57,10 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
         reg_count: 2,
     });
     pb.set_function_name(leaf, "leaf").expect("set leaf name");
+    pb.set_function_input_name(leaf, 0, "x")
+        .expect("set leaf input name");
+    pb.set_function_output_name(leaf, 0, "x")
+        .expect("set leaf output name");
     let stage_one = pb.declare_function(FunctionSig {
         arg_types: vec![ValueType::I64],
         ret_types: vec![ValueType::I64],
@@ -64,6 +68,10 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     });
     pb.set_function_name(stage_one, "stage_one")
         .expect("set stage_one name");
+    pb.set_function_input_name(stage_one, 0, "x")
+        .expect("set stage_one input name");
+    pb.set_function_output_name(stage_one, 0, "y")
+        .expect("set stage_one output name");
     let stage_two = pb.declare_function(FunctionSig {
         arg_types: vec![ValueType::I64],
         ret_types: vec![ValueType::I64],
@@ -71,12 +79,18 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     });
     pb.set_function_name(stage_two, "stage_two")
         .expect("set stage_two name");
+    pb.set_function_input_name(stage_two, 0, "x")
+        .expect("set stage_two input name");
+    pb.set_function_output_name(stage_two, 0, "y")
+        .expect("set stage_two output name");
     let main = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
         reg_count: 4,
     });
     pb.set_function_name(main, "main").expect("set main name");
+    pb.set_function_output_name(main, 0, "result")
+        .expect("set main output name");
 
     let mut a_leaf = Asm::new();
     a_leaf.ret(0, &[1]);

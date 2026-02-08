@@ -19,7 +19,7 @@
 //! use execution_tape::host::{AccessSink, Host, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
 //! use execution_tape::trace::TraceMask;
-//! use execution_tape::value::{FuncId, Value};
+//! use execution_tape::value::Value;
 //! use execution_tape::vm::{Limits, Vm};
 //!
 //! struct NoHost;
@@ -37,23 +37,28 @@
 //! }
 //!
 //! let mut a = Asm::new();
-//! a.const_i64(1, 7);
-//! a.ret(0, &[1]);
+//! a.const_i64(2, 1);
+//! a.i64_add(3, 1, 2);
+//! a.ret(0, &[3]);
 //!
 //! let mut pb = ProgramBuilder::new();
-//! pb.push_function_checked(
+//! let entry = pb.push_function_checked(
 //!     a,
 //!     FunctionSig {
-//!         arg_types: vec![],
+//!         arg_types: vec![ValueType::I64],
 //!         ret_types: vec![ValueType::I64],
-//!         reg_count: 2,
+//!         reg_count: 4,
 //!     },
 //! )?;
+//! pb.set_function_input_name(entry, 0, "x")?;
+//! pb.set_function_output_name(entry, 0, "y")?;
 //! let program = pb.build_verified()?;
 //!
 //! let mut vm = Vm::new(NoHost, Limits::default());
-//! let out = vm.run(&program, FuncId(0), &[], TraceMask::NONE, None).unwrap();
-//! assert_eq!(out, vec![Value::I64(7)]);
+//! let out = vm
+//!     .run(&program, entry, &[Value::I64(7)], TraceMask::NONE, None)
+//!     .unwrap();
+//! assert_eq!(out, vec![Value::I64(8)]);
 //! # Ok::<(), execution_tape::asm::BuildError>(())
 //! ```
 

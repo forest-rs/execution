@@ -1007,6 +1007,79 @@ fn fmt_reg_list(w: &mut fmt::Formatter<'_>, regs: &[u32]) -> fmt::Result {
     write!(w, "]")
 }
 
+fn fmt_named_ret_list(
+    w: &mut fmt::Formatter<'_>,
+    program: &Program,
+    func: FuncId,
+    regs: &[u32],
+) -> fmt::Result {
+    write!(w, "[")?;
+    for (i, r) in regs.iter().enumerate() {
+        if i != 0 {
+            write!(w, ", ")?;
+        }
+        let ret = u32::try_from(i).unwrap_or(u32::MAX);
+        if let Some(name) = program.function_output_name(func.0, ret) {
+            write!(w, "{name}=")?;
+        }
+        fmt_reg(w, *r)?;
+    }
+    write!(w, "]")
+}
+
+fn fmt_named_arg_list(
+    w: &mut fmt::Formatter<'_>,
+    program: &Program,
+    func: FuncId,
+    regs: &[u32],
+) -> fmt::Result {
+    write!(w, "[")?;
+    for (i, r) in regs.iter().enumerate() {
+        if i != 0 {
+            write!(w, ", ")?;
+        }
+        let arg = u32::try_from(i).unwrap_or(u32::MAX);
+        if let Some(name) = program.function_input_name(func.0, arg) {
+            write!(w, "{name}=")?;
+        }
+        fmt_reg(w, *r)?;
+    }
+    write!(w, "]")
+}
+
+fn fmt_named_func_arg_bindings(
+    w: &mut fmt::Formatter<'_>,
+    program: &Program,
+    func: FuncId,
+) -> fmt::Result {
+    let Some(f) = program.functions.get(func.0 as usize) else {
+        return Ok(());
+    };
+    let argc = f.arg_count;
+    let mut any = false;
+    for arg in 0..argc {
+        if program.function_input_name(func.0, arg).is_some() {
+            any = true;
+            break;
+        }
+    }
+    if !any {
+        return Ok(());
+    }
+
+    write!(w, "  ; args=[")?;
+    for arg in 0..argc {
+        if arg != 0 {
+            write!(w, ", ")?;
+        }
+        if let Some(name) = program.function_input_name(func.0, arg) {
+            write!(w, "{name}=")?;
+        }
+        fmt_reg(w, 1 + arg)?;
+    }
+    writeln!(w, "]")
+}
+
 fn fmt_reg_iter(w: &mut fmt::Formatter<'_>, mut regs: RegIter<'_>) -> fmt::Result {
     write!(w, "[")?;
     if let Some(first) = regs.next() {
@@ -1034,6 +1107,7 @@ impl fmt::Display for Disassembly<'_> {
                 write!(f, " ; name=\"{name}\"")?;
             }
             writeln!(f)?;
+            fmt_named_func_arg_bindings(f, self.program, fd.func())?;
             if let Some(e) = fd.error() {
                 writeln!(f, "  <decode error: {e:?}>")?;
                 continue;
@@ -1122,8 +1196,12 @@ fn fmt_instr_with_labels(
             write!(f, " eff_out=")?;
             fmt_reg(f, call.eff_out)?;
             write!(f, ", ")?;
+            let mut callee_func_for_names: Option<FuncId> = None;
             match call.callee {
-                CallTarget::Func(id) => write!(f, "f{}", id.0)?,
+                CallTarget::Func(id) => {
+                    callee_func_for_names = Some(id);
+                    write!(f, "f{}", id.0)?;
+                }
                 CallTarget::HostSig(id, sym) => {
                     write!(f, "host_sig#{}", id.0)?;
                     if let Some(s) = sym {
@@ -1134,15 +1212,23 @@ fn fmt_instr_with_labels(
             write!(f, ", eff_in=")?;
             fmt_reg(f, call.eff_in)?;
             write!(f, ", args=")?;
-            fmt_reg_list(f, call.args)?;
+            if let Some(callee) = callee_func_for_names {
+                fmt_named_arg_list(f, iv.program, callee, call.args)?;
+            } else {
+                fmt_reg_list(f, call.args)?;
+            }
             write!(f, ", rets=")?;
-            fmt_reg_list(f, call.rets)?;
+            if let Some(callee) = callee_func_for_names {
+                fmt_named_ret_list(f, iv.program, callee, call.rets)?;
+            } else {
+                fmt_reg_list(f, call.rets)?;
+            }
         }
         Operands::Ret { eff, rets } => {
             write!(f, " eff=")?;
             fmt_reg(f, eff)?;
             write!(f, ", rets=")?;
-            fmt_reg_list(f, rets)?;
+            fmt_named_ret_list(f, iv.program, iv.func(), rets)?;
         }
     }
     Ok(())
@@ -1236,8 +1322,12 @@ impl fmt::Display for InstrView<'_> {
                 write!(f, " eff_out=")?;
                 fmt_reg(f, call.eff_out)?;
                 write!(f, ", ")?;
+                let mut callee_func_for_names: Option<FuncId> = None;
                 match call.callee {
-                    CallTarget::Func(id) => write!(f, "f{}", id.0)?,
+                    CallTarget::Func(id) => {
+                        callee_func_for_names = Some(id);
+                        write!(f, "f{}", id.0)?;
+                    }
                     CallTarget::HostSig(id, sym) => {
                         write!(f, "host_sig#{}", id.0)?;
                         if let Some(s) = sym {
@@ -1250,13 +1340,17 @@ impl fmt::Display for InstrView<'_> {
                 write!(f, ", args=")?;
                 fmt_reg_list(f, call.args)?;
                 write!(f, ", rets=")?;
-                fmt_reg_list(f, call.rets)?;
+                if let Some(callee) = callee_func_for_names {
+                    fmt_named_ret_list(f, self.program, callee, call.rets)?;
+                } else {
+                    fmt_reg_list(f, call.rets)?;
+                }
             }
             Operands::Ret { eff, rets } => {
                 write!(f, " eff=")?;
                 fmt_reg(f, eff)?;
                 write!(f, ", rets=")?;
-                fmt_reg_list(f, rets)?;
+                fmt_named_ret_list(f, self.program, self.func, rets)?;
             }
         }
         Ok(())
@@ -1351,6 +1445,74 @@ mod tests {
         assert!(text.contains("func f0: ; name=\"main\""));
         assert!(text.contains("; name=\"then\""));
         assert!(text.contains("; name=\"else\""));
+    }
+
+    #[test]
+    fn disasm_includes_function_output_names_for_call_and_ret() {
+        let mut pb = ProgramBuilder::new();
+
+        let mut callee = Asm::new();
+        callee.ret(0, &[1]);
+        let callee_id = pb
+            .push_function_checked(
+                callee,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                },
+            )
+            .unwrap();
+        pb.set_function_input_name(callee_id, 0, "x").unwrap();
+        pb.set_function_output_name(callee_id, 0, "value").unwrap();
+
+        let mut main = Asm::new();
+        main.const_i64(1, 7);
+        main.call(0, callee_id, 0, &[1], &[2]);
+        main.ret(0, &[2]);
+        let main_id = pb
+            .push_function_checked(
+                main,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 3,
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(main_id, 0, "result").unwrap();
+
+        let vp = pb.build_verified().unwrap();
+        let text = disassemble(vp.program()).to_string();
+        assert!(text.contains("args=[x=r1]"));
+        assert!(text.contains("rets=[value=r2]"));
+        assert!(text.contains("rets=[result=r2]"));
+    }
+
+    #[test]
+    fn disasm_includes_function_input_names_in_function_header() {
+        let mut pb = ProgramBuilder::new();
+
+        let mut a = Asm::new();
+        // Return argument `a` (r2) so the function verifies without additional setup.
+        a.ret(0, &[2]);
+        let func = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::Bool, ValueType::I64, ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 4,
+                },
+            )
+            .unwrap();
+        pb.set_function_input_name(func, 0, "cond").unwrap();
+        pb.set_function_input_name(func, 1, "a").unwrap();
+        pb.set_function_input_name(func, 2, "b").unwrap();
+
+        let vp = pb.build_verified().unwrap();
+        let text = disassemble(vp.program()).to_string();
+        assert!(text.contains("; args=[cond=r1, a=r2, b=r3]"));
     }
 
     #[test]

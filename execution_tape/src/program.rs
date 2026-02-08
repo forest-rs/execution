@@ -132,6 +132,18 @@ pub struct Function {
     pub arg_types: ByteRange,
     /// Return types range (into [`Program::value_types`]).
     pub ret_types: ByteRange,
+    /// Optional argument name ids range (into [`Program::value_name_ids`]).
+    ///
+    /// Entries are symbol table indices (so `0` means “no name”).
+    ///
+    /// If this range is empty, no argument names are present for the function.
+    pub arg_name_ids: ByteRange,
+    /// Optional return name ids range (into [`Program::value_name_ids`]).
+    ///
+    /// Entries are symbol table indices (so `0` means “no name”).
+    ///
+    /// If this range is empty, no return names are present for the function.
+    pub ret_name_ids: ByteRange,
 }
 
 impl Function {
@@ -205,6 +217,11 @@ pub struct Program {
     pub types: TypeTable,
     /// Packed value-type arena for function/host signatures.
     pub value_types: Vec<ValueType>,
+    /// Packed optional value-name arena for function signatures.
+    ///
+    /// Entries are symbol table indices (so `0` means “no name”). Function signatures store
+    /// ranges into this arena for argument/return names.
+    pub value_name_ids: Vec<u32>,
     /// Packed bytecode arena; functions reference slices by [`ByteRange`].
     pub bytecode_data: Vec<u8>,
     /// Packed span arena; functions reference slices by [`ByteRange`] interpreted as a span-entry range.
@@ -606,6 +623,8 @@ impl Program {
                     offset: ret_off,
                     len: ret_len,
                 },
+                arg_name_ids: ByteRange { offset: 0, len: 0 },
+                ret_name_ids: ByteRange { offset: 0, len: 0 },
             });
         }
 
@@ -618,6 +637,7 @@ impl Program {
             host_sigs: packed_host_sigs,
             types,
             value_types,
+            value_name_ids: Vec::new(),
             bytecode_data,
             spans,
             functions: packed_functions,
@@ -649,6 +669,60 @@ impl Program {
             .iter()
             .find(|e| e.func == func && e.pc == pc)
             .and_then(|e| self.symbol_str(e.name).ok())
+    }
+
+    /// Returns the function input name for `func` and `arg`, if present.
+    #[must_use]
+    pub fn function_input_name(&self, func: u32, arg: u32) -> Option<&str> {
+        let f = self.functions.get(func as usize)?;
+        if arg >= f.arg_count {
+            return None;
+        }
+        let ids = self.function_arg_name_ids(f).ok()?;
+        let v = *ids.get(arg as usize)?;
+        if v == 0 {
+            return None;
+        }
+        let sym = SymbolId(NonZeroU32::new(v)?);
+        self.symbol_str(sym).ok()
+    }
+
+    /// Returns the function output name for `func` and `ret`, if present.
+    #[must_use]
+    pub fn function_output_name(&self, func: u32, ret: u32) -> Option<&str> {
+        let f = self.functions.get(func as usize)?;
+        if ret >= f.ret_count {
+            return None;
+        }
+        let ids = self.function_ret_name_ids(f).ok()?;
+        let v = *ids.get(ret as usize)?;
+        if v == 0 {
+            return None;
+        }
+        let sym = SymbolId(NonZeroU32::new(v)?);
+        self.symbol_str(sym).ok()
+    }
+
+    /// Returns a slice of argument name ids for `func`.
+    ///
+    /// Entries are symbol table indices (so `0` means “no name”).
+    pub fn function_arg_name_ids(&self, func: &Function) -> Result<&[u32], DecodeError> {
+        let start = func.arg_name_ids.offset as usize;
+        let end = func.arg_name_ids.end()? as usize;
+        self.value_name_ids
+            .get(start..end)
+            .ok_or(DecodeError::OutOfBounds)
+    }
+
+    /// Returns a slice of return name ids for `func`.
+    ///
+    /// Entries are symbol table indices (so `0` means “no name”).
+    pub fn function_ret_name_ids(&self, func: &Function) -> Result<&[u32], DecodeError> {
+        let start = func.ret_name_ids.offset as usize;
+        let end = func.ret_name_ids.end()? as usize;
+        self.value_name_ids
+            .get(start..end)
+            .ok_or(DecodeError::OutOfBounds)
     }
 
     /// Returns a host-call symbol string for `id`.
@@ -854,10 +928,28 @@ impl Program {
                 for &t in arg_types {
                     encode_value_type(&mut payload, t);
                 }
+                let arg_names = self.function_arg_name_ids(f).unwrap_or(&[]);
+                if arg_names.is_empty() || arg_names.len() != arg_types.len() {
+                    payload.write_u8(0);
+                } else {
+                    payload.write_u8(1);
+                    for &name in arg_names {
+                        payload.write_uleb128_u32(name);
+                    }
+                }
                 let ret_types = self.function_ret_types(f).unwrap_or(&[]);
                 payload.write_uleb128_u64(ret_types.len() as u64);
                 for &t in ret_types {
                     encode_value_type(&mut payload, t);
+                }
+                let ret_names = self.function_ret_name_ids(f).unwrap_or(&[]);
+                if ret_names.is_empty() || ret_names.len() != ret_types.len() {
+                    payload.write_u8(0);
+                } else {
+                    payload.write_u8(1);
+                    for &name in ret_names {
+                        payload.write_uleb128_u32(name);
+                    }
                 }
             }
             write_section(&mut w, SectionTag::FunctionSigs, payload.as_slice());
@@ -1070,7 +1162,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut host_sig_defs: Vec<(SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry> = Vec::new();
-    let mut function_sig_defs: Vec<(Vec<ValueType>, Vec<ValueType>)> = Vec::new();
+    let mut function_sig_defs: Vec<DecodedFunctionSig> = Vec::new();
     let mut bytecode_blobs: Vec<Vec<u8>> = Vec::new();
     let mut span_tables: Vec<Vec<SpanEntry>> = Vec::new();
     let mut names: NamesDef = NamesDef::default();
@@ -1221,6 +1313,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     }
 
     let mut value_types: Vec<ValueType> = Vec::new();
+    let mut value_name_ids: Vec<u32> = Vec::new();
     let mut host_sigs: Vec<HostSigEntry> = Vec::with_capacity(host_sig_defs.len());
     for (symbol, sig_hash, args, rets) in host_sig_defs {
         let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
@@ -1247,7 +1340,9 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     if function_sig_defs.len() != function_table.len() {
         return Err(DecodeError::OutOfBounds);
     }
-    for (entry, (arg_types, ret_types)) in function_table.into_iter().zip(function_sig_defs) {
+    for (entry, (arg_types, ret_types, arg_names, ret_names)) in
+        function_table.into_iter().zip(function_sig_defs)
+    {
         let bc = *bytecode_ranges
             .get(usize::try_from(entry.bytecode_index).map_err(|_| DecodeError::OutOfBounds)?)
             .ok_or(DecodeError::OutOfBounds)?;
@@ -1261,6 +1356,32 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         let ret_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
         value_types.extend_from_slice(&ret_types);
         let ret_len = u32::try_from(ret_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
+
+        let arg_name_range = if arg_names.is_empty() {
+            ByteRange { offset: 0, len: 0 }
+        } else {
+            if arg_names.len() != arg_types.len() {
+                return Err(DecodeError::OutOfBounds);
+            }
+            let offset =
+                u32::try_from(value_name_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+            value_name_ids.extend_from_slice(&arg_names);
+            let len = u32::try_from(arg_names.len()).map_err(|_| DecodeError::OutOfBounds)?;
+            ByteRange { offset, len }
+        };
+
+        let ret_name_range = if ret_names.is_empty() {
+            ByteRange { offset: 0, len: 0 }
+        } else {
+            if ret_names.len() != ret_types.len() {
+                return Err(DecodeError::OutOfBounds);
+            }
+            let offset =
+                u32::try_from(value_name_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+            value_name_ids.extend_from_slice(&ret_names);
+            let len = u32::try_from(ret_names.len()).map_err(|_| DecodeError::OutOfBounds)?;
+            ByteRange { offset, len }
+        };
 
         functions.push(Function {
             arg_count: entry.arg_count,
@@ -1276,6 +1397,8 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 offset: ret_off,
                 len: ret_len,
             },
+            arg_name_ids: arg_name_range,
+            ret_name_ids: ret_name_range,
         });
     }
 
@@ -1309,6 +1432,28 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         }
     }
 
+    for f in &functions {
+        for range in [f.arg_name_ids, f.ret_name_ids] {
+            if range.len == 0 {
+                continue;
+            }
+            let start = range.offset as usize;
+            let end = range.end()? as usize;
+            let slice = value_name_ids
+                .get(start..end)
+                .ok_or(DecodeError::OutOfBounds)?;
+            for &v in slice {
+                if v == 0 {
+                    continue;
+                }
+                let sym_ix = usize::try_from(v).map_err(|_| DecodeError::OutOfBounds)?;
+                if symbols.get(sym_ix).is_none() {
+                    return Err(DecodeError::OutOfBounds);
+                }
+            }
+        }
+    }
+
     Ok(Program {
         symbols,
         symbol_data,
@@ -1318,6 +1463,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         host_sigs,
         types: TypeTable::pack(types),
         value_types,
+        value_name_ids,
         bytecode_data,
         spans,
         functions,
@@ -1582,7 +1728,7 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
     })
 }
 
-type DecodedFunctionSig = (Vec<ValueType>, Vec<ValueType>);
+type DecodedFunctionSig = (Vec<ValueType>, Vec<ValueType>, Vec<u32>, Vec<u32>);
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
@@ -1595,12 +1741,36 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
         for _ in 0..argc {
             args.push(decode_value_type(&mut r)?);
         }
+        let has_arg_names = r.read_u8()?;
+        let arg_names = if has_arg_names == 0 {
+            Vec::new()
+        } else if has_arg_names == 1 {
+            let mut names = Vec::with_capacity(argc);
+            for _ in 0..argc {
+                names.push(r.read_uleb128_u32()?);
+            }
+            names
+        } else {
+            return Err(DecodeError::OutOfBounds);
+        };
         let retc = read_usize(&mut r)?;
         let mut rets = Vec::with_capacity(retc);
         for _ in 0..retc {
             rets.push(decode_value_type(&mut r)?);
         }
-        out.push((args, rets));
+        let has_ret_names = r.read_u8()?;
+        let ret_names = if has_ret_names == 0 {
+            Vec::new()
+        } else if has_ret_names == 1 {
+            let mut names = Vec::with_capacity(retc);
+            for _ in 0..retc {
+                names.push(r.read_uleb128_u32()?);
+            }
+            names
+        } else {
+            return Err(DecodeError::OutOfBounds);
+        };
+        out.push((args, rets, arg_names, ret_names));
     }
     Ok(out)
 }
@@ -1751,6 +1921,46 @@ mod tests {
                 },
             ],
         );
+
+        let bytes = p.encode();
+        let back = Program::decode(&bytes).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn program_roundtrips_with_function_input_and_output_names() {
+        let mut p = Program::new(
+            vec![
+                HostSymbol {
+                    symbol: "mesh.make_cube".into(),
+                },
+                HostSymbol {
+                    symbol: "price.lookup".into(),
+                },
+                HostSymbol {
+                    symbol: "arg".into(),
+                },
+                HostSymbol {
+                    symbol: "out".into(),
+                },
+            ],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::U64],
+                ret_types: vec![ValueType::U64],
+                reg_count: 2,
+                bytecode: vec![1, 2, 3],
+                spans: vec![SpanEntry {
+                    pc_delta: 0,
+                    span_id: 123,
+                }],
+            }],
+        );
+        p.value_name_ids = vec![3, 4];
+        p.functions[0].arg_name_ids = ByteRange { offset: 0, len: 1 };
+        p.functions[0].ret_name_ids = ByteRange { offset: 1, len: 1 };
 
         let bytes = p.encode();
         let back = Program::decode(&bytes).unwrap();
@@ -1987,7 +2197,9 @@ mod tests {
             let mut p = Writer::new();
             p.write_uleb128_u64(1);
             p.write_uleb128_u64(0); // argc
+            p.write_u8(0); // has_arg_names
             p.write_uleb128_u64(0); // retc
+            p.write_u8(0); // has_ret_names
             write_section(&mut w, SectionTag::FunctionSigs, p.as_slice());
         }
         // host signatures: empty

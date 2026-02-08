@@ -113,6 +113,24 @@ pub enum BuildError {
         /// The invalid function id.
         func: u32,
     },
+    /// An argument index was out of range for the function signature.
+    BadArgIndex {
+        /// The function id.
+        func: u32,
+        /// The invalid argument index.
+        arg: u32,
+        /// The number of arguments in the function signature.
+        arg_count: u32,
+    },
+    /// A return index was out of range for the function signature.
+    BadRetIndex {
+        /// The function id.
+        func: u32,
+        /// The invalid return index.
+        ret: u32,
+        /// The number of returns in the function signature.
+        ret_count: u32,
+    },
     /// A function was declared but never defined.
     MissingFunctionBody {
         /// The function id that is missing a body.
@@ -128,6 +146,42 @@ impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
+            Self::BadArgIndex {
+                func,
+                arg,
+                arg_count,
+            } => {
+                if *arg_count == 0 {
+                    write!(
+                        f,
+                        "invalid argument index {arg} for function {func} (function takes 0 arguments)"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "invalid argument index {arg} for function {func} (valid range: 0..={})",
+                        arg_count - 1
+                    )
+                }
+            }
+            Self::BadRetIndex {
+                func,
+                ret,
+                ret_count,
+            } => {
+                if *ret_count == 0 {
+                    write!(
+                        f,
+                        "invalid return index {ret} for function {func} (function returns 0 values)"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "invalid return index {ret} for function {func} (valid range: 0..={})",
+                        ret_count - 1
+                    )
+                }
+            }
             Self::MissingFunctionBody { func } => write!(f, "missing function body for {func}"),
             Self::Verify(e) => write!(f, "verification failed: {e}"),
             Self::UnresolvedLabel => write!(f, "unresolved label"),
@@ -221,6 +275,22 @@ pub struct ProgramBuilder {
     program_name: Option<SymbolId>,
     function_names: Vec<FunctionNameEntry>,
     labels: Vec<LabelNameEntry>,
+    function_input_names: Vec<FunctionInputNameDef>,
+    function_output_names: Vec<FunctionOutputNameDef>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct FunctionInputNameDef {
+    func: u32,
+    arg: u32,
+    name: SymbolId,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct FunctionOutputNameDef {
+    func: u32,
+    ret: u32,
+    name: SymbolId,
 }
 
 impl ProgramBuilder {
@@ -267,6 +337,78 @@ impl ProgramBuilder {
         } else {
             self.function_names.push(FunctionNameEntry {
                 func: func.0,
+                name: sym,
+            });
+        }
+        Ok(sym)
+    }
+
+    /// Sets a human-readable input name for `arg` in `func` (stored as a symbol id).
+    pub fn set_function_input_name(
+        &mut self,
+        func: FuncId,
+        arg: u32,
+        name: &str,
+    ) -> Result<SymbolId, BuildError> {
+        let Some(def) = self.functions.get(func.0 as usize) else {
+            return Err(BuildError::BadFuncId { func: func.0 });
+        };
+        if (arg as usize) >= def.arg_types.len() {
+            let arg_count = u32::try_from(def.arg_types.len()).unwrap_or(u32::MAX);
+            return Err(BuildError::BadArgIndex {
+                func: func.0,
+                arg,
+                arg_count,
+            });
+        }
+
+        let sym = self.symbol(name);
+        if let Some(entry) = self
+            .function_input_names
+            .iter_mut()
+            .find(|e| e.func == func.0 && e.arg == arg)
+        {
+            entry.name = sym;
+        } else {
+            self.function_input_names.push(FunctionInputNameDef {
+                func: func.0,
+                arg,
+                name: sym,
+            });
+        }
+        Ok(sym)
+    }
+
+    /// Sets a human-readable output name for `ret` in `func` (stored as a symbol id).
+    pub fn set_function_output_name(
+        &mut self,
+        func: FuncId,
+        ret: u32,
+        name: &str,
+    ) -> Result<SymbolId, BuildError> {
+        let Some(def) = self.functions.get(func.0 as usize) else {
+            return Err(BuildError::BadFuncId { func: func.0 });
+        };
+        if (ret as usize) >= def.ret_types.len() {
+            let ret_count = u32::try_from(def.ret_types.len()).unwrap_or(u32::MAX);
+            return Err(BuildError::BadRetIndex {
+                func: func.0,
+                ret,
+                ret_count,
+            });
+        }
+
+        let sym = self.symbol(name);
+        if let Some(entry) = self
+            .function_output_names
+            .iter_mut()
+            .find(|e| e.func == func.0 && e.ret == ret)
+        {
+            entry.name = sym;
+        } else {
+            self.function_output_names.push(FunctionOutputNameDef {
+                func: func.0,
+                ret,
                 name: sym,
             });
         }
@@ -454,6 +596,69 @@ impl ProgramBuilder {
         p.program_name = self.program_name;
         p.function_names = self.function_names;
         p.labels = self.labels;
+
+        let func_count = p.functions.len();
+        let mut has_arg_names = vec![false; func_count];
+        let mut has_ret_names = vec![false; func_count];
+        for e in &self.function_input_names {
+            if let Some(slot) = has_arg_names.get_mut(e.func as usize) {
+                *slot = true;
+            }
+        }
+        for e in &self.function_output_names {
+            if let Some(slot) = has_ret_names.get_mut(e.func as usize) {
+                *slot = true;
+            }
+        }
+
+        for (i, f) in p.functions.iter_mut().enumerate() {
+            if has_arg_names[i] {
+                let offset = u32::try_from(p.value_name_ids.len()).unwrap_or(u32::MAX);
+                let len = f.arg_count;
+                p.value_name_ids
+                    .resize(p.value_name_ids.len() + len as usize, 0);
+                f.arg_name_ids = crate::program::ByteRange { offset, len };
+            }
+            if has_ret_names[i] {
+                let offset = u32::try_from(p.value_name_ids.len()).unwrap_or(u32::MAX);
+                let len = f.ret_count;
+                p.value_name_ids
+                    .resize(p.value_name_ids.len() + len as usize, 0);
+                f.ret_name_ids = crate::program::ByteRange { offset, len };
+            }
+        }
+
+        for e in &self.function_input_names {
+            let Some(f) = p.functions.get(e.func as usize) else {
+                continue;
+            };
+            if e.arg >= f.arg_count {
+                continue;
+            }
+            if f.arg_name_ids.len == 0 {
+                continue;
+            }
+            let base = f.arg_name_ids.offset as usize;
+            if let Some(slot) = p.value_name_ids.get_mut(base + e.arg as usize) {
+                *slot = e.name.index();
+            }
+        }
+        for e in &self.function_output_names {
+            let Some(f) = p.functions.get(e.func as usize) else {
+                continue;
+            };
+            if e.ret >= f.ret_count {
+                continue;
+            }
+            if f.ret_name_ids.len == 0 {
+                continue;
+            }
+            let base = f.ret_name_ids.offset as usize;
+            if let Some(slot) = p.value_name_ids.get_mut(base + e.ret as usize) {
+                *slot = e.name.index();
+            }
+        }
+
         p
     }
 
