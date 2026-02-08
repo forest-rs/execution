@@ -143,8 +143,6 @@ pub struct ExecutionGraph<H: Host> {
 #[derive(Debug, Default)]
 struct Scratch {
     to_run: Vec<NodeId>,
-    restore: Vec<DirtyKey>,
-    stack: Vec<DirtyKey>,
     seen_stamp: Vec<u32>,
     stamp: u32,
 }
@@ -153,8 +151,6 @@ impl Scratch {
     #[inline]
     fn start_drain(&mut self, node_count: usize) {
         self.to_run.clear();
-        self.restore.clear();
-        self.stack.clear();
 
         if self.seen_stamp.len() < node_count {
             self.seen_stamp.resize(node_count, 0);
@@ -405,8 +401,8 @@ impl<H: Host> ExecutionGraph<H> {
 
     /// Runs the subgraph needed to (re)compute `node`, executing only what is currently dirty.
     ///
-    /// This is a minimal implementation: it filters the global dirty drain down to keys that are
-    /// in the dependency-closure of `node`'s output keys, then restores the remaining dirty keys.
+    /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
+    /// Unrelated dirty work remains dirty and is not drained.
     pub fn run_node(&mut self, node: NodeId) -> Result<(), GraphError> {
         let Ok(index) = usize::try_from(node.as_u64()) else {
             return Err(GraphError::BadNodeId);
@@ -415,34 +411,17 @@ impl<H: Host> ExecutionGraph<H> {
             return Err(GraphError::BadNodeId);
         };
 
-        // Compute the dependency-closure of this node's output keys.
-        let mut closure: BTreeMap<DirtyKey, ()> = BTreeMap::new();
-        self.scratch.stack.clear();
+        // Drain dirty keys within the dependency closure of each output, and execute nodes whose
+        // output keys are affected.
+        self.scratch.start_drain(self.nodes.len());
         for out_name in n.output_names.iter().cloned() {
             let out_id = self.dirty.intern(ResourceKey::tape_output(node, out_name));
-            self.scratch.stack.push(out_id);
-        }
-        while let Some(next) = self.scratch.stack.pop() {
-            if closure.insert(next, ()).is_some() {
-                continue;
+            for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
+                let ResourceKey::TapeOutput { node, .. } = key else {
+                    continue;
+                };
+                let _ = self.scratch.take_node(*node);
             }
-            for dep in self.dirty.dependencies(next) {
-                self.scratch.stack.push(dep);
-            }
-        }
-
-        // Drain everything, but only execute nodes that have dirty keys in the closure.
-        self.scratch.start_drain(self.nodes.len());
-
-        for (key_id, key) in self.dirty.drain() {
-            if !closure.contains_key(&key_id) {
-                self.scratch.restore.push(key_id);
-                continue;
-            }
-            let ResourceKey::TapeOutput { node, .. } = key else {
-                continue;
-            };
-            let _ = self.scratch.take_node(*node);
         }
 
         let mut to_run = core::mem::take(&mut self.scratch.to_run);
@@ -450,11 +429,6 @@ impl<H: Host> ExecutionGraph<H> {
             self.run_node_internal(node)?;
         }
         self.scratch.to_run = to_run;
-
-        // Restore unrelated dirty work.
-        for k in self.scratch.restore.iter().copied() {
-            self.dirty.mark_dirty(k);
-        }
 
         Ok(())
     }
@@ -617,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn run_node_restores_unrelated_dirty_work() {
+    fn run_node_leaves_unrelated_dirty_work_dirty() {
         fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
@@ -636,48 +610,62 @@ mod tests {
             (pb.build_verified().unwrap(), f)
         }
 
-        // Two disjoint chains: A -> B and X -> Y.
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let (a_prog, a_entry) = make_identity_program("value");
         let (b_prog, b_entry) = make_identity_program("value");
-        let (x_prog, x_entry) = make_identity_program("value");
-        let (y_prog, y_entry) = make_identity_program("value");
 
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        // Target chain: A -> B
         let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
         let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
-        let nx = g.add_node(x_prog, x_entry, vec!["x".into()]);
-        let ny = g.add_node(y_prog, y_entry, vec!["y".into()]);
-
         g.set_input_value(na, "a", Value::I64(1));
         g.connect(na, "value", nb, "b");
-        g.set_input_value(nx, "x", Value::I64(10));
-        g.connect(nx, "value", ny, "y");
+
+        // Many unrelated chains: X_i -> Y_i
+        let mut unrelated_leaves: Vec<NodeId> = Vec::new();
+        for i in 0..32_u64 {
+            let (x_prog, x_entry) = make_identity_program("value");
+            let (y_prog, y_entry) = make_identity_program("value");
+            let nx = g.add_node(x_prog, x_entry, vec!["x".into()]);
+            let ny = g.add_node(y_prog, y_entry, vec!["y".into()]);
+            g.set_input_value(
+                nx,
+                "x",
+                Value::I64(10 + i64::try_from(i).unwrap_or(i64::MAX)),
+            );
+            g.connect(nx, "value", ny, "y");
+            unrelated_leaves.push(ny);
+        }
 
         g.run_all().unwrap();
         assert_eq!(g.node_run_count(nb), Some(1));
-        assert_eq!(g.node_run_count(ny), Some(1));
+        for &ny in &unrelated_leaves {
+            assert_eq!(g.node_run_count(ny), Some(1));
+        }
 
-        // Dirty both chains.
+        // Dirty target chain and all unrelated chains.
         g.set_input_value(na, "a", Value::I64(2));
         g.invalidate_input("a");
-        g.set_input_value(nx, "x", Value::I64(11));
+
+        // This invalidates the shared input key for all unrelated chains. The key property we
+        // care about is that `run_node(nb)` must not drain or run unrelated dirty work.
         g.invalidate_input("x");
 
-        // Run only the A->B closure; X->Y should remain dirty and be executed later.
+        // Run only the A->B closure; unrelated chains should remain dirty and not execute.
         g.run_node(nb).unwrap();
         assert_eq!(
             g.node_outputs(nb).unwrap().get("value"),
             Some(&Value::I64(2))
         );
         assert_eq!(g.node_run_count(nb), Some(2));
-        assert_eq!(g.node_run_count(ny), Some(1));
+        for &ny in &unrelated_leaves {
+            assert_eq!(g.node_run_count(ny), Some(1));
+        }
 
+        // Unrelated dirty work should still be present.
         g.run_all().unwrap();
-        assert_eq!(
-            g.node_outputs(ny).unwrap().get("value"),
-            Some(&Value::I64(11))
-        );
-        assert_eq!(g.node_run_count(ny), Some(2));
+        for &ny in &unrelated_leaves {
+            assert_eq!(g.node_run_count(ny), Some(2));
+        }
     }
 
     #[test]

@@ -74,16 +74,6 @@ impl DirtyEngine {
         self.keys.intern(key)
     }
 
-    /// Iterates the current dependency set for `key`.
-    ///
-    /// Dependencies are always within `EXECUTION_GRAPH_CHANNEL`.
-    #[inline]
-    pub(crate) fn dependencies(&self, key: DirtyKey) -> impl Iterator<Item = DirtyKey> + '_ {
-        self.tracker
-            .graph()
-            .dependencies(key, EXECUTION_GRAPH_CHANNEL)
-    }
-
     /// Marks `key` dirty (lazy propagation).
     ///
     /// This records the root dirty mark; dependents become eligible for execution during drain.
@@ -105,6 +95,26 @@ impl DirtyEngine {
         self.tracker
             .drain(EXECUTION_GRAPH_CHANNEL)
             .affected()
+            .deterministic()
+            .run()
+            .filter_map(move |id| keys.get(id).map(|k| (id, k)))
+    }
+
+    /// Drains dirty work, restricted to keys within the dependency closure of `key`.
+    ///
+    /// This yields only dirty/affected keys that are (transitively) upstream dependencies of
+    /// `key` (including `key` itself if it is affected). This is used to support targeted
+    /// execution of a single node’s dependency closure without draining unrelated dirty work.
+    #[inline]
+    pub(crate) fn drain_within_dependencies_of(
+        &mut self,
+        key: DirtyKey,
+    ) -> impl Iterator<Item = (DirtyKey, &ResourceKey)> + '_ {
+        let keys = &self.keys;
+        self.tracker
+            .drain(EXECUTION_GRAPH_CHANNEL)
+            .affected()
+            .within_dependencies_of(key)
             .deterministic()
             .run()
             .filter_map(move |id| keys.get(id).map(|k| (id, k)))
