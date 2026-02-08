@@ -4,7 +4,9 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-use execution_tape::host::{Host, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn};
+use execution_tape::host::{
+    AccessSink, Host, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn,
+};
 use execution_tape::program::Program;
 use execution_tape::program::{Const, ValueType};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
@@ -500,6 +502,7 @@ impl Host for NopHost {
         _symbol: &str,
         _sig_hash: SigHash,
         _args: &[ValueRef<'_>],
+        _access: Option<&mut dyn AccessSink>,
     ) -> Result<(Vec<Value>, u64), HostError> {
         Err(HostError::UnknownSymbol)
     }
@@ -514,6 +517,7 @@ impl Host for IdentityHost {
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        _access: Option<&mut dyn AccessSink>,
     ) -> Result<(Vec<Value>, u64), HostError> {
         if symbol != "id" {
             return Err(HostError::UnknownSymbol);

@@ -19,6 +19,259 @@ use crate::value::Value;
 #[cfg(doc)]
 use crate::program::Program;
 
+/// Sink for recording resource accesses during execution.
+///
+/// This is an optional integration point intended for incremental execution systems (e.g.
+/// `execution_graph`). A sink is provided to host calls via [`Host::call`].
+///
+/// ## Semantics
+///
+/// An [`AccessSink`] observes a *best-effort* stream of resource accesses during a run:
+/// - [`AccessSink::read`] records a dependency (“this call’s result depended on that resource”).
+/// - [`AccessSink::write`] records an invalidation source (“this call mutated that resource”).
+///
+/// Incremental executors use these events to decide what to re-run after external state changes:
+/// a run that previously *read* a given key should be considered potentially stale after some run
+/// *writes* the same key.
+///
+/// The core soundness contract is:
+/// - If a host call’s output depends on some external state, it should record a `read(...)` for a
+///   key that will also be used for future `write(...)` events when that external state changes.
+///
+/// If you record too few reads/writes, incremental execution may incorrectly reuse stale results
+/// (unsound). If you record extra reads/writes, incremental execution may re-run more than
+/// necessary (conservative but correct).
+///
+/// ## Choosing keys
+///
+/// [`ResourceKeyRef`] is intentionally small and allocation-free. If your sink needs ownership,
+/// clone strings or intern structured keys on the sink side.
+///
+/// Good keys are:
+/// - stable across program rebuilds that don’t change the underlying resource identity
+/// - collision-resistant (especially for `u64`-based keys)
+/// - scoped to a well-defined namespace so unrelated resources don’t alias
+///
+/// Avoid keys derived from VM register numbers, argument indices, or other incidental details:
+/// those identities tend to shift as code changes, which makes caching/debugging brittle.
+///
+/// ## Example: recording host reads/writes
+///
+/// This example records a host call's external reads/writes without using `execution_graph` yet.
+///
+/// ```no_run
+/// extern crate alloc;
+///
+/// use alloc::collections::BTreeMap;
+/// use alloc::vec;
+/// use alloc::vec::Vec;
+///
+/// use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+/// use execution_tape::host::{
+///     sig_hash, AccessSink, Host, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef,
+/// };
+/// use execution_tape::program::ValueType;
+/// use execution_tape::trace::TraceMask;
+/// use execution_tape::value::{FuncId, Value};
+/// use execution_tape::vm::{ExecutionContext, Limits, Vm};
+///
+/// #[derive(Debug, Default)]
+/// struct RecordingAccessSink {
+///     reads: Vec<(SigHash, u64)>,
+///     writes: Vec<(SigHash, u64)>,
+/// }
+///
+/// impl AccessSink for RecordingAccessSink {
+///     fn read(&mut self, key: ResourceKeyRef<'_>) {
+///         if let ResourceKeyRef::HostState { op, key } = key {
+///             self.reads.push((op, key));
+///         }
+///     }
+///
+///     fn write(&mut self, key: ResourceKeyRef<'_>) {
+///         if let ResourceKeyRef::HostState { op, key } = key {
+///             self.writes.push((op, key));
+///         }
+///     }
+/// }
+///
+/// struct KvHost {
+///     kv: BTreeMap<u64, i64>,
+///     get_sig: SigHash,
+///     set_sig: SigHash,
+/// }
+///
+/// impl Host for KvHost {
+///     fn call(
+///         &mut self,
+///         symbol: &str,
+///         sig_hash: SigHash,
+///         args: &[ValueRef<'_>],
+///         access: Option<&mut dyn AccessSink>,
+///     ) -> Result<(Vec<Value>, u64), HostError> {
+///         match symbol {
+///             "kv.get" => {
+///                 if sig_hash != self.get_sig {
+///                     return Err(HostError::SignatureMismatch);
+///                 }
+///                 let [ValueRef::U64(key)] = args else {
+///                     return Err(HostError::Failed);
+///                 };
+///                 if let Some(a) = access {
+///                     a.read(ResourceKeyRef::HostState {
+///                         op: sig_hash,
+///                         key: *key,
+///                     });
+///                 }
+///                 let v = *self.kv.get(key).unwrap_or(&0);
+///                 Ok((vec![Value::I64(v)], 0))
+///             }
+///             "kv.set" => {
+///                 if sig_hash != self.set_sig {
+///                     return Err(HostError::SignatureMismatch);
+///                 }
+///                 let [ValueRef::U64(key), ValueRef::I64(value)] = args else {
+///                     return Err(HostError::Failed);
+///                 };
+///                 if let Some(a) = access {
+///                     a.write(ResourceKeyRef::HostState {
+///                         op: sig_hash,
+///                         key: *key,
+///                     });
+///                 }
+///                 self.kv.insert(*key, *value);
+///                 Ok((vec![Value::Unit], 0))
+///             }
+///             _ => Err(HostError::UnknownSymbol),
+///         }
+///     }
+/// }
+///
+/// // Program: v = kv.get(42); kv.set(42, v + 1); return v + 1
+/// let get_sig = HostSig {
+///     args: vec![ValueType::U64],
+///     rets: vec![ValueType::I64],
+/// };
+/// let set_sig = HostSig {
+///     args: vec![ValueType::U64, ValueType::I64],
+///     rets: vec![ValueType::Unit],
+/// };
+/// let get_hash = sig_hash(&get_sig);
+/// let set_hash = sig_hash(&set_sig);
+///
+/// let mut pb = ProgramBuilder::new();
+/// let get_host = pb.host_sig_for("kv.get", get_sig);
+/// let set_host = pb.host_sig_for("kv.set", set_sig);
+///
+/// let mut a = Asm::new();
+/// a.const_u64(1, 42); // r1 = 42
+/// a.host_call(0, get_host, 0, &[1], &[2]); // r2 = kv.get(r1)
+/// a.const_i64(3, 1); // r3 = 1
+/// a.i64_add(4, 2, 3); // r4 = r2 + r3
+/// a.host_call(0, set_host, 0, &[1, 4], &[5]); // r5 = kv.set(r1, r4)
+/// a.ret(0, &[4]); // return r4
+///
+/// pb.push_function_checked(
+///     a,
+///     FunctionSig {
+///         arg_types: vec![],
+///         ret_types: vec![ValueType::I64],
+///         reg_count: 6,
+///     },
+/// )?;
+/// let program = pb.build_verified()?;
+///
+/// let mut kv = BTreeMap::new();
+/// kv.insert(42, 7);
+/// let host = KvHost {
+///     kv,
+///     get_sig: get_hash,
+///     set_sig: set_hash,
+/// };
+///
+/// let mut vm = Vm::new(host, Limits::default());
+/// let mut ctx = ExecutionContext::new();
+/// let mut access = RecordingAccessSink::default();
+///
+/// let out = vm
+///     .run_with_ctx(
+///         &mut ctx,
+///         &program,
+///         FuncId(0),
+///         &[],
+///         TraceMask::NONE,
+///         None,
+///         Some(&mut access),
+///     )
+///     .unwrap();
+///
+/// assert_eq!(out, vec![Value::I64(8)]);
+/// assert_eq!(access.reads.len(), 1);
+/// assert_eq!(access.writes.len(), 1);
+/// # Ok::<(), execution_tape::asm::BuildError>(())
+/// ```
+pub trait AccessSink {
+    /// Records a read of `key` (a dependency edge).
+    fn read(&mut self, key: ResourceKeyRef<'_>);
+    /// Records a write of `key` (an invalidation source).
+    fn write(&mut self, key: ResourceKeyRef<'_>);
+}
+
+/// A borrowed resource key used to model dependencies for incremental execution.
+///
+/// This type is intentionally small and allocation-free; sinks that need ownership should clone
+/// the referenced strings.
+///
+/// ## Key kinds
+///
+/// - [`ResourceKeyRef::Input`] is for embedder-defined “semantic inputs”: values that are supplied
+///   *from outside* the VM/host boundary (configuration, environment, request parameters, etc.).
+///   The string is an embedder-chosen stable name.
+///
+/// - [`ResourceKeyRef::HostState`] is the main “precise” form for host-managed state.
+///   It is explicitly namespaced by the host operation’s [`SigHash`], so different host ops can
+///   reuse the same numeric `key` without colliding. The `key: u64` should identify *which*
+///   piece of state was consulted/mutated for that operation (often a stable hash of a structured
+///   key, or an intern id managed by the embedder).
+///
+/// - [`ResourceKeyRef::OpaqueHost`] is a conservative escape hatch for operations that depend on
+///   (or mutate) host state but cannot (or choose not to) produce a more precise key.
+///   Use it when the best you can say is “this call depends on *something* behind op X”.
+///
+///   The intended pattern is:
+///   - record `read(OpaqueHost { op })` for calls whose outputs depend on opaque host state
+///   - record `write(OpaqueHost { op })` for calls that may invalidate that opaque state
+///
+///   This is always safe (it may cause extra re-runs), and it provides a predictable stepping
+///   stone until a host op can be keyed more precisely.
+///
+/// ## Read/write matching
+///
+/// Incremental systems treat keys as equal by simple structural equality. That means the
+/// *caller* of [`AccessSink`] is responsible for consistency:
+/// - If a later mutation should invalidate a prior dependency, they must use the same
+///   `ResourceKeyRef` (same variant + same payload values).
+/// - If you choose a `u64` hash key, collisions are “aliasing”: unrelated resources can spuriously
+///   invalidate each other (conservative but may be costly). Prefer stable, collision-resistant
+///   hashing or interning when it matters.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceKeyRef<'a> {
+    /// An external input by name (e.g. environment, provided parameter, or named input binding).
+    Input(&'a str),
+    /// Host state consulted by an operation, with a key namespace local to the host op.
+    HostState {
+        /// Host operation identifier.
+        op: SigHash,
+        /// Opaque per-op key identifying the consulted state.
+        key: u64,
+    },
+    /// Conservative dependency for opaque host operations.
+    OpaqueHost {
+        /// Host operation identifier.
+        op: SigHash,
+    },
+}
+
 /// A host-call signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSig {
@@ -165,11 +418,15 @@ impl<'a> ValueRef<'a> {
 /// - an optional additional fuel charge (charged by the VM)
 pub trait Host {
     /// Performs a host call.
+    ///
+    /// If `access` is present, the host should record any external reads and writes that are
+    /// relevant for incremental execution.
     fn call(
         &mut self,
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        access: Option<&mut dyn AccessSink>,
     ) -> Result<(Vec<Value>, u64), HostError>;
 }
 

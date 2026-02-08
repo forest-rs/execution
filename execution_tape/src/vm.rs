@@ -13,7 +13,7 @@ use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap};
 use crate::arena::{BytesHandle, StrHandle, ValueArena};
-use crate::host::{Host, HostError, ValueRef};
+use crate::host::{AccessSink, Host, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
@@ -453,7 +453,7 @@ impl<H: Host> Vm<H> {
         trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let mut ctx = ExecutionContext::new();
-        self.run_with_ctx(&mut ctx, program, entry, args, trace_mask, trace)
+        self.run_with_ctx(&mut ctx, program, entry, args, trace_mask, trace, None)
     }
 
     /// Executes `program` starting at `entry` using an explicit per-run [`ExecutionContext`].
@@ -467,12 +467,13 @@ impl<H: Host> Vm<H> {
         args: &[Value],
         trace_mask: TraceMask,
         trace: Option<&mut dyn TraceSink>,
+        access: Option<&mut dyn AccessSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let program_ref = program.program();
         let mut trace = TraceCtx::new(trace_mask, trace);
         trace.run_start(program_ref, entry, args.len());
 
-        let result = self.run_body(ctx, program, entry, args, &mut trace);
+        let result = self.run_body(ctx, program, entry, args, &mut trace, access);
 
         let outcome = match &result {
             Ok(_) => TraceOutcome::Ok,
@@ -490,6 +491,7 @@ impl<H: Host> Vm<H> {
         entry: FuncId,
         args: &[Value],
         trace: &mut TraceCtx<'_>,
+        mut access: Option<&mut dyn AccessSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
@@ -1449,10 +1451,11 @@ impl<H: Host> Vm<H> {
                         );
                     }
 
-                    let (mut out_vals, extra_fuel) =
-                        self.host
-                            .call(sym, hs.sig_hash, &call_args)
-                            .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
+                    let access_for_call = access.as_mut().map(|a| &mut **a as &mut dyn AccessSink);
+                    let (mut out_vals, extra_fuel) = self
+                        .host
+                        .call(sym, hs.sig_hash, &call_args, access_for_call)
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
                     if trace_host {
@@ -2513,7 +2516,7 @@ fn f64_max_num(a: f64, b: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
-    use crate::host::{HostSig, SigHash};
+    use crate::host::{AccessSink, HostSig, ResourceKeyRef, SigHash};
     use crate::program::{Program, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
     use alloc::vec;
@@ -2527,6 +2530,7 @@ mod tests {
             symbol: &str,
             _sig_hash: SigHash,
             args: &[ValueRef<'_>],
+            _access: Option<&mut dyn AccessSink>,
         ) -> Result<(Vec<Value>, u64), HostError> {
             match symbol {
                 "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
@@ -2660,6 +2664,91 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingAccessSink {
+        reads: usize,
+        writes: usize,
+    }
+
+    impl AccessSink for CountingAccessSink {
+        fn read(&mut self, _key: ResourceKeyRef<'_>) {
+            self.reads += 1;
+        }
+
+        fn write(&mut self, _key: ResourceKeyRef<'_>) {
+            self.writes += 1;
+        }
+    }
+
+    struct RecordingHost;
+
+    impl Host for RecordingHost {
+        fn call(
+            &mut self,
+            symbol: &str,
+            sig_hash: SigHash,
+            args: &[ValueRef<'_>],
+            access: Option<&mut dyn AccessSink>,
+        ) -> Result<(Vec<Value>, u64), HostError> {
+            if let Some(a) = access {
+                a.read(ResourceKeyRef::OpaqueHost { op: sig_hash });
+                a.read(ResourceKeyRef::HostState {
+                    op: sig_hash,
+                    key: 123,
+                });
+            }
+            match symbol {
+                "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
+                _ => Err(HostError::UnknownSymbol),
+            }
+        }
+    }
+
+    #[test]
+    fn vm_host_call_can_record_accesses() {
+        let sig = HostSig {
+            args: vec![ValueType::I64],
+            rets: vec![ValueType::I64],
+        };
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("id", sig);
+
+        let mut a = Asm::new();
+        a.const_i64(1, 9);
+        a.host_call(0, host_sig, 0, &[1], &[2]);
+        a.ret(0, &[2]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 3,
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(RecordingHost, Limits::default());
+        let mut ctx = ExecutionContext::new();
+        let mut access = CountingAccessSink::default();
+
+        let out = vm
+            .run_with_ctx(
+                &mut ctx,
+                &p,
+                FuncId(0),
+                &[],
+                TraceMask::NONE,
+                None,
+                Some(&mut access),
+            )
+            .unwrap();
+
+        assert_eq!(out, vec![Value::I64(9)]);
+        assert!(access.reads > 0);
     }
 
     #[test]
