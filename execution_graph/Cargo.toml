@@ -1,0 +1,22 @@
+[package]
+name = "execution_graph"
+description = "Incremental execution graph built on execution_tape"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["vm", "bytecode", "no_std", "incremental"]
+categories = ["no-std", "virtualization"]
+
+[features]
+default = []
+std = []
+
+[lints]
+workspace = true
+
+[dependencies]
+execution_tape = { path = "../execution_tape" }
+understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "c8f89324c5af436eabced7cef283f98577a94d70" }
