@@ -197,6 +197,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_graph_wind_tunnel"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "execution_graph",
+ "execution_tape",
+]
+
+[[package]]
 name = "execution_tape"
 version = "0.0.1"
 
