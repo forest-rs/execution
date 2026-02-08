@@ -9,6 +9,7 @@
 //! The encoding matches the "Draft encoding for minimal implemented opcodes" section in
 //! `docs/v1_spec.md`.
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -89,7 +90,7 @@ pub struct NamedLabel {
     /// Bytecode pc (byte offset within the function).
     pub pc: u32,
     /// Label name.
-    pub name: alloc::string::String,
+    pub name: String,
 }
 
 impl From<UnresolvedLabel> for AsmError {
@@ -232,11 +233,16 @@ impl ProgramBuilder {
     /// Interns a host symbol and returns its [`SymbolId`].
     ///
     /// This symbol table is also used for optional debug metadata (program/function/label names).
+    ///
+    /// Note that `SymbolId` indices start at `1` (index `0` is reserved in the encoded symbol
+    /// table).
     pub fn symbol(&mut self, symbol: &str) -> SymbolId {
         if let Some(i) = self.symbols.iter().position(|s| s.symbol == symbol) {
-            return SymbolId(u32::try_from(i).unwrap_or(u32::MAX));
+            let raw = u32::try_from(i + 1).unwrap_or(u32::MAX);
+            return SymbolId(core::num::NonZeroU32::new(raw).unwrap());
         }
-        let id = SymbolId(u32::try_from(self.symbols.len()).unwrap_or(u32::MAX));
+        let raw = u32::try_from(self.symbols.len() + 1).unwrap_or(u32::MAX);
+        let id = SymbolId(core::num::NonZeroU32::new(raw).unwrap());
         self.symbols.push(HostSymbol {
             symbol: symbol.into(),
         });
@@ -495,7 +501,7 @@ pub struct Asm {
     bytes: Vec<u8>,
     next_label: u32,
     labels: Vec<Option<u32>>,
-    label_names: Vec<Option<alloc::string::String>>,
+    label_names: Vec<Option<String>>,
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, u64)>,
 }

@@ -777,7 +777,7 @@ struct VerifiedFunctionContainer {
 fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
     for (i, hs) in program.host_sigs.iter().enumerate() {
         let host_sig = u32::try_from(i).unwrap_or(u32::MAX);
-        if (hs.symbol.0 as usize) >= program.symbols.len() {
+        if (hs.symbol.index() as usize) >= program.symbols.len() {
             return Err(VerifyError::HostSigMalformed { host_sig });
         }
         let args = program

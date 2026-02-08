@@ -11,6 +11,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use core::num::NonZeroU32;
+
 use crate::format::{DecodeError, Reader, Writer};
 use crate::host::{HostSig, SigHash, sig_hash};
 
@@ -74,8 +76,19 @@ pub struct SpanEntry {
 }
 
 /// Symbol table identifier (index into [`Program::symbols`]).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SymbolId(pub u32);
+///
+/// This is a non-zero index: symbol index `0` is reserved (and encoded as an empty symbol) and is
+/// never referenced by a [`SymbolId`]. This lets `Option<SymbolId>` use the niche optimization.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SymbolId(pub NonZeroU32);
+
+impl SymbolId {
+    /// Returns the underlying symbol-table index.
+    #[must_use]
+    pub fn index(self) -> u32 {
+        self.0.get()
+    }
+}
 
 /// Constant pool identifier (index into [`Program::const_pool`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -479,8 +492,12 @@ impl Program {
         types: TypeTableDef,
         functions: Vec<FunctionDef>,
     ) -> Self {
+        // Reserve symbol index 0 (encoded as an empty symbol) so `SymbolId` can be non-zero.
         let mut symbol_data: String = String::new();
-        let mut packed_symbols: Vec<SymbolEntry> = Vec::with_capacity(symbols.len());
+        let mut packed_symbols: Vec<SymbolEntry> = Vec::with_capacity(symbols.len() + 1);
+        packed_symbols.push(SymbolEntry {
+            bytes: ByteRange { offset: 0, len: 0 },
+        });
         for s in symbols {
             let offset = u32::try_from(symbol_data.len()).unwrap_or(u32::MAX);
             let len = u32::try_from(s.symbol.len()).unwrap_or(u32::MAX);
@@ -638,7 +655,7 @@ impl Program {
     pub fn symbol_str(&self, id: SymbolId) -> Result<&str, DecodeError> {
         let e = self
             .symbols
-            .get(id.0 as usize)
+            .get(id.index() as usize)
             .ok_or(DecodeError::OutOfBounds)?;
         let start = usize::try_from(e.bytes.offset).map_err(|_| DecodeError::OutOfBounds)?;
         let end = usize::try_from(e.bytes.end()?).map_err(|_| DecodeError::OutOfBounds)?;
@@ -818,9 +835,9 @@ impl Program {
             let mut payload = Writer::new();
             payload.write_uleb128_u64(self.functions.len() as u64);
             for (i, f) in self.functions.iter().enumerate() {
-                payload.write_uleb128_u64(u64::from(f.arg_count));
-                payload.write_uleb128_u64(u64::from(f.ret_count));
-                payload.write_uleb128_u64(u64::from(f.reg_count));
+                payload.write_uleb128_u32(f.arg_count);
+                payload.write_uleb128_u32(f.ret_count);
+                payload.write_uleb128_u32(f.reg_count);
                 payload.write_uleb128_u64(i as u64); // bytecode index
                 payload.write_uleb128_u64(i as u64); // span table index
             }
@@ -851,7 +868,7 @@ impl Program {
             let mut payload = Writer::new();
             payload.write_uleb128_u64(self.host_sigs.len() as u64);
             for hs in &self.host_sigs {
-                payload.write_uleb128_u64(u64::from(hs.symbol.0));
+                payload.write_uleb128_u32(hs.symbol.index());
                 payload.write_u64_le(hs.sig_hash.0);
                 let args = self.host_sig_args(hs).unwrap_or(&[]);
                 payload.write_uleb128_u64(args.len() as u64);
@@ -875,17 +892,20 @@ impl Program {
                 None => payload.write_u8(0),
                 Some(name) => {
                     payload.write_u8(1);
-                    payload.write_uleb128_u64(u64::from(name.0));
+                    payload.write_uleb128_u32(name.index());
                 }
             }
 
             let mut function_names = self.function_names.clone();
-            function_names
-                .sort_by(|a, b| a.func.cmp(&b.func).then_with(|| a.name.0.cmp(&b.name.0)));
+            function_names.sort_by(|a, b| {
+                a.func
+                    .cmp(&b.func)
+                    .then_with(|| a.name.index().cmp(&b.name.index()))
+            });
             payload.write_uleb128_u64(function_names.len() as u64);
             for e in &function_names {
-                payload.write_uleb128_u64(u64::from(e.func));
-                payload.write_uleb128_u64(u64::from(e.name.0));
+                payload.write_uleb128_u32(e.func);
+                payload.write_uleb128_u32(e.name.index());
             }
 
             let mut labels = self.labels.clone();
@@ -893,13 +913,13 @@ impl Program {
                 a.func
                     .cmp(&b.func)
                     .then_with(|| a.pc.cmp(&b.pc))
-                    .then_with(|| a.name.0.cmp(&b.name.0))
+                    .then_with(|| a.name.index().cmp(&b.name.index()))
             });
             payload.write_uleb128_u64(labels.len() as u64);
             for e in &labels {
-                payload.write_uleb128_u64(u64::from(e.func));
-                payload.write_uleb128_u64(u64::from(e.pc));
-                payload.write_uleb128_u64(u64::from(e.name.0));
+                payload.write_uleb128_u32(e.func);
+                payload.write_uleb128_u32(e.pc);
+                payload.write_uleb128_u32(e.name.index());
             }
 
             write_section(&mut w, SectionTag::Names, payload.as_slice());
@@ -978,10 +998,7 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
     let program_name = if has_program_name == 0 {
         None
     } else if has_program_name == 1 {
-        let raw = r.read_uleb128_u64()?;
-        Some(SymbolId(
-            u32::try_from(raw).map_err(|_| DecodeError::OutOfBounds)?,
-        ))
+        Some(SymbolId(r.read_uleb128_u32_nz()?))
     } else {
         return Err(DecodeError::OutOfBounds);
     };
@@ -989,8 +1006,8 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
     let n_funcs = read_usize(&mut r)?;
     let mut function_names = Vec::with_capacity(n_funcs);
     for _ in 0..n_funcs {
-        let func = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
-        let name = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        let func = r.read_uleb128_u32()?;
+        let name = r.read_uleb128_u32_nz()?;
         function_names.push(FunctionNameEntry {
             func,
             name: SymbolId(name),
@@ -1000,9 +1017,9 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
     let n_labels = read_usize(&mut r)?;
     let mut labels = Vec::with_capacity(n_labels);
     for _ in 0..n_labels {
-        let func = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
-        let pc = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
-        let name = u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        let func = r.read_uleb128_u32()?;
+        let pc = r.read_uleb128_u32()?;
+        let name = r.read_uleb128_u32_nz()?;
         labels.push(LabelNameEntry {
             func,
             pc,
@@ -1035,6 +1052,11 @@ fn decode_symbols(payload: &[u8]) -> Result<(Vec<SymbolEntry>, String), DecodeEr
         symbols.push(SymbolEntry {
             bytes: ByteRange { offset, len },
         });
+    }
+    // Symbol index 0 is reserved so `SymbolId` can be non-zero. We encode it as an empty string so
+    // it cannot accidentally collide with a real symbol.
+    if symbols.is_empty() || symbols[0].bytes.len != 0 {
+        return Err(DecodeError::OutOfBounds);
     }
     Ok((symbols, symbol_data))
 }
@@ -1259,10 +1281,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
 
     // Validate optional name metadata.
     if let Some(name) = names.program_name
-        && usize::try_from(name.0)
-            .ok()
-            .and_then(|i| symbols.get(i))
-            .is_none()
+        && symbols.get(name.index() as usize).is_none()
     {
         return Err(DecodeError::OutOfBounds);
     }
@@ -1274,11 +1293,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         {
             return Err(DecodeError::OutOfBounds);
         }
-        if usize::try_from(e.name.0)
-            .ok()
-            .and_then(|i| symbols.get(i))
-            .is_none()
-        {
+        if symbols.get(e.name.index() as usize).is_none() {
             return Err(DecodeError::OutOfBounds);
         }
     }
@@ -1289,11 +1304,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         if e.pc > func.bytecode.len {
             return Err(DecodeError::OutOfBounds);
         }
-        if usize::try_from(e.name.0)
-            .ok()
-            .and_then(|i| symbols.get(i))
-            .is_none()
-        {
+        if symbols.get(e.name.index() as usize).is_none() {
             return Err(DecodeError::OutOfBounds);
         }
     }
@@ -1522,7 +1533,7 @@ fn encode_types(w: &mut Writer, t: &TypeTable) {
 
         let types = t.struct_field_types(s).unwrap_or(&[]);
         for (name_id, ty) in names.iter().zip(types.iter()) {
-            w.write_uleb128_u64(u64::from(name_id.0));
+            w.write_uleb128_u32(name_id.0);
             encode_value_type(w, *ty);
         }
     }
@@ -1599,8 +1610,7 @@ fn decode_host_sigs(payload: &[u8]) -> Result<Vec<DecodedHostSig>, DecodeError> 
     let n = read_usize(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        let symbol =
-            SymbolId(u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?);
+        let symbol = SymbolId(r.read_uleb128_u32_nz()?);
         let sig_hash = SigHash(r.read_u64_le()?);
         let argc = read_usize(&mut r)?;
         let mut args = Vec::with_capacity(argc);
@@ -1631,12 +1641,9 @@ fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, Deco
     let n = read_usize(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        let arg_count =
-            u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
-        let ret_count =
-            u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
-        let reg_count =
-            u32::try_from(r.read_uleb128_u64()?).map_err(|_| DecodeError::OutOfBounds)?;
+        let arg_count = r.read_uleb128_u32()?;
+        let ret_count = r.read_uleb128_u32()?;
+        let reg_count = r.read_uleb128_u32()?;
         let bytecode_index = r.read_uleb128_u64()?;
         let span_index = r.read_uleb128_u64()?;
         out.push(FunctionTableEntry {
@@ -1846,15 +1853,15 @@ mod tests {
                 spans: vec![],
             }],
         );
-        p.program_name = Some(SymbolId(0));
+        p.program_name = Some(SymbolId(NonZeroU32::new(1).unwrap()));
         p.function_names = vec![FunctionNameEntry {
             func: 0,
-            name: SymbolId(1),
+            name: SymbolId(NonZeroU32::new(2).unwrap()),
         }];
         p.labels = vec![LabelNameEntry {
             func: 0,
             pc: 0,
-            name: SymbolId(2),
+            name: SymbolId(NonZeroU32::new(3).unwrap()),
         }];
 
         let bytes = p.encode();
