@@ -6,7 +6,6 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 use core::fmt::Write;
 
 use execution_tape::host::Host;
@@ -154,62 +153,11 @@ impl<H: Host> ExecutionGraph<H> {
     }
 }
 
-impl<H: Host> fmt::Display for ExecutionGraph<H> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "ExecutionGraph [{} nodes]:", self.nodes.len())?;
-
-        for (index, node) in self.nodes.iter().enumerate() {
-            let node_id = node_id_for_index(index);
-            writeln!(
-                f,
-                "{node_id}: entry=f{} run_count={}",
-                node.entry.0, node.run_count
-            )?;
-
-            if node.input_names.is_empty() {
-                writeln!(f, "    inputs: (none)")?;
-            } else {
-                for input_name in node.input_names.iter() {
-                    match node.inputs.get(input_name.as_ref()) {
-                        Some(Binding::External(value)) => {
-                            writeln!(f, "    in[{input_name}] <- external {value:?}")?;
-                        }
-                        Some(Binding::FromNode { node, output }) => {
-                            writeln!(f, "    in[{input_name}] <- {}.{output}", node.as_u64())?;
-                        }
-                        None => {
-                            writeln!(f, "    in[{input_name}] <- (unbound)")?;
-                        }
-                    }
-                }
-            }
-
-            if node.output_names.is_empty() {
-                writeln!(f, "    outputs: (none)")?;
-            } else {
-                for output_name in node.output_names.iter() {
-                    match node.outputs.get(output_name.as_ref()) {
-                        Some(value) => {
-                            writeln!(f, "    out[{output_name}] = {value:?}")?;
-                        }
-                        None => {
-                            writeln!(f, "    out[{output_name}] = (not computed)")?;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
 
     use super::*;
-    use alloc::string::ToString;
     use alloc::vec;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
     use execution_tape::host::{AccessSink, Host, HostError, SigHash, ValueRef};
@@ -316,24 +264,5 @@ mod tests {
         let dot = g.to_dot();
         assert!(dot.contains("node#0 (named_program)"));
         assert!(dot.contains("entry=f0 (named_entry)"));
-    }
-
-    #[test]
-    fn display_lists_bindings_and_outputs() {
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let (a_prog, a_entry) = make_identity_program("subtotal");
-        let (b_prog, b_entry) = make_identity_program("total");
-
-        let na = g.add_node(a_prog, a_entry, vec!["qty".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["subtotal".into()]);
-        g.set_input_value(na, "qty", Value::I64(2));
-        g.connect(na, "subtotal", nb, "subtotal");
-
-        let rendered = g.to_string();
-
-        assert!(rendered.contains("ExecutionGraph [2 nodes]:"));
-        assert!(rendered.contains("in[qty] <- external I64(2)"));
-        assert!(rendered.contains("in[subtotal] <- 0.subtotal"));
-        assert!(rendered.contains("out[subtotal] = (not computed)"));
     }
 }
