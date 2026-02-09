@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "execution_graph",
+  "execution_graph_examples",
   "execution_tape",
   "execution_tape_codegen",
   "execution_tape_conformance",
