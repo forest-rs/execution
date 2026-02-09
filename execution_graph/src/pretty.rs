@@ -104,10 +104,7 @@ impl<H: Host> ExecutionGraph<H> {
                 Some(name) => format!("entry=f{} ({name})", node.entry.0),
                 None => format!("entry=f{}", node.entry.0),
             };
-            let center = escape_record(&format!(
-                "{node_line}\n{entry_line}\nruns={}",
-                node.run_count
-            ));
+            let center = escape_record(&format!("{node_line}\n{entry_line}"));
 
             let label = match (input_block.is_empty(), output_block.is_empty()) {
                 (true, true) => center,
