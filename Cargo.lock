@@ -197,6 +197,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_graph_examples"
+version = "0.1.0"
+dependencies = [
+ "execution_graph",
+ "execution_tape",
+]
+
+[[package]]
 name = "execution_graph_wind_tunnel"
 version = "0.1.0"
 dependencies = [

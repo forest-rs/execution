@@ -32,6 +32,14 @@ node’s outputs, leaving unrelated dirty work dirty to be handled by a later `r
 For debugging and instrumentation, `run_all_with_report` / `run_node_with_report` return a
 structured report that includes one plausible “why re-ran” cause path per executed node.
 
+## Demo
+
+Run the demo with:
+
+```sh
+cargo run -p execution_graph_examples --bin tax
+```
+
 ## Current limitations
 
 - Error reporting is intentionally minimal (`GraphError::Trap` is opaque); richer error surfaces
