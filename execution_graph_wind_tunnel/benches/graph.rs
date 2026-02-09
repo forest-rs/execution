@@ -83,6 +83,13 @@ fn build_chain_graph(len: usize) -> (ExecutionGraph<NopHost>, execution_graph::N
 
 /// Linear chain of `len` nodes where every node depends on the previous node’s output.
 ///
+/// Graph shape (`len = 5` example):
+/// ```text
+/// input("in")
+///    |
+///   [n0] -> [n1] -> [n2] -> [n3] -> [n4]
+/// ```
+///
 /// Measures the cost of a single root input invalidation that forces the entire chain to rerun.
 fn bench_chain_rerun(c: &mut Criterion) {
     let mut group = c.benchmark_group("chain_rerun");
@@ -102,6 +109,13 @@ fn bench_chain_rerun(c: &mut Criterion) {
 }
 
 /// Steady-state overhead of calling `run_all()` when nothing is dirty.
+///
+/// Graph shape (same chain used by `bench_chain_rerun`):
+/// ```text
+/// input("in")
+///    |
+///   [n0] -> [n1] -> ... -> [n(len-1)]
+/// ```
 ///
 /// This should be near-constant (does not scale with graph size) and acts as a “baseline tax”.
 fn bench_chain_noop(c: &mut Criterion) {
@@ -134,6 +148,15 @@ fn build_fanout_graph(fanout: usize) -> (ExecutionGraph<NopHost>, execution_grap
 }
 
 /// Star/fanout graph where a single root feeds `fanout` independent leaves.
+///
+/// Graph shape (`fanout = 5` example):
+/// ```text
+///                +--> [leaf0]
+///                +--> [leaf1]
+/// input("in")    +--> [leaf2]
+///    |           +--> [leaf3]
+///  [root] ------ +--> [leaf4]
+/// ```
 ///
 /// Measures the cost of a root input invalidation that reruns all leaves.
 fn bench_fanout_rerun(c: &mut Criterion) {
@@ -260,6 +283,15 @@ fn invalidate_host_state<H: Host>(g: &mut ExecutionGraph<H>, op: HostOpId, key: 
 
 /// Many disjoint chains (no shared upstreams), where each chain’s root reads a distinct host key.
 ///
+/// Graph shape (`chains = 3`, `chain_len = 4` example):
+/// ```text
+/// key=0 -> [c0_0] -> [c0_1] -> [c0_2] -> [c0_3]
+/// key=1 -> [c1_0] -> [c1_1] -> [c1_2] -> [c1_3]
+/// key=2 -> [c2_0] -> [c2_1] -> [c2_2] -> [c2_3]
+///
+/// (no edges between chains)
+/// ```
+///
 /// Measures the cost of invalidating exactly one host-state key and rerunning only the affected
 /// chain, even as the total node count grows.
 fn bench_disjoint_chains_host_key(c: &mut Criterion) {
@@ -354,6 +386,18 @@ fn build_shared_upstream(
 
 /// Many “tenants” share one global upstream value, but each tenant also has its own key.
 ///
+/// Graph shape (`tenants = 3`, `chain_len = 4` example):
+/// ```text
+///                     [global key=0]
+///                       /     |     \
+///                      v      v      v
+/// [tenant key=1] -> [base0] -> [t0_1] -> [t0_2] -> [t0_3]
+/// [tenant key=2] -> [base1] -> [t1_1] -> [t1_2] -> [t1_3]
+/// [tenant key=3] -> [base2] -> [t2_1] -> [t2_2] -> [t2_3]
+///
+/// where each `[baseN]` is `add2(global, tenantN)`.
+/// ```
+///
 /// Measures invalidation of a single tenant’s key. This should remain close to constant as
 /// tenant count grows (only one tenant’s subgraph should rerun).
 fn bench_shared_upstream_one_tenant(c: &mut Criterion) {
@@ -383,6 +427,18 @@ fn bench_shared_upstream_one_tenant(c: &mut Criterion) {
 }
 
 /// Same graph shape as `shared_upstream_invalidate_one_tenant`, but invalidates the shared key.
+///
+/// Graph shape (`tenants = 3`, `chain_len = 4` example):
+/// ```text
+///                     [global key=0]
+///                       /     |     \
+///                      v      v      v
+/// [tenant key=1] -> [base0] -> [t0_1] -> [t0_2] -> [t0_3]
+/// [tenant key=2] -> [base1] -> [t1_1] -> [t1_2] -> [t1_3]
+/// [tenant key=3] -> [base2] -> [t2_1] -> [t2_2] -> [t2_3]
+///
+/// where each `[baseN]` is `add2(global, tenantN)`.
+/// ```
 ///
 /// Measures the “blast radius” when a global configuration changes: all tenants’ subgraphs should
 /// rerun, so this should scale roughly linearly with tenant count.
@@ -444,6 +500,23 @@ fn build_layered_dag(
 }
 
 /// Layered DAG where each node depends on two upstream neighbors (“2-input stencil”).
+///
+/// Graph shape (`width = 5`, `layers = 4` example):
+/// ```text
+/// L0: [r0] [r1] [r2] [r3] [r4]
+///      |\   |\   |\   |\   |\
+///      | \  | \  | \  | \  | \
+/// L1: [a0] [a1] [a2] [a3] [a4]
+///      |\   |\   |\   |\   |\
+///      | \  | \  | \  | \  | \
+/// L2: [b0] [b1] [b2] [b3] [b4]
+///      |\   |\   |\   |\   |\
+///      | \  | \  | \  | \  | \
+/// L3: [c0] [c1] [c2] [c3] [c4]
+///
+/// Dependency rule:
+/// - `L{k+1}[i]` depends on `L{k}[i]` and `L{k}[(i + 1) % width]`.
+/// ```
 ///
 /// Measures the widening “cone” of recomputation from invalidating a single root input in the
 /// first layer, across different widths/layer counts.
