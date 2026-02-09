@@ -9,10 +9,12 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 use execution_tape::host::Host;
 use execution_tape::host::ResourceKeyRef;
-use execution_tape::trace::TraceMask;
+use execution_tape::host::SigHash;
+use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
@@ -20,7 +22,7 @@ use execution_tape::vm::{ExecutionContext, Limits, Vm};
 use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
 use crate::report::{NodeRunReport, RunReport};
-use crate::tape_access::TapeAccessLog;
+use crate::tape_access::{CountingAccessSink, StrictDepsTrace};
 
 use understory_dirty::TraversalScratch;
 use understory_dirty::trace::OneParentRecorder;
@@ -48,6 +50,15 @@ pub enum GraphError {
     BadOutputArity {
         /// Node that produced outputs.
         node: NodeId,
+    },
+    /// Strict deps mode error: a host op recorded no access keys.
+    StrictDepsViolation {
+        /// Node whose execution contained the violating host call.
+        node: NodeId,
+        /// Host call symbol.
+        symbol: Box<str>,
+        /// Signature hash carried in bytecode/program.
+        sig_hash: SigHash,
     },
     /// VM execution trapped.
     Trap,
@@ -78,6 +89,16 @@ impl fmt::Display for GraphError {
                     node.as_u64()
                 )
             }
+            Self::StrictDepsViolation {
+                node,
+                symbol,
+                sig_hash,
+            } => write!(
+                f,
+                "strict deps violation: node={} host_call={symbol} sig_hash={}",
+                node.as_u64(),
+                sig_hash.0
+            ),
             Self::Trap => write!(f, "vm trapped during execution"),
         }
     }
@@ -143,6 +164,7 @@ pub struct ExecutionGraph<H: Host> {
     input_ids: BTreeMap<Box<str>, DirtyKey>,
     nodes: Vec<Node>,
     scratch: Scratch,
+    strict_deps: bool,
 }
 
 #[derive(Debug, Default)]
@@ -199,7 +221,17 @@ impl<H: Host> ExecutionGraph<H> {
             input_ids: BTreeMap::new(),
             nodes: Vec::new(),
             scratch: Scratch::default(),
+            strict_deps: false,
         }
+    }
+
+    /// Enables or disables strict dependency tracking for host calls.
+    ///
+    /// When enabled, each host call is required to record at least one access key via the access
+    /// sink. This is a debugging mode intended to prevent silently unsound incremental execution
+    /// caused by missing access reporting.
+    pub fn set_strict_deps(&mut self, strict: bool) {
+        self.strict_deps = strict;
     }
 
     /// Adds a node and returns its [`NodeId`].
@@ -630,7 +662,16 @@ impl<H: Host> ExecutionGraph<H> {
         }
 
         // Execute, capturing host accesses.
-        let mut tape_access = TapeAccessLog::new();
+        let access_count: Cell<usize> = Cell::new(0);
+        let mut tape_access = CountingAccessSink::new(&access_count);
+        let mut strict = StrictDepsTrace::new(&access_count);
+
+        let (trace_mask, trace) = if self.strict_deps {
+            (TraceMask::HOST, Some(&mut strict as &mut dyn TraceSink))
+        } else {
+            (TraceMask::NONE, None)
+        };
+
         let out = self
             .vm
             .run_with_ctx(
@@ -638,11 +679,26 @@ impl<H: Host> ExecutionGraph<H> {
                 &self.nodes[node_index].program,
                 self.nodes[node_index].entry,
                 &args,
-                TraceMask::NONE,
-                None,
+                trace_mask,
+                trace,
                 Some(&mut tape_access),
             )
             .map_err(|_| GraphError::Trap)?;
+
+        if self.strict_deps
+            && let Some(v) = strict.violation()
+        {
+            return Err(GraphError::StrictDepsViolation {
+                node,
+                symbol: v.symbol.clone(),
+                sig_hash: v.sig_hash,
+            });
+        }
+
+        // Merge tape-recorded accesses (host state, opaque ops, etc).
+        for a in tape_access.log().iter().cloned() {
+            log.push(a);
+        }
 
         // Map outputs.
         let retc = out.len();
@@ -655,11 +711,6 @@ impl<H: Host> ExecutionGraph<H> {
             let name = self.nodes[node_index].output_name_at(i);
             outputs.insert(name.clone(), v);
             log.push(Access::Write(ResourceKey::tape_output(node, name)));
-        }
-
-        // Merge tape-recorded accesses (host state, opaque ops, etc).
-        for a in tape_access.log().iter().cloned() {
-            log.push(a);
         }
 
         // Update dirty dependencies: each output depends on all reads observed during the run.
@@ -880,6 +931,71 @@ mod tests {
         assert_eq!(
             r.executed[1].why_path.last(),
             Some(&ResourceKey::tape_output(nb, "value"))
+        );
+    }
+
+    #[test]
+    fn strict_deps_rejects_host_calls_without_accesses() {
+        #[derive(Debug, Default)]
+        struct HostNoAccess;
+
+        impl Host for HostNoAccess {
+            fn call(
+                &mut self,
+                symbol: &str,
+                _sig_hash: SigHash,
+                _args: &[ValueRef<'_>],
+                _access: Option<&mut dyn AccessSink>,
+            ) -> Result<(Vec<Value>, u64), HostError> {
+                if symbol != "no_access" {
+                    return Err(HostError::UnknownSymbol);
+                }
+                Ok((vec![Value::I64(7)], 0))
+            }
+        }
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for(
+            "no_access",
+            HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64],
+            },
+        );
+
+        let mut a = Asm::new();
+        a.const_i64(1, 42);
+        a.host_call(0, host_sig, 0, &[1], &[2]);
+        a.ret(0, &[2]);
+
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 3,
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+
+        let prog = pb.build_verified().unwrap();
+
+        let mut g = ExecutionGraph::new(HostNoAccess, Limits::default());
+        let n = g.add_node(prog, f, vec![]);
+        g.set_strict_deps(true);
+
+        assert_eq!(
+            g.run_all(),
+            Err(GraphError::StrictDepsViolation {
+                node: n,
+                symbol: "no_access".into(),
+                sig_hash: sig_hash(&HostSig {
+                    args: vec![ValueType::I64],
+                    rets: vec![ValueType::I64],
+                }),
+            })
         );
     }
 
