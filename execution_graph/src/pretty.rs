@@ -69,10 +69,6 @@ fn output_slot(node: &Node, output_name: &str) -> Option<usize> {
         .position(|candidate| candidate.as_ref() == output_name)
 }
 
-fn node_id_for_index(index: usize) -> u64 {
-    u64::try_from(index).unwrap_or(u64::MAX)
-}
-
 impl<H: Host> ExecutionGraph<H> {
     /// Renders the graph as Graphviz DOT.
     ///
@@ -90,8 +86,7 @@ impl<H: Host> ExecutionGraph<H> {
              \tedge [fontname=\"monospace\", fontsize=9, arrowsize=0.7];\n",
         );
 
-        for (index, node) in self.nodes.iter().enumerate() {
-            let node_id = node_id_for_index(index);
+        for (node_id, node) in self.nodes.iter().enumerate() {
             let input_block = record_inputs(node);
             let output_block = record_outputs(node);
             let program = node.program.program();
@@ -115,8 +110,7 @@ impl<H: Host> ExecutionGraph<H> {
             let _ = writeln!(dot, "  n{node_id} [label=\"{label}\"];");
         }
 
-        for (dst_index, node) in self.nodes.iter().enumerate() {
-            let dst_id = node_id_for_index(dst_index);
+        for (dst_id, node) in self.nodes.iter().enumerate() {
             for (dst_slot, input_name) in node.input_names.iter().enumerate() {
                 let Some(Binding::FromNode {
                     node: src_node,
