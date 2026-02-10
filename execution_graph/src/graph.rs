@@ -584,6 +584,7 @@ impl<H: Host> ExecutionGraph<H> {
     fn run_plan(&mut self, plan: RunPlan) -> Result<(), GraphError> {
         let mut dispatcher = InlineDispatcher;
         let to_run = dispatcher.dispatch(self, plan)?;
+        // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
         self.scratch.to_run = to_run;
         Ok(())
     }
@@ -593,6 +594,7 @@ impl<H: Host> ExecutionGraph<H> {
     fn run_plan_with_report(&mut self, plan: RunPlan) -> Result<RunReport, GraphError> {
         let mut dispatcher = InlineDispatcher;
         let (to_run, report) = dispatcher.dispatch_with_report(self, plan)?;
+        // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
         self.scratch.to_run = to_run;
         Ok(report)
     }
