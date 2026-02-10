@@ -21,7 +21,8 @@ use execution_tape::vm::{ExecutionContext, Limits, Vm};
 
 use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
-use crate::plan::{PlanScope, RunPlan, RunPlanTrace};
+use crate::dispatch::{Dispatcher, InlineDispatcher};
+use crate::plan::{RunPlan, RunPlanTrace};
 use crate::report::{NodeRunReport, RunReport};
 use crate::tape_access::{CountingAccessSink, StrictDepsTrace};
 
@@ -579,40 +580,18 @@ impl<H: Host> ExecutionGraph<H> {
     }
 
     /// Executes a pre-built run plan without traced reporting.
-    fn run_plan(&mut self, mut plan: RunPlan) -> Result<(), GraphError> {
-        // Keep scope part of the runtime contract even before dispatcher extraction.
-        match plan.scope() {
-            PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
-        }
-
-        let mut to_run = plan.take_nodes();
-        for node in to_run.drain(..) {
-            self.run_node_internal(node)?;
-        }
+    fn run_plan(&mut self, plan: RunPlan) -> Result<(), GraphError> {
+        let mut dispatcher = InlineDispatcher;
+        let to_run = dispatcher.dispatch(plan, |node| self.run_node_internal(node))?;
         self.scratch.to_run = to_run;
         Ok(())
     }
 
     /// Executes a pre-built run plan and returns traced reporting data if attached.
-    fn run_plan_with_report(&mut self, mut plan: RunPlan) -> Result<RunReport, GraphError> {
-        // Keep scope part of the runtime contract even before dispatcher extraction.
-        match plan.scope() {
-            PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
-        }
-
-        let mut trace = plan.take_trace();
-        let mut report = RunReport::default();
-        let mut to_run = plan.take_nodes();
-
-        for node in to_run.drain(..) {
-            self.run_node_internal(node)?;
-            if let Some(t) = trace.as_mut()
-                && let Some(r) = t.take_report_for(node)
-            {
-                report.executed.push(r);
-            }
-        }
-
+    fn run_plan_with_report(&mut self, plan: RunPlan) -> Result<RunReport, GraphError> {
+        let mut dispatcher = InlineDispatcher;
+        let (to_run, report) =
+            dispatcher.dispatch_with_report(plan, |node| self.run_node_internal(node))?;
         self.scratch.to_run = to_run;
         Ok(report)
     }

@@ -20,6 +20,7 @@ extern crate alloc;
 
 mod access;
 mod dirty;
+mod dispatch;
 mod graph;
 mod plan;
 mod report;
