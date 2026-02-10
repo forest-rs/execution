@@ -416,16 +416,51 @@ impl<H: Host> ExecutionGraph<H> {
         Some(self.nodes.get(index)?.run_count)
     }
 
-    /// Runs all currently dirty work in dependency order.
-    pub fn run_all(&mut self) -> Result<(), GraphError> {
+    #[inline]
+    fn output_names_for_node(&self, node: NodeId) -> Result<Vec<Box<str>>, GraphError> {
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+        Ok(n.output_names.clone())
+    }
+
+    #[inline]
+    fn collect_planned_nodes_all(&mut self) {
         self.scratch.start_drain(self.nodes.len());
 
         for (_key_id, key) in self.dirty.drain() {
-            let ResourceKey::TapeOutput { node, .. } = key else {
-                continue;
-            };
-            let _ = self.scratch.take_node(*node);
+            Self::schedule_tape_output_key(&mut self.scratch, key);
         }
+    }
+
+    #[inline]
+    fn collect_planned_nodes_within_dependencies_of(
+        &mut self,
+        node: NodeId,
+    ) -> Result<(), GraphError> {
+        let output_names = self.output_names_for_node(node)?;
+
+        self.scratch.start_drain(self.nodes.len());
+        for out_name in output_names {
+            let out_id = self.dirty.intern(ResourceKey::tape_output(node, out_name));
+            for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
+                Self::schedule_tape_output_key(&mut self.scratch, key);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn schedule_tape_output_key(scratch: &mut Scratch, key: &ResourceKey) {
+        let ResourceKey::TapeOutput { node, .. } = key else {
+            return;
+        };
+        let _ = scratch.take_node(*node);
+    }
+
+    /// Runs all currently dirty work in dependency order.
+    pub fn run_all(&mut self) -> Result<(), GraphError> {
+        self.collect_planned_nodes_all();
 
         let mut to_run = core::mem::take(&mut self.scratch.to_run);
         for node in to_run.drain(..) {
@@ -512,25 +547,7 @@ impl<H: Host> ExecutionGraph<H> {
     /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
     /// Unrelated dirty work remains dirty and is not drained.
     pub fn run_node(&mut self, node: NodeId) -> Result<(), GraphError> {
-        let Ok(index) = usize::try_from(node.as_u64()) else {
-            return Err(GraphError::BadNodeId);
-        };
-        let Some(n) = self.nodes.get(index) else {
-            return Err(GraphError::BadNodeId);
-        };
-
-        // Drain dirty keys within the dependency closure of each output, and execute nodes whose
-        // output keys are affected.
-        self.scratch.start_drain(self.nodes.len());
-        for out_name in n.output_names.iter().cloned() {
-            let out_id = self.dirty.intern(ResourceKey::tape_output(node, out_name));
-            for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
-                let ResourceKey::TapeOutput { node, .. } = key else {
-                    continue;
-                };
-                let _ = self.scratch.take_node(*node);
-            }
-        }
+        self.collect_planned_nodes_within_dependencies_of(node)?;
 
         let mut to_run = core::mem::take(&mut self.scratch.to_run);
         for node in to_run.drain(..) {
