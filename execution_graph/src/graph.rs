@@ -417,13 +417,6 @@ impl<H: Host> ExecutionGraph<H> {
     }
 
     #[inline]
-    fn output_names_for_node(&self, node: NodeId) -> Result<Vec<Box<str>>, GraphError> {
-        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
-        let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
-        Ok(n.output_names.clone())
-    }
-
-    #[inline]
     fn collect_planned_nodes_all(&mut self) {
         self.scratch.start_drain(self.nodes.len());
 
@@ -437,7 +430,11 @@ impl<H: Host> ExecutionGraph<H> {
         &mut self,
         node: NodeId,
     ) -> Result<(), GraphError> {
-        let output_names = self.output_names_for_node(node)?;
+        let output_names = {
+            let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+            let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+            n.output_names.clone()
+        };
 
         self.scratch.start_drain(self.nodes.len());
         for out_name in output_names {
