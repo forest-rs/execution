@@ -21,6 +21,7 @@ use execution_tape::vm::{ExecutionContext, Limits, Vm};
 
 use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
+use crate::plan::{PlanScope, RunPlan, RunPlanTrace};
 use crate::report::{NodeRunReport, RunReport};
 use crate::tape_access::{CountingAccessSink, StrictDepsTrace};
 
@@ -420,61 +421,21 @@ impl<H: Host> ExecutionGraph<H> {
         Some(self.nodes.get(index)?.run_count)
     }
 
+    /// Builds a plan from all currently affected dirty work.
     #[inline]
-    fn collect_planned_nodes_all(&mut self) {
+    fn plan_all(&mut self) -> RunPlan {
         self.scratch.start_drain(self.nodes.len());
 
         for (_key_id, key) in self.dirty.drain() {
             Self::schedule_tape_output_key(&mut self.scratch, key);
         }
+
+        RunPlan::all(core::mem::take(&mut self.scratch.to_run))
     }
 
+    /// Builds a plan from all currently affected dirty work, including traced cause payload.
     #[inline]
-    fn collect_planned_nodes_within_dependencies_of(
-        &mut self,
-        node: NodeId,
-    ) -> Result<(), GraphError> {
-        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
-        let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
-        let output_count = n.output_ids.len();
-
-        self.scratch.start_drain(self.nodes.len());
-        for output_ix in 0..output_count {
-            let out_id = self.nodes[index].output_ids[output_ix];
-            for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
-                Self::schedule_tape_output_key(&mut self.scratch, key);
-            }
-        }
-
-        Ok(())
-    }
-
-    #[inline]
-    fn schedule_tape_output_key(scratch: &mut Scratch, key: &ResourceKey) {
-        let ResourceKey::TapeOutput { node, .. } = key else {
-            return;
-        };
-        let _ = scratch.take_node(*node);
-    }
-
-    /// Runs all currently dirty work in dependency order.
-    pub fn run_all(&mut self) -> Result<(), GraphError> {
-        self.collect_planned_nodes_all();
-
-        let mut to_run = core::mem::take(&mut self.scratch.to_run);
-        for node in to_run.drain(..) {
-            self.run_node_internal(node)?;
-        }
-        self.scratch.to_run = to_run;
-
-        Ok(())
-    }
-
-    /// Runs all currently dirty work and returns a report including “why re-ran” cause paths.
-    ///
-    /// The report records one plausible cause path per executed node (a spanning forest), not all
-    /// possible causes.
-    pub fn run_all_with_report(&mut self) -> Result<RunReport, GraphError> {
+    fn plan_all_traced(&mut self) -> RunPlan {
         self.scratch.start_drain(self.nodes.len());
 
         let mut node_report: Vec<Option<NodeRunReport>> = alloc::vec![None; self.nodes.len()];
@@ -495,10 +456,7 @@ impl<H: Host> ExecutionGraph<H> {
             let Ok(index) = usize::try_from(node.as_u64()) else {
                 continue;
             };
-            if index >= node_report.len() {
-                continue;
-            }
-            if node_report[index].is_some() {
+            if index >= node_report.len() || node_report[index].is_some() {
                 continue;
             }
             scheduled.push((*node, key_id, key.clone()));
@@ -522,47 +480,34 @@ impl<H: Host> ExecutionGraph<H> {
             });
         }
 
-        let mut report = RunReport::default();
-        let mut to_run = core::mem::take(&mut self.scratch.to_run);
-        for node in to_run.drain(..) {
-            self.run_node_internal(node)?;
-            let Ok(index) = usize::try_from(node.as_u64()) else {
-                continue;
-            };
-            if index >= node_report.len() {
-                continue;
-            }
-            if let Some(r) = node_report[index].take() {
-                report.executed.push(r);
-            }
-        }
-        self.scratch.to_run = to_run;
-
-        Ok(report)
+        let nodes = core::mem::take(&mut self.scratch.to_run);
+        RunPlan::all(nodes).with_trace(RunPlanTrace::from_node_reports(node_report))
     }
 
-    /// Runs the subgraph needed to (re)compute `node`, executing only what is currently dirty.
-    ///
-    /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
-    /// Unrelated dirty work remains dirty and is not drained.
-    pub fn run_node(&mut self, node: NodeId) -> Result<(), GraphError> {
-        self.collect_planned_nodes_within_dependencies_of(node)?;
+    /// Builds a plan restricted to keys within the dependency closure of `node`'s outputs.
+    #[inline]
+    fn plan_within_dependencies_of(&mut self, node: NodeId) -> Result<RunPlan, GraphError> {
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+        let output_count = n.output_ids.len();
 
-        let mut to_run = core::mem::take(&mut self.scratch.to_run);
-        for node in to_run.drain(..) {
-            self.run_node_internal(node)?;
+        self.scratch.start_drain(self.nodes.len());
+        for output_ix in 0..output_count {
+            let out_id = self.nodes[index].output_ids[output_ix];
+            for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
+                Self::schedule_tape_output_key(&mut self.scratch, key);
+            }
         }
-        self.scratch.to_run = to_run;
 
-        Ok(())
+        Ok(RunPlan::within_dependencies_of(
+            node,
+            core::mem::take(&mut self.scratch.to_run),
+        ))
     }
 
-    /// Runs the subgraph needed to (re)compute `node` and returns a report including “why re-ran”
-    /// cause paths.
-    ///
-    /// The report records one plausible cause path per executed node (a spanning forest), not all
-    /// possible causes.
-    pub fn run_node_with_report(&mut self, node: NodeId) -> Result<RunReport, GraphError> {
+    /// Builds a plan restricted to keys within `node`'s dependency closure, with traced causes.
+    #[inline]
+    fn plan_within_dependencies_of_traced(&mut self, node: NodeId) -> Result<RunPlan, GraphError> {
         let Ok(index) = usize::try_from(node.as_u64()) else {
             return Err(GraphError::BadNodeId);
         };
@@ -620,23 +565,90 @@ impl<H: Host> ExecutionGraph<H> {
             }
         }
 
-        let mut report = RunReport::default();
-        let mut to_run = core::mem::take(&mut self.scratch.to_run);
+        let nodes = core::mem::take(&mut self.scratch.to_run);
+        Ok(RunPlan::within_dependencies_of(node, nodes)
+            .with_trace(RunPlanTrace::from_node_reports(node_report)))
+    }
+
+    #[inline]
+    fn schedule_tape_output_key(scratch: &mut Scratch, key: &ResourceKey) {
+        let ResourceKey::TapeOutput { node, .. } = key else {
+            return;
+        };
+        let _ = scratch.take_node(*node);
+    }
+
+    /// Executes a pre-built run plan without traced reporting.
+    fn run_plan(&mut self, mut plan: RunPlan) -> Result<(), GraphError> {
+        // Keep scope part of the runtime contract even before dispatcher extraction.
+        match plan.scope() {
+            PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
+        }
+
+        let mut to_run = plan.take_nodes();
         for node in to_run.drain(..) {
             self.run_node_internal(node)?;
-            let Ok(index) = usize::try_from(node.as_u64()) else {
-                continue;
-            };
-            if index >= node_report.len() {
-                continue;
-            }
-            if let Some(r) = node_report[index].take() {
+        }
+        self.scratch.to_run = to_run;
+        Ok(())
+    }
+
+    /// Executes a pre-built run plan and returns traced reporting data if attached.
+    fn run_plan_with_report(&mut self, mut plan: RunPlan) -> Result<RunReport, GraphError> {
+        // Keep scope part of the runtime contract even before dispatcher extraction.
+        match plan.scope() {
+            PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
+        }
+
+        let mut trace = plan.take_trace();
+        let mut report = RunReport::default();
+        let mut to_run = plan.take_nodes();
+
+        for node in to_run.drain(..) {
+            self.run_node_internal(node)?;
+            if let Some(t) = trace.as_mut()
+                && let Some(r) = t.take_report_for(node)
+            {
                 report.executed.push(r);
             }
         }
-        self.scratch.to_run = to_run;
 
+        self.scratch.to_run = to_run;
         Ok(report)
+    }
+
+    /// Runs all currently dirty work in dependency order.
+    pub fn run_all(&mut self) -> Result<(), GraphError> {
+        let plan = self.plan_all();
+        self.run_plan(plan)
+    }
+
+    /// Runs all currently dirty work and returns a report including “why re-ran” cause paths.
+    ///
+    /// The report records one plausible cause path per executed node (a spanning forest), not all
+    /// possible causes.
+    pub fn run_all_with_report(&mut self) -> Result<RunReport, GraphError> {
+        let plan = self.plan_all_traced();
+        self.run_plan_with_report(plan)
+    }
+
+    /// Runs the subgraph needed to (re)compute `node`, executing only what is currently dirty.
+    ///
+    /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
+    /// Unrelated dirty work remains dirty and is not drained.
+    pub fn run_node(&mut self, node: NodeId) -> Result<(), GraphError> {
+        let plan = self.plan_within_dependencies_of(node)?;
+        self.run_plan(plan)
+    }
+
+    /// Runs the subgraph needed to (re)compute `node` and returns a report including “why re-ran”
+    /// cause paths.
+    ///
+    /// The report records one plausible cause path per executed node (a spanning forest), not all
+    /// possible causes.
+    pub fn run_node_with_report(&mut self, node: NodeId) -> Result<RunReport, GraphError> {
+        let plan = self.plan_within_dependencies_of_traced(node)?;
+        self.run_plan_with_report(plan)
     }
 
     fn run_node_internal(&mut self, node: NodeId) -> Result<(), GraphError> {
