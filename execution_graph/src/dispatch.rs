@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Internal dispatch interfaces for executing [`RunPlan`](crate::plan::RunPlan) values.
+//! Internal dispatch interfaces for executing [`RunPlan`] values.
 //!
 //! This module intentionally stays internal. It provides a stable seam between planning ("what to
 //! run") and execution strategy ("how to run"), so future scheduler work can swap dispatch
