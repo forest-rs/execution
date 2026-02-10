@@ -25,6 +25,11 @@ pub(crate) enum PlanScope {
 ///
 /// The payload is indexed by node id (`NodeId::as_u64() as usize`) and stores one plausible
 /// rerun cause report for nodes that were scheduled.
+///
+/// TODO(dispatcher): Revisit this dense representation. It currently scales with total graph node
+/// count for O(1) `take_report_for` lookups. A sparse map keyed by `NodeId` would scale with
+/// scheduled nodes instead, but lookup/remove would become O(log n) and per-entry overhead would
+/// increase.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RunPlanTrace {
     node_reports: Vec<Option<NodeRunReport>>,
