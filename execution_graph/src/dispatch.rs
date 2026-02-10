@@ -8,9 +8,10 @@
 //! implementations without reshaping `ExecutionGraph` public APIs.
 
 use alloc::vec::Vec;
+use execution_tape::host::Host;
 
 use crate::access::NodeId;
-use crate::graph::GraphError;
+use crate::graph::{ExecutionGraph, GraphError};
 use crate::plan::{PlanScope, RunPlan};
 use crate::report::RunReport;
 
@@ -18,25 +19,24 @@ use crate::report::RunReport;
 ///
 /// Dispatchers execute nodes in a precomputed [`RunPlan`] and may optionally assemble traced
 /// reporting if the plan carries trace payload.
-pub(crate) trait Dispatcher {
+pub(crate) trait Dispatcher<H: Host> {
     /// Executes `plan` without producing traced reporting.
     ///
-    /// The dispatcher receives a node runner callback and returns the drained scheduling buffer so
-    /// callers can reuse its capacity.
-    fn dispatch<F>(&mut self, plan: RunPlan, run_node: F) -> Result<Vec<NodeId>, GraphError>
-    where
-        F: FnMut(NodeId) -> Result<(), GraphError>;
+    /// Returns the drained scheduling buffer so callers can reuse its capacity.
+    fn dispatch(
+        &mut self,
+        graph: &mut ExecutionGraph<H>,
+        plan: RunPlan,
+    ) -> Result<Vec<NodeId>, GraphError>;
 
     /// Executes `plan` and returns traced reporting if available.
     ///
     /// Returns both the drained scheduling buffer (for capacity reuse) and the assembled report.
-    fn dispatch_with_report<F>(
+    fn dispatch_with_report(
         &mut self,
+        graph: &mut ExecutionGraph<H>,
         plan: RunPlan,
-        run_node: F,
-    ) -> Result<(Vec<NodeId>, RunReport), GraphError>
-    where
-        F: FnMut(NodeId) -> Result<(), GraphError>;
+    ) -> Result<(Vec<NodeId>, RunReport), GraphError>;
 }
 
 /// Serial in-thread dispatcher used by default.
@@ -46,11 +46,13 @@ pub(crate) trait Dispatcher {
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct InlineDispatcher;
 
-impl Dispatcher for InlineDispatcher {
-    fn dispatch<F>(&mut self, mut plan: RunPlan, mut run_node: F) -> Result<Vec<NodeId>, GraphError>
-    where
-        F: FnMut(NodeId) -> Result<(), GraphError>,
-    {
+impl<H: Host> Dispatcher<H> for InlineDispatcher {
+    #[inline]
+    fn dispatch(
+        &mut self,
+        graph: &mut ExecutionGraph<H>,
+        mut plan: RunPlan,
+    ) -> Result<Vec<NodeId>, GraphError> {
         // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
         match plan.scope() {
             PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
@@ -58,19 +60,17 @@ impl Dispatcher for InlineDispatcher {
 
         let mut to_run: Vec<NodeId> = plan.take_nodes();
         for node in to_run.drain(..) {
-            run_node(node)?;
+            graph.execute_scheduled_node(node)?;
         }
         Ok(to_run)
     }
 
-    fn dispatch_with_report<F>(
+    #[inline]
+    fn dispatch_with_report(
         &mut self,
+        graph: &mut ExecutionGraph<H>,
         mut plan: RunPlan,
-        mut run_node: F,
-    ) -> Result<(Vec<NodeId>, RunReport), GraphError>
-    where
-        F: FnMut(NodeId) -> Result<(), GraphError>,
-    {
+    ) -> Result<(Vec<NodeId>, RunReport), GraphError> {
         // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
         match plan.scope() {
             PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
@@ -81,7 +81,7 @@ impl Dispatcher for InlineDispatcher {
         let mut to_run: Vec<NodeId> = plan.take_nodes();
 
         for node in to_run.drain(..) {
-            run_node(node)?;
+            graph.execute_scheduled_node(node)?;
             if let Some(t) = trace.as_mut()
                 && let Some(r) = t.take_report_for(node)
             {
@@ -98,40 +98,104 @@ mod tests {
     extern crate std;
 
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use super::{Dispatcher, InlineDispatcher};
-    use crate::access::{NodeId, ResourceKey};
-    use crate::graph::GraphError;
+    use crate::access::ResourceKey;
+    use crate::graph::{ExecutionGraph, GraphError};
     use crate::plan::{RunPlan, RunPlanTrace};
     use crate::report::NodeRunReport;
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::host::{AccessSink, Host, HostError, SigHash, ValueRef};
+    use execution_tape::program::ValueType;
+    use execution_tape::value::{FuncId, Value};
+    use execution_tape::verifier::VerifiedProgram;
+    use execution_tape::vm::Limits;
+
+    #[derive(Debug, Default)]
+    struct HostNoop;
+
+    impl Host for HostNoop {
+        fn call(
+            &mut self,
+            _symbol: &str,
+            _sig_hash: SigHash,
+            _args: &[ValueRef<'_>],
+            _access: Option<&mut dyn AccessSink>,
+        ) -> Result<(Vec<Value>, u64), HostError> {
+            Err(HostError::UnknownSymbol)
+        }
+    }
+
+    fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                },
+            )
+            .expect("identity function should be valid");
+        pb.set_function_output_name(f, 0, output_name)
+            .expect("name assignment should succeed");
+        (pb.build_verified().expect("program should verify"), f)
+    }
+
+    fn make_const_program(output_name: &str, value: i64) -> (VerifiedProgram, FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.const_i64(1, value);
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                },
+            )
+            .expect("const function should be valid");
+        pb.set_function_output_name(f, 0, output_name)
+            .expect("name assignment should succeed");
+        (pb.build_verified().expect("program should verify"), f)
+    }
 
     #[test]
     fn inline_dispatcher_fail_fast_matches_graph_error_semantics() {
-        let n_err = NodeId::new(7);
-        let n_ok = NodeId::new(8);
+        let (needs_input_prog, needs_input_entry) = make_identity_program("value");
+        let (const_prog, const_entry) = make_const_program("value", 7);
 
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n_err = g.add_node(needs_input_prog, needs_input_entry, vec!["in".into()]);
+        let n_ok = g.add_node(const_prog, const_entry, vec![]);
         let plan = RunPlan::all(vec![n_err, n_ok]);
         let mut dispatcher = InlineDispatcher;
-        let mut executed = vec![];
 
         assert_eq!(
-            dispatcher.dispatch(plan, |node| {
-                executed.push(node);
-                if node == n_err {
-                    return Err(GraphError::Trap);
-                }
-                Ok(())
-            }),
-            Err(GraphError::Trap)
+            dispatcher.dispatch(&mut g, plan),
+            Err(GraphError::MissingInput {
+                node: n_err,
+                name: "in".into()
+            })
         );
 
-        assert_eq!(executed, vec![n_err]);
+        assert_eq!(g.node_run_count(n_err), Some(0));
+        assert_eq!(g.node_run_count(n_ok), Some(0));
     }
 
     #[test]
     fn inline_dispatcher_with_report_keeps_execution_order() {
-        let n0 = NodeId::new(0);
-        let n1 = NodeId::new(1);
+        let (prog, entry) = make_const_program("value", 11);
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n0 = g.add_node(prog.clone(), entry, vec![]);
+        let n1 = g.add_node(prog, entry, vec![]);
 
         let r0 = NodeRunReport {
             node: n0,
@@ -151,15 +215,10 @@ mod tests {
         let plan =
             RunPlan::all(vec![n1, n0]).with_trace(RunPlanTrace::from_node_reports(node_reports));
         let mut dispatcher = InlineDispatcher;
-        let mut executed = vec![];
         let (_buf, report) = dispatcher
-            .dispatch_with_report(plan, |node| {
-                executed.push(node);
-                Ok(())
-            })
+            .dispatch_with_report(&mut g, plan)
             .expect("dispatch should succeed");
 
-        assert_eq!(executed, vec![n1, n0]);
         assert_eq!(report.executed.len(), 2);
         assert_eq!(report.executed[0], r1);
         assert_eq!(report.executed[1], r0);
@@ -167,16 +226,19 @@ mod tests {
 
     #[test]
     fn inline_dispatcher_with_report_handles_short_trace_vectors() {
-        let node = NodeId::new(4);
+        let (prog, entry) = make_const_program("value", 5);
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let node = g.add_node(prog, entry, vec![]);
 
         // Empty trace payload: execution should still succeed and simply produce no traced rows.
         let trace = RunPlanTrace::from_node_reports(vec![]);
 
         let mut dispatcher = InlineDispatcher;
         let (_buf, out) = dispatcher
-            .dispatch_with_report(RunPlan::all(vec![node]).with_trace(trace), |_n| Ok(()))
+            .dispatch_with_report(&mut g, RunPlan::all(vec![node]).with_trace(trace))
             .expect("dispatch should succeed");
 
+        assert_eq!(g.node_run_count(node), Some(1));
         assert!(out.executed.is_empty());
     }
 }

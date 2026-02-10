@@ -580,18 +580,19 @@ impl<H: Host> ExecutionGraph<H> {
     }
 
     /// Executes a pre-built run plan without traced reporting.
+    #[inline]
     fn run_plan(&mut self, plan: RunPlan) -> Result<(), GraphError> {
         let mut dispatcher = InlineDispatcher;
-        let to_run = dispatcher.dispatch(plan, |node| self.run_node_internal(node))?;
+        let to_run = dispatcher.dispatch(self, plan)?;
         self.scratch.to_run = to_run;
         Ok(())
     }
 
     /// Executes a pre-built run plan and returns traced reporting data if attached.
+    #[inline]
     fn run_plan_with_report(&mut self, plan: RunPlan) -> Result<RunReport, GraphError> {
         let mut dispatcher = InlineDispatcher;
-        let (to_run, report) =
-            dispatcher.dispatch_with_report(plan, |node| self.run_node_internal(node))?;
+        let (to_run, report) = dispatcher.dispatch_with_report(self, plan)?;
         self.scratch.to_run = to_run;
         Ok(report)
     }
@@ -628,6 +629,12 @@ impl<H: Host> ExecutionGraph<H> {
     pub fn run_node_with_report(&mut self, node: NodeId) -> Result<RunReport, GraphError> {
         let plan = self.plan_within_dependencies_of_traced(node)?;
         self.run_plan_with_report(plan)
+    }
+
+    /// Internal dispatch hook: executes one already-scheduled node.
+    #[inline]
+    pub(crate) fn execute_scheduled_node(&mut self, node: NodeId) -> Result<(), GraphError> {
+        self.run_node_internal(node)
     }
 
     fn run_node_internal(&mut self, node: NodeId) -> Result<(), GraphError> {
