@@ -23,6 +23,8 @@ use std::rc::Rc;
 fn bench_graph(c: &mut Criterion) {
     bench_chain_rerun(c);
     bench_chain_noop(c);
+    bench_stable_deps_many_reads(c);
+    bench_stable_deps_host_order_flap(c);
     bench_fanout_rerun(c);
     bench_disjoint_chains_host_key(c);
     bench_shared_upstream_one_tenant(c);
@@ -81,6 +83,44 @@ fn build_chain_graph(len: usize) -> (ExecutionGraph<NopHost>, execution_graph::N
     (g, n0)
 }
 
+fn build_wide_input_program(input_count: usize, output_name: &str) -> (VerifiedProgram, FuncId) {
+    // fn wide(in0, in1, ..., inN) -> i64 { in0 }
+    let mut pb = ProgramBuilder::new();
+    let mut a = Asm::new();
+    a.ret(0, &[1]);
+
+    let f = pb
+        .push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::I64; input_count],
+                ret_types: vec![ValueType::I64],
+                reg_count: u32::try_from(input_count.saturating_add(1)).unwrap_or(u32::MAX),
+            },
+        )
+        .unwrap();
+    pb.set_function_output_name(f, 0, output_name).unwrap();
+    (pb.build_verified().unwrap(), f)
+}
+
+fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
+    let (prog, entry) = build_wide_input_program(input_count, "value");
+    let mut g = ExecutionGraph::new(NopHost, Limits::default());
+
+    let input_names: Vec<Box<str>> = (0..input_count)
+        .map(|i| format!("in{i}").into_boxed_str())
+        .collect();
+    let node = g.add_node(prog, entry, input_names.clone());
+
+    for (i, name) in input_names.iter().enumerate() {
+        let value = i64::try_from(i).unwrap_or(i64::MAX);
+        g.set_input_value(node, name.as_ref(), Value::I64(value));
+    }
+
+    g.run_all().unwrap();
+    g
+}
+
 /// Linear chain of `len` nodes where every node depends on the previous node’s output.
 ///
 /// Graph shape (`len = 5` example):
@@ -127,6 +167,147 @@ fn bench_chain_noop(c: &mut Criterion) {
                 g.run_all().unwrap();
             });
         });
+    }
+    group.finish();
+}
+
+/// Single node with many external input reads; invalidation key set stays stable each iteration.
+///
+/// Graph shape (`input_count = 5` example):
+/// ```text
+/// in0 --->\
+/// in1 ---->\
+/// in2 -----> [wide] -> value
+/// in3 ---->/
+/// in4 --->/
+/// ```
+///
+/// Benchmark loop:
+/// - invalidate `in0`
+/// - run all dirty work
+///
+/// This isolates steady-state rerun cost where dependency keys are unchanged between runs.
+fn bench_stable_deps_many_reads(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stable_deps_many_reads_rerun");
+    for &input_count in &[8_usize, 32, 128, 512, 1024, 2048, 4096] {
+        let mut g = build_stable_deps_graph(input_count);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(input_count),
+            &input_count,
+            |b, _| {
+                b.iter(|| {
+                    g.invalidate_input(black_box("in0"));
+                    g.run_all().unwrap();
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+#[derive(Debug, Clone)]
+struct FlappingOrderHost {
+    read_count: usize,
+    flip: Rc<RefCell<bool>>,
+}
+
+impl Host for FlappingOrderHost {
+    fn call(
+        &mut self,
+        symbol: &str,
+        sig_hash: SigHash,
+        _args: &[ValueRef<'_>],
+        mut access: Option<&mut dyn AccessSink>,
+    ) -> Result<(Vec<Value>, u64), HostError> {
+        if symbol != "flap_reads_i64" {
+            return Err(HostError::UnknownSymbol);
+        }
+
+        let mut flip = self.flip.borrow_mut();
+        let reverse = *flip;
+        *flip = !*flip;
+
+        if reverse {
+            for i in (0..self.read_count).rev() {
+                let key = u64::try_from(i).map_err(|_| HostError::Failed)?;
+                if let Some(sink) = access.as_mut() {
+                    sink.read(ResourceKeyRef::HostState { op: sig_hash, key });
+                }
+            }
+        } else {
+            for i in 0..self.read_count {
+                let key = u64::try_from(i).map_err(|_| HostError::Failed)?;
+                if let Some(sink) = access.as_mut() {
+                    sink.read(ResourceKeyRef::HostState { op: sig_hash, key });
+                }
+            }
+        }
+
+        Ok((vec![Value::I64(0)], 0))
+    }
+}
+
+fn build_flap_reads_program() -> (VerifiedProgram, FuncId, HostOpId) {
+    let host_sig = HostSig {
+        args: vec![],
+        rets: vec![ValueType::I64],
+    };
+    let op = HostOpId::new(sig_hash(&host_sig).0);
+
+    let mut pb = ProgramBuilder::new();
+    let host_sig_id = pb.host_sig_for("flap_reads_i64", host_sig);
+
+    let mut a = Asm::new();
+    a.host_call(0, host_sig_id, 0, &[], &[1]);
+    a.ret(0, &[1]);
+
+    let f = pb
+        .push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 2,
+            },
+        )
+        .unwrap();
+    pb.set_function_output_name(f, 0, "value").unwrap();
+
+    (pb.build_verified().unwrap(), f, op)
+}
+
+fn build_stable_deps_flapping_order_graph(
+    read_count: usize,
+) -> (ExecutionGraph<FlappingOrderHost>, HostOpId) {
+    let (prog, entry, op) = build_flap_reads_program();
+    let host = FlappingOrderHost {
+        read_count,
+        flip: Rc::new(RefCell::new(false)),
+    };
+    let mut g = ExecutionGraph::new(host, Limits::default());
+    g.add_node(prog, entry, vec![]);
+    g.run_all().unwrap();
+    (g, op)
+}
+
+/// Single node with host-read dependency set stable, but read emission order alternates each run.
+///
+/// This isolates order-normalization overhead and checks that stable sets do not thrash dependency
+/// replacement when host read order is nondeterministic.
+fn bench_stable_deps_host_order_flap(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stable_deps_host_order_flap_rerun");
+    for &read_count in &[32_usize, 128, 512, 1024] {
+        let (mut g, op) = build_stable_deps_flapping_order_graph(read_count);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(read_count),
+            &read_count,
+            |b, _| {
+                b.iter(|| {
+                    g.invalidate(ResourceKey::host_state(op, black_box(0)));
+                    g.run_all().unwrap();
+                });
+            },
+        );
     }
     group.finish();
 }
