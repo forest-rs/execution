@@ -122,7 +122,8 @@ pub(crate) struct Node {
     pub(crate) program: VerifiedProgram,
     pub(crate) entry: FuncId,
     pub(crate) input_names: Vec<Box<str>>,
-    pub(crate) inputs: BTreeMap<Box<str>, Binding>,
+    pub(crate) input_slots: BTreeMap<Box<str>, Vec<usize>>,
+    pub(crate) inputs: Vec<Option<Binding>>,
     pub(crate) output_names: Vec<Box<str>>,
     pub(crate) output_ids: Vec<DirtyKey>,
     pub(crate) outputs: NodeOutputs,
@@ -284,11 +285,18 @@ impl<H: Host> ExecutionGraph<H> {
             output_ids.push(id);
         }
 
+        let mut input_slots: BTreeMap<Box<str>, Vec<usize>> = BTreeMap::new();
+        for (slot, name) in input_names.iter().enumerate() {
+            input_slots.entry(name.clone()).or_default().push(slot);
+        }
+        let input_count = input_names.len();
+
         let n = Node {
             program,
             entry,
             input_names,
-            inputs: BTreeMap::new(),
+            input_slots,
+            inputs: alloc::vec![None; input_count],
             output_names,
             output_ids,
             outputs: BTreeMap::new(),
@@ -307,16 +315,29 @@ impl<H: Host> ExecutionGraph<H> {
     /// The `name` is part of the dependency key space. If you later want to trigger re-execution
     /// of nodes that read this input, call [`ExecutionGraph::invalidate_input`] with the same
     /// `name` string.
+    ///
+    /// If a node declares duplicate input names (for example `["x", "x"]`), those slots are
+    /// treated as aliases: setting `"x"` binds all matching slots.
     pub fn set_input_value(&mut self, node: NodeId, name: impl Into<Box<str>>, value: Value) {
         let Ok(index) = usize::try_from(node.as_u64()) else {
             return;
         };
         if let Some(n) = self.nodes.get_mut(index) {
-            n.inputs.insert(name.into(), Binding::External(value));
+            let name: Box<str> = name.into();
+            let Some(slots) = n.input_slots.get(name.as_ref()) else {
+                return;
+            };
+            for &slot in slots {
+                if let Some(binding) = n.inputs.get_mut(slot) {
+                    *binding = Some(Binding::External(value.clone()));
+                }
+            }
         }
     }
 
     /// Connects `from.output` into `to.input`.
+    ///
+    /// If `to` declares duplicate input names, all slots matching `to.input` are connected.
     pub fn connect(
         &mut self,
         from: NodeId,
@@ -325,17 +346,21 @@ impl<H: Host> ExecutionGraph<H> {
         input: impl Into<Box<str>>,
     ) {
         let output: Box<str> = output.into();
+        let input: Box<str> = input.into();
         let Ok(index) = usize::try_from(to.as_u64()) else {
             return;
         };
-        if let Some(n) = self.nodes.get_mut(index) {
-            n.inputs.insert(
-                input.into(),
-                Binding::FromNode {
-                    node: from,
-                    output: output.clone(),
-                },
-            );
+        if let Some(n) = self.nodes.get_mut(index)
+            && let Some(slots) = n.input_slots.get(input.as_ref())
+        {
+            for &slot in slots {
+                if let Some(binding) = n.inputs.get_mut(slot) {
+                    *binding = Some(Binding::FromNode {
+                        node: from,
+                        output: output.clone(),
+                    });
+                }
+            }
         }
 
         // Conservative scheduling: treat wiring as a dependency edge until the next execution run
@@ -749,10 +774,12 @@ impl<H: Host> ExecutionGraph<H> {
         let mut args: Vec<Value> = Vec::with_capacity(n.input_names.len());
         let mut log = AccessLog::new();
 
-        for name in n.input_names.iter() {
-            let b = n.inputs.get(name).ok_or_else(|| GraphError::MissingInput {
-                node,
-                name: name.clone(),
+        for (slot, name) in n.input_names.iter().enumerate() {
+            let b = n.inputs.get(slot).and_then(Option::as_ref).ok_or_else(|| {
+                GraphError::MissingInput {
+                    node,
+                    name: name.clone(),
+                }
             })?;
 
             match b {
@@ -1729,5 +1756,36 @@ mod tests {
     fn run_node_errors_on_bad_node_id() {
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         assert_eq!(g.run_node(NodeId::new(999)), Err(GraphError::BadNodeId));
+    }
+
+    #[test]
+    fn duplicate_input_names_alias_same_binding() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        // Return arg1 where both args are named "x". If aliasing is broken, run fails with
+        // MissingInput for the second slot.
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64, ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 3,
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+        let prog = pb.build_verified().unwrap();
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n = g.add_node(prog, f, vec!["x".into(), "x".into()]);
+        g.set_input_value(n, "x", Value::I64(7));
+
+        g.run_all().unwrap();
+        assert_eq!(
+            g.node_outputs(n).unwrap().get("value"),
+            Some(&Value::I64(7))
+        );
     }
 }
