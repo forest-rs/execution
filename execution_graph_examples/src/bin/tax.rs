@@ -59,6 +59,7 @@ impl Host for TaxHost {
 fn program_price_subtotal() -> (VerifiedProgram, FuncId) {
     // fn price_subtotal(qty: i64, unit_price: i64) -> i64 { qty * unit_price }
     let mut pb = ProgramBuilder::new();
+    pb.set_program_name("tax_price_subtotal_program");
     let mut a = Asm::new();
     a.i64_mul(3, 1, 2);
     a.ret(0, &[3]);
@@ -73,6 +74,7 @@ fn program_price_subtotal() -> (VerifiedProgram, FuncId) {
             },
         )
         .unwrap();
+    pb.set_function_name(f, "price_subtotal").unwrap();
     pb.set_function_output_name(f, 0, "subtotal").unwrap();
     (pb.build_verified().unwrap(), f)
 }
@@ -80,6 +82,7 @@ fn program_price_subtotal() -> (VerifiedProgram, FuncId) {
 fn program_tax_amount() -> (VerifiedProgram, FuncId) {
     // fn tax_amount(subtotal: i64) -> i64 { subtotal * host.tax_rate_bp() / 10000 }
     let mut pb = ProgramBuilder::new();
+    pb.set_program_name("tax_amount_program");
     let sig = HostSig {
         args: vec![],
         rets: vec![ValueType::I64],
@@ -103,6 +106,7 @@ fn program_tax_amount() -> (VerifiedProgram, FuncId) {
             },
         )
         .unwrap();
+    pb.set_function_name(f, "tax_amount").unwrap();
     pb.set_function_output_name(f, 0, "tax").unwrap();
     (pb.build_verified().unwrap(), f)
 }
@@ -110,6 +114,7 @@ fn program_tax_amount() -> (VerifiedProgram, FuncId) {
 fn program_total() -> (VerifiedProgram, FuncId) {
     // fn total(subtotal: i64, tax: i64) -> i64 { subtotal + tax }
     let mut pb = ProgramBuilder::new();
+    pb.set_program_name("tax_total_program");
     let mut a = Asm::new();
     a.i64_add(3, 1, 2);
     a.ret(0, &[3]);
@@ -124,6 +129,7 @@ fn program_total() -> (VerifiedProgram, FuncId) {
             },
         )
         .unwrap();
+    pb.set_function_name(f, "total").unwrap();
     pb.set_function_output_name(f, 0, "total").unwrap();
     (pb.build_verified().unwrap(), f)
 }
@@ -153,6 +159,8 @@ fn fmt_key(node_labels: &BTreeMap<u64, &'static str>, key: &ResourceKey) -> Stri
 }
 
 fn main() -> Result<(), GraphError> {
+    let emit_dot = std::env::args().skip(1).any(|arg| arg == "--dot");
+
     let rate_bp: Rc<RefCell<i64>> = Rc::new(RefCell::new(825));
     let mut g = ExecutionGraph::new(
         TaxHost {
@@ -182,6 +190,12 @@ fn main() -> Result<(), GraphError> {
     g.connect(n_price, "subtotal", n_tax, "subtotal");
     g.connect(n_price, "subtotal", n_total, "subtotal");
     g.connect(n_tax, "tax", n_total, "tax");
+
+    if emit_dot {
+        g.run_all()?;
+        println!("{}", g.to_dot());
+        return Ok(());
+    }
 
     let _ = g.run_all_with_report()?;
     let total0 = g

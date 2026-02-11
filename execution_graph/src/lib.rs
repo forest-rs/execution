@@ -23,6 +23,7 @@ mod dirty;
 mod dispatch;
 mod graph;
 mod plan;
+mod pretty;
 mod report;
 mod tape_access;
 

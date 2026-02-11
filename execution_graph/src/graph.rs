@@ -112,22 +112,22 @@ impl core::error::Error for GraphError {}
 pub type NodeOutputs = BTreeMap<Box<str>, Value>;
 
 #[derive(Clone, Debug)]
-enum Binding {
+pub(crate) enum Binding {
     External(Value),
     FromNode { node: NodeId, output: Box<str> },
 }
 
 #[derive(Debug)]
-struct Node {
-    program: VerifiedProgram,
-    entry: FuncId,
-    input_names: Vec<Box<str>>,
-    inputs: BTreeMap<Box<str>, Binding>,
-    output_names: Vec<Box<str>>,
-    output_ids: Vec<DirtyKey>,
-    outputs: NodeOutputs,
-    last_access: AccessLog,
-    run_count: u64,
+pub(crate) struct Node {
+    pub(crate) program: VerifiedProgram,
+    pub(crate) entry: FuncId,
+    pub(crate) input_names: Vec<Box<str>>,
+    pub(crate) inputs: BTreeMap<Box<str>, Binding>,
+    pub(crate) output_names: Vec<Box<str>>,
+    pub(crate) output_ids: Vec<DirtyKey>,
+    pub(crate) outputs: NodeOutputs,
+    pub(crate) last_access: AccessLog,
+    pub(crate) run_count: u64,
 }
 
 impl Node {
@@ -165,7 +165,7 @@ pub struct ExecutionGraph<H: Host> {
     ctx: ExecutionContext,
     dirty: DirtyEngine,
     input_ids: BTreeMap<Box<str>, DirtyKey>,
-    nodes: Vec<Node>,
+    pub(crate) nodes: Vec<Node>,
     scratch: Scratch,
     strict_deps: bool,
 }
