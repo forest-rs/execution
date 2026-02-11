@@ -127,6 +127,8 @@ pub(crate) struct Node {
     pub(crate) output_ids: Vec<DirtyKey>,
     pub(crate) outputs: NodeOutputs,
     pub(crate) last_access: AccessLog,
+    pub(crate) last_read_ids: Vec<DirtyKey>,
+    pub(crate) deps_initialized: bool,
     pub(crate) run_count: u64,
 }
 
@@ -176,6 +178,7 @@ pub struct ExecutionGraph<H: Host> {
 struct Scratch {
     to_run: Vec<NodeId>,
     seen_stamp: Vec<u32>,
+    read_ids: Vec<DirtyKey>,
     stamp: u32,
 }
 
@@ -290,6 +293,8 @@ impl<H: Host> ExecutionGraph<H> {
             output_ids,
             outputs: BTreeMap::new(),
             last_access: AccessLog::new(),
+            last_read_ids: Vec::new(),
+            deps_initialized: false,
             run_count: 0,
         };
 
@@ -826,17 +831,30 @@ impl<H: Host> ExecutionGraph<H> {
         }
 
         // Update dirty dependencies: each output depends on all reads observed during the run.
-        let reads: Vec<_> = log
-            .iter()
-            .filter_map(|a| match a {
-                Access::Read(k) => Some(k.clone()),
-                Access::Write(_) => None,
-            })
-            .map(|k| self.dirty.intern(k))
-            .collect();
+        // Reuse scratch storage to avoid per-run allocation in the hot path.
+        self.scratch.read_ids.clear();
+        for a in log.iter() {
+            if let Access::Read(k) = a {
+                self.scratch.read_ids.push(self.dirty.intern(k.clone()));
+            }
+        }
+        // Canonicalize to set semantics so host/read emission order does not cause
+        // spurious dependency-set "changes" across runs.
+        self.scratch.read_ids.sort_unstable();
+        self.scratch.read_ids.dedup();
 
-        for &out_id in self.nodes[node_index].output_ids.iter() {
-            self.dirty.set_dependencies(out_id, reads.iter().copied());
+        let deps_changed = !self.nodes[node_index].deps_initialized
+            || self.nodes[node_index].last_read_ids != self.scratch.read_ids;
+        if deps_changed {
+            for &out_id in self.nodes[node_index].output_ids.iter() {
+                self.dirty
+                    .set_dependencies(out_id, self.scratch.read_ids.iter().copied());
+            }
+            self.nodes[node_index].last_read_ids.clear();
+            self.nodes[node_index]
+                .last_read_ids
+                .extend(self.scratch.read_ids.iter().copied());
+            self.nodes[node_index].deps_initialized = true;
         }
 
         // Commit outputs/log.
@@ -1401,6 +1419,98 @@ mod tests {
     }
 
     #[test]
+    fn host_read_order_changes_do_not_change_last_read_ids() {
+        #[derive(Clone)]
+        struct FlippingReadHost {
+            flip: Rc<RefCell<bool>>,
+            op_sig: SigHash,
+        }
+
+        impl Host for FlippingReadHost {
+            fn call(
+                &mut self,
+                symbol: &str,
+                sig_hash: SigHash,
+                _args: &[ValueRef<'_>],
+                access: Option<&mut dyn AccessSink>,
+            ) -> Result<(Vec<Value>, u64), HostError> {
+                if symbol != "flip.reads" {
+                    return Err(HostError::UnknownSymbol);
+                }
+                if sig_hash != self.op_sig {
+                    return Err(HostError::SignatureMismatch);
+                }
+
+                let mut flip = self.flip.borrow_mut();
+                let (a, b) = if *flip {
+                    (2_u64, 1_u64)
+                } else {
+                    (1_u64, 2_u64)
+                };
+                *flip = !*flip;
+
+                if let Some(sink) = access {
+                    sink.read(ResourceKeyRef::HostState {
+                        op: sig_hash,
+                        key: a,
+                    });
+                    sink.read(ResourceKeyRef::HostState {
+                        op: sig_hash,
+                        key: b,
+                    });
+                }
+                Ok((vec![Value::I64(0)], 0))
+            }
+        }
+
+        let host_sig = HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        };
+        let op_hash = sig_hash(&host_sig);
+
+        let mut pb = ProgramBuilder::new();
+        let op = pb.host_sig_for("flip.reads", host_sig);
+        let mut a = Asm::new();
+        a.host_call(0, op, 0, &[], &[1]);
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+        let prog = pb.build_verified().unwrap();
+
+        let mut g = ExecutionGraph::new(
+            FlippingReadHost {
+                flip: Rc::new(RefCell::new(false)),
+                op_sig: op_hash,
+            },
+            Limits::default(),
+        );
+        let n = g.add_node(prog, f, vec![]);
+
+        g.run_all().unwrap();
+        let first_ids = g.nodes[usize::try_from(n.as_u64()).unwrap()]
+            .last_read_ids
+            .clone();
+
+        g.invalidate(ResourceKey::host_state(HostOpId::new(op_hash.0), 1));
+        g.run_all().unwrap();
+        let second_ids = g.nodes[usize::try_from(n.as_u64()).unwrap()]
+            .last_read_ids
+            .clone();
+
+        assert_eq!(first_ids, second_ids);
+    }
+
+    #[test]
     fn invalidating_opaque_host_reruns_dependent_nodes() {
         #[derive(Clone)]
         struct KvHost {
@@ -1550,6 +1660,69 @@ mod tests {
         assert_eq!(g.node_run_count(na), Some(2));
         assert_eq!(g.node_run_count(nb), Some(2));
         assert_eq!(g.node_run_count(nc), Some(2));
+    }
+
+    #[test]
+    fn first_run_sync_clears_conservative_deps_for_zero_read_node() {
+        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                        reg_count: 2,
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (pb.build_verified().unwrap(), f)
+        }
+
+        fn make_const_program(output_name: &str, v: i64) -> (VerifiedProgram, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.const_i64(1, v);
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ValueType::I64],
+                        reg_count: 2,
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (pb.build_verified().unwrap(), f)
+        }
+
+        let (a_prog, a_entry) = make_identity_program("value");
+        let (b_prog, b_entry) = make_const_program("value", 9);
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let na = g.add_node(a_prog, a_entry, vec!["in".into()]);
+        let nb = g.add_node(b_prog, b_entry, vec![]);
+
+        // This creates conservative dirty edges from A -> B, but B has zero observed reads.
+        g.connect(na, "value", nb, "not_an_input");
+        g.set_input_value(na, "in", Value::I64(1));
+
+        g.run_all().unwrap();
+        assert_eq!(g.node_run_count(na), Some(1));
+        assert_eq!(g.node_run_count(nb), Some(1));
+
+        // If conservative deps were not replaced on first run, this would spuriously rerun B.
+        g.set_input_value(na, "in", Value::I64(2));
+        g.invalidate_input("in");
+        g.run_all().unwrap();
+
+        assert_eq!(g.node_run_count(na), Some(2));
+        assert_eq!(g.node_run_count(nb), Some(1));
     }
 
     #[test]
