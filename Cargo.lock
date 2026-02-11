@@ -703,7 +703,7 @@ dependencies = [
 [[package]]
 name = "understory_dirty"
 version = "0.1.0"
-source = "git+https://github.com/endoli/understory.git?rev=c8f89324c5af436eabced7cef283f98577a94d70#c8f89324c5af436eabced7cef283f98577a94d70"
+source = "git+https://github.com/endoli/understory.git?rev=e66fecdc521b57b76bb3b28ddc70ce3944926664#e66fecdc521b57b76bb3b28ddc70ce3944926664"
 dependencies = [
  "hashbrown",
 ]
