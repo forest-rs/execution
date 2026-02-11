@@ -29,8 +29,12 @@ via `ExecutionGraph::invalidate_tape_key(...)` (or by constructing the correspon
 `run_node` drains and executes only the dirty work within the dependency closure of the target
 node’s outputs, leaving unrelated dirty work dirty to be handled by a later `run_all`.
 
-For debugging and instrumentation, `run_all_with_report` / `run_node_with_report` return a
-structured report that includes one plausible “why re-ran” cause path per executed node.
+For low overhead telemetry, `run_all` / `run_node` return only an executed-node summary.
+
+For debugging and instrumentation:
+- `run_all_with_report` / `run_node_with_report` accept a `ReportDetailMask` so you can choose
+  cheaper detail levels (for example, node + immediate cause key without path tracing).
+- Use `ReportDetailMask::FULL` when you want full per-node cause paths.
 
 ## Demo
 

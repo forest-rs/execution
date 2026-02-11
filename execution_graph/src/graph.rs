@@ -23,7 +23,7 @@ use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
 use crate::dispatch::{Dispatcher, InlineDispatcher};
 use crate::plan::{RunPlan, RunPlanTrace};
-use crate::report::{NodeRunReport, RunReport};
+use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
 use crate::tape_access::{CountingAccessSink, StrictDepsTrace};
 
 use understory_dirty::TraversalScratch;
@@ -156,9 +156,11 @@ impl Node {
 /// - Dependencies are refined dynamically: after each run, each output key’s dependency set is
 ///   replaced with “all reads observed during that run”. The [`connect`](ExecutionGraph::connect)
 ///   method adds conservative edges to enforce initial topological ordering before the first run.
-/// - `run_all` / `run_node` track *whether* something must re-run. If you also need “why re-ran”
-///   reporting, use [`ExecutionGraph::run_all_with_report`] or
-///   [`ExecutionGraph::run_node_with_report`].
+/// - [`ExecutionGraph::run_all`] / [`ExecutionGraph::run_node`] execute dirty work and return a
+///   cheap executed-node summary.
+/// - If you need “why re-ran” data, use [`ExecutionGraph::run_all_with_report`] /
+///   [`ExecutionGraph::run_node_with_report`] with an appropriate [`ReportDetailMask`].
+///   Use [`ReportDetailMask::FULL`] for the full path-rich report.
 #[derive(Debug)]
 pub struct ExecutionGraph<H: Host> {
     vm: Vm<H>,
@@ -434,51 +436,88 @@ impl<H: Host> ExecutionGraph<H> {
         RunPlan::all(core::mem::take(&mut self.scratch.to_run))
     }
 
-    /// Builds a plan from all currently affected dirty work, including traced cause payload.
+    /// Builds a report-capable plan from all currently affected dirty work.
     #[inline]
-    fn plan_all_traced(&mut self) -> RunPlan {
+    fn plan_all_report(&mut self, detail_mask: ReportDetailMask) -> RunPlan {
+        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF)
+            || detail_mask.contains(ReportDetailMask::WHY_PATH);
+        let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
+
         self.scratch.start_drain(self.nodes.len());
+        let mut node_report: Vec<Option<NodeRunDetail>> = alloc::vec![None; self.nodes.len()];
 
-        let mut node_report: Vec<Option<NodeRunReport>> = alloc::vec![None; self.nodes.len()];
+        if collect_why {
+            let mut trace_scratch = TraversalScratch::<DirtyKey>::new();
+            let mut trace = OneParentRecorder::<DirtyKey>::new();
+            trace.clear();
 
-        let mut trace_scratch = TraversalScratch::<DirtyKey>::new();
-        let mut trace = OneParentRecorder::<DirtyKey>::new();
-        trace.clear();
+            let mut scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
+            for (key_id, key) in self.dirty.drain_traced(&mut trace_scratch, &mut trace) {
+                let ResourceKey::TapeOutput { node, .. } = key else {
+                    continue;
+                };
+                if !self.scratch.take_node(*node) || node_report.is_empty() {
+                    continue;
+                }
 
-        let mut scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
-        for (key_id, key) in self.dirty.drain_traced(&mut trace_scratch, &mut trace) {
-            let ResourceKey::TapeOutput { node, .. } = key else {
-                continue;
-            };
-            if !self.scratch.take_node(*node) || node_report.is_empty() {
-                continue;
+                let Ok(index) = usize::try_from(node.as_u64()) else {
+                    continue;
+                };
+                if index >= node_report.len() || node_report[index].is_some() {
+                    continue;
+                }
+                scheduled.push((*node, key_id, key.clone()));
             }
 
-            let Ok(index) = usize::try_from(node.as_u64()) else {
-                continue;
-            };
-            if index >= node_report.len() || node_report[index].is_some() {
-                continue;
-            }
-            scheduled.push((*node, key_id, key.clone()));
-        }
+            for (node, key_id, because_of) in scheduled {
+                let Ok(index) = usize::try_from(node.as_u64()) else {
+                    continue;
+                };
+                if index >= node_report.len() || node_report[index].is_some() {
+                    continue;
+                }
 
-        for (node, key_id, because_of) in scheduled {
-            let Ok(index) = usize::try_from(node.as_u64()) else {
-                continue;
-            };
-            if index >= node_report.len() || node_report[index].is_some() {
-                continue;
+                let why_path = self
+                    .dirty
+                    .explain_path(&trace, key_id)
+                    .unwrap_or_else(|| alloc::vec![because_of.clone()]);
+
+                node_report[index] = Some(NodeRunDetail {
+                    node,
+                    because_of: if collect_because {
+                        Some(because_of)
+                    } else {
+                        None
+                    },
+                    why_path: Some(why_path),
+                });
             }
-            let why_path = self
-                .dirty
-                .explain_path(&trace, key_id)
-                .unwrap_or_else(|| alloc::vec![because_of.clone()]);
-            node_report[index] = Some(NodeRunReport {
-                node,
-                because_of,
-                why_path,
-            });
+        } else {
+            for (_key_id, key) in self.dirty.drain() {
+                let ResourceKey::TapeOutput { node, .. } = key else {
+                    continue;
+                };
+                if !self.scratch.take_node(*node) || node_report.is_empty() {
+                    continue;
+                }
+
+                let Ok(index) = usize::try_from(node.as_u64()) else {
+                    continue;
+                };
+                if index >= node_report.len() || node_report[index].is_some() {
+                    continue;
+                }
+
+                node_report[index] = Some(NodeRunDetail {
+                    node: *node,
+                    because_of: if collect_because {
+                        Some(key.clone())
+                    } else {
+                        None
+                    },
+                    why_path: None,
+                });
+            }
         }
 
         let nodes = core::mem::take(&mut self.scratch.to_run);
@@ -506,9 +545,13 @@ impl<H: Host> ExecutionGraph<H> {
         ))
     }
 
-    /// Builds a plan restricted to keys within `node`'s dependency closure, with traced causes.
+    /// Builds a report-capable plan restricted to keys within `node`'s dependency closure.
     #[inline]
-    fn plan_within_dependencies_of_traced(&mut self, node: NodeId) -> Result<RunPlan, GraphError> {
+    fn plan_within_dependencies_of_report(
+        &mut self,
+        node: NodeId,
+        detail_mask: ReportDetailMask,
+    ) -> Result<RunPlan, GraphError> {
         let Ok(index) = usize::try_from(node.as_u64()) else {
             return Err(GraphError::BadNodeId);
         };
@@ -516,53 +559,97 @@ impl<H: Host> ExecutionGraph<H> {
             return Err(GraphError::BadNodeId);
         };
         let output_count = n.output_ids.len();
+        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF)
+            || detail_mask.contains(ReportDetailMask::WHY_PATH);
+        let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
         self.scratch.start_drain(self.nodes.len());
-        let mut node_report: Vec<Option<NodeRunReport>> = alloc::vec![None; self.nodes.len()];
+        let mut node_report: Vec<Option<NodeRunDetail>> = alloc::vec![None; self.nodes.len()];
 
-        let mut trace_scratch = TraversalScratch::<DirtyKey>::new();
-        let mut trace = OneParentRecorder::<DirtyKey>::new();
+        if collect_why {
+            let mut trace_scratch = TraversalScratch::<DirtyKey>::new();
+            let mut trace = OneParentRecorder::<DirtyKey>::new();
 
-        // Drain dirty keys within the dependency closure of each output, and execute nodes whose
-        // output keys are affected.
-        for output_ix in 0..output_count {
-            let out_id = self.nodes[index].output_ids[output_ix];
+            // Drain dirty keys within the dependency closure of each output, and execute nodes
+            // whose output keys are affected.
+            for output_ix in 0..output_count {
+                let out_id = self.nodes[index].output_ids[output_ix];
 
-            trace.clear();
-            let mut newly_scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
+                trace.clear();
+                let mut newly_scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
 
-            for (key_id, key) in self.dirty.drain_within_dependencies_of_traced(
-                out_id,
-                &mut trace_scratch,
-                &mut trace,
-            ) {
-                let ResourceKey::TapeOutput { node, .. } = key else {
-                    continue;
-                };
-                if !self.scratch.take_node(*node) {
-                    continue;
+                for (key_id, key) in self.dirty.drain_within_dependencies_of_traced(
+                    out_id,
+                    &mut trace_scratch,
+                    &mut trace,
+                ) {
+                    let ResourceKey::TapeOutput { node, .. } = key else {
+                        continue;
+                    };
+                    if !self.scratch.take_node(*node) {
+                        continue;
+                    }
+                    newly_scheduled.push((*node, key_id, key.clone()));
                 }
-                newly_scheduled.push((*node, key_id, key.clone()));
+
+                for (scheduled_node, key_id, because_of) in newly_scheduled {
+                    let Ok(scheduled_index) = usize::try_from(scheduled_node.as_u64()) else {
+                        continue;
+                    };
+                    if scheduled_index >= node_report.len()
+                        || node_report[scheduled_index].is_some()
+                    {
+                        continue;
+                    }
+
+                    let why_path = self
+                        .dirty
+                        .explain_path(&trace, key_id)
+                        .unwrap_or_else(|| alloc::vec![because_of.clone()]);
+
+                    node_report[scheduled_index] = Some(NodeRunDetail {
+                        node: scheduled_node,
+                        because_of: if collect_because {
+                            Some(because_of)
+                        } else {
+                            None
+                        },
+                        why_path: Some(why_path),
+                    });
+                }
             }
+        } else {
+            // Drain dirty keys within the dependency closure of each output, and execute nodes
+            // whose output keys are affected.
+            for output_ix in 0..output_count {
+                let out_id = self.nodes[index].output_ids[output_ix];
+                for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
+                    let ResourceKey::TapeOutput { node, .. } = key else {
+                        continue;
+                    };
+                    if !self.scratch.take_node(*node) {
+                        continue;
+                    }
 
-            for (scheduled_node, key_id, because_of) in newly_scheduled {
-                let Ok(scheduled_index) = usize::try_from(scheduled_node.as_u64()) else {
-                    continue;
-                };
-                if scheduled_index >= node_report.len() || node_report[scheduled_index].is_some() {
-                    continue;
+                    let Ok(scheduled_index) = usize::try_from(node.as_u64()) else {
+                        continue;
+                    };
+                    if scheduled_index >= node_report.len()
+                        || node_report[scheduled_index].is_some()
+                    {
+                        continue;
+                    }
+
+                    node_report[scheduled_index] = Some(NodeRunDetail {
+                        node: *node,
+                        because_of: if collect_because {
+                            Some(key.clone())
+                        } else {
+                            None
+                        },
+                        why_path: None,
+                    });
                 }
-
-                let why_path = self
-                    .dirty
-                    .explain_path(&trace, key_id)
-                    .unwrap_or_else(|| alloc::vec![because_of.clone()]);
-
-                node_report[scheduled_index] = Some(NodeRunReport {
-                    node: scheduled_node,
-                    because_of,
-                    why_path,
-                });
             }
         }
 
@@ -581,17 +668,19 @@ impl<H: Host> ExecutionGraph<H> {
 
     /// Executes a pre-built run plan without traced reporting.
     #[inline]
-    fn run_plan(&mut self, plan: RunPlan) -> Result<(), GraphError> {
+    fn run_plan(&mut self, plan: RunPlan) -> Result<RunSummary, GraphError> {
+        let mut probe = plan.clone();
+        let executed_nodes = probe.take_nodes().len();
         let mut dispatcher = InlineDispatcher;
         let to_run = dispatcher.dispatch(self, plan)?;
         // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
         self.scratch.to_run = to_run;
-        Ok(())
+        Ok(RunSummary { executed_nodes })
     }
 
     /// Executes a pre-built run plan and returns traced reporting data if attached.
     #[inline]
-    fn run_plan_with_report(&mut self, plan: RunPlan) -> Result<RunReport, GraphError> {
+    fn run_plan_with_report(&mut self, plan: RunPlan) -> Result<RunDetailReport, GraphError> {
         let mut dispatcher = InlineDispatcher;
         let (to_run, report) = dispatcher.dispatch_with_report(self, plan)?;
         // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
@@ -599,18 +688,21 @@ impl<H: Host> ExecutionGraph<H> {
         Ok(report)
     }
 
-    /// Runs all currently dirty work in dependency order.
-    pub fn run_all(&mut self) -> Result<(), GraphError> {
+    /// Runs all currently dirty work in dependency order and returns a cheap summary.
+    pub fn run_all(&mut self) -> Result<RunSummary, GraphError> {
         let plan = self.plan_all();
         self.run_plan(plan)
     }
 
-    /// Runs all currently dirty work and returns a report including “why re-ran” cause paths.
+    /// Runs all currently dirty work and returns a structured report.
     ///
-    /// The report records one plausible cause path per executed node (a spanning forest), not all
-    /// possible causes.
-    pub fn run_all_with_report(&mut self) -> Result<RunReport, GraphError> {
-        let plan = self.plan_all_traced();
+    /// Detail payloads are selected by `detail_mask`; this keeps heavy cause-path construction
+    /// opt-in. Use [`ReportDetailMask::FULL`] for the full path-rich report.
+    pub fn run_all_with_report(
+        &mut self,
+        detail_mask: ReportDetailMask,
+    ) -> Result<RunDetailReport, GraphError> {
+        let plan = self.plan_all_report(detail_mask);
         self.run_plan_with_report(plan)
     }
 
@@ -618,18 +710,21 @@ impl<H: Host> ExecutionGraph<H> {
     ///
     /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
     /// Unrelated dirty work remains dirty and is not drained.
-    pub fn run_node(&mut self, node: NodeId) -> Result<(), GraphError> {
+    pub fn run_node(&mut self, node: NodeId) -> Result<RunSummary, GraphError> {
         let plan = self.plan_within_dependencies_of(node)?;
         self.run_plan(plan)
     }
 
-    /// Runs the subgraph needed to (re)compute `node` and returns a report including “why re-ran”
-    /// cause paths.
+    /// Runs the subgraph needed to (re)compute `node` and returns a structured report.
     ///
-    /// The report records one plausible cause path per executed node (a spanning forest), not all
-    /// possible causes.
-    pub fn run_node_with_report(&mut self, node: NodeId) -> Result<RunReport, GraphError> {
-        let plan = self.plan_within_dependencies_of_traced(node)?;
+    /// Detail payloads are selected by `detail_mask`; this keeps heavy cause-path construction
+    /// opt-in. Use [`ReportDetailMask::FULL`] for the full path-rich report.
+    pub fn run_node_with_report(
+        &mut self,
+        node: NodeId,
+        detail_mask: ReportDetailMask,
+    ) -> Result<RunDetailReport, GraphError> {
+        let plan = self.plan_within_dependencies_of_report(node, detail_mask)?;
         self.run_plan_with_report(plan)
     }
 
@@ -926,28 +1021,133 @@ mod tests {
         g.set_input_value(na, "a", Value::I64(2));
         g.invalidate_input("a");
 
-        let r = g.run_node_with_report(nb).unwrap();
+        let r = g.run_node_with_report(nb, ReportDetailMask::FULL).unwrap();
         assert_eq!(r.executed.len(), 2);
         assert_eq!(r.executed[0].node, na);
         assert_eq!(r.executed[1].node, nb);
 
         assert_eq!(
-            r.executed[0].why_path.first(),
+            r.executed[0]
+                .why_path
+                .as_ref()
+                .expect("full report should include why_path")
+                .first(),
             Some(&ResourceKey::input("a"))
         );
         assert_eq!(
-            r.executed[0].why_path.last(),
+            r.executed[0]
+                .why_path
+                .as_ref()
+                .expect("full report should include why_path")
+                .last(),
             Some(&ResourceKey::tape_output(na, "value"))
         );
 
         assert_eq!(
-            r.executed[1].why_path.first(),
+            r.executed[1]
+                .why_path
+                .as_ref()
+                .expect("full report should include why_path")
+                .first(),
             Some(&ResourceKey::input("a"))
         );
         assert_eq!(
-            r.executed[1].why_path.last(),
+            r.executed[1]
+                .why_path
+                .as_ref()
+                .expect("full report should include why_path")
+                .last(),
             Some(&ResourceKey::tape_output(nb, "value"))
         );
+    }
+
+    #[test]
+    fn run_all_counts_executed_nodes() {
+        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                        reg_count: 2,
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (pb.build_verified().unwrap(), f)
+        }
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let (a_prog, a_entry) = make_identity_program("value");
+        let (b_prog, b_entry) = make_identity_program("value");
+
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
+        g.set_input_value(na, "a", Value::I64(1));
+        g.connect(na, "value", nb, "b");
+
+        let first = g.run_all().unwrap();
+        assert_eq!(first.executed_nodes, 2);
+
+        let second = g.run_all().unwrap();
+        assert_eq!(second.executed_nodes, 0);
+    }
+
+    #[test]
+    fn run_node_with_report_can_skip_why_paths() {
+        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                        reg_count: 2,
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (pb.build_verified().unwrap(), f)
+        }
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let (a_prog, a_entry) = make_identity_program("value");
+        let (b_prog, b_entry) = make_identity_program("value");
+
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
+        g.set_input_value(na, "a", Value::I64(1));
+        g.connect(na, "value", nb, "b");
+
+        g.run_all().unwrap();
+        g.set_input_value(na, "a", Value::I64(2));
+        g.invalidate_input("a");
+
+        let minimal = g.run_node_with_report(nb, ReportDetailMask::NONE).unwrap();
+        assert_eq!(minimal.executed.len(), 2);
+        for e in &minimal.executed {
+            assert!(e.because_of.is_none());
+            assert!(e.why_path.is_none());
+        }
+
+        g.set_input_value(na, "a", Value::I64(3));
+        g.invalidate_input("a");
+
+        let because_only = g
+            .run_node_with_report(nb, ReportDetailMask::BECAUSE_OF)
+            .unwrap();
+        assert_eq!(because_only.executed.len(), 2);
+        for e in &because_only.executed {
+            assert!(e.because_of.is_some());
+            assert!(e.why_path.is_none());
+        }
     }
 
     #[test]

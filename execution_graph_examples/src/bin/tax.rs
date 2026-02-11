@@ -14,7 +14,7 @@ use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use core::cell::RefCell;
 
-use execution_graph::{ExecutionGraph, GraphError, NodeId, ResourceKey};
+use execution_graph::{ExecutionGraph, GraphError, NodeId, ReportDetailMask, ResourceKey};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
     AccessSink, Host, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
@@ -197,7 +197,7 @@ fn main() -> Result<(), GraphError> {
         return Ok(());
     }
 
-    let _ = g.run_all_with_report()?;
+    let _ = g.run_all_with_report(ReportDetailMask::FULL)?;
     let total0 = g
         .node_outputs(n_total)
         .and_then(|o| o.get("total"))
@@ -210,7 +210,7 @@ fn main() -> Result<(), GraphError> {
     g.set_input_value(n_price, "qty", Value::I64(3));
     g.invalidate_input("qty");
 
-    let report = g.run_all_with_report()?;
+    let report = g.run_all_with_report(ReportDetailMask::FULL)?;
     let total1 = g
         .node_outputs(n_total)
         .and_then(|o| o.get("total"))
@@ -225,13 +225,17 @@ fn main() -> Result<(), GraphError> {
             .get(&r.node.as_u64())
             .copied()
             .unwrap_or("<unknown>");
-        let because_of = fmt_key(&node_labels, &r.because_of);
+        let because_of = r
+            .because_of
+            .as_ref()
+            .map(|k| fmt_key(&node_labels, k))
+            .unwrap_or_else(|| "<none>".to_string());
         println!(
             "  - {label} (node={}): because this is dirty: {because_of}",
             r.node.as_u64()
         );
         println!("    path:");
-        for k in r.why_path {
+        for k in r.why_path.unwrap_or_default() {
             println!("      - {}", fmt_key(&node_labels, &k));
         }
     }
@@ -251,7 +255,7 @@ fn main() -> Result<(), GraphError> {
         key: TaxHost::TAX_RATE_KEY,
     });
 
-    let report = g.run_all_with_report()?;
+    let report = g.run_all_with_report(ReportDetailMask::FULL)?;
     let total2 = g
         .node_outputs(n_total)
         .and_then(|o| o.get("total"))
@@ -267,13 +271,17 @@ fn main() -> Result<(), GraphError> {
             .get(&r.node.as_u64())
             .copied()
             .unwrap_or("<unknown>");
-        let because_of = fmt_key(&node_labels, &r.because_of);
+        let because_of = r
+            .because_of
+            .as_ref()
+            .map(|k| fmt_key(&node_labels, k))
+            .unwrap_or_else(|| "<none>".to_string());
         println!(
             "  - {label} (node={}): because this is dirty: {because_of}",
             r.node.as_u64()
         );
         println!("    path:");
-        for k in r.why_path {
+        for k in r.why_path.unwrap_or_default() {
             println!("      - {}", fmt_key(&node_labels, &k));
         }
     }
