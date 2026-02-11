@@ -29,4 +29,4 @@ mod tape_access;
 
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 pub use graph::{ExecutionGraph, GraphError, NodeOutputs};
-pub use report::{NodeRunReport, RunReport};
+pub use report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};

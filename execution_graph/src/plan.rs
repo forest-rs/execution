@@ -10,7 +10,7 @@
 use alloc::vec::Vec;
 
 use crate::access::NodeId;
-use crate::report::NodeRunReport;
+use crate::report::NodeRunDetail;
 
 /// Scope of scheduled work represented by a [`RunPlan`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -32,20 +32,20 @@ pub(crate) enum PlanScope {
 /// increase.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RunPlanTrace {
-    node_reports: Vec<Option<NodeRunReport>>,
+    node_reports: Vec<Option<NodeRunDetail>>,
 }
 
 impl RunPlanTrace {
     /// Creates traced payload from per-node optional reports.
     #[must_use]
     #[inline]
-    pub(crate) fn from_node_reports(node_reports: Vec<Option<NodeRunReport>>) -> Self {
+    pub(crate) fn from_node_reports(node_reports: Vec<Option<NodeRunDetail>>) -> Self {
         Self { node_reports }
     }
 
     /// Removes and returns the report for `node`, if present.
     #[inline]
-    pub(crate) fn take_report_for(&mut self, node: NodeId) -> Option<NodeRunReport> {
+    pub(crate) fn take_report_for(&mut self, node: NodeId) -> Option<NodeRunDetail> {
         let index = usize::try_from(node.as_u64()).ok()?;
         self.node_reports.get_mut(index)?.take()
     }
@@ -120,15 +120,15 @@ mod tests {
 
     use super::RunPlanTrace;
     use crate::access::{NodeId, ResourceKey};
-    use crate::report::NodeRunReport;
+    use crate::report::NodeRunDetail;
 
     #[test]
     fn run_plan_trace_take_report_for_is_one_shot_and_bounds_safe() {
         let node = NodeId::new(3);
-        let report = NodeRunReport {
+        let report = NodeRunDetail {
             node,
-            because_of: ResourceKey::tape_output(node, "value"),
-            why_path: alloc::vec![ResourceKey::input("in")],
+            because_of: Some(ResourceKey::tape_output(node, "value")),
+            why_path: Some(alloc::vec![ResourceKey::input("in")]),
         };
 
         let mut trace =

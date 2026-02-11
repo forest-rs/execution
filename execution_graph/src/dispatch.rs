@@ -13,7 +13,7 @@ use execution_tape::host::Host;
 use crate::access::NodeId;
 use crate::graph::{ExecutionGraph, GraphError};
 use crate::plan::{PlanScope, RunPlan};
-use crate::report::RunReport;
+use crate::report::RunDetailReport;
 
 /// Internal dispatcher contract.
 ///
@@ -36,7 +36,7 @@ pub(crate) trait Dispatcher<H: Host> {
         &mut self,
         graph: &mut ExecutionGraph<H>,
         plan: RunPlan,
-    ) -> Result<(Vec<NodeId>, RunReport), GraphError>;
+    ) -> Result<(Vec<NodeId>, RunDetailReport), GraphError>;
 }
 
 /// Serial in-thread dispatcher used by default.
@@ -70,14 +70,14 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
         &mut self,
         graph: &mut ExecutionGraph<H>,
         mut plan: RunPlan,
-    ) -> Result<(Vec<NodeId>, RunReport), GraphError> {
+    ) -> Result<(Vec<NodeId>, RunDetailReport), GraphError> {
         // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
         match plan.scope() {
             PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
         }
 
         let mut trace = plan.take_trace();
-        let mut report = RunReport::default();
+        let mut report = RunDetailReport::default();
         let mut to_run: Vec<NodeId> = plan.take_nodes();
 
         for node in to_run.drain(..) {
@@ -104,7 +104,7 @@ mod tests {
     use crate::access::ResourceKey;
     use crate::graph::{ExecutionGraph, GraphError};
     use crate::plan::{RunPlan, RunPlanTrace};
-    use crate::report::NodeRunReport;
+    use crate::report::NodeRunDetail;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
     use execution_tape::host::{AccessSink, Host, HostError, SigHash, ValueRef};
     use execution_tape::program::ValueType;
@@ -197,15 +197,15 @@ mod tests {
         let n0 = g.add_node(prog.clone(), entry, vec![]);
         let n1 = g.add_node(prog, entry, vec![]);
 
-        let r0 = NodeRunReport {
+        let r0 = NodeRunDetail {
             node: n0,
-            because_of: ResourceKey::tape_output(n0, "value"),
-            why_path: vec![ResourceKey::input("seed")],
+            because_of: Some(ResourceKey::tape_output(n0, "value")),
+            why_path: Some(vec![ResourceKey::input("seed")]),
         };
-        let r1 = NodeRunReport {
+        let r1 = NodeRunDetail {
             node: n1,
-            because_of: ResourceKey::tape_output(n1, "value"),
-            why_path: vec![ResourceKey::input("seed")],
+            because_of: Some(ResourceKey::tape_output(n1, "value")),
+            why_path: Some(vec![ResourceKey::input("seed")]),
         };
 
         let mut node_reports = vec![None; 2];
