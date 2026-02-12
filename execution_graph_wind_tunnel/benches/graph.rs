@@ -21,6 +21,7 @@ use std::rc::Rc;
 /// invalidations propagate through different graph shapes (chains, fanout, shared upstreams,
 /// layered DAG “cones”).
 fn bench_graph(c: &mut Criterion) {
+    bench_single_node_rerun(c);
     bench_chain_rerun(c);
     bench_chain_noop(c);
     bench_stable_deps_many_reads(c);
@@ -121,7 +122,36 @@ fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
     g
 }
 
-/// Linear chain of `len` nodes where every node depends on the previous node’s output.
+/// Single identity node that is invalidated and rerun each iteration.
+///
+/// Graph shape:
+/// ```text
+/// input("in")
+///    |
+///   [n0] -> value
+/// ```
+///
+/// Measures the tightest per-execution overhead: 1 `invalidate_input` + 1 `plan_all` +
+/// 1 `run_node_internal`.
+fn bench_single_node_rerun(c: &mut Criterion) {
+    let (prog, entry) = build_identity_program("value");
+    let mut g = ExecutionGraph::new(NopHost, Limits::default());
+    let n0 = g.add_node(prog, entry, vec!["in".into()]);
+    g.set_input_value(n0, "in", Value::I64(0));
+    g.run_all().unwrap();
+
+    c.bench_function("single_node_rerun", |b| {
+        let mut v = 0_i64;
+        b.iter(|| {
+            v = v.wrapping_add(1);
+            g.set_input_value(n0, "in", Value::I64(black_box(v)));
+            g.invalidate_input("in");
+            g.run_all().unwrap();
+        });
+    });
+}
+
+/// Linear chain of `len` nodes where every node depends on the previous node's output.
 ///
 /// Graph shape (`len = 5` example):
 /// ```text

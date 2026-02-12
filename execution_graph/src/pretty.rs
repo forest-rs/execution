@@ -39,8 +39,8 @@ fn record_inputs(node: &Node) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(node.input_names.len());
     for (i, input_name) in node.input_names.iter().enumerate() {
         let rendered_raw = match node.inputs.get(i).and_then(Option::as_ref) {
-            Some(Binding::External(_)) => format!("{input_name} (external)"),
-            Some(Binding::FromNode { node, output }) => {
+            Some(Binding::External { .. }) => format!("{input_name} (external)"),
+            Some(Binding::FromNode { node, output, .. }) => {
                 format!("{input_name} <- {}.{output}", node.as_u64())
             }
             None => format!("{input_name} (unbound)"),
@@ -115,6 +115,7 @@ impl<H: Host> ExecutionGraph<H> {
                 let Some(Binding::FromNode {
                     node: src_node,
                     output,
+                    ..
                 }) = node.inputs.get(dst_slot).and_then(Option::as_ref)
                 else {
                     continue;
