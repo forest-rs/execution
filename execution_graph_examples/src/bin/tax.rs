@@ -12,6 +12,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::cell::RefCell;
 
 use execution_graph::{ExecutionGraph, GraphError, NodeId, ReportDetailMask, ResourceKey};
@@ -56,7 +57,7 @@ impl Host for TaxHost {
     }
 }
 
-fn program_price_subtotal() -> (VerifiedProgram, FuncId) {
+fn program_price_subtotal() -> (Arc<VerifiedProgram>, FuncId) {
     // fn price_subtotal(qty: i64, unit_price: i64) -> i64 { qty * unit_price }
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("tax_price_subtotal_program");
@@ -76,10 +77,10 @@ fn program_price_subtotal() -> (VerifiedProgram, FuncId) {
         .unwrap();
     pb.set_function_name(f, "price_subtotal").unwrap();
     pb.set_function_output_name(f, 0, "subtotal").unwrap();
-    (pb.build_verified().unwrap(), f)
+    (Arc::new(pb.build_verified().unwrap()), f)
 }
 
-fn program_tax_amount() -> (VerifiedProgram, FuncId) {
+fn program_tax_amount() -> (Arc<VerifiedProgram>, FuncId) {
     // fn tax_amount(subtotal: i64) -> i64 { subtotal * host.tax_rate_bp() / 10000 }
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("tax_amount_program");
@@ -108,10 +109,10 @@ fn program_tax_amount() -> (VerifiedProgram, FuncId) {
         .unwrap();
     pb.set_function_name(f, "tax_amount").unwrap();
     pb.set_function_output_name(f, 0, "tax").unwrap();
-    (pb.build_verified().unwrap(), f)
+    (Arc::new(pb.build_verified().unwrap()), f)
 }
 
-fn program_total() -> (VerifiedProgram, FuncId) {
+fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
     // fn total(subtotal: i64, tax: i64) -> i64 { subtotal + tax }
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("tax_total_program");
@@ -131,7 +132,7 @@ fn program_total() -> (VerifiedProgram, FuncId) {
         .unwrap();
     pb.set_function_name(f, "total").unwrap();
     pb.set_function_output_name(f, 0, "total").unwrap();
-    (pb.build_verified().unwrap(), f)
+    (Arc::new(pb.build_verified().unwrap()), f)
 }
 
 fn label_for(node: NodeId) -> &'static str {

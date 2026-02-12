@@ -8,6 +8,7 @@ use core::fmt;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
@@ -127,7 +128,7 @@ pub(crate) enum Binding {
 #[derive(Debug)]
 pub(crate) enum NodeKind {
     Tape {
-        program: VerifiedProgram,
+        program: Arc<VerifiedProgram>,
         entry: FuncId,
     },
 }
@@ -292,7 +293,7 @@ impl<H: Host> ExecutionGraph<H> {
     /// `input_names` defines the mapping from per-node binding names to positional function args.
     pub fn add_node(
         &mut self,
-        program: VerifiedProgram,
+        program: Arc<VerifiedProgram>,
         entry: FuncId,
         input_names: Vec<Box<str>>,
     ) -> NodeId {
@@ -1059,7 +1060,7 @@ mod tests {
             .unwrap();
         pb.set_function_output_name(a_node, 0, "value").unwrap();
 
-        let a_prog = pb.build_verified().unwrap();
+        let a_prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let na = g.add_node(a_prog, a_node, vec![]);
@@ -1073,7 +1074,7 @@ mod tests {
 
     #[test]
     fn run_node_leaves_unrelated_dirty_work_dirty() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1088,7 +1089,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
@@ -1151,7 +1152,7 @@ mod tests {
 
     #[test]
     fn run_node_with_report_includes_cause_paths() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1166,7 +1167,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
@@ -1225,7 +1226,7 @@ mod tests {
 
     #[test]
     fn run_all_counts_executed_nodes() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1240,7 +1241,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
@@ -1261,7 +1262,7 @@ mod tests {
 
     #[test]
     fn run_node_with_report_can_skip_why_paths() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1276,7 +1277,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
@@ -1358,7 +1359,7 @@ mod tests {
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
 
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoAccess, Limits::default());
         let n = g.add_node(prog, f, vec![]);
@@ -1393,7 +1394,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let n = g.add_node(prog, f, vec!["in".into()]);
@@ -1409,7 +1410,7 @@ mod tests {
 
     #[test]
     fn run_all_errors_on_missing_upstream_output() {
-        fn make_const_program(output_name: &str, v: i64) -> (VerifiedProgram, FuncId) {
+        fn make_const_program(output_name: &str, v: i64) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.const_i64(1, v);
@@ -1425,10 +1426,10 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1443,7 +1444,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let (a_prog, a_entry) = make_const_program("value", 7);
@@ -1527,7 +1528,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let kv = Rc::new(RefCell::new(BTreeMap::new()));
         kv.borrow_mut().insert(1, 7);
@@ -1629,7 +1630,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(
             FlippingReadHost {
@@ -1713,7 +1714,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let kv = Rc::new(RefCell::new(BTreeMap::new()));
         kv.borrow_mut().insert(1, 7);
@@ -1746,7 +1747,7 @@ mod tests {
 
     #[test]
     fn invalidating_an_input_reruns_transitive_dependents_only_when_needed() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1761,7 +1762,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let (a_prog, a_entry) = make_identity_program("value");
@@ -1808,7 +1809,7 @@ mod tests {
 
     #[test]
     fn first_run_sync_clears_conservative_deps_for_zero_read_node() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1823,10 +1824,10 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
-        fn make_const_program(output_name: &str, v: i64) -> (VerifiedProgram, FuncId) {
+        fn make_const_program(output_name: &str, v: i64) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.const_i64(1, v);
@@ -1842,7 +1843,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let (a_prog, a_entry) = make_identity_program("value");
@@ -1893,7 +1894,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let n = g.add_node(prog, f, vec!["x".into(), "x".into()]);
@@ -1926,7 +1927,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         g.set_collect_access_log(true);
@@ -1942,7 +1943,7 @@ mod tests {
 
     #[test]
     fn node_last_access_returns_none_after_collection_disabled_rerun() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1957,7 +1958,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let (prog, entry) = make_identity_program("value");
@@ -1983,7 +1984,7 @@ mod tests {
 
     #[test]
     fn in_place_output_update_preserves_values_across_reruns() {
-        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
             a.ret(0, &[1]);
@@ -1998,7 +1999,7 @@ mod tests {
                 )
                 .unwrap();
             pb.set_function_output_name(f, 0, output_name).unwrap();
-            (pb.build_verified().unwrap(), f)
+            (Arc::new(pb.build_verified().unwrap()), f)
         }
 
         let (prog, entry) = make_identity_program("value");
