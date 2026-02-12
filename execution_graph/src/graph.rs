@@ -12,6 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
+use execution_tape::host::AccessSink;
 use execution_tape::host::Host;
 use execution_tape::host::ResourceKeyRef;
 use execution_tape::host::SigHash;
@@ -26,7 +27,10 @@ use crate::dirty::{DirtyEngine, DirtyKey};
 use crate::dispatch::{Dispatcher, InlineDispatcher};
 use crate::plan::{RunPlan, RunPlanTrace};
 use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
-use crate::tape_access::{CountingAccessSink, StrictDepsTrace};
+use crate::tape_access::{
+    CountingAccessSink, DepsOnlyAccessSink, NodeAccessSink, StrictDepsTrace,
+    intern_host_state_key_id, intern_input_key_id, intern_opaque_host_key_id,
+};
 
 use understory_dirty::TraversalScratch;
 use understory_dirty::trace::OneParentRecorder;
@@ -498,39 +502,17 @@ impl<H: Host> ExecutionGraph<H> {
 
     #[inline]
     fn intern_input_id(&mut self, name: &str) -> DirtyKey {
-        if let Some(&id) = self.input_ids.get(name) {
-            return id;
-        }
-
-        // Note: we may allocate twice on first use (once for the lookup table key and once for
-        // the `ResourceKey::Input` stored in the interner). Subsequent invalidations are
-        // allocation-free.
-        let boxed: Box<str> = name.into();
-        let id = self.dirty.intern(ResourceKey::Input(boxed.clone()));
-        self.input_ids.insert(boxed, id);
-        id
+        intern_input_key_id(&mut self.dirty, &mut self.input_ids, name)
     }
 
     #[inline]
     fn intern_host_state_id(&mut self, op: HostOpId, key: u64) -> DirtyKey {
-        if let Some(&id) = self.host_state_ids.get(&(op, key)) {
-            return id;
-        }
-
-        let id = self.dirty.intern(ResourceKey::host_state(op, key));
-        self.host_state_ids.insert((op, key), id);
-        id
+        intern_host_state_key_id(&mut self.dirty, &mut self.host_state_ids, op, key)
     }
 
     #[inline]
     fn intern_opaque_host_id(&mut self, op: HostOpId) -> DirtyKey {
-        if let Some(&id) = self.opaque_host_ids.get(&op) {
-            return id;
-        }
-
-        let id = self.dirty.intern(ResourceKey::opaque_host(op));
-        self.opaque_host_ids.insert(op, id);
-        id
+        intern_opaque_host_key_id(&mut self.dirty, &mut self.opaque_host_ids, op)
     }
 
     /// Returns the most recent outputs for `node`, if present.
@@ -865,7 +847,7 @@ impl<H: Host> ExecutionGraph<H> {
         args: &[Value],
         trace_mask: TraceMask,
         trace: Option<&mut dyn TraceSink>,
-        tape_access: &mut CountingAccessSink<'_>,
+        tape_access: &mut dyn AccessSink,
     ) -> Result<Vec<Value>, GraphError> {
         match kind {
             NodeKind::Tape { program, entry } => vm
@@ -889,12 +871,13 @@ impl<H: Host> ExecutionGraph<H> {
         };
 
         let collect_access = self.collect_access;
+        let strict_deps = self.strict_deps;
 
         // Build args and (optionally) access log. In the fast path we build read_ids directly.
         // Take args out of scratch to allow disjoint borrows of self.vm / self.ctx.
         let mut args = core::mem::take(&mut self.scratch.args);
         args.clear();
-        let mut log = AccessLog::new();
+        let mut log = collect_access.then(AccessLog::new);
 
         self.scratch.read_ids.clear();
 
@@ -909,7 +892,7 @@ impl<H: Host> ExecutionGraph<H> {
             match b {
                 Binding::External { value: v, read_id } => {
                     self.scratch.read_ids.push(*read_id);
-                    if collect_access {
+                    if let Some(log) = log.as_mut() {
                         log.push(Access::Read(ResourceKey::input(name.clone())));
                     }
                     args.push(v.clone());
@@ -931,7 +914,7 @@ impl<H: Host> ExecutionGraph<H> {
                         }
                     })?;
                     self.scratch.read_ids.push(*read_id);
-                    if collect_access {
+                    if let Some(log) = log.as_mut() {
                         log.push(Access::Read(ResourceKey::node_output(*up, output.clone())));
                     }
                     args.push(v.clone());
@@ -941,15 +924,24 @@ impl<H: Host> ExecutionGraph<H> {
 
         // Execute, capturing host accesses.
         let access_count: Cell<usize> = Cell::new(0);
-        let mut tape_access = CountingAccessSink::new(&access_count);
         let mut strict = StrictDepsTrace::new(&access_count);
-
-        let (trace_mask, trace) = if self.strict_deps {
+        let (trace_mask, trace): (TraceMask, Option<&mut dyn TraceSink>) = if strict_deps {
             (TraceMask::HOST, Some(&mut strict as &mut dyn TraceSink))
         } else {
             (TraceMask::NONE, None)
         };
-
+        let mut tape_access = if collect_access {
+            NodeAccessSink::Collect(CountingAccessSink::new(&access_count))
+        } else {
+            NodeAccessSink::Deps(DepsOnlyAccessSink::new(
+                &mut self.dirty,
+                &mut self.input_ids,
+                &mut self.host_state_ids,
+                &mut self.opaque_host_ids,
+                &mut self.scratch.read_ids,
+                &access_count,
+            ))
+        };
         let out = Self::execute_kind(
             &mut self.nodes[node_index].kind,
             &mut self.vm,
@@ -959,13 +951,12 @@ impl<H: Host> ExecutionGraph<H> {
             trace,
             &mut tape_access,
         )?;
+        let tape_log = tape_access.into_log();
 
         // Restore args buffer to scratch for reuse on next run.
         self.scratch.args = args;
 
-        if self.strict_deps
-            && let Some(v) = strict.violation()
-        {
+        if strict_deps && let Some(v) = strict.violation() {
             return Err(GraphError::StrictDepsViolation {
                 node,
                 symbol: v.symbol.clone(),
@@ -973,42 +964,35 @@ impl<H: Host> ExecutionGraph<H> {
             });
         }
 
-        // Merge tape-recorded accesses (host state, opaque ops, etc).
-        for access in tape_access.into_log() {
-            match access {
-                Access::Read(ResourceKey::Input(name)) => {
-                    let read_id = self.intern_input_id(name.as_ref());
-                    self.scratch.read_ids.push(read_id);
-                    if collect_access {
+        // Merge tape-recorded accesses (host state, opaque ops, etc) when access-log collection
+        // is enabled. The deps-only fast path records read IDs during execution and skips this.
+        if let Some(tape_log) = tape_log {
+            let log = log
+                .as_mut()
+                .expect("collect_access branch must allocate an access log");
+            for access in tape_log {
+                match access {
+                    Access::Read(ResourceKey::Input(name)) => {
+                        let read_id = self.intern_input_id(name.as_ref());
+                        self.scratch.read_ids.push(read_id);
                         log.push(Access::Read(ResourceKey::Input(name)));
                     }
-                }
-                Access::Read(ResourceKey::HostState { op, key }) => {
-                    let read_id = self.intern_host_state_id(op, key);
-                    self.scratch.read_ids.push(read_id);
-                    if collect_access {
+                    Access::Read(ResourceKey::HostState { op, key }) => {
+                        let read_id = self.intern_host_state_id(op, key);
+                        self.scratch.read_ids.push(read_id);
                         log.push(Access::Read(ResourceKey::HostState { op, key }));
                     }
-                }
-                Access::Read(ResourceKey::OpaqueHost(op)) => {
-                    let read_id = self.intern_opaque_host_id(op);
-                    self.scratch.read_ids.push(read_id);
-                    if collect_access {
+                    Access::Read(ResourceKey::OpaqueHost(op)) => {
+                        let read_id = self.intern_opaque_host_id(op);
+                        self.scratch.read_ids.push(read_id);
                         log.push(Access::Read(ResourceKey::OpaqueHost(op)));
                     }
-                }
-                Access::Read(key) => {
-                    let read_id = if collect_access {
-                        let id = self.dirty.intern(key.clone());
+                    Access::Read(key) => {
+                        let read_id = self.dirty.intern(key.clone());
+                        self.scratch.read_ids.push(read_id);
                         log.push(Access::Read(key));
-                        id
-                    } else {
-                        self.dirty.intern(key)
-                    };
-                    self.scratch.read_ids.push(read_id);
-                }
-                Access::Write(key) => {
-                    if collect_access {
+                    }
+                    Access::Write(key) => {
                         log.push(Access::Write(key));
                     }
                 }
@@ -1028,12 +1012,12 @@ impl<H: Host> ExecutionGraph<H> {
             for (i, v) in out.into_iter().enumerate() {
                 if first_run {
                     let name = n.output_name_at(i);
-                    if collect_access {
+                    if let Some(log) = log.as_mut() {
                         log.push(Access::Write(ResourceKey::node_output(node, name.clone())));
                     }
                     n.outputs.insert(name, v);
                 } else {
-                    if collect_access {
+                    if let Some(log) = log.as_mut() {
                         let name = n.output_names[i].clone();
                         log.push(Access::Write(ResourceKey::node_output(node, name)));
                     }
@@ -1070,7 +1054,7 @@ impl<H: Host> ExecutionGraph<H> {
         }
 
         // Commit log.
-        self.nodes[node_index].last_access = if collect_access { Some(log) } else { None };
+        self.nodes[node_index].last_access = log;
         self.nodes[node_index].run_count = self.nodes[node_index].run_count.saturating_add(1);
 
         Ok(())
