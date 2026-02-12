@@ -51,7 +51,7 @@ impl HostOpId {
 ///
 /// `execution_graph` converts those borrowed keys into this owned [`ResourceKey`] so it can store
 /// them in an [`AccessLog`] and in dirty-tracking structures. This type also includes
-/// [`ResourceKey::TapeOutput`], which is graph-local and has no direct `execution_tape` analog.
+/// [`ResourceKey::NodeOutput`], which is graph-local and has no direct `execution_tape` analog.
 ///
 /// ## Read/write matching
 ///
@@ -78,7 +78,7 @@ pub enum ResourceKey {
     ///
     /// Note: [`NodeId`] values are graph-local identities; they are not intended to be stable
     /// across reconstructing the graph.
-    TapeOutput {
+    NodeOutput {
         /// The node that produced the output.
         node: NodeId,
         /// The output name within the node.
@@ -121,10 +121,10 @@ impl ResourceKey {
         Self::Input(name.into())
     }
 
-    /// Constructs an [`ResourceKey::TapeOutput`] key.
+    /// Constructs an [`ResourceKey::NodeOutput`] key.
     #[inline]
-    pub fn tape_output(node: NodeId, output: impl Into<Box<str>>) -> Self {
-        Self::TapeOutput {
+    pub fn node_output(node: NodeId, output: impl Into<Box<str>>) -> Self {
+        Self::NodeOutput {
             node,
             output: output.into(),
         }
@@ -281,9 +281,9 @@ mod tests {
             hasher.finish()
         }
 
-        let a = ResourceKey::tape_output(NodeId::new(1), "out");
-        let b = ResourceKey::tape_output(NodeId::new(1), "out");
-        let c = ResourceKey::tape_output(NodeId::new(2), "out");
+        let a = ResourceKey::node_output(NodeId::new(1), "out");
+        let b = ResourceKey::node_output(NodeId::new(1), "out");
+        let c = ResourceKey::node_output(NodeId::new(2), "out");
 
         assert_eq!(a, b);
         assert_ne!(a, c);

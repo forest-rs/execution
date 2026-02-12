@@ -217,7 +217,7 @@ mod tests {
     fn dirty_propagates_to_dependents() {
         let mut e = DirtyEngine::new();
         let in_key = e.intern(ResourceKey::input("in"));
-        let out_key = e.intern(ResourceKey::tape_output(NodeId::new(1), "out"));
+        let out_key = e.intern(ResourceKey::node_output(NodeId::new(1), "out"));
 
         e.set_dependencies(out_key, [in_key]);
 

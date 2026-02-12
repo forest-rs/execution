@@ -10,7 +10,7 @@ use core::fmt::Write;
 
 use execution_tape::host::Host;
 
-use crate::graph::{Binding, ExecutionGraph, Node};
+use crate::graph::{Binding, ExecutionGraph, Node, NodeKind};
 
 fn escape_record(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 8);
@@ -89,14 +89,19 @@ impl<H: Host> ExecutionGraph<H> {
         for (node_id, node) in self.nodes.iter().enumerate() {
             let input_block = record_inputs(node);
             let output_block = record_outputs(node);
-            let program = node.program.program();
-            let node_line = match program.name() {
-                Some(name) => format!("node#{node_id} ({name})"),
-                None => format!("node#{node_id}"),
-            };
-            let entry_line = match program.function_name(node.entry.0) {
-                Some(name) => format!("entry=f{} ({name})", node.entry.0),
-                None => format!("entry=f{}", node.entry.0),
+            let (node_line, entry_line) = match &node.kind {
+                NodeKind::Tape { program, entry } => {
+                    let p = program.program();
+                    let nl = match p.name() {
+                        Some(name) => format!("node#{node_id} ({name})"),
+                        None => format!("node#{node_id}"),
+                    };
+                    let el = match p.function_name(entry.0) {
+                        Some(name) => format!("entry=f{} ({name})", entry.0),
+                        None => format!("entry=f{}", entry.0),
+                    };
+                    (nl, el)
+                }
             };
             let center = escape_record(&format!("{node_line}\n{entry_line}"));
 

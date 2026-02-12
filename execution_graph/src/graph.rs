@@ -125,9 +125,16 @@ pub(crate) enum Binding {
 }
 
 #[derive(Debug)]
+pub(crate) enum NodeKind {
+    Tape {
+        program: VerifiedProgram,
+        entry: FuncId,
+    },
+}
+
+#[derive(Debug)]
 pub(crate) struct Node {
-    pub(crate) program: VerifiedProgram,
-    pub(crate) entry: FuncId,
+    pub(crate) kind: NodeKind,
     pub(crate) input_names: Vec<Box<str>>,
     pub(crate) input_slots: BTreeMap<Box<str>, Vec<usize>>,
     pub(crate) inputs: Vec<Option<Binding>>,
@@ -317,7 +324,7 @@ impl<H: Host> ExecutionGraph<H> {
         // Intern output keys once at node creation time.
         let mut output_ids: Vec<DirtyKey> = Vec::with_capacity(output_names.len());
         for out_name in output_names.iter().cloned() {
-            let id = self.dirty.intern(ResourceKey::tape_output(node, out_name));
+            let id = self.dirty.intern(ResourceKey::node_output(node, out_name));
             self.dirty.mark_dirty(id);
             output_ids.push(id);
         }
@@ -329,8 +336,7 @@ impl<H: Host> ExecutionGraph<H> {
         let input_count = input_names.len();
 
         let n = Node {
-            program,
-            entry,
+            kind: NodeKind::Tape { program, entry },
             input_names,
             input_slots,
             inputs: alloc::vec![None; input_count],
@@ -402,7 +408,7 @@ impl<H: Host> ExecutionGraph<H> {
         }
         let read_id = self
             .dirty
-            .intern(ResourceKey::tape_output(from, output.clone()));
+            .intern(ResourceKey::node_output(from, output.clone()));
         if let Some(n) = self.nodes.get_mut(index)
             && let Some(slots) = n.input_slots.get(input.as_ref())
         {
@@ -514,7 +520,7 @@ impl<H: Host> ExecutionGraph<H> {
         self.scratch.start_drain(self.nodes.len());
 
         for (_key_id, key) in self.dirty.drain() {
-            Self::schedule_tape_output_key(&mut self.scratch, key);
+            Self::schedule_node_output_key(&mut self.scratch, key);
         }
 
         RunPlan::all(core::mem::take(&mut self.scratch.to_run))
@@ -537,7 +543,7 @@ impl<H: Host> ExecutionGraph<H> {
 
             let mut scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
             for (key_id, key) in self.dirty.drain_traced(&mut trace_scratch, &mut trace) {
-                let ResourceKey::TapeOutput { node, .. } = key else {
+                let ResourceKey::NodeOutput { node, .. } = key else {
                     continue;
                 };
                 if !self.scratch.take_node(*node) || node_report.is_empty() {
@@ -578,7 +584,7 @@ impl<H: Host> ExecutionGraph<H> {
             }
         } else {
             for (_key_id, key) in self.dirty.drain() {
-                let ResourceKey::TapeOutput { node, .. } = key else {
+                let ResourceKey::NodeOutput { node, .. } = key else {
                     continue;
                 };
                 if !self.scratch.take_node(*node) || node_report.is_empty() {
@@ -619,7 +625,7 @@ impl<H: Host> ExecutionGraph<H> {
         for output_ix in 0..output_count {
             let out_id = self.nodes[index].output_ids[output_ix];
             for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
-                Self::schedule_tape_output_key(&mut self.scratch, key);
+                Self::schedule_node_output_key(&mut self.scratch, key);
             }
         }
 
@@ -667,7 +673,7 @@ impl<H: Host> ExecutionGraph<H> {
                     &mut trace_scratch,
                     &mut trace,
                 ) {
-                    let ResourceKey::TapeOutput { node, .. } = key else {
+                    let ResourceKey::NodeOutput { node, .. } = key else {
                         continue;
                     };
                     if !self.scratch.take_node(*node) {
@@ -708,7 +714,7 @@ impl<H: Host> ExecutionGraph<H> {
             for output_ix in 0..output_count {
                 let out_id = self.nodes[index].output_ids[output_ix];
                 for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
-                    let ResourceKey::TapeOutput { node, .. } = key else {
+                    let ResourceKey::NodeOutput { node, .. } = key else {
                         continue;
                     };
                     if !self.scratch.take_node(*node) {
@@ -743,8 +749,8 @@ impl<H: Host> ExecutionGraph<H> {
     }
 
     #[inline]
-    fn schedule_tape_output_key(scratch: &mut Scratch, key: &ResourceKey) {
-        let ResourceKey::TapeOutput { node, .. } = key else {
+    fn schedule_node_output_key(scratch: &mut Scratch, key: &ResourceKey) {
+        let ResourceKey::NodeOutput { node, .. } = key else {
             return;
         };
         let _ = scratch.take_node(*node);
@@ -817,6 +823,30 @@ impl<H: Host> ExecutionGraph<H> {
         self.run_node_internal(node)
     }
 
+    fn execute_kind(
+        kind: &mut NodeKind,
+        vm: &mut Vm<H>,
+        ctx: &mut ExecutionContext,
+        args: &[Value],
+        trace_mask: TraceMask,
+        trace: Option<&mut dyn TraceSink>,
+        tape_access: &mut CountingAccessSink<'_>,
+    ) -> Result<Vec<Value>, GraphError> {
+        match kind {
+            NodeKind::Tape { program, entry } => vm
+                .run_with_ctx(
+                    ctx,
+                    program,
+                    *entry,
+                    args,
+                    trace_mask,
+                    trace,
+                    Some(tape_access),
+                )
+                .map_err(|_| GraphError::Trap),
+        }
+    }
+
     fn run_node_internal(&mut self, node: NodeId) -> Result<(), GraphError> {
         let node_index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
         let Some(n) = self.nodes.get(node_index) else {
@@ -867,7 +897,7 @@ impl<H: Host> ExecutionGraph<H> {
                     })?;
                     self.scratch.read_ids.push(*read_id);
                     if collect_access {
-                        log.push(Access::Read(ResourceKey::tape_output(*up, output.clone())));
+                        log.push(Access::Read(ResourceKey::node_output(*up, output.clone())));
                     }
                     args.push(v.clone());
                 }
@@ -885,18 +915,15 @@ impl<H: Host> ExecutionGraph<H> {
             (TraceMask::NONE, None)
         };
 
-        let out = self
-            .vm
-            .run_with_ctx(
-                &mut self.ctx,
-                &self.nodes[node_index].program,
-                self.nodes[node_index].entry,
-                &args,
-                trace_mask,
-                trace,
-                Some(&mut tape_access),
-            )
-            .map_err(|_| GraphError::Trap)?;
+        let out = Self::execute_kind(
+            &mut self.nodes[node_index].kind,
+            &mut self.vm,
+            &mut self.ctx,
+            &args,
+            trace_mask,
+            trace,
+            &mut tape_access,
+        )?;
 
         // Restore args buffer to scratch for reuse on next run.
         self.scratch.args = args;
@@ -935,13 +962,13 @@ impl<H: Host> ExecutionGraph<H> {
                 if first_run {
                     let name = n.output_name_at(i);
                     if collect_access {
-                        log.push(Access::Write(ResourceKey::tape_output(node, name.clone())));
+                        log.push(Access::Write(ResourceKey::node_output(node, name.clone())));
                     }
                     n.outputs.insert(name, v);
                 } else {
                     if collect_access {
                         let name = n.output_names[i].clone();
-                        log.push(Access::Write(ResourceKey::tape_output(node, name)));
+                        log.push(Access::Write(ResourceKey::node_output(node, name)));
                     }
                     let slot = n.outputs.get_mut(n.output_names[i].as_ref());
                     debug_assert!(
@@ -1175,7 +1202,7 @@ mod tests {
                 .as_ref()
                 .expect("full report should include why_path")
                 .last(),
-            Some(&ResourceKey::tape_output(na, "value"))
+            Some(&ResourceKey::node_output(na, "value"))
         );
 
         assert_eq!(
@@ -1192,7 +1219,7 @@ mod tests {
                 .as_ref()
                 .expect("full report should include why_path")
                 .last(),
-            Some(&ResourceKey::tape_output(nb, "value"))
+            Some(&ResourceKey::node_output(nb, "value"))
         );
     }
 
