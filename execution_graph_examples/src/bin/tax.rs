@@ -40,8 +40,9 @@ impl Host for TaxHost {
         symbol: &str,
         sig_hash: SigHash,
         _args: &[ValueRef<'_>],
+        rets: &mut [Value],
         mut access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         match symbol {
             "tax_rate_bp" => {
                 if let Some(sink) = access.as_mut() {
@@ -50,7 +51,8 @@ impl Host for TaxHost {
                         key: Self::TAX_RATE_KEY,
                     });
                 }
-                Ok((vec![Value::I64(*self.rate_bp.borrow())], 0))
+                rets[0] = Value::I64(*self.rate_bp.borrow());
+                Ok(0)
             }
             _ => Err(HostError::UnknownSymbol),
         }

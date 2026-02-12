@@ -1101,8 +1101,9 @@ mod tests {
             _symbol: &str,
             _sig_hash: SigHash,
             _args: &[ValueRef<'_>],
+            _rets: &mut [Value],
             _access: Option<&mut dyn AccessSink>,
-        ) -> Result<(Vec<Value>, u64), HostError> {
+        ) -> Result<u64, HostError> {
             Err(HostError::UnknownSymbol)
         }
     }
@@ -1390,12 +1391,14 @@ mod tests {
                 symbol: &str,
                 _sig_hash: SigHash,
                 _args: &[ValueRef<'_>],
+                rets: &mut [Value],
                 _access: Option<&mut dyn AccessSink>,
-            ) -> Result<(Vec<Value>, u64), HostError> {
+            ) -> Result<u64, HostError> {
                 if symbol != "no_access" {
                     return Err(HostError::UnknownSymbol);
                 }
-                Ok((vec![Value::I64(7)], 0))
+                rets[0] = Value::I64(7);
+                Ok(0)
             }
         }
 
@@ -1546,8 +1549,9 @@ mod tests {
                 symbol: &str,
                 sig_hash: SigHash,
                 args: &[ValueRef<'_>],
+                rets: &mut [Value],
                 access: Option<&mut dyn AccessSink>,
-            ) -> Result<(Vec<Value>, u64), HostError> {
+            ) -> Result<u64, HostError> {
                 if symbol != "kv.get" {
                     return Err(HostError::UnknownSymbol);
                 }
@@ -1564,7 +1568,8 @@ mod tests {
                     });
                 }
                 let v = *self.kv.borrow().get(key).unwrap_or(&0);
-                Ok((vec![Value::I64(v)], 0))
+                rets[0] = Value::I64(v);
+                Ok(0)
             }
         }
 
@@ -1643,8 +1648,9 @@ mod tests {
                 symbol: &str,
                 sig_hash: SigHash,
                 _args: &[ValueRef<'_>],
+                rets: &mut [Value],
                 access: Option<&mut dyn AccessSink>,
-            ) -> Result<(Vec<Value>, u64), HostError> {
+            ) -> Result<u64, HostError> {
                 if symbol != "flip.reads" {
                     return Err(HostError::UnknownSymbol);
                 }
@@ -1670,7 +1676,8 @@ mod tests {
                         key: b,
                     });
                 }
-                Ok((vec![Value::I64(0)], 0))
+                rets[0] = Value::I64(0);
+                Ok(0)
             }
         }
 
@@ -1735,8 +1742,9 @@ mod tests {
                 symbol: &str,
                 sig_hash: SigHash,
                 args: &[ValueRef<'_>],
+                rets: &mut [Value],
                 access: Option<&mut dyn AccessSink>,
-            ) -> Result<(Vec<Value>, u64), HostError> {
+            ) -> Result<u64, HostError> {
                 if symbol != "kv.get" {
                     return Err(HostError::UnknownSymbol);
                 }
@@ -1750,7 +1758,8 @@ mod tests {
                     a.read(ResourceKeyRef::OpaqueHost { op: sig_hash });
                 }
                 let v = *self.kv.borrow().get(key).unwrap_or(&0);
-                Ok((vec![Value::I64(v)], 0))
+                rets[0] = Value::I64(v);
+                Ok(0)
             }
         }
 

@@ -8,6 +8,7 @@
 //! The VM executes [`VerifiedProgram`]s only.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -1418,28 +1419,42 @@ impl<H: Host> Vm<H> {
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
                     let args = vf.vregs(*args);
-                    let mut call_args: Vec<ValueRef<'_>> = Vec::with_capacity(args.len());
-                    for &a in args {
-                        call_args.push(
-                            read_value_ref_at(
-                                &ctx.arena,
-                                &ctx.units,
-                                &ctx.bools,
-                                &ctx.i64s,
-                                &ctx.u64s,
-                                &ctx.f64s,
-                                &ctx.decimals,
-                                &ctx.bytes,
-                                &ctx.strs,
-                                &ctx.objs,
-                                &ctx.aggs,
-                                &ctx.funcs,
-                                base,
-                                a,
-                            )
-                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
-                        );
+
+                    // Stack buffer for the common case (0–8 args); Vec fallback for the rest.
+                    // 8 × 24 bytes = 192 bytes on the stack — every host call in the codebase
+                    // uses 0–2 args, so this is generous headroom without measurable stack cost.
+                    const HOST_CALL_INLINE_ARGS: usize = 8;
+                    let mut buf = [ValueRef::Unit; HOST_CALL_INLINE_ARGS];
+                    let mut vec_fallback: Vec<ValueRef<'_>>;
+                    let call_args_mut: &mut [ValueRef<'_>] = if args.len() <= HOST_CALL_INLINE_ARGS
+                    {
+                        &mut buf[..args.len()]
+                    } else {
+                        vec_fallback = vec![ValueRef::Unit; args.len()];
+                        &mut vec_fallback
+                    };
+
+                    for (slot, &a) in call_args_mut.iter_mut().zip(args.iter()) {
+                        *slot = read_value_ref_at(
+                            &ctx.arena,
+                            &ctx.units,
+                            &ctx.bools,
+                            &ctx.i64s,
+                            &ctx.u64s,
+                            &ctx.f64s,
+                            &ctx.decimals,
+                            &ctx.bytes,
+                            &ctx.strs,
+                            &ctx.objs,
+                            &ctx.aggs,
+                            &ctx.funcs,
+                            base,
+                            a,
+                        )
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
+
+                    let call_args: &[ValueRef<'_>] = call_args_mut;
 
                     if trace_host {
                         trace.scope_enter(
@@ -1456,10 +1471,25 @@ impl<H: Host> Vm<H> {
                         );
                     }
 
+                    // Stack buffer for the common case (0–8 rets); Vec fallback for the rest.
+                    // Value is Clone but not Copy, so use `from_fn` instead of repeat syntax.
+                    // 8 × ~32 bytes = ~256 bytes on the stack — every host call in the codebase
+                    // returns 0–2 values, so this is generous headroom.
+                    const HOST_CALL_INLINE_RETS: usize = 8;
+                    let mut ret_buf: [Value; HOST_CALL_INLINE_RETS] =
+                        core::array::from_fn(|_| Value::Unit);
+                    let mut ret_vec_fallback: Vec<Value>;
+                    let ret_slots: &mut [Value] = if ret_types.len() <= HOST_CALL_INLINE_RETS {
+                        &mut ret_buf[..ret_types.len()]
+                    } else {
+                        ret_vec_fallback = vec![Value::Unit; ret_types.len()];
+                        &mut ret_vec_fallback
+                    };
+
                     let access_for_call = access.as_mut().map(|a| &mut **a as &mut dyn AccessSink);
-                    let (mut out_vals, extra_fuel) = self
+                    let extra_fuel = self
                         .host
-                        .call(sym, hs.sig_hash, &call_args, access_for_call)
+                        .call(sym, hs.sig_hash, call_args, ret_slots, access_for_call)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
@@ -1482,22 +1512,23 @@ impl<H: Host> Vm<H> {
                     ctx.write_unit(base, *eff_out, 0);
 
                     let rets = vf.vregs(*rets);
-                    let expected = u32::try_from(ret_types.len()).unwrap_or(u32::MAX);
-                    let actual = u32::try_from(out_vals.len()).unwrap_or(u32::MAX);
-                    if out_vals.len() != ret_types.len() || out_vals.len() != rets.len() {
-                        return Err(ctx.trap(
-                            func_id,
-                            pc,
-                            span_id,
-                            Trap::HostReturnArityMismatch { expected, actual },
-                        ));
-                    }
-                    for (v, &expected) in out_vals.iter().zip(ret_types.iter()) {
+                    // The VM controls the slice size, so arity is guaranteed correct for
+                    // verified programs. Keep the Trap variant (public API) but it's
+                    // unreachable from verified programs.
+                    debug_assert_eq!(
+                        ret_slots.len(),
+                        rets.len(),
+                        "HostReturnArityMismatch: expected {}, got {}",
+                        rets.len(),
+                        ret_slots.len()
+                    );
+                    for (v, &expected) in ret_slots.iter().zip(ret_types.iter()) {
                         v.check_type(expected)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
-                    for (dst, v) in rets.iter().copied().zip(out_vals.drain(..)) {
-                        ctx.intern_value_to_vreg(base, dst, &v)
+                    for (dst, v) in rets.iter().copied().zip(ret_slots.iter_mut()) {
+                        let val = core::mem::replace(v, Value::Unit);
+                        ctx.intern_value_to_vreg(base, dst, &val)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
                     ctx.frames[frame_index].pc = next_pc;
@@ -2535,10 +2566,16 @@ mod tests {
             symbol: &str,
             _sig_hash: SigHash,
             args: &[ValueRef<'_>],
+            rets: &mut [Value],
             _access: Option<&mut dyn AccessSink>,
-        ) -> Result<(Vec<Value>, u64), HostError> {
+        ) -> Result<u64, HostError> {
             match symbol {
-                "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
+                "id" => {
+                    for (slot, arg) in rets.iter_mut().zip(args) {
+                        *slot = arg.to_value();
+                    }
+                    Ok(0)
+                }
                 _ => Err(HostError::UnknownSymbol),
             }
         }
@@ -2671,6 +2708,137 @@ mod tests {
         assert_eq!(out, vec![Value::I64(9)]);
     }
 
+    #[test]
+    fn vm_calls_host_zero_args() {
+        // 0-arg host call exercises the empty inline-slice path.
+        let sig = HostSig {
+            args: vec![],
+            rets: vec![],
+        };
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("id", sig);
+
+        let mut a = Asm::new();
+        // host_call with 0 args, 0 rets — should succeed without touching the arg buffer.
+        a.host_call(0, host_sig, 0, &[], &[]);
+        a.const_i64(1, 42);
+        a.ret(0, &[1]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 2,
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        assert_eq!(out, vec![Value::I64(42)]);
+    }
+
+    #[test]
+    fn vm_calls_host_nine_args() {
+        // 9 args forces the Vec heap-fallback path (inline buffer is 8).
+        let n: u32 = 9;
+        let sig = HostSig {
+            args: vec![ValueType::I64; n as usize],
+            rets: vec![ValueType::I64; n as usize],
+        };
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("id", sig);
+
+        // Register layout:
+        //   r0         = effect token
+        //   r1 ..= r9  = arg values (distinct i64s 10..=18)
+        //   r10..= r18 = ret values written by the host
+        let mut a = Asm::new();
+        let arg_regs: Vec<u32> = (1..=n).collect();
+        let ret_regs: Vec<u32> = (n + 1..=2 * n).collect();
+
+        for (i, &r) in arg_regs.iter().enumerate() {
+            a.const_i64(r, 10 + i as i64);
+        }
+        a.host_call(0, host_sig, 0, &arg_regs, &ret_regs);
+        a.ret(0, &ret_regs);
+
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64; n as usize],
+                reg_count: 2 * n + 1, // r0..r18
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        // "id" host echoes args back — verify ordering is preserved.
+        let expected: Vec<Value> = (10..10 + i64::from(n)).map(Value::I64).collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn vm_traps_when_host_leaves_ret_slot_unwritten() {
+        // A host that intentionally does NOT write into `rets`, leaving the
+        // pre-filled `Value::Unit` in a slot declared as `I64`.
+        struct LazyHost;
+
+        impl Host for LazyHost {
+            fn call(
+                &mut self,
+                _symbol: &str,
+                _sig_hash: SigHash,
+                _args: &[ValueRef<'_>],
+                _rets: &mut [Value],
+                _access: Option<&mut dyn AccessSink>,
+            ) -> Result<u64, HostError> {
+                // Deliberately leave rets[0] as Value::Unit.
+                Ok(0)
+            }
+        }
+
+        let sig = HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        };
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("lazy", sig);
+
+        let mut a = Asm::new();
+        a.host_call(0, host_sig, 0, &[], &[1]);
+        a.ret(0, &[1]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+                reg_count: 2,
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(LazyHost, Limits::default());
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
+        assert_eq!(
+            err.trap,
+            Trap::TypeMismatch {
+                expected: ValueType::I64,
+                actual: ValueType::Unit,
+            }
+        );
+    }
+
     #[derive(Debug, Default)]
     struct CountingAccessSink {
         reads: usize,
@@ -2695,8 +2863,9 @@ mod tests {
             symbol: &str,
             sig_hash: SigHash,
             args: &[ValueRef<'_>],
+            rets: &mut [Value],
             access: Option<&mut dyn AccessSink>,
-        ) -> Result<(Vec<Value>, u64), HostError> {
+        ) -> Result<u64, HostError> {
             if let Some(a) = access {
                 a.read(ResourceKeyRef::OpaqueHost { op: sig_hash });
                 a.read(ResourceKeyRef::HostState {
@@ -2705,7 +2874,12 @@ mod tests {
                 });
             }
             match symbol {
-                "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
+                "id" => {
+                    for (slot, arg) in rets.iter_mut().zip(args) {
+                        *slot = arg.to_value();
+                    }
+                    Ok(0)
+                }
                 _ => Err(HostError::UnknownSymbol),
             }
         }

@@ -44,8 +44,9 @@ impl Host for NopHost {
         _symbol: &str,
         _sig_hash: SigHash,
         _args: &[ValueRef<'_>],
+        _rets: &mut [Value],
         _access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         Err(HostError::UnknownSymbol)
     }
 }
@@ -252,8 +253,9 @@ impl Host for FlappingOrderHost {
         symbol: &str,
         sig_hash: SigHash,
         _args: &[ValueRef<'_>],
+        rets: &mut [Value],
         mut access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         if symbol != "flap_reads_i64" {
             return Err(HostError::UnknownSymbol);
         }
@@ -278,7 +280,8 @@ impl Host for FlappingOrderHost {
             }
         }
 
-        Ok((vec![Value::I64(0)], 0))
+        rets[0] = Value::I64(0);
+        Ok(0)
     }
 }
 
@@ -403,8 +406,9 @@ impl Host for ParamHost {
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        rets: &mut [Value],
         mut access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         if symbol != "param_i64" {
             return Err(HostError::UnknownSymbol);
         }
@@ -426,7 +430,8 @@ impl Host for ParamHost {
             .get(i)
             .copied()
             .ok_or(HostError::Failed)?;
-        Ok((vec![Value::I64(v)], 0))
+        rets[0] = Value::I64(v);
+        Ok(0)
     }
 }
 

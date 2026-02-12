@@ -107,8 +107,9 @@ use crate::program::Program;
 ///         symbol: &str,
 ///         sig_hash: SigHash,
 ///         args: &[ValueRef<'_>],
+///         rets: &mut [Value],
 ///         access: Option<&mut dyn AccessSink>,
-///     ) -> Result<(Vec<Value>, u64), HostError> {
+///     ) -> Result<u64, HostError> {
 ///         match symbol {
 ///             "kv.get" => {
 ///                 if sig_hash != self.get_sig {
@@ -124,7 +125,8 @@ use crate::program::Program;
 ///                     });
 ///                 }
 ///                 let v = *self.kv.get(key).unwrap_or(&0);
-///                 Ok((vec![Value::I64(v)], 0))
+///                 rets[0] = Value::I64(v);
+///                 Ok(0)
 ///             }
 ///             "kv.set" => {
 ///                 if sig_hash != self.set_sig {
@@ -140,7 +142,8 @@ use crate::program::Program;
 ///                     });
 ///                 }
 ///                 self.kv.insert(*key, *value);
-///                 Ok((vec![Value::Unit], 0))
+///                 rets[0] = Value::Unit;
+///                 Ok(0)
 ///             }
 ///             _ => Err(HostError::UnknownSymbol),
 ///         }
@@ -411,13 +414,18 @@ impl<'a> ValueRef<'a> {
 /// - the resolved `symbol` string (via
 ///   [`Program::symbol_str`])
 /// - the signature hash (a [`SigHash`]) carried in bytecode
-/// - argument values
+/// - argument values as `args`
+/// - a pre-sized `rets` slice (one slot per declared return value, pre-filled with
+///   [`Value::Unit`])
 ///
-/// The host returns:
-/// - a list of return values (must match the declared return count)
-/// - an optional additional fuel charge (charged by the VM)
+/// The host writes return values into `rets` and returns an optional additional fuel charge
+/// (charged by the VM). Every slot in `rets` whose declared type is not `Unit` **must** be
+/// written; unwritten slots will fail the VM's post-call type check.
 pub trait Host {
     /// Performs a host call.
+    ///
+    /// `rets` is pre-sized by the VM to match the declared return count and pre-filled with
+    /// [`Value::Unit`]. The host must overwrite each slot with the correct return value.
     ///
     /// If `access` is present, the host should record any external reads and writes that are
     /// relevant for incremental execution.
@@ -426,8 +434,9 @@ pub trait Host {
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        rets: &mut [Value],
         access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError>;
+    ) -> Result<u64, HostError>;
 }
 
 #[derive(Copy, Clone, Debug)]

@@ -26,8 +26,9 @@ impl Host for EchoHost {
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        rets: &mut [Value],
         _access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         if symbol != "trace.echo" {
             return Err(HostError::UnknownSymbol);
         }
@@ -37,7 +38,8 @@ impl Host for EchoHost {
         let [ValueRef::I64(arg)] = args else {
             return Err(HostError::Failed);
         };
-        Ok((vec![Value::I64(*arg)], 0))
+        rets[0] = Value::I64(*arg);
+        Ok(0)
     }
 }
 

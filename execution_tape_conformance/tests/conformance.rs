@@ -25,10 +25,16 @@ impl Host for TestHost {
         symbol: &str,
         _sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        rets: &mut [Value],
         _access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         match symbol {
-            "id" => Ok((args.iter().copied().map(ValueRef::to_value).collect(), 0)),
+            "id" => {
+                for (slot, arg) in rets.iter_mut().zip(args) {
+                    *slot = arg.to_value();
+                }
+                Ok(0)
+            }
             _ => Err(HostError::UnknownSymbol),
         }
     }
@@ -859,10 +865,11 @@ fn vm_traps_host_call_limit_in_loop() {
             _symbol: &str,
             _sig_hash: SigHash,
             _args: &[ValueRef<'_>],
+            _rets: &mut [Value],
             _access: Option<&mut dyn AccessSink>,
-        ) -> Result<(Vec<Value>, u64), HostError> {
+        ) -> Result<u64, HostError> {
             self.calls += 1;
-            Ok((Vec::new(), 0))
+            Ok(0)
         }
     }
 

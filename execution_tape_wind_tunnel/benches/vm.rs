@@ -502,8 +502,9 @@ impl Host for NopHost {
         _symbol: &str,
         _sig_hash: SigHash,
         _args: &[ValueRef<'_>],
+        _rets: &mut [Value],
         _access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         Err(HostError::UnknownSymbol)
     }
 }
@@ -517,8 +518,9 @@ impl Host for IdentityHost {
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
+        rets: &mut [Value],
         _access: Option<&mut dyn AccessSink>,
-    ) -> Result<(Vec<Value>, u64), HostError> {
+    ) -> Result<u64, HostError> {
         if symbol != "id" {
             return Err(HostError::UnknownSymbol);
         }
@@ -532,7 +534,8 @@ impl Host for IdentityHost {
         let Some(ValueRef::I64(x)) = args.first().copied() else {
             return Err(HostError::Failed);
         };
-        Ok((vec![Value::I64(x)], 0))
+        rets[0] = Value::I64(x);
+        Ok(0)
     }
 }
 

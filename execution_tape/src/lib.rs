@@ -30,8 +30,9 @@
 //!         _symbol: &str,
 //!         _sig_hash: SigHash,
 //!         _args: &[ValueRef<'_>],
+//!         _rets: &mut [Value],
 //!         _access: Option<&mut dyn AccessSink>,
-//!     ) -> Result<(Vec<Value>, u64), HostError> {
+//!     ) -> Result<u64, HostError> {
 //!         Err(HostError::UnknownSymbol)
 //!     }
 //! }
