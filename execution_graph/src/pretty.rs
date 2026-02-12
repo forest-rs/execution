@@ -158,6 +158,7 @@ mod tests {
     extern crate std;
 
     use super::*;
+    use alloc::sync::Arc;
     use alloc::vec;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
     use execution_tape::host::{AccessSink, Host, HostError, SigHash, ValueRef};
@@ -181,7 +182,7 @@ mod tests {
         }
     }
 
-    fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+    fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.ret(0, &[1]);
@@ -196,7 +197,7 @@ mod tests {
             )
             .unwrap();
         pb.set_function_output_name(f, 0, output_name).unwrap();
-        (pb.build_verified().unwrap(), f)
+        (Arc::new(pb.build_verified().unwrap()), f)
     }
 
     #[test]
@@ -255,7 +256,7 @@ mod tests {
             .unwrap();
         pb.set_function_name(f, "named_entry").unwrap();
         pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = pb.build_verified().unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let n = g.add_node(prog, f, vec!["x".into()]);

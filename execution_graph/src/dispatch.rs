@@ -97,6 +97,7 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
 mod tests {
     extern crate std;
 
+    use alloc::sync::Arc;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -127,7 +128,7 @@ mod tests {
         }
     }
 
-    fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+    fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.ret(0, &[1]);
@@ -143,10 +144,13 @@ mod tests {
             .expect("identity function should be valid");
         pb.set_function_output_name(f, 0, output_name)
             .expect("name assignment should succeed");
-        (pb.build_verified().expect("program should verify"), f)
+        (
+            Arc::new(pb.build_verified().expect("program should verify")),
+            f,
+        )
     }
 
-    fn make_const_program(output_name: &str, value: i64) -> (VerifiedProgram, FuncId) {
+    fn make_const_program(output_name: &str, value: i64) -> (Arc<VerifiedProgram>, FuncId) {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
         a.const_i64(1, value);
@@ -163,7 +167,10 @@ mod tests {
             .expect("const function should be valid");
         pb.set_function_output_name(f, 0, output_name)
             .expect("name assignment should succeed");
-        (pb.build_verified().expect("program should verify"), f)
+        (
+            Arc::new(pb.build_verified().expect("program should verify")),
+            f,
+        )
     }
 
     #[test]

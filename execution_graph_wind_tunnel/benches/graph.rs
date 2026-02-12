@@ -1,6 +1,10 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use execution_graph::{ExecutionGraph, HostOpId, ResourceKey};
@@ -12,8 +16,6 @@ use execution_tape::program::ValueType;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::Limits;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Entry point for `execution_graph` wind-tunnel benchmarks.
 ///
@@ -48,7 +50,7 @@ impl Host for NopHost {
     }
 }
 
-fn build_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+fn build_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
     a.ret(0, &[1]);
@@ -63,7 +65,7 @@ fn build_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
         )
         .unwrap();
     pb.set_function_output_name(f, 0, output_name).unwrap();
-    (pb.build_verified().unwrap(), f)
+    (Arc::new(pb.build_verified().unwrap()), f)
 }
 
 fn build_chain_graph(len: usize) -> (ExecutionGraph<NopHost>, execution_graph::NodeId) {
@@ -84,7 +86,10 @@ fn build_chain_graph(len: usize) -> (ExecutionGraph<NopHost>, execution_graph::N
     (g, n0)
 }
 
-fn build_wide_input_program(input_count: usize, output_name: &str) -> (VerifiedProgram, FuncId) {
+fn build_wide_input_program(
+    input_count: usize,
+    output_name: &str,
+) -> (Arc<VerifiedProgram>, FuncId) {
     // fn wide(in0, in1, ..., inN) -> i64 { in0 }
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
@@ -101,7 +106,7 @@ fn build_wide_input_program(input_count: usize, output_name: &str) -> (VerifiedP
         )
         .unwrap();
     pb.set_function_output_name(f, 0, output_name).unwrap();
-    (pb.build_verified().unwrap(), f)
+    (Arc::new(pb.build_verified().unwrap()), f)
 }
 
 fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
@@ -277,7 +282,7 @@ impl Host for FlappingOrderHost {
     }
 }
 
-fn build_flap_reads_program() -> (VerifiedProgram, FuncId, HostOpId) {
+fn build_flap_reads_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
     let host_sig = HostSig {
         args: vec![],
         rets: vec![ValueType::I64],
@@ -303,7 +308,7 @@ fn build_flap_reads_program() -> (VerifiedProgram, FuncId, HostOpId) {
         .unwrap();
     pb.set_function_output_name(f, 0, "value").unwrap();
 
-    (pb.build_verified().unwrap(), f, op)
+    (Arc::new(pb.build_verified().unwrap()), f, op)
 }
 
 fn build_stable_deps_flapping_order_graph(
@@ -425,7 +430,7 @@ impl Host for ParamHost {
     }
 }
 
-fn build_param_program() -> (VerifiedProgram, FuncId, HostOpId) {
+fn build_param_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
     let host_sig = HostSig {
         args: vec![ValueType::U64],
         rets: vec![ValueType::I64],
@@ -451,7 +456,7 @@ fn build_param_program() -> (VerifiedProgram, FuncId, HostOpId) {
         .unwrap();
     pb.set_function_output_name(f, 0, "value").unwrap();
 
-    (pb.build_verified().unwrap(), f, op)
+    (Arc::new(pb.build_verified().unwrap()), f, op)
 }
 
 fn build_disjoint_chains(
@@ -531,7 +536,7 @@ fn bench_disjoint_chains_host_key(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_add2_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+fn build_add2_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
     // fn add2(a: i64, b: i64) -> i64 { a + b }
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
@@ -549,7 +554,7 @@ fn build_add2_program(output_name: &str) -> (VerifiedProgram, FuncId) {
         )
         .unwrap();
     pb.set_function_output_name(f, 0, output_name).unwrap();
-    (pb.build_verified().unwrap(), f)
+    (Arc::new(pb.build_verified().unwrap()), f)
 }
 
 fn build_shared_upstream(
