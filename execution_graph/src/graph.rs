@@ -19,6 +19,7 @@ use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use hashbrown::HashMap;
 
 use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
@@ -191,6 +192,8 @@ pub struct ExecutionGraph<H: Host> {
     ctx: ExecutionContext,
     dirty: DirtyEngine,
     input_ids: BTreeMap<Box<str>, DirtyKey>,
+    host_state_ids: HashMap<(HostOpId, u64), DirtyKey>,
+    opaque_host_ids: HashMap<HostOpId, DirtyKey>,
     pub(crate) nodes: Vec<Node>,
     scratch: Scratch,
     strict_deps: bool,
@@ -251,6 +254,8 @@ impl<H: Host> ExecutionGraph<H> {
             ctx: ExecutionContext::new(),
             dirty: DirtyEngine::new(),
             input_ids: BTreeMap::new(),
+            host_state_ids: HashMap::new(),
+            opaque_host_ids: HashMap::new(),
             nodes: Vec::new(),
             scratch: Scratch::default(),
             strict_deps: false,
@@ -376,7 +381,7 @@ impl<H: Host> ExecutionGraph<H> {
         {
             return;
         }
-        let read_id = self.dirty.intern(ResourceKey::input(name.clone()));
+        let read_id = self.intern_input_id(name.as_ref());
         let n = &mut self.nodes[index];
         for &slot in n.input_slots.get(name.as_ref()).unwrap() {
             if let Some(binding) = n.inputs.get_mut(slot) {
@@ -462,7 +467,12 @@ impl<H: Host> ExecutionGraph<H> {
     /// opaque host state ([`ResourceKey::OpaqueHost`]).
     #[inline]
     pub fn invalidate(&mut self, key: ResourceKey) {
-        let id = self.dirty.intern(key);
+        let id = match key {
+            ResourceKey::Input(name) => self.intern_input_id(name.as_ref()),
+            ResourceKey::HostState { op, key } => self.intern_host_state_id(op, key),
+            ResourceKey::OpaqueHost(op) => self.intern_opaque_host_id(op),
+            ResourceKey::NodeOutput { .. } => self.dirty.intern(key),
+        };
         self.dirty.mark_dirty(id);
     }
 
@@ -476,10 +486,12 @@ impl<H: Host> ExecutionGraph<H> {
         match key {
             ResourceKeyRef::Input(name) => self.invalidate_input(name),
             ResourceKeyRef::HostState { op, key } => {
-                self.invalidate(ResourceKey::host_state(HostOpId::new(op.0), key));
+                let id = self.intern_host_state_id(HostOpId::new(op.0), key);
+                self.dirty.mark_dirty(id);
             }
             ResourceKeyRef::OpaqueHost { op } => {
-                self.invalidate(ResourceKey::opaque_host(HostOpId::new(op.0)));
+                let id = self.intern_opaque_host_id(HostOpId::new(op.0));
+                self.dirty.mark_dirty(id);
             }
         }
     }
@@ -496,6 +508,28 @@ impl<H: Host> ExecutionGraph<H> {
         let boxed: Box<str> = name.into();
         let id = self.dirty.intern(ResourceKey::Input(boxed.clone()));
         self.input_ids.insert(boxed, id);
+        id
+    }
+
+    #[inline]
+    fn intern_host_state_id(&mut self, op: HostOpId, key: u64) -> DirtyKey {
+        if let Some(&id) = self.host_state_ids.get(&(op, key)) {
+            return id;
+        }
+
+        let id = self.dirty.intern(ResourceKey::host_state(op, key));
+        self.host_state_ids.insert((op, key), id);
+        id
+    }
+
+    #[inline]
+    fn intern_opaque_host_id(&mut self, op: HostOpId) -> DirtyKey {
+        if let Some(&id) = self.opaque_host_ids.get(&op) {
+            return id;
+        }
+
+        let id = self.dirty.intern(ResourceKey::opaque_host(op));
+        self.opaque_host_ids.insert(op, id);
         id
     }
 
@@ -940,12 +974,44 @@ impl<H: Host> ExecutionGraph<H> {
         }
 
         // Merge tape-recorded accesses (host state, opaque ops, etc).
-        for a in tape_access.log().iter() {
-            if let Access::Read(k) = a {
-                self.scratch.read_ids.push(self.dirty.intern(k.clone()));
-            }
-            if collect_access {
-                log.push(a.clone());
+        for access in tape_access.into_log() {
+            match access {
+                Access::Read(ResourceKey::Input(name)) => {
+                    let read_id = self.intern_input_id(name.as_ref());
+                    self.scratch.read_ids.push(read_id);
+                    if collect_access {
+                        log.push(Access::Read(ResourceKey::Input(name)));
+                    }
+                }
+                Access::Read(ResourceKey::HostState { op, key }) => {
+                    let read_id = self.intern_host_state_id(op, key);
+                    self.scratch.read_ids.push(read_id);
+                    if collect_access {
+                        log.push(Access::Read(ResourceKey::HostState { op, key }));
+                    }
+                }
+                Access::Read(ResourceKey::OpaqueHost(op)) => {
+                    let read_id = self.intern_opaque_host_id(op);
+                    self.scratch.read_ids.push(read_id);
+                    if collect_access {
+                        log.push(Access::Read(ResourceKey::OpaqueHost(op)));
+                    }
+                }
+                Access::Read(key) => {
+                    let read_id = if collect_access {
+                        let id = self.dirty.intern(key.clone());
+                        log.push(Access::Read(key));
+                        id
+                    } else {
+                        self.dirty.intern(key)
+                    };
+                    self.scratch.read_ids.push(read_id);
+                }
+                Access::Write(key) => {
+                    if collect_access {
+                        log.push(Access::Write(key));
+                    }
+                }
             }
         }
 

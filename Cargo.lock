@@ -193,6 +193,7 @@ name = "execution_graph"
 version = "0.1.0"
 dependencies = [
  "execution_tape",
+ "hashbrown",
  "understory_dirty",
 ]
 

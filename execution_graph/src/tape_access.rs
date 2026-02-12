@@ -30,11 +30,10 @@ impl TapeAccessLog {
         }
     }
 
-    /// Returns the recorded access log.
     #[must_use]
     #[inline]
-    pub(crate) fn log(&self) -> &AccessLog {
-        &self.log
+    pub(crate) fn into_log(self) -> AccessLog {
+        self.log
     }
 
     #[inline]
@@ -84,8 +83,8 @@ impl<'a> CountingAccessSink<'a> {
 
     #[must_use]
     #[inline]
-    pub(crate) fn log(&self) -> &AccessLog {
-        self.inner.log()
+    pub(crate) fn into_log(self) -> AccessLog {
+        self.inner.into_log()
     }
 }
 
