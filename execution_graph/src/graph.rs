@@ -127,7 +127,7 @@ pub(crate) struct Node {
     pub(crate) output_names: Vec<Box<str>>,
     pub(crate) output_ids: Vec<DirtyKey>,
     pub(crate) outputs: NodeOutputs,
-    pub(crate) last_access: AccessLog,
+    pub(crate) last_access: Option<AccessLog>,
     pub(crate) last_read_ids: Vec<DirtyKey>,
     pub(crate) deps_initialized: bool,
     pub(crate) run_count: u64,
@@ -164,6 +164,12 @@ impl Node {
 /// - If you need “why re-ran” data, use [`ExecutionGraph::run_all_with_report`] /
 ///   [`ExecutionGraph::run_node_with_report`] with an appropriate [`ReportDetailMask`].
 ///   Use [`ReportDetailMask::FULL`] for the full path-rich report.
+///
+/// ## Access log collection
+///
+/// Per-node access logs are **not** collected by default. Callers that need
+/// [`node_last_access`](ExecutionGraph::node_last_access) must first call
+/// [`set_collect_access_log(true)`](ExecutionGraph::set_collect_access_log).
 #[derive(Debug)]
 pub struct ExecutionGraph<H: Host> {
     vm: Vm<H>,
@@ -173,6 +179,7 @@ pub struct ExecutionGraph<H: Host> {
     pub(crate) nodes: Vec<Node>,
     scratch: Scratch,
     strict_deps: bool,
+    collect_access: bool,
 }
 
 #[derive(Debug, Default)]
@@ -231,6 +238,7 @@ impl<H: Host> ExecutionGraph<H> {
             nodes: Vec::new(),
             scratch: Scratch::default(),
             strict_deps: false,
+            collect_access: false,
         }
     }
 
@@ -241,6 +249,27 @@ impl<H: Host> ExecutionGraph<H> {
     /// caused by missing access reporting.
     pub fn set_strict_deps(&mut self, strict: bool) {
         self.strict_deps = strict;
+    }
+
+    /// Enables or disables collection of per-node access logs.
+    ///
+    /// When enabled, each node's full [`AccessLog`] (bindings, tape accesses, output writes) is
+    /// stored after execution and can be retrieved with [`ExecutionGraph::node_last_access`].
+    /// When disabled (the default), the access log is not built, eliminating significant per-run
+    /// allocation overhead.
+    pub fn set_collect_access_log(&mut self, collect: bool) {
+        self.collect_access = collect;
+    }
+
+    /// Returns the most recent access log for `node`, if access log collection is enabled.
+    ///
+    /// Returns `None` if the node has not been run or if access log collection was disabled
+    /// during the last run.
+    #[must_use]
+    #[inline]
+    pub fn node_last_access(&self, node: NodeId) -> Option<&AccessLog> {
+        let index = usize::try_from(node.as_u64()).ok()?;
+        self.nodes.get(index)?.last_access.as_ref()
     }
 
     /// Adds a node and returns its [`NodeId`].
@@ -300,7 +329,7 @@ impl<H: Host> ExecutionGraph<H> {
             output_names,
             output_ids,
             outputs: BTreeMap::new(),
-            last_access: AccessLog::new(),
+            last_access: None,
             last_read_ids: Vec::new(),
             deps_initialized: false,
             run_count: 0,
@@ -769,9 +798,17 @@ impl<H: Host> ExecutionGraph<H> {
             return Err(GraphError::BadNodeId);
         };
 
-        // Build args + access log.
+        let collect_access = self.collect_access;
+
+        // Build args and (optionally) access log. In the fast path we build read_ids directly.
         let mut args: Vec<Value> = Vec::with_capacity(n.input_names.len());
-        let mut log = AccessLog::new();
+        let mut log = if collect_access {
+            AccessLog::new()
+        } else {
+            AccessLog::new() // will remain empty; not written to
+        };
+
+        self.scratch.read_ids.clear();
 
         for (slot, name) in n.input_names.iter().enumerate() {
             let b = n.inputs.get(slot).and_then(Option::as_ref).ok_or_else(|| {
@@ -783,7 +820,13 @@ impl<H: Host> ExecutionGraph<H> {
 
             match b {
                 Binding::External(v) => {
-                    log.push(Access::Read(ResourceKey::input(name.clone())));
+                    let read_key = ResourceKey::input(name.clone());
+                    self.scratch
+                        .read_ids
+                        .push(self.dirty.intern(read_key.clone()));
+                    if collect_access {
+                        log.push(Access::Read(read_key));
+                    }
                     args.push(v.clone());
                 }
                 Binding::FromNode { node: up, output } => {
@@ -798,7 +841,13 @@ impl<H: Host> ExecutionGraph<H> {
                             name: output.clone(),
                         }
                     })?;
-                    log.push(Access::Read(ResourceKey::tape_output(*up, output.clone())));
+                    let read_key = ResourceKey::tape_output(*up, output.clone());
+                    self.scratch
+                        .read_ids
+                        .push(self.dirty.intern(read_key.clone()));
+                    if collect_access {
+                        log.push(Access::Read(read_key));
+                    }
                     args.push(v.clone());
                 }
             }
@@ -839,8 +888,13 @@ impl<H: Host> ExecutionGraph<H> {
         }
 
         // Merge tape-recorded accesses (host state, opaque ops, etc).
-        for a in tape_access.log().iter().cloned() {
-            log.push(a);
+        for a in tape_access.log().iter() {
+            if let Access::Read(k) = a {
+                self.scratch.read_ids.push(self.dirty.intern(k.clone()));
+            }
+            if collect_access {
+                log.push(a.clone());
+            }
         }
 
         // Map outputs.
@@ -853,17 +907,12 @@ impl<H: Host> ExecutionGraph<H> {
         for (i, v) in out.into_iter().enumerate() {
             let name = self.nodes[node_index].output_name_at(i);
             outputs.insert(name.clone(), v);
-            log.push(Access::Write(ResourceKey::tape_output(node, name)));
+            if collect_access {
+                log.push(Access::Write(ResourceKey::tape_output(node, name)));
+            }
         }
 
         // Update dirty dependencies: each output depends on all reads observed during the run.
-        // Reuse scratch storage to avoid per-run allocation in the hot path.
-        self.scratch.read_ids.clear();
-        for a in log.iter() {
-            if let Access::Read(k) = a {
-                self.scratch.read_ids.push(self.dirty.intern(k.clone()));
-            }
-        }
         // Canonicalize to set semantics so host/read emission order does not cause
         // spurious dependency-set "changes" across runs.
         self.scratch.read_ids.sort_unstable();
@@ -885,7 +934,7 @@ impl<H: Host> ExecutionGraph<H> {
 
         // Commit outputs/log.
         self.nodes[node_index].outputs = outputs;
-        self.nodes[node_index].last_access = log;
+        self.nodes[node_index].last_access = if collect_access { Some(log) } else { None };
         self.nodes[node_index].run_count = self.nodes[node_index].run_count.saturating_add(1);
 
         Ok(())
@@ -1785,6 +1834,81 @@ mod tests {
         assert_eq!(
             g.node_outputs(n).unwrap().get("value"),
             Some(&Value::I64(7))
+        );
+    }
+
+    #[test]
+    fn node_last_access_returns_some_when_collection_enabled() {
+        // A constant node with no inputs (zero reads, output writes only).
+        // Nodes with zero outputs cannot be tested here because they have no dirty keys
+        // and are never scheduled by plan_all.
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.const_i64(1, 42);
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+        let prog = pb.build_verified().unwrap();
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        g.set_collect_access_log(true);
+        let n = g.add_node(prog, f, vec![]);
+        g.run_all().unwrap();
+
+        let log = g.node_last_access(n);
+        assert!(
+            log.is_some(),
+            "access log should be Some when collection is enabled"
+        );
+    }
+
+    #[test]
+    fn node_last_access_returns_none_after_collection_disabled_rerun() {
+        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                        reg_count: 2,
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (pb.build_verified().unwrap(), f)
+        }
+
+        let (prog, entry) = make_identity_program("value");
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n = g.add_node(prog, entry, vec!["in".into()]);
+        g.set_input_value(n, "in", Value::I64(1));
+
+        // Run with collection enabled — should produce a log.
+        g.set_collect_access_log(true);
+        g.run_all().unwrap();
+        assert!(g.node_last_access(n).is_some());
+
+        // Disable collection, rerun — stale log must be cleared.
+        g.set_collect_access_log(false);
+        g.set_input_value(n, "in", Value::I64(2));
+        g.invalidate_input("in");
+        g.run_all().unwrap();
+        assert!(
+            g.node_last_access(n).is_none(),
+            "stale access log should be cleared after rerun with collection disabled"
         );
     }
 }
