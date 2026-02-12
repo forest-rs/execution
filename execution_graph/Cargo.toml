@@ -20,4 +20,6 @@ workspace = true
 [dependencies]
 execution_tape = { path = "../execution_tape" }
 understory_dirty = { git = "https://github.com/endoli/understory.git", rev = "e66fecdc521b57b76bb3b28ddc70ce3944926664" }
-hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher"] }
+hashbrown = { version = "0.16.1", default-features = false, features = [
+  "default-hasher",
+] }
