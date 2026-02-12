@@ -134,7 +134,7 @@ mod tests {
         let node = NodeId::new(3);
         let report = NodeRunDetail {
             node,
-            because_of: Some(ResourceKey::tape_output(node, "value")),
+            because_of: Some(ResourceKey::node_output(node, "value")),
             why_path: Some(alloc::vec![ResourceKey::input("in")]),
         };
 

@@ -199,12 +199,12 @@ mod tests {
 
         let r0 = NodeRunDetail {
             node: n0,
-            because_of: Some(ResourceKey::tape_output(n0, "value")),
+            because_of: Some(ResourceKey::node_output(n0, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
         };
         let r1 = NodeRunDetail {
             node: n1,
-            because_of: Some(ResourceKey::tape_output(n1, "value")),
+            because_of: Some(ResourceKey::node_output(n1, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
         };
 

@@ -146,12 +146,12 @@ fn label_for(node: NodeId) -> &'static str {
 fn fmt_key(node_labels: &BTreeMap<u64, &'static str>, key: &ResourceKey) -> String {
     match key {
         ResourceKey::Input(name) => format!("Input({name})"),
-        ResourceKey::TapeOutput { node, output } => {
+        ResourceKey::NodeOutput { node, output } => {
             let label = node_labels
                 .get(&node.as_u64())
                 .copied()
                 .unwrap_or("<unknown>");
-            format!("TapeOutput({label}:{output})")
+            format!("NodeOutput({label}:{output})")
         }
         ResourceKey::HostState { op, key } => format!("HostState(op={}, key={key})", op.as_u64()),
         ResourceKey::OpaqueHost(op) => format!("OpaqueHost(op={})", op.as_u64()),
