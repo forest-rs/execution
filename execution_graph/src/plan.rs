@@ -99,6 +99,13 @@ impl RunPlan {
         self.scope
     }
 
+    /// Returns the number of scheduled nodes.
+    #[must_use]
+    #[inline]
+    pub(crate) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Drains scheduled nodes from the plan.
     #[must_use]
     #[inline]

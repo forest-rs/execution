@@ -699,8 +699,7 @@ impl<H: Host> ExecutionGraph<H> {
     /// Executes a pre-built run plan without traced reporting.
     #[inline]
     fn run_plan(&mut self, plan: RunPlan) -> Result<RunSummary, GraphError> {
-        let mut probe = plan.clone();
-        let executed_nodes = probe.take_nodes().len();
+        let executed_nodes = plan.node_count();
         let mut dispatcher = InlineDispatcher;
         let to_run = dispatcher.dispatch(self, plan)?;
         // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
