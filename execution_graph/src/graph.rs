@@ -927,12 +927,31 @@ impl<H: Host> ExecutionGraph<H> {
             return Err(GraphError::BadOutputArity { node });
         }
 
-        let mut outputs: NodeOutputs = BTreeMap::new();
-        for (i, v) in out.into_iter().enumerate() {
-            let name = self.nodes[node_index].output_name_at(i);
-            outputs.insert(name.clone(), v);
-            if collect_access {
-                log.push(Access::Write(ResourceKey::tape_output(node, name)));
+        // Update outputs in-place when the BTreeMap is already populated (subsequent runs).
+        {
+            let n = &mut self.nodes[node_index];
+            let first_run = n.outputs.is_empty();
+            for (i, v) in out.into_iter().enumerate() {
+                if first_run {
+                    let name = n.output_name_at(i);
+                    if collect_access {
+                        log.push(Access::Write(ResourceKey::tape_output(node, name.clone())));
+                    }
+                    n.outputs.insert(name, v);
+                } else {
+                    if collect_access {
+                        let name = n.output_names[i].clone();
+                        log.push(Access::Write(ResourceKey::tape_output(node, name)));
+                    }
+                    let slot = n.outputs.get_mut(n.output_names[i].as_ref());
+                    debug_assert!(
+                        slot.is_some(),
+                        "output key invariant broken: output_names[{i}] not found in outputs map"
+                    );
+                    if let Some(slot) = slot {
+                        *slot = v;
+                    }
+                }
             }
         }
 
@@ -956,8 +975,7 @@ impl<H: Host> ExecutionGraph<H> {
             self.nodes[node_index].deps_initialized = true;
         }
 
-        // Commit outputs/log.
-        self.nodes[node_index].outputs = outputs;
+        // Commit log.
         self.nodes[node_index].last_access = if collect_access { Some(log) } else { None };
         self.nodes[node_index].run_count = self.nodes[node_index].run_count.saturating_add(1);
 
@@ -1934,5 +1952,57 @@ mod tests {
             g.node_last_access(n).is_none(),
             "stale access log should be cleared after rerun with collection disabled"
         );
+    }
+
+    #[test]
+    fn in_place_output_update_preserves_values_across_reruns() {
+        fn make_identity_program(output_name: &str) -> (VerifiedProgram, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                        reg_count: 2,
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (pb.build_verified().unwrap(), f)
+        }
+
+        let (prog, entry) = make_identity_program("value");
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n = g.add_node(prog, entry, vec!["in".into()]);
+
+        // First run populates the output map.
+        g.set_input_value(n, "in", Value::I64(10));
+        g.run_all().unwrap();
+        assert_eq!(
+            g.node_outputs(n).unwrap().get("value"),
+            Some(&Value::I64(10))
+        );
+
+        // Second run uses in-place update path.
+        g.set_input_value(n, "in", Value::I64(20));
+        g.invalidate_input("in");
+        g.run_all().unwrap();
+        assert_eq!(
+            g.node_outputs(n).unwrap().get("value"),
+            Some(&Value::I64(20))
+        );
+
+        // Third run confirms stability.
+        g.set_input_value(n, "in", Value::I64(30));
+        g.invalidate_input("in");
+        g.run_all().unwrap();
+        assert_eq!(
+            g.node_outputs(n).unwrap().get("value"),
+            Some(&Value::I64(30))
+        );
+        assert_eq!(g.node_run_count(n), Some(3));
     }
 }
