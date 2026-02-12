@@ -45,10 +45,19 @@ pub(crate) type DirtyKey = InternId;
 /// owned keys into compact ids.
 ///
 /// The interner grows monotonically for the lifetime of the graph: keys are not removed.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct DirtyEngine {
     tracker: DirtyTracker<DirtyKey>,
     keys: Interner<ResourceKey>,
+    // Reused by non-traced drains to avoid rebuilding traversal buffers each run.
+    drain_scratch: TraversalScratch<DirtyKey>,
+}
+
+impl Default for DirtyEngine {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DirtyEngine {
@@ -62,6 +71,7 @@ impl DirtyEngine {
         Self {
             tracker,
             keys: Interner::new(),
+            drain_scratch: TraversalScratch::new(),
         }
     }
 
@@ -88,13 +98,19 @@ impl DirtyEngine {
     /// affected by those marks via dependency propagation in the channel.
     ///
     /// The order is deterministic so callers can build stable scheduling and tests on top.
+    ///
+    /// Internally this reuses a retained traversal scratch buffer to reduce per-drain
+    /// allocation churn on hot rerun paths.
     #[inline]
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (DirtyKey, &ResourceKey)> + '_ {
         let keys = &self.keys;
-        self.tracker
+        let tracker = &mut self.tracker;
+        let scratch = &mut self.drain_scratch;
+        tracker
             .drain(EXECUTION_GRAPH_CHANNEL)
             .affected()
             .deterministic()
+            .scratch(scratch)
             .run()
             .filter_map(move |id| keys.get(id).map(|k| (id, k)))
     }
@@ -123,17 +139,23 @@ impl DirtyEngine {
     /// This yields only dirty/affected keys that are (transitively) upstream dependencies of
     /// `key` (including `key` itself if it is affected). This is used to support targeted
     /// execution of a single node’s dependency closure without draining unrelated dirty work.
+    ///
+    /// Internally this reuses a retained traversal scratch buffer to reduce per-drain
+    /// allocation churn on hot rerun paths.
     #[inline]
     pub(crate) fn drain_within_dependencies_of(
         &mut self,
         key: DirtyKey,
     ) -> impl Iterator<Item = (DirtyKey, &ResourceKey)> + '_ {
         let keys = &self.keys;
-        self.tracker
+        let tracker = &mut self.tracker;
+        let scratch = &mut self.drain_scratch;
+        tracker
             .drain(EXECUTION_GRAPH_CHANNEL)
             .affected()
             .within_dependencies_of(key)
             .deterministic()
+            .scratch(scratch)
             .run()
             .filter_map(move |id| keys.get(id).map(|k| (id, k)))
     }
