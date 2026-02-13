@@ -709,6 +709,9 @@ impl ProgramBuilder {
 #[derive(Clone, Debug, Default)]
 pub struct Asm {
     bytes: Vec<u8>,
+    /// `max(register_operand + 1)` seen while encoding instructions.
+    ///
+    /// This is used to infer function `reg_count` without requiring callers to provide it.
     max_reg_plus_one: u32,
     next_label: u32,
     labels: Vec<Option<u32>>,
@@ -742,10 +745,14 @@ impl Asm {
         u32::try_from(self.bytes.len()).unwrap_or(u32::MAX)
     }
 
+    /// Returns inferred register count, floored by argument convention requirements.
+    ///
+    /// The floor is `arg_count + 1` to reserve `r0` for the implicit effect token.
     fn inferred_reg_count_for_args(&self, arg_count: usize) -> u32 {
         inferred_reg_count_for_arg_count(self.inferred_reg_count(), arg_count)
     }
 
+    /// Returns inferred register count from observed register operands only.
     fn inferred_reg_count(&self) -> u32 {
         self.max_reg_plus_one.max(1)
     }
@@ -1918,6 +1925,10 @@ fn min_reg_count_for_arg_count(arg_count: usize) -> u32 {
         .saturating_add(1)
 }
 
+/// Combines operand-driven inference with argument convention requirements.
+///
+/// This keeps `r0` available for the implicit effect token even if a function body does not
+/// explicitly reference it in operands.
 fn inferred_reg_count_for_arg_count(inferred_reg_count: u32, arg_count: usize) -> u32 {
     inferred_reg_count.max(min_reg_count_for_arg_count(arg_count))
 }
