@@ -17,98 +17,95 @@ use hashbrown::HashMap;
 use crate::access::{Access, AccessLog, HostOpId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
 
-/// Records `execution_tape` host access events as `execution_graph` [`Access`] entries.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct TapeAccessLog {
-    log: AccessLog,
-}
-
-impl TapeAccessLog {
-    /// Creates an empty access log.
-    #[must_use]
-    #[inline]
-    pub(crate) const fn new() -> Self {
-        Self {
-            log: AccessLog::new(),
-        }
-    }
-
-    #[must_use]
-    #[inline]
-    pub(crate) fn into_log(self) -> AccessLog {
-        self.log
-    }
-
-    #[inline]
-    fn map_key(key: ResourceKeyRef<'_>) -> ResourceKey {
-        match key {
-            ResourceKeyRef::Input(name) => ResourceKey::input(name),
-            ResourceKeyRef::HostState { op, key } => {
-                ResourceKey::host_state(HostOpId::new(op.0), key)
-            }
-            ResourceKeyRef::OpaqueHost { op } => ResourceKey::opaque_host(HostOpId::new(op.0)),
-        }
-    }
-}
-
-impl AccessSink for TapeAccessLog {
-    fn read(&mut self, key: ResourceKeyRef<'_>) {
-        self.log.push(Access::read(Self::map_key(key)));
-    }
-
-    fn write(&mut self, key: ResourceKeyRef<'_>) {
-        self.log.push(Access::write(Self::map_key(key)));
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StrictDepsViolation {
     pub(crate) symbol: Box<str>,
     pub(crate) sig_hash: SigHash,
 }
 
-/// Access sink wrapper that counts reads/writes while also recording full access logs.
+/// Access sink used when per-node access-log collection is enabled.
 ///
-/// This is used when `ExecutionGraph` is collecting per-node [`AccessLog`] values.
+/// It performs all collect-mode host access work inline:
+/// - increments the strict-deps access counter,
+/// - interns read keys and appends dependency IDs to `read_ids`,
+/// - appends host reads/writes directly into the caller-provided per-node [`AccessLog`].
 #[derive(Debug)]
-pub(crate) struct CountingAccessSink<'a> {
-    inner: TapeAccessLog,
+pub(crate) struct CollectingAccessSink<'a> {
+    dirty: &'a mut DirtyEngine,
+    input_ids: &'a mut BTreeMap<Box<str>, DirtyKey>,
+    host_state_ids: &'a mut HashMap<(HostOpId, u64), DirtyKey>,
+    opaque_host_ids: &'a mut HashMap<HostOpId, DirtyKey>,
+    read_ids: &'a mut Vec<DirtyKey>,
+    log: &'a mut AccessLog,
     counter: &'a Cell<usize>,
 }
 
-/// Builder and extraction helpers for [`CountingAccessSink`].
-impl<'a> CountingAccessSink<'a> {
-    /// Creates a sink that increments `counter` on every access event.
+/// Builder for [`CollectingAccessSink`].
+impl<'a> CollectingAccessSink<'a> {
+    /// Creates a sink that increments `counter` on every access event and writes directly
+    /// into dependency IDs and the provided per-node [`AccessLog`].
     ///
     /// The counter is shared with [`StrictDepsTrace`] so strict-deps validation can verify
     /// that each host call reported at least one key.
     #[must_use]
     #[inline]
-    pub(crate) const fn new(counter: &'a Cell<usize>) -> Self {
+    pub(crate) const fn new(
+        dirty: &'a mut DirtyEngine,
+        input_ids: &'a mut BTreeMap<Box<str>, DirtyKey>,
+        host_state_ids: &'a mut HashMap<(HostOpId, u64), DirtyKey>,
+        opaque_host_ids: &'a mut HashMap<HostOpId, DirtyKey>,
+        read_ids: &'a mut Vec<DirtyKey>,
+        log: &'a mut AccessLog,
+        counter: &'a Cell<usize>,
+    ) -> Self {
         Self {
-            inner: TapeAccessLog::new(),
+            dirty,
+            input_ids,
+            host_state_ids,
+            opaque_host_ids,
+            read_ids,
+            log,
             counter,
         }
-    }
-
-    /// Consumes the sink and returns the collected access log.
-    #[must_use]
-    #[inline]
-    pub(crate) fn into_log(self) -> AccessLog {
-        self.inner.into_log()
     }
 }
 
 /// Access recording behavior for the collection-enabled path.
-impl AccessSink for CountingAccessSink<'_> {
+impl AccessSink for CollectingAccessSink<'_> {
     fn read(&mut self, key: ResourceKeyRef<'_>) {
         self.counter.set(self.counter.get().saturating_add(1));
-        self.inner.read(key);
+        match key {
+            ResourceKeyRef::Input(name) => {
+                let read_id = intern_input_key_id(self.dirty, self.input_ids, name);
+                self.read_ids.push(read_id);
+                self.log.push(Access::Read(ResourceKey::input(name)));
+            }
+            ResourceKeyRef::HostState { op, key } => {
+                let op = HostOpId::new(op.0);
+                let read_id = intern_host_state_key_id(self.dirty, self.host_state_ids, op, key);
+                self.read_ids.push(read_id);
+                self.log
+                    .push(Access::Read(ResourceKey::host_state(op, key)));
+            }
+            ResourceKeyRef::OpaqueHost { op } => {
+                let op = HostOpId::new(op.0);
+                let read_id = intern_opaque_host_key_id(self.dirty, self.opaque_host_ids, op);
+                self.read_ids.push(read_id);
+                self.log.push(Access::Read(ResourceKey::opaque_host(op)));
+            }
+        }
     }
 
     fn write(&mut self, key: ResourceKeyRef<'_>) {
         self.counter.set(self.counter.get().saturating_add(1));
-        self.inner.write(key);
+        let key = match key {
+            ResourceKeyRef::Input(name) => ResourceKey::input(name),
+            ResourceKeyRef::HostState { op, key } => {
+                ResourceKey::host_state(HostOpId::new(op.0), key)
+            }
+            ResourceKeyRef::OpaqueHost { op } => ResourceKey::opaque_host(HostOpId::new(op.0)),
+        };
+        self.log.push(Access::Write(key));
     }
 }
 
@@ -234,24 +231,9 @@ impl AccessSink for DepsOnlyAccessSink<'_> {
 #[derive(Debug)]
 pub(crate) enum NodeAccessSink<'a> {
     /// Full access collection mode.
-    Collect(CountingAccessSink<'a>),
+    Collect(CollectingAccessSink<'a>),
     /// Deps-only fast mode (no `AccessLog` materialization).
     Deps(DepsOnlyAccessSink<'a>),
-}
-
-/// Helpers for post-execution handling of the unified sink.
-impl NodeAccessSink<'_> {
-    /// Returns a collected access log when the sink was in collection mode.
-    ///
-    /// In deps-only mode this returns `None`.
-    #[must_use]
-    #[inline]
-    pub(crate) fn into_log(self) -> Option<AccessLog> {
-        match self {
-            Self::Collect(sink) => Some(sink.into_log()),
-            Self::Deps(_) => None,
-        }
-    }
 }
 
 /// Dispatches read/write events to the active sink variant.

@@ -28,7 +28,7 @@ use crate::dispatch::{Dispatcher, InlineDispatcher};
 use crate::plan::{RunPlan, RunPlanTrace};
 use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
 use crate::tape_access::{
-    CountingAccessSink, DepsOnlyAccessSink, NodeAccessSink, StrictDepsTrace,
+    CollectingAccessSink, DepsOnlyAccessSink, NodeAccessSink, StrictDepsTrace,
     intern_host_state_key_id, intern_input_key_id, intern_opaque_host_key_id,
 };
 
@@ -930,28 +930,37 @@ impl<H: Host> ExecutionGraph<H> {
         } else {
             (TraceMask::NONE, None)
         };
-        let mut tape_access = if collect_access {
-            NodeAccessSink::Collect(CountingAccessSink::new(&access_count))
-        } else {
-            NodeAccessSink::Deps(DepsOnlyAccessSink::new(
-                &mut self.dirty,
-                &mut self.input_ids,
-                &mut self.host_state_ids,
-                &mut self.opaque_host_ids,
-                &mut self.scratch.read_ids,
-                &access_count,
-            ))
+        let out = {
+            let mut tape_access = if let Some(log) = log.as_mut() {
+                NodeAccessSink::Collect(CollectingAccessSink::new(
+                    &mut self.dirty,
+                    &mut self.input_ids,
+                    &mut self.host_state_ids,
+                    &mut self.opaque_host_ids,
+                    &mut self.scratch.read_ids,
+                    log,
+                    &access_count,
+                ))
+            } else {
+                NodeAccessSink::Deps(DepsOnlyAccessSink::new(
+                    &mut self.dirty,
+                    &mut self.input_ids,
+                    &mut self.host_state_ids,
+                    &mut self.opaque_host_ids,
+                    &mut self.scratch.read_ids,
+                    &access_count,
+                ))
+            };
+            Self::execute_kind(
+                &mut self.nodes[node_index].kind,
+                &mut self.vm,
+                &mut self.ctx,
+                &args,
+                trace_mask,
+                trace,
+                &mut tape_access,
+            )?
         };
-        let out = Self::execute_kind(
-            &mut self.nodes[node_index].kind,
-            &mut self.vm,
-            &mut self.ctx,
-            &args,
-            trace_mask,
-            trace,
-            &mut tape_access,
-        )?;
-        let tape_log = tape_access.into_log();
 
         // Restore args buffer to scratch for reuse on next run.
         self.scratch.args = args;
@@ -962,41 +971,6 @@ impl<H: Host> ExecutionGraph<H> {
                 symbol: v.symbol.clone(),
                 sig_hash: v.sig_hash,
             });
-        }
-
-        // Merge tape-recorded accesses (host state, opaque ops, etc) when access-log collection
-        // is enabled. The deps-only fast path records read IDs during execution and skips this.
-        if let Some(tape_log) = tape_log {
-            let log = log
-                .as_mut()
-                .expect("collect_access branch must allocate an access log");
-            for access in tape_log {
-                match access {
-                    Access::Read(ResourceKey::Input(name)) => {
-                        let read_id = self.intern_input_id(name.as_ref());
-                        self.scratch.read_ids.push(read_id);
-                        log.push(Access::Read(ResourceKey::Input(name)));
-                    }
-                    Access::Read(ResourceKey::HostState { op, key }) => {
-                        let read_id = self.intern_host_state_id(op, key);
-                        self.scratch.read_ids.push(read_id);
-                        log.push(Access::Read(ResourceKey::HostState { op, key }));
-                    }
-                    Access::Read(ResourceKey::OpaqueHost(op)) => {
-                        let read_id = self.intern_opaque_host_id(op);
-                        self.scratch.read_ids.push(read_id);
-                        log.push(Access::Read(ResourceKey::OpaqueHost(op)));
-                    }
-                    Access::Read(key) => {
-                        let read_id = self.dirty.intern(key.clone());
-                        self.scratch.read_ids.push(read_id);
-                        log.push(Access::Read(key));
-                    }
-                    Access::Write(key) => {
-                        log.push(Access::Write(key));
-                    }
-                }
-            }
         }
 
         // Map outputs.
