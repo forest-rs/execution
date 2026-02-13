@@ -2594,7 +2594,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -2650,7 +2649,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -2697,7 +2695,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -2729,7 +2726,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -2771,7 +2767,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64; n as usize],
-                reg_count: 2 * n + 1, // r0..r18
             },
         )
         .unwrap();
@@ -2820,7 +2815,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -2904,7 +2898,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -2949,7 +2942,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -2974,7 +2966,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();

@@ -179,7 +179,6 @@ use crate::program::Program;
 ///     FunctionSig {
 ///         arg_types: vec![],
 ///         ret_types: vec![ValueType::I64],
-///         reg_count: 6,
 ///     },
 /// )?;
 /// let program = pb.build_verified()?;

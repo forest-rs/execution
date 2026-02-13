@@ -138,7 +138,6 @@ mod tests {
                 FunctionSig {
                     arg_types: vec![ValueType::I64],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 2,
                 },
             )
             .expect("identity function should be valid");
@@ -161,7 +160,6 @@ mod tests {
                 FunctionSig {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 2,
                 },
             )
             .expect("const function should be valid");

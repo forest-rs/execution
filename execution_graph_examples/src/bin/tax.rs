@@ -73,7 +73,6 @@ fn program_price_subtotal() -> (Arc<VerifiedProgram>, FuncId) {
             FunctionSig {
                 arg_types: vec![ValueType::I64, ValueType::I64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();
@@ -105,7 +104,6 @@ fn program_tax_amount() -> (Arc<VerifiedProgram>, FuncId) {
             FunctionSig {
                 arg_types: vec![ValueType::I64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 6,
             },
         )
         .unwrap();
@@ -128,7 +126,6 @@ fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
             FunctionSig {
                 arg_types: vec![ValueType::I64, ValueType::I64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();

@@ -254,7 +254,6 @@ fn build_i64_add_chain(chain_len: u32) -> execution_tape::verifier::VerifiedProg
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: cur,
         },
     )
     .unwrap();
@@ -288,7 +287,6 @@ fn build_i64_add_chain_with_spans(
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: cur,
         },
     )
     .unwrap();
@@ -309,7 +307,6 @@ fn build_bytes_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram 
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -330,7 +327,6 @@ fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -342,12 +338,10 @@ fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     let f0 = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
-        reg_count: 2,
     });
     let f1 = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
-        reg_count: 4,
     });
 
     let mut a1 = Asm::new();
@@ -370,12 +364,10 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     let f0 = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
-        reg_count: 8,
     });
     let f1 = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
-        reg_count: 4,
     });
 
     let mut a1 = Asm::new();
@@ -432,7 +424,6 @@ fn build_host_call_overhead() -> execution_tape::verifier::VerifiedProgram {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -478,7 +469,6 @@ fn build_host_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 7,
         },
     )
     .unwrap();

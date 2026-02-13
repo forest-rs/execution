@@ -226,8 +226,6 @@ pub struct FunctionSig {
     pub arg_types: Vec<ValueType>,
     /// Return types.
     pub ret_types: Vec<ValueType>,
-    /// Total registers used by the function (including `r0`).
-    pub reg_count: u32,
 }
 
 /// Convenience builder for constructing small [`Program`]s.
@@ -259,7 +257,6 @@ pub struct FunctionSig {
 ///     FunctionSig {
 ///         arg_types: vec![],
 ///         ret_types: vec![ValueType::I64],
-///         reg_count: 4,
 ///     },
 /// )?;
 /// let _program = pb.build_verified()?;
@@ -504,11 +501,12 @@ impl ProgramBuilder {
     /// This is useful when assembling mutually recursive or out-of-order functions: you can
     /// declare all functions up front, then reference them by [`FuncId`] in [`Asm::call`].
     pub fn declare_function(&mut self, sig: FunctionSig) -> FuncId {
+        let reg_count = min_reg_count_for_arg_count(sig.arg_types.len());
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
         self.functions.push(FunctionDef {
             arg_types: sig.arg_types,
             ret_types: sig.ret_types,
-            reg_count: sig.reg_count,
+            reg_count,
             bytecode: Vec::new(),
             spans: Vec::new(),
         });
@@ -517,10 +515,13 @@ impl ProgramBuilder {
 
     /// Defines the body of a previously declared function.
     pub fn define_function(&mut self, func: FuncId, a: Asm) -> Result<(), BuildError> {
+        let inferred_reg_count = a.inferred_reg_count();
         let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
+        let reg_count = inferred_reg_count_for_arg_count(inferred_reg_count, slot.arg_types.len());
+        slot.reg_count = reg_count;
         slot.bytecode = parts.bytecode;
         slot.spans = parts.spans;
         for l in parts.labels {
@@ -541,10 +542,13 @@ impl ProgramBuilder {
         a: Asm,
         spans: Vec<SpanEntry>,
     ) -> Result<(), BuildError> {
+        let inferred_reg_count = a.inferred_reg_count();
         let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
+        let reg_count = inferred_reg_count_for_arg_count(inferred_reg_count, slot.arg_types.len());
+        slot.reg_count = reg_count;
         slot.bytecode = parts.bytecode;
         slot.spans = spans;
         for l in parts.labels {
@@ -563,12 +567,13 @@ impl ProgramBuilder {
     /// This resolves labels and records the typed signature. Full verification (including host-call
     /// signature checks and cross-function call checks) is performed by `build_checked`.
     pub fn push_function_checked(&mut self, a: Asm, sig: FunctionSig) -> Result<FuncId, AsmError> {
+        let reg_count = a.inferred_reg_count_for_args(sig.arg_types.len());
         let parts = a.finish_parts()?;
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
         self.functions.push(FunctionDef {
             arg_types: sig.arg_types,
             ret_types: sig.ret_types,
-            reg_count: sig.reg_count,
+            reg_count,
             bytecode: parts.bytecode,
             spans: parts.spans,
         });
@@ -704,6 +709,7 @@ impl ProgramBuilder {
 #[derive(Clone, Debug, Default)]
 pub struct Asm {
     bytes: Vec<u8>,
+    max_reg_plus_one: u32,
     next_label: u32,
     labels: Vec<Option<u32>>,
     label_names: Vec<Option<String>>,
@@ -734,6 +740,14 @@ impl Asm {
     #[must_use]
     pub fn pc(&self) -> u32 {
         u32::try_from(self.bytes.len()).unwrap_or(u32::MAX)
+    }
+
+    fn inferred_reg_count_for_args(&self, arg_count: usize) -> u32 {
+        inferred_reg_count_for_arg_count(self.inferred_reg_count(), arg_count)
+    }
+
+    fn inferred_reg_count(&self) -> u32 {
+        self.max_reg_plus_one.max(1)
     }
 
     /// Allocates a new label.
@@ -871,6 +885,7 @@ impl Asm {
         sig: &FunctionSig,
         cfg: &VerifyConfig,
     ) -> Result<AsmParts, AsmError> {
+        let reg_count = self.inferred_reg_count_for_args(sig.arg_types.len());
         let parts = self.finish_parts()?;
         let p = Program::new(
             Vec::new(),
@@ -880,7 +895,7 @@ impl Asm {
             vec![FunctionDef {
                 arg_types: sig.arg_types.clone(),
                 ret_types: sig.ret_types.clone(),
-                reg_count: sig.reg_count,
+                reg_count,
                 bytecode: parts.bytecode.clone(),
                 spans: parts.spans.clone(),
             }],
@@ -1863,6 +1878,7 @@ impl Asm {
     }
 
     fn reg(&mut self, r: u32) {
+        self.max_reg_plus_one = self.max_reg_plus_one.max(r.saturating_add(1));
         self.uleb(r);
     }
 
@@ -1894,6 +1910,16 @@ fn patch_uleb128_u32(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at + 2] = b2;
     bytes[at + 3] = b3;
     bytes[at + 4] = b4;
+}
+
+fn min_reg_count_for_arg_count(arg_count: usize) -> u32 {
+    u32::try_from(arg_count)
+        .unwrap_or(u32::MAX)
+        .saturating_add(1)
+}
+
+fn inferred_reg_count_for_arg_count(inferred_reg_count: u32, arg_count: usize) -> u32 {
+    inferred_reg_count.max(min_reg_count_for_arg_count(arg_count))
 }
 
 #[cfg(test)]
@@ -1930,7 +1956,6 @@ mod tests {
             .finish_checked(&FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             })
             .unwrap();
         assert!(!bytes.is_empty());
@@ -1947,7 +1972,6 @@ mod tests {
             .finish_checked(&FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 2,
             })
             .unwrap_err();
         assert!(matches!(
@@ -1962,12 +1986,10 @@ mod tests {
         let foo = pb.declare_function(FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 2,
         });
         let bar = pb.declare_function(FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 2,
         });
 
         // Define `foo` first; it calls `bar` by its declared `FuncId`.
@@ -1983,6 +2005,41 @@ mod tests {
 
         let p = pb.build_checked().unwrap();
         assert_eq!(p.functions.len(), 2);
+    }
+
+    #[test]
+    fn program_builder_infers_reg_count_from_max_used_register() {
+        let mut pb = ProgramBuilder::new();
+        let func = pb.declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![],
+        });
+        let mut a = Asm::new();
+        a.const_i64(7, 1);
+        a.ret(0, &[]);
+        pb.define_function(func, a).unwrap();
+
+        let p = pb.build_checked().unwrap();
+        assert_eq!(p.functions[func.0 as usize].reg_count, 8);
+    }
+
+    #[test]
+    fn program_builder_infers_reg_count_floor_from_argument_count() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.ret(0, &[]);
+        let func = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64, ValueType::Bool],
+                    ret_types: vec![],
+                },
+            )
+            .unwrap();
+
+        let p = pb.build_checked().unwrap();
+        assert_eq!(p.functions[func.0 as usize].reg_count, 3);
     }
 
     #[test]

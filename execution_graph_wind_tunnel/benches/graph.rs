@@ -61,7 +61,6 @@ fn build_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             FunctionSig {
                 arg_types: vec![ValueType::I64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -102,7 +101,6 @@ fn build_wide_input_program(
             FunctionSig {
                 arg_types: vec![ValueType::I64; input_count],
                 ret_types: vec![ValueType::I64],
-                reg_count: u32::try_from(input_count.saturating_add(1)).unwrap_or(u32::MAX),
             },
         )
         .unwrap();
@@ -305,7 +303,6 @@ fn build_flap_reads_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -455,7 +452,6 @@ fn build_param_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
             FunctionSig {
                 arg_types: vec![ValueType::U64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -554,7 +550,6 @@ fn build_add2_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             FunctionSig {
                 arg_types: vec![ValueType::I64, ValueType::I64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();

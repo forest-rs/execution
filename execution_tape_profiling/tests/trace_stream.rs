@@ -90,12 +90,10 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let callee = pb.declare_function(FunctionSig {
         arg_types: vec![ValueType::I64],
         ret_types: vec![ValueType::I64],
-        reg_count: 2,
     });
     let main = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
-        reg_count: 4,
     });
 
     let mut a_callee = Asm::new();

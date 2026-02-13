@@ -145,7 +145,6 @@ fn roundtrip_verify_run_pure_ops() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -182,7 +181,6 @@ fn roundtrip_verify_run_cmp_cast_select() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 10,
         },
     )
     .unwrap();
@@ -216,7 +214,6 @@ fn roundtrip_verify_run_u64_ops() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 6,
         },
     )
     .unwrap();
@@ -275,7 +272,6 @@ fn roundtrip_verify_run_f64_ext_ops() {
                 ValueType::U64,
                 ValueType::F64,
             ],
-            reg_count: 19,
         },
     )
     .unwrap();
@@ -317,7 +313,6 @@ fn roundtrip_verify_run_u64_ops_wrap() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -356,7 +351,6 @@ fn roundtrip_verify_run_u64_bitwise_and_shifts() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64, ValueType::U64],
-            reg_count: 12,
         },
     )
     .unwrap();
@@ -389,7 +383,6 @@ fn roundtrip_verify_run_u64_ordering() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Bool, ValueType::Bool, ValueType::Bool],
-            reg_count: 6,
         },
     )
     .unwrap();
@@ -424,7 +417,6 @@ fn roundtrip_verify_run_bool_bitwise() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Bool, ValueType::Bool, ValueType::Bool],
-            reg_count: 6,
         },
     )
     .unwrap();
@@ -467,7 +459,6 @@ fn roundtrip_verify_run_i64_bitwise_and_shifts() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64, ValueType::I64],
-            reg_count: 12,
         },
     )
     .unwrap();
@@ -500,7 +491,6 @@ fn roundtrip_verify_run_i64_ordering() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Bool, ValueType::Bool, ValueType::Bool],
-            reg_count: 6,
         },
     )
     .unwrap();
@@ -538,7 +528,6 @@ fn roundtrip_verify_run_decimal_ops() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Decimal],
-            reg_count: 8,
         },
     )
     .unwrap();
@@ -574,7 +563,6 @@ fn vm_traps_decimal_scale_mismatch() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Decimal],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -601,7 +589,6 @@ fn vm_traps_decimal_overflow_on_scale_add() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Decimal],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -633,7 +620,6 @@ fn roundtrip_verify_run_f64_ops() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::F64],
-            reg_count: 8,
         },
     )
     .unwrap();
@@ -662,7 +648,6 @@ fn vm_traps_on_cast_overflow() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -694,7 +679,6 @@ fn roundtrip_verify_run_host_call() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -737,7 +721,6 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
     let f = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![],
-        reg_count: 1,
     });
 
     let mut a = Asm::new();
@@ -812,7 +795,6 @@ fn vm_loop_sum_0_to_n_minus_1() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 8,
         },
     )
     .unwrap();
@@ -836,7 +818,6 @@ fn vm_traps_fuel_in_tight_loop() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![],
-            reg_count: 1,
         },
     )
     .unwrap();
@@ -891,7 +872,6 @@ fn vm_traps_host_call_limit_in_loop() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![],
-            reg_count: 1,
         },
     )
     .unwrap();
@@ -925,7 +905,6 @@ fn verifier_rejects_select_type_mismatch() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 5,
         },
     )
     .unwrap();
@@ -948,7 +927,6 @@ fn vm_traps_on_negative_i64_to_u64() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -977,7 +955,6 @@ fn roundtrip_verify_run_tuple_len() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64, ValueType::I64],
-            reg_count: 6,
         },
     )
     .unwrap();
@@ -1010,7 +987,6 @@ fn roundtrip_verify_run_struct_field_count() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64, ValueType::U64],
-            reg_count: 7,
         },
     )
     .unwrap();
@@ -1039,7 +1015,6 @@ fn roundtrip_verify_run_array_get_imm() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 6,
         },
     )
     .unwrap();
@@ -1066,7 +1041,6 @@ fn vm_traps_array_get_imm_oob() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -1097,7 +1071,6 @@ fn roundtrip_verify_run_bytes_len_and_str_len() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64, ValueType::U64],
-            reg_count: 5,
         },
     )
     .unwrap();
@@ -1133,7 +1106,6 @@ fn roundtrip_verify_run_div_rem() {
                 ValueType::U64,
                 ValueType::U64,
             ],
-            reg_count: 9,
         },
     )
     .unwrap();
@@ -1161,7 +1133,6 @@ fn vm_traps_div_by_zero() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -1188,7 +1159,6 @@ fn vm_traps_i64_div_overflow_min_over_minus_one() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -1225,7 +1195,6 @@ fn roundtrip_verify_run_int_float_conversions() {
                 ValueType::I64,
                 ValueType::U64,
             ],
-            reg_count: 9,
         },
     )
     .unwrap();
@@ -1271,7 +1240,6 @@ fn roundtrip_verify_run_f64_div_and_comparisons() {
                 ValueType::Bool,
                 ValueType::Bool,
             ],
-            reg_count: 9,
         },
     )
     .unwrap();
@@ -1311,7 +1279,6 @@ fn roundtrip_verify_run_f64_comparisons_nan_are_false() {
                 ValueType::Bool,
                 ValueType::Bool,
             ],
-            reg_count: 8,
         },
     )
     .unwrap();
@@ -1344,7 +1311,6 @@ fn vm_traps_f64_to_int_on_nan() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -1370,7 +1336,6 @@ fn vm_traps_f64_to_u64_on_negative() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -1397,7 +1362,6 @@ fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64, ValueType::Decimal],
-            reg_count: 4,
         },
     )
     .unwrap();
@@ -1428,7 +1392,6 @@ fn vm_traps_dec_to_i64_on_nonzero_scale() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::I64],
-            reg_count: 3,
         },
     )
     .unwrap();
@@ -1481,7 +1444,6 @@ fn roundtrip_verify_run_bytes_and_string_ops() {
                 ValueType::Bool,
                 ValueType::Str,
             ],
-            reg_count: 16,
         },
     )
     .unwrap();
@@ -1514,7 +1476,6 @@ fn vm_traps_str_slice_on_non_boundary() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Str],
-            reg_count: 5,
         },
     )
     .unwrap();
@@ -1542,7 +1503,6 @@ fn vm_traps_bytes_to_str_on_invalid_utf8() {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::Str],
-            reg_count: 3,
         },
     )
     .unwrap();

@@ -193,7 +193,6 @@ mod tests {
                 FunctionSig {
                     arg_types: vec![ValueType::I64],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 2,
                 },
             )
             .unwrap();
@@ -251,7 +250,6 @@ mod tests {
                 FunctionSig {
                     arg_types: vec![ValueType::I64],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 2,
                 },
             )
             .unwrap();
