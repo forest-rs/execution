@@ -3573,7 +3573,6 @@ mod tests {
                 FunctionSig {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64, ValueType::I64],
-                    reg_count: 3,
                 },
             )
             .unwrap();
@@ -3600,7 +3599,6 @@ mod tests {
                 FunctionSig {
                     arg_types: vec![ValueType::I64, ValueType::I64],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 3,
                 },
             )
             .unwrap();
@@ -3661,7 +3659,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -3715,7 +3712,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -3893,7 +3889,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 1,
             },
         )
         .unwrap();
@@ -3909,7 +3904,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -4013,7 +4007,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();
@@ -4046,7 +4039,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::Agg],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -4082,7 +4074,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::Agg],
-                reg_count: 3,
             },
         )
         .unwrap();
@@ -4109,7 +4100,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 6,
             },
         )
         .unwrap();
@@ -4130,7 +4120,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();
@@ -4167,7 +4156,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 6,
             },
         )
         .unwrap();
@@ -4193,7 +4181,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();
@@ -4220,7 +4207,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 4,
             },
         )
         .unwrap();
@@ -4245,7 +4231,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
-                reg_count: 2,
             },
         )
         .unwrap();
@@ -4275,7 +4260,6 @@ mod tests {
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 5,
             },
         )
         .unwrap();

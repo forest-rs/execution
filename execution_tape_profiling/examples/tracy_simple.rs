@@ -56,7 +56,6 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let leaf = pb.declare_function(FunctionSig {
         arg_types: vec![ValueType::I64],
         ret_types: vec![ValueType::I64],
-        reg_count: 2,
     });
     pb.set_function_name(leaf, "leaf").expect("set leaf name");
     pb.set_function_input_name(leaf, 0, "x")
@@ -66,7 +65,6 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let stage_one = pb.declare_function(FunctionSig {
         arg_types: vec![ValueType::I64],
         ret_types: vec![ValueType::I64],
-        reg_count: 4,
     });
     pb.set_function_name(stage_one, "stage_one")
         .expect("set stage_one name");
@@ -77,7 +75,6 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let stage_two = pb.declare_function(FunctionSig {
         arg_types: vec![ValueType::I64],
         ret_types: vec![ValueType::I64],
-        reg_count: 3,
     });
     pb.set_function_name(stage_two, "stage_two")
         .expect("set stage_two name");
@@ -88,7 +85,6 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let main = pb.declare_function(FunctionSig {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
-        reg_count: 4,
     });
     pb.set_function_name(main, "main").expect("set main name");
     pb.set_function_output_name(main, 0, "result")

@@ -48,7 +48,6 @@
 //!     FunctionSig {
 //!         arg_types: vec![ValueType::I64],
 //!         ret_types: vec![ValueType::I64],
-//!         reg_count: 4,
 //!     },
 //! )?;
 //! pb.set_function_input_name(entry, 0, "x")?;

@@ -34,7 +34,6 @@ fn main() {
             FunctionSig {
                 arg_types: vec![ValueType::Bool, ValueType::I64, ValueType::I64],
                 ret_types: vec![ValueType::I64],
-                reg_count: 5,
             },
         )
         .unwrap();
