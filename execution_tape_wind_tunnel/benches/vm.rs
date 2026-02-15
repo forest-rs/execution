@@ -21,6 +21,9 @@ fn bench_vm(c: &mut Criterion) {
     bench_i64_add_chain_no_trace_span_dense(c);
     bench_bytes_const_len(c);
     bench_str_const_len(c);
+    bench_bytes_concat_chain(c);
+    bench_str_concat_chain(c);
+    bench_array_alloc_loop(c);
     bench_call_overhead(c);
     bench_call_loop(c);
     bench_host_call(c);
@@ -141,6 +144,63 @@ fn bench_str_const_len(c: &mut Criterion) {
     group.finish();
 }
 
+// Measures heap pressure from repeated bytes_concat with growing payloads.
+fn bench_bytes_concat_chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bytes_concat_chain");
+    for &iters in &[10_u32, 50, 200] {
+        for &chunk in &[16_usize, 64] {
+            let p = build_bytes_concat_chain(iters, chunk);
+            let mut vm = Vm::new(NopHost, wide_open_limits());
+            let id = BenchmarkId::new("n_chunk", format!("{iters}x{chunk}"));
+            group.bench_with_input(id, &p, |b, p| {
+                b.iter(|| {
+                    let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                    black_box(out);
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
+// Measures heap pressure from repeated str_concat with growing payloads.
+fn bench_str_concat_chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("str_concat_chain");
+    for &iters in &[10_u32, 50, 200] {
+        for &chunk in &[16_usize, 64] {
+            let p = build_str_concat_chain(iters, chunk);
+            let mut vm = Vm::new(NopHost, wide_open_limits());
+            let id = BenchmarkId::new("n_chunk", format!("{iters}x{chunk}"));
+            group.bench_with_input(id, &p, |b, p| {
+                b.iter(|| {
+                    let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                    black_box(out);
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
+// Measures aggregate heap pressure from repeated array_new + array_get in a tight loop.
+fn bench_array_alloc_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("array_alloc_loop");
+    for &iters in &[100_u64, 1_000] {
+        for &arity in &[4_u32, 16] {
+            let p = build_array_alloc_loop(iters, arity);
+            let mut vm = Vm::new(NopHost, wide_open_limits());
+            let id = BenchmarkId::new("iters_arity", format!("{iters}x{arity}"));
+            group.bench_with_input(id, &p, |b, p| {
+                b.iter(|| {
+                    let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                    black_box(out);
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 fn bench_call_overhead(c: &mut Criterion) {
     let p = build_call_overhead();
     let mut vm = Vm::new(NopHost, wide_open_limits());
@@ -155,7 +215,7 @@ fn bench_call_overhead(c: &mut Criterion) {
 
 fn bench_call_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("call_loop");
-    for &iters in &[10_u64, 100, 1000] {
+    for &iters in &[10_u64, 100, 1_000] {
         let p = build_call_loop(iters);
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
@@ -182,7 +242,7 @@ fn bench_host_call(c: &mut Criterion) {
 
 fn bench_host_call_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("host_call_loop");
-    for &iters in &[10_u64, 100, 1000] {
+    for &iters in &[10_u64, 100, 1_000] {
         let p = build_host_call_loop(iters);
         let mut vm = Vm::new(IdentityHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
@@ -327,6 +387,119 @@ fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
         FunctionSig {
             arg_types: vec![],
             ret_types: vec![ValueType::U64],
+        },
+    )
+    .unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_array_alloc_loop(iters: u64, arity: u32) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+    let elem = pb.array_elem(ValueType::I64);
+
+    let mut a = Asm::new();
+    let l_loop = a.label();
+    let l_body = a.label();
+    let l_done = a.label();
+
+    a.const_u64(1, 0);
+    a.const_u64(2, iters);
+    a.const_u64(3, 1);
+
+    let base = 6_u32;
+    let mut values = Vec::with_capacity(arity as usize);
+    for i in 0..arity {
+        let reg = base + i;
+        a.const_i64(reg, i as i64);
+        values.push(reg);
+    }
+    let ret_reg = base + arity;
+    a.const_i64(ret_reg, 0);
+
+    a.jmp(l_loop);
+    a.place(l_loop).unwrap();
+    a.u64_eq(4, 1, 2);
+    a.br(4, l_done, l_body);
+
+    a.place(l_body).unwrap();
+    a.array_new(5, elem, &values);
+    a.array_get_imm(ret_reg, 5, 0);
+    a.u64_add(1, 1, 3);
+    a.jmp(l_loop);
+
+    a.place(l_done).unwrap();
+    a.ret(0, &[ret_reg]);
+
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+            reg_count: ret_reg + 1,
+        },
+    )
+    .unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_bytes_concat_chain(
+    iters: u32,
+    chunk_size: usize,
+) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+    let bytes = pb.constant(Const::Bytes(vec![0_u8; chunk_size]));
+
+    let mut a = Asm::new();
+    a.const_pool(1, bytes);
+    a.const_pool(2, bytes);
+
+    let mut cur = 2_u32;
+    let mut next = 3_u32;
+    for _ in 0..iters {
+        a.bytes_concat(next, cur, 1);
+        cur = next;
+        next += 1;
+    }
+    a.ret(0, &[cur]);
+
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::Bytes],
+            reg_count: next,
+        },
+    )
+    .unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_str_concat_chain(
+    iters: u32,
+    chunk_size: usize,
+) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+    let s = pb.constant(Const::Str("a".repeat(chunk_size)));
+
+    let mut a = Asm::new();
+    a.const_pool(1, s);
+    a.const_pool(2, s);
+
+    let mut cur = 2_u32;
+    let mut next = 3_u32;
+    for _ in 0..iters {
+        a.str_concat(next, cur, 1);
+        cur = next;
+        next += 1;
+    }
+    a.ret(0, &[cur]);
+
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::Str],
+            reg_count: next,
         },
     )
     .unwrap();
