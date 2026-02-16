@@ -8,7 +8,7 @@ use execution_tape::host::{
     AccessSink, Host, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn,
 };
 use execution_tape::program::Program;
-use execution_tape::program::{Const, ValueType};
+use execution_tape::program::{Const, SpanId, ValueType};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
@@ -289,7 +289,7 @@ fn build_i64_add_chain_with_spans(
     let mut next_span_id = 1_u64;
     for i in 0..chain_len {
         if i % span_every == 0 {
-            a.span(next_span_id);
+            a.span(SpanId::try_from(next_span_id).unwrap());
             next_span_id = next_span_id.saturating_add(1);
         }
         a.i64_add(cur, cur - 1, 2);

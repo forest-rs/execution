@@ -9,7 +9,7 @@ pub use leb128::{read_sleb128_i64, read_uleb128_u64, write_sleb128_i64, write_ul
 
 use alloc::vec::Vec;
 use core::fmt;
-use core::num::NonZeroU32;
+use core::num::{NonZeroU32, NonZeroU64};
 
 /// A decode error for `execution_tape` binary artifacts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +144,15 @@ impl<'a> Reader<'a> {
         NonZeroU32::new(v).ok_or(DecodeError::OutOfBounds)
     }
 
+    /// Reads an unsigned LEB128 integer as a non-zero `u64`.
+    ///
+    /// Returns [`DecodeError::OutOfBounds`] if the decoded value is `0`.
+    #[inline(always)]
+    pub fn read_uleb128_u64_nz(&mut self) -> Result<NonZeroU64, DecodeError> {
+        let v = self.read_uleb128_u64()?;
+        NonZeroU64::new(v).ok_or(DecodeError::OutOfBounds)
+    }
+
     /// Reads a signed LEB128 integer as `i64`.
     pub fn read_sleb128_i64(&mut self) -> Result<i64, DecodeError> {
         read_sleb128_i64(self.bytes, &mut self.offset)
@@ -223,6 +232,12 @@ impl Writer {
     #[inline(always)]
     pub fn write_uleb128_u32_nz(&mut self, v: NonZeroU32) {
         self.write_uleb128_u32(v.get());
+    }
+
+    /// Appends an unsigned LEB128 integer (non-zero `u64`).
+    #[inline(always)]
+    pub fn write_uleb128_u64_nz(&mut self, v: NonZeroU64) {
+        self.write_uleb128_u64(v.get());
     }
 
     /// Appends a signed LEB128 integer (`i64`).

@@ -11,7 +11,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use core::num::NonZeroU32;
+use core::num::{NonZeroU32, NonZeroU64};
 
 use crate::format::{DecodeError, Reader, Writer};
 use crate::host::{HostSig, SigHash, sig_hash};
@@ -71,8 +71,36 @@ pub enum Const {
 pub struct SpanEntry {
     /// Delta from previous `pc` (or from 0 for the first entry).
     pub pc_delta: u64,
-    /// Stable span identifier.
-    pub span_id: u64,
+    /// Stable, non-zero span identifier.
+    pub span_id: SpanId,
+}
+
+/// Stable, non-zero span identifier.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SpanId(pub NonZeroU64);
+
+impl SpanId {
+    /// Returns the underlying integer id.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl core::fmt::Display for SpanId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl TryFrom<u64> for SpanId {
+    type Error = DecodeError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or(DecodeError::OutOfBounds)
+    }
 }
 
 /// Symbol table identifier (index into [`Program::symbols`]).
@@ -898,7 +926,7 @@ impl Program {
                 payload.write_uleb128_u64(spans.len() as u64);
                 for s in spans {
                     payload.write_uleb128_u64(s.pc_delta);
-                    payload.write_uleb128_u64(s.span_id);
+                    payload.write_uleb128_u64_nz(s.span_id.0);
                 }
             }
             write_section(&mut w, SectionTag::SpanTables, payload.as_slice());
@@ -1848,7 +1876,7 @@ fn decode_span_tables(payload: &[u8]) -> Result<Vec<Vec<SpanEntry>>, DecodeError
         for _ in 0..span_count {
             spans.push(SpanEntry {
                 pc_delta: r.read_uleb128_u64()?,
-                span_id: r.read_uleb128_u64()?,
+                span_id: SpanId(r.read_uleb128_u64_nz()?),
             });
         }
         out.push(spans);
@@ -1865,6 +1893,10 @@ fn read_usize(r: &mut Reader<'_>) -> Result<usize, DecodeError> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    fn sid(v: u64) -> SpanId {
+        SpanId::try_from(v).unwrap()
+    }
 
     #[test]
     fn program_roundtrips() {
@@ -1906,7 +1938,7 @@ mod tests {
                     bytecode: vec![1, 2, 3],
                     spans: vec![SpanEntry {
                         pc_delta: 0,
-                        span_id: 123,
+                        span_id: sid(123),
                     }],
                 },
                 FunctionDef {
@@ -1916,7 +1948,7 @@ mod tests {
                     bytecode: vec![0xff; 32],
                     spans: vec![SpanEntry {
                         pc_delta: 5,
-                        span_id: 9999,
+                        span_id: sid(9999),
                     }],
                 },
             ],
@@ -1954,7 +1986,7 @@ mod tests {
                 bytecode: vec![1, 2, 3],
                 spans: vec![SpanEntry {
                     pc_delta: 0,
-                    span_id: 123,
+                    span_id: sid(123),
                 }],
             }],
         );

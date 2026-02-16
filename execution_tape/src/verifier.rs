@@ -21,7 +21,7 @@ use crate::host::sig_hash_slices;
 use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
-    ConstEntry, ElemTypeId, Function, Program, SpanEntry, SymbolId, TypeId, ValueType,
+    ConstEntry, ElemTypeId, Function, Program, SpanEntry, SpanId, SymbolId, TypeId, ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg, FuncReg,
@@ -1138,11 +1138,11 @@ fn verify_span_table(bytecode_len: u64, spans: &[SpanEntry]) -> Result<(), ()> {
     Ok(())
 }
 
-fn build_span_by_instr_ix(decoded: &[DecodedInstr], spans: &[SpanEntry]) -> Vec<Option<u64>> {
-    let mut by_ix: Vec<Option<u64>> = Vec::with_capacity(decoded.len());
+fn build_span_by_instr_ix(decoded: &[DecodedInstr], spans: &[SpanEntry]) -> Vec<Option<SpanId>> {
+    let mut by_ix: Vec<Option<SpanId>> = Vec::with_capacity(decoded.len());
     let mut span_ix: usize = 0;
     let mut span_pc: u64 = 0;
-    let mut cur_span: Option<u64> = None;
+    let mut cur_span: Option<SpanId> = None;
 
     for di in decoded {
         let instr_pc = u64::from(di.offset);
@@ -3549,9 +3549,15 @@ mod tests {
     use crate::asm::Asm;
     use crate::asm::{BuildError, FunctionSig, ProgramBuilder};
     use crate::opcode::Opcode;
-    use crate::program::{Const, FunctionDef, HostSymbol, StructTypeDef, TypeTableDef, ValueType};
+    use crate::program::{
+        Const, FunctionDef, HostSymbol, SpanId, StructTypeDef, TypeTableDef, ValueType,
+    };
     use crate::value::FuncId;
     use alloc::vec;
+
+    fn sid(v: u64) -> SpanId {
+        SpanId::try_from(v).unwrap()
+    }
 
     #[test]
     fn verifier_accepts_minimal_program() {
@@ -3568,7 +3574,7 @@ mod tests {
                 bytecode: vec![Opcode::ConstUnit as u8, 0x01, Opcode::Ret as u8, 0x00, 0x00],
                 spans: vec![SpanEntry {
                     pc_delta: 0,
-                    span_id: 1,
+                    span_id: sid(1),
                 }],
             }],
         );
@@ -3755,7 +3761,7 @@ mod tests {
                 bytecode: vec![0, 1, 2],
                 spans: vec![SpanEntry {
                     pc_delta: 999,
-                    span_id: 1,
+                    span_id: sid(1),
                 }],
             }],
         );

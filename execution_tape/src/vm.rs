@@ -521,7 +521,7 @@ impl<H: Host> Vm<H> {
                 ctx.frames.len(),
                 entry,
                 0,
-                entry_vf.span_at_ix(0),
+                entry_vf.span_at_ix(0).map(|id| id.get()),
             );
         }
 
@@ -551,7 +551,10 @@ impl<H: Host> Vm<H> {
                 let span_id = ctx.span_at(program_ref, func_id, pc);
                 ctx.trap(func_id, pc, span_id, Trap::InvalidPc)
             })?;
-            let span_id = vf.span_at_ix(instr_ix);
+            // Keep span ids as plain `u64` in the dispatch loop: carrying `SpanId`/`NonZeroU64`
+            // through this hot path caused measurable regressions in branch-heavy benchmarks.
+            // The verifier/program pipeline still enforces non-zero span ids via `SpanId`.
+            let span_id = vf.span_at_ix(instr_ix).map(|id| id.get());
             let (opcode, instr, actual_pc, next_pc) =
                 vf.fetch_at_ix(instr_ix).ok_or_else(|| {
                     let trap_span = span_id.or_else(|| ctx.span_at(program_ref, func_id, pc));
@@ -1302,7 +1305,7 @@ impl<H: Host> Vm<H> {
                             ctx.frames.len(),
                             *callee,
                             0,
-                            callee_vf.span_at_ix(0),
+                            callee_vf.span_at_ix(0).map(|id| id.get()),
                         );
                     }
 
@@ -2346,7 +2349,7 @@ impl ExecutionContext {
             if cur_pc > u64::from(pc) {
                 break;
             }
-            out = Some(s.span_id);
+            out = Some(s.span_id.get());
         }
         out
     }

@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use crate::program::HostSigId;
 use crate::program::{ConstId, ValueType};
-use crate::program::{ElemTypeId, TypeId};
+use crate::program::{ElemTypeId, SpanId, TypeId};
 use crate::value::FuncId;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -793,7 +793,7 @@ pub(crate) struct ExecFunc {
     /// This is precomputed by the verifier from the function span table so VM execution can do
     /// O(1) span lookup in hot paths.
     ///
-    pub(crate) span_by_instr_ix: Vec<Option<u64>>,
+    pub(crate) span_by_instr_ix: Vec<Option<SpanId>>,
 }
 
 impl ExecFunc {
@@ -803,7 +803,7 @@ impl ExecFunc {
     }
 
     #[inline]
-    pub(crate) fn span_at_ix(&self, ix: usize) -> Option<u64> {
+    pub(crate) fn span_at_ix(&self, ix: usize) -> Option<SpanId> {
         self.span_by_instr_ix.get(ix).copied().flatten()
     }
 

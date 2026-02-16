@@ -19,7 +19,8 @@ use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
     Const, ConstId, ElemTypeId, FunctionDef, FunctionNameEntry, HostSigDef, HostSigId, HostSymbol,
-    LabelNameEntry, Program, SpanEntry, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
+    LabelNameEntry, Program, SpanEntry, SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef,
+    ValueType,
 };
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -717,7 +718,7 @@ pub struct Asm {
     labels: Vec<Option<u32>>,
     label_names: Vec<Option<String>>,
     fixups: Vec<Fixup>,
-    span_marks: Vec<(u32, u64)>,
+    span_marks: Vec<(u32, SpanId)>,
 }
 
 #[derive(Clone, Debug)]
@@ -807,7 +808,7 @@ impl Asm {
     ///
     /// This emits a span-table entry at the current `pc`. Repeated calls at the same `pc` overwrite
     /// the previous entry (so the encoded `pc_delta` sequence remains valid).
-    pub fn span(&mut self, span_id: u64) -> &mut Self {
+    pub fn span(&mut self, span_id: SpanId) -> &mut Self {
         let pc = self.pc();
         if let Some((last_pc, last_span)) = self.span_marks.last_mut()
             && *last_pc == pc
@@ -2083,10 +2084,10 @@ mod tests {
     #[test]
     fn asm_span_overwrites_at_same_pc() {
         let mut a = Asm::new();
-        a.span(1);
-        a.span(2);
+        a.span(SpanId::try_from(1).unwrap());
+        a.span(SpanId::try_from(2).unwrap());
         a.const_unit(0);
-        a.span(3);
+        a.span(SpanId::try_from(3).unwrap());
         a.trap(0);
 
         let parts = a.finish_parts().unwrap();
@@ -2095,11 +2096,11 @@ mod tests {
             vec![
                 SpanEntry {
                     pc_delta: 0,
-                    span_id: 2
+                    span_id: SpanId::try_from(2).unwrap()
                 },
                 SpanEntry {
                     pc_delta: 2,
-                    span_id: 3
+                    span_id: SpanId::try_from(3).unwrap()
                 }
             ]
         );
