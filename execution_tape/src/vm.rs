@@ -20,7 +20,7 @@ use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg, I64Reg, ObjReg,
-    StrReg, U64Reg, UnitReg, VReg,
+    StrReg, U64Reg, UnitReg, VReg, VRegSlice,
 };
 use crate::value::{AggHandle, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
@@ -220,29 +220,16 @@ struct Frame {
     ///
     /// This is `None` for the entry frame.
     ///
-    /// Design note: we intentionally do *not* store a cloned `Vec<VReg>` of return registers here.
-    /// Instead we store a pointer to the caller's `call` instruction (`call_instr_ix`) and recover
-    /// the return register slice from the verified instruction stream at `ret` time.
-    ///
-    /// This avoids a per-call allocation and is a better starting point for future PTC (tail calls
-    /// can keep the same continuation while replacing the current frame).
+    /// Design note: we intentionally keep this metadata compact and avoid storing duplicated
+    /// caller frame state (`func`, `base`, `pc`, `instr_ix`) because the caller frame remains on
+    /// stack while the callee executes.
     return_to: Option<ReturnTo>,
 }
 
 #[derive(Copy, Clone, Debug)]
 struct ReturnTo {
-    /// Caller function id.
-    caller: FuncId,
-    /// Instruction index of the caller's `call` instruction within the verified instruction list.
-    ///
-    /// Used to recover the call's destination registers without allocating.
-    call_instr_ix: usize,
-    /// Base offsets for the caller frame's registers.
-    caller_base: RegBase,
-    /// Program counter to resume at in the caller frame.
-    caller_pc: u32,
-    /// Instruction index to resume at in the caller frame.
-    caller_instr_ix: usize,
+    /// Destination return-register slice declared by the caller's `call`.
+    dst_rets: VRegSlice,
 }
 
 /// Per-run execution context for [`Vm`].
@@ -1266,7 +1253,7 @@ impl<H: Host> Vm<H> {
                     func_id: callee,
                     eff_in: _,
                     args,
-                    rets: _,
+                    rets: dst_rets,
                 } => {
                     if ctx.frames.len() >= max_call_depth {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
@@ -1283,11 +1270,6 @@ impl<H: Host> Vm<H> {
                     // v1: effect token is `Unit` (stored as 0).
                     ctx.write_unit(base, *eff_out, 0);
 
-                    let ret_base = base;
-                    let ret_pc = next_pc;
-                    let ret_instr_ix = next_instr_ix;
-                    let call_instr_ix = instr_ix;
-
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
                     if args.len() != callee_vf.reg_layout.arg_regs.len() {
@@ -1298,7 +1280,7 @@ impl<H: Host> Vm<H> {
                         .copied()
                         .zip(callee_vf.reg_layout.arg_regs.iter().copied())
                     {
-                        ctx.copy_vreg(ret_base, src, callee_base, dst)
+                        ctx.copy_vreg(base, src, callee_base, dst)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
@@ -1309,11 +1291,7 @@ impl<H: Host> Vm<H> {
                         byte_len: callee_vf.byte_len,
                         base: callee_base,
                         return_to: Some(ReturnTo {
-                            caller: func_id,
-                            call_instr_ix,
-                            caller_base: ret_base,
-                            caller_pc: ret_pc,
-                            caller_instr_ix: ret_instr_ix,
+                            dst_rets: *dst_rets,
                         }),
                     });
 
@@ -1369,33 +1347,26 @@ impl<H: Host> Vm<H> {
 
                     let rets = vf.vregs(*rets);
 
-                    // Recover the call's destination registers from the verified instruction
-                    // stream. This avoids storing/cloning the return register list on every call.
-                    let caller_vf = program
-                        .verified(ret.caller)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let (_caller_opcode, caller_instr, _caller_pc, _caller_next_pc) = caller_vf
-                        .fetch_at_ix(ret.call_instr_ix)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let ExecInstr::Call { rets: dst_rets, .. } = caller_instr else {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                    let caller_index = ctx.frames.len() - 1;
+                    let (caller_func, caller_base) = {
+                        let f = &ctx.frames[caller_index];
+                        (f.func, f.base)
                     };
-                    let dst_rets = caller_vf.vregs(*dst_rets);
+                    let caller_vf = program
+                        .verified(caller_func)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let dst_rets = caller_vf.vregs(ret.dst_rets);
 
                     if dst_rets.len() != rets.len() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     }
 
                     for (&dst, &src) in dst_rets.iter().zip(rets.iter()) {
-                        ctx.copy_vreg(base, src, ret.caller_base, dst)
+                        ctx.copy_vreg(base, src, caller_base, dst)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
                     ctx.truncate_to(base);
-
-                    let caller_index = ctx.frames.len() - 1;
-                    ctx.frames[caller_index].pc = ret.caller_pc;
-                    ctx.frames[caller_index].instr_ix = ret.caller_instr_ix;
                 }
 
                 ExecInstr::HostCall {
