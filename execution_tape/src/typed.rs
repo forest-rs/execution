@@ -127,15 +127,15 @@ pub(crate) struct RegLayout {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct VerifiedDecodedInstr {
+pub(crate) struct ExecDecoded {
     pub(crate) offset: u32,
     pub(crate) opcode: u8,
-    pub(crate) instr: VerifiedInstr,
+    pub(crate) instr: ExecInstr,
 }
 
 /// A verifier-produced instruction stream with typed register operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum VerifiedInstr {
+pub(crate) enum ExecInstr {
     /// No-op.
     Nop,
     /// Trap unconditionally with a trap code.
@@ -586,11 +586,11 @@ pub(crate) enum VerifiedInstr {
 
     Br {
         cond: BoolReg,
-        pc_true: u32,
-        pc_false: u32,
+        true_ix: u32,
+        false_ix: u32,
     },
     Jmp {
-        pc_target: u32,
+        target_ix: u32,
     },
 
     Call {
@@ -783,21 +783,20 @@ pub(crate) enum VerifiedInstr {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct VerifiedFunction {
+pub(crate) struct ExecFunc {
     pub(crate) byte_len: u32,
     pub(crate) reg_layout: RegLayout,
     pub(crate) operands: Vec<VReg>,
-    pub(crate) instrs: Vec<VerifiedDecodedInstr>,
+    pub(crate) instrs: Vec<ExecDecoded>,
     /// Optional source span id for each decoded instruction index.
     ///
     /// This is precomputed by the verifier from the function span table so VM execution can do
     /// O(1) span lookup in hot paths.
     ///
-    /// TODO: Remove this once execution instructions are introduced.
     pub(crate) span_by_instr_ix: Vec<Option<u64>>,
 }
 
-impl VerifiedFunction {
+impl ExecFunc {
     #[inline(always)]
     pub(crate) fn vregs(&self, s: VRegSlice) -> &[VReg] {
         s.as_slice(&self.operands)
@@ -808,11 +807,12 @@ impl VerifiedFunction {
         self.span_by_instr_ix.get(ix).copied().flatten()
     }
 
-    pub(crate) fn instr_ix_at_pc(&self, pc: u32) -> Option<usize> {
-        self.instrs.binary_search_by_key(&pc, |di| di.offset).ok()
+    #[inline]
+    pub(crate) fn pc_at_ix(&self, ix: usize) -> Option<u32> {
+        self.instrs.get(ix).map(|di| di.offset)
     }
 
-    pub(crate) fn fetch_at_ix(&self, ix: usize) -> Option<(u8, &VerifiedInstr, u32, u32)> {
+    pub(crate) fn fetch_at_ix(&self, ix: usize) -> Option<(u8, &ExecInstr, u32, u32)> {
         let di = self.instrs.get(ix)?;
         let next_pc = self
             .instrs

@@ -23,6 +23,7 @@ fn bench_vm(c: &mut Criterion) {
     bench_str_const_len(c);
     bench_call_overhead(c);
     bench_call_loop(c);
+    bench_branch_hot_loop(c);
     bench_host_call(c);
     bench_host_call_loop(c);
     bench_host_call_traced_run(c);
@@ -157,6 +158,21 @@ fn bench_call_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("call_loop");
     for &iters in &[10_u64, 100, 1000] {
         let p = build_call_loop(iters);
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
+            b.iter(|| {
+                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                black_box(out);
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_branch_hot_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("branch_hot_loop");
+    for &iters in &[100_u64, 1000, 10_000] {
+        let p = build_branch_hot_loop(iters);
         let mut vm = Vm::new(NopHost, wide_open_limits());
         group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
             b.iter(|| {
@@ -404,6 +420,60 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     a0.ret(0, &[4]);
 
     pb.define_function(f0, a0).unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_branch_hot_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+
+    // r1: counter, r2: limit, r3: one, r4: zero
+    // r5: done?, r6: parity, r7: even?, r8: accumulator
+    let mut a = Asm::new();
+    let l_loop = a.label();
+    let l_check = a.label();
+    let l_even = a.label();
+    let l_odd = a.label();
+    let l_done = a.label();
+
+    a.const_u64(1, 0);
+    a.const_u64(2, iters);
+    a.const_u64(3, 1);
+    a.const_u64(4, 0);
+    a.const_i64(8, 0);
+
+    a.jmp(l_loop);
+    a.place(l_loop).unwrap();
+    a.u64_eq(5, 1, 2);
+    a.br(5, l_done, l_check);
+
+    a.place(l_check).unwrap();
+    a.u64_and(6, 1, 3);
+    a.u64_eq(7, 6, 4);
+    a.br(7, l_even, l_odd);
+
+    // Alternate branches hit this on even iterations.
+    a.place(l_even).unwrap();
+    a.i64_add(8, 8, 8);
+    a.u64_add(1, 1, 3);
+    a.jmp(l_loop);
+
+    // Alternate branches hit this on odd iterations.
+    a.place(l_odd).unwrap();
+    a.i64_sub(8, 8, 8);
+    a.u64_add(1, 1, 3);
+    a.jmp(l_loop);
+
+    a.place(l_done).unwrap();
+    a.ret(0, &[8]);
+
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        },
+    )
+    .unwrap();
     pb.build_verified().unwrap()
 }
 

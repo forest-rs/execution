@@ -19,8 +19,8 @@ use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, DecimalReg, F64Reg, FuncReg, I64Reg, ObjReg, StrReg, U64Reg,
-    UnitReg, VReg, VerifiedFunction, VerifiedInstr,
+    AggReg, BoolReg, BytesReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg, I64Reg, ObjReg,
+    StrReg, U64Reg, UnitReg, VReg,
 };
 use crate::value::{AggHandle, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
@@ -585,104 +585,104 @@ impl<H: Host> Vm<H> {
             ctx.frames[frame_index].instr_ix = next_instr_ix;
 
             match instr {
-                VerifiedInstr::Nop => {}
-                VerifiedInstr::Trap { code } => {
+                ExecInstr::Nop => {}
+                ExecInstr::Trap { code } => {
                     return Err(ctx.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
                 }
 
-                VerifiedInstr::MovUnit { dst, src } => {
+                ExecInstr::MovUnit { dst, src } => {
                     let v = ctx.read_unit(base, *src);
                     ctx.write_unit(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovBool { dst, src } => {
+                ExecInstr::MovBool { dst, src } => {
                     let v = ctx.read_bool(base, *src);
                     ctx.write_bool(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovI64 { dst, src } => {
+                ExecInstr::MovI64 { dst, src } => {
                     let v = ctx.read_i64(base, *src);
                     ctx.write_i64(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovU64 { dst, src } => {
+                ExecInstr::MovU64 { dst, src } => {
                     let v = ctx.read_u64(base, *src);
                     ctx.write_u64(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovF64 { dst, src } => {
+                ExecInstr::MovF64 { dst, src } => {
                     let v = ctx.read_f64(base, *src);
                     ctx.write_f64(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovDecimal { dst, src } => {
+                ExecInstr::MovDecimal { dst, src } => {
                     let v = ctx.read_decimal(base, *src);
                     ctx.write_decimal(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovBytes { dst, src } => {
+                ExecInstr::MovBytes { dst, src } => {
                     let v = ctx.read_bytes_handle(base, *src);
                     ctx.write_bytes_handle(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovStr { dst, src } => {
+                ExecInstr::MovStr { dst, src } => {
                     let v = ctx.read_str_handle(base, *src);
                     ctx.write_str_handle(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovObj { dst, src } => {
+                ExecInstr::MovObj { dst, src } => {
                     let v = ctx.read_obj(base, *src);
                     ctx.write_obj(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovAgg { dst, src } => {
+                ExecInstr::MovAgg { dst, src } => {
                     let v = ctx.read_agg_handle(base, *src);
                     ctx.write_agg_handle(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::MovFunc { dst, src } => {
+                ExecInstr::MovFunc { dst, src } => {
                     let v = ctx.read_func(base, *src);
                     ctx.write_func(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
-                VerifiedInstr::ConstUnit { dst } => {
+                ExecInstr::ConstUnit { dst } => {
                     ctx.write_unit(base, *dst, 0);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::ConstBool { dst, imm } => {
+                ExecInstr::ConstBool { dst, imm } => {
                     ctx.write_bool(base, *dst, *imm);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::ConstI64 { dst, imm } => {
+                ExecInstr::ConstI64 { dst, imm } => {
                     ctx.write_i64(base, *dst, *imm);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::ConstU64 { dst, imm } => {
+                ExecInstr::ConstU64 { dst, imm } => {
                     ctx.write_u64(base, *dst, *imm);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::ConstF64 { dst, bits } => {
+                ExecInstr::ConstF64 { dst, bits } => {
                     ctx.write_f64(base, *dst, f64::from_bits(*bits));
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::ConstDecimal {
+                ExecInstr::ConstDecimal {
                     dst,
                     mantissa,
                     scale,
@@ -698,13 +698,13 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                VerifiedInstr::ConstFunc { dst, func_id } => {
+                ExecInstr::ConstFunc { dst, func_id } => {
                     ctx.write_func(base, *dst, *func_id);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
-                VerifiedInstr::ConstPoolUnit { dst, idx } => {
+                ExecInstr::ConstPoolUnit { dst, idx } => {
                     let ConstEntry::Unit = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -715,7 +715,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_unit(base, *dst, 0);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolBool { dst, idx } => {
+                ExecInstr::ConstPoolBool { dst, idx } => {
                     let ConstEntry::Bool(b) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -726,7 +726,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bool(base, *dst, *b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolI64 { dst, idx } => {
+                ExecInstr::ConstPoolI64 { dst, idx } => {
                     let ConstEntry::I64(i) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -737,7 +737,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_i64(base, *dst, *i);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolU64 { dst, idx } => {
+                ExecInstr::ConstPoolU64 { dst, idx } => {
                     let ConstEntry::U64(u) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -748,7 +748,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, *u);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolF64 { dst, idx } => {
+                ExecInstr::ConstPoolF64 { dst, idx } => {
                     let ConstEntry::F64(bits) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -759,7 +759,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_f64(base, *dst, f64::from_bits(*bits));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolDecimal { dst, idx } => {
+                ExecInstr::ConstPoolDecimal { dst, idx } => {
                     let ConstEntry::Decimal { mantissa, scale } = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -777,7 +777,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolBytes { dst, idx } => {
+                ExecInstr::ConstPoolBytes { dst, idx } => {
                     let ConstEntry::Bytes(r) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -799,7 +799,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::ConstPoolStr { dst, idx } => {
+                ExecInstr::ConstPoolStr { dst, idx } => {
                     let ConstEntry::Str(r) = program_ref
                         .const_pool
                         .get(idx.0 as usize)
@@ -821,7 +821,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::DecAdd { dst, a, b } => {
+                ExecInstr::DecAdd { dst, a, b } => {
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
                     if da.scale != db.scale {
@@ -841,7 +841,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::DecSub { dst, a, b } => {
+                ExecInstr::DecSub { dst, a, b } => {
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
                     if da.scale != db.scale {
@@ -861,7 +861,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::DecMul { dst, a, b } => {
+                ExecInstr::DecMul { dst, a, b } => {
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
                     let mantissa = da
@@ -875,64 +875,64 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::F64Add { dst, a, b } => {
+                ExecInstr::F64Add { dst, a, b } => {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a) + ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Sub { dst, a, b } => {
+                ExecInstr::F64Sub { dst, a, b } => {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a) - ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Mul { dst, a, b } => {
+                ExecInstr::F64Mul { dst, a, b } => {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a) * ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Div { dst, a, b } => {
+                ExecInstr::F64Div { dst, a, b } => {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a) / ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Neg { dst, a } => {
+                ExecInstr::F64Neg { dst, a } => {
                     ctx.write_f64(base, *dst, -ctx.read_f64(base, *a));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Abs { dst, a } => {
+                ExecInstr::F64Abs { dst, a } => {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a).abs());
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Min { dst, a, b } => {
+                ExecInstr::F64Min { dst, a, b } => {
                     let out = f64_min(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Max { dst, a, b } => {
+                ExecInstr::F64Max { dst, a, b } => {
                     let out = f64_max(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64MinNum { dst, a, b } => {
+                ExecInstr::F64MinNum { dst, a, b } => {
                     let out = f64_min_num(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64MaxNum { dst, a, b } => {
+                ExecInstr::F64MaxNum { dst, a, b } => {
                     let out = f64_max_num(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Rem { dst, a, b } => {
+                ExecInstr::F64Rem { dst, a, b } => {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a) % ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64ToBits { dst, a } => {
+                ExecInstr::F64ToBits { dst, a } => {
                     ctx.write_u64(base, *dst, ctx.read_f64(base, *a).to_bits());
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64FromBits { dst, a } => {
+                ExecInstr::F64FromBits { dst, a } => {
                     ctx.write_f64(base, *dst, f64::from_bits(ctx.read_u64(base, *a)));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::I64Add { dst, a, b } => {
+                ExecInstr::I64Add { dst, a, b } => {
                     ctx.write_i64(
                         base,
                         *dst,
@@ -940,7 +940,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Sub { dst, a, b } => {
+                ExecInstr::I64Sub { dst, a, b } => {
                     ctx.write_i64(
                         base,
                         *dst,
@@ -948,7 +948,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Mul { dst, a, b } => {
+                ExecInstr::I64Mul { dst, a, b } => {
                     ctx.write_i64(
                         base,
                         *dst,
@@ -956,30 +956,30 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64And { dst, a, b } => {
+                ExecInstr::I64And { dst, a, b } => {
                     ctx.write_i64(base, *dst, ctx.read_i64(base, *a) & ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Or { dst, a, b } => {
+                ExecInstr::I64Or { dst, a, b } => {
                     ctx.write_i64(base, *dst, ctx.read_i64(base, *a) | ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Xor { dst, a, b } => {
+                ExecInstr::I64Xor { dst, a, b } => {
                     ctx.write_i64(base, *dst, ctx.read_i64(base, *a) ^ ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Shl { dst, a, b } => {
+                ExecInstr::I64Shl { dst, a, b } => {
                     let sh = (ctx.read_i64(base, *b) as u64 & 63) as u32;
                     ctx.write_i64(base, *dst, ctx.read_i64(base, *a) << sh);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Shr { dst, a, b } => {
+                ExecInstr::I64Shr { dst, a, b } => {
                     let sh = (ctx.read_i64(base, *b) as u64 & 63) as u32;
                     ctx.write_i64(base, *dst, ctx.read_i64(base, *a) >> sh);
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::U64Add { dst, a, b } => {
+                ExecInstr::U64Add { dst, a, b } => {
                     ctx.write_u64(
                         base,
                         *dst,
@@ -987,7 +987,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Sub { dst, a, b } => {
+                ExecInstr::U64Sub { dst, a, b } => {
                     ctx.write_u64(
                         base,
                         *dst,
@@ -995,7 +995,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Mul { dst, a, b } => {
+                ExecInstr::U64Mul { dst, a, b } => {
                     ctx.write_u64(
                         base,
                         *dst,
@@ -1003,97 +1003,97 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64And { dst, a, b } => {
+                ExecInstr::U64And { dst, a, b } => {
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a) & ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Or { dst, a, b } => {
+                ExecInstr::U64Or { dst, a, b } => {
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a) | ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Xor { dst, a, b } => {
+                ExecInstr::U64Xor { dst, a, b } => {
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a) ^ ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Shl { dst, a, b } => {
+                ExecInstr::U64Shl { dst, a, b } => {
                     let sh = (ctx.read_u64(base, *b) & 63) as u32;
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a) << sh);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Shr { dst, a, b } => {
+                ExecInstr::U64Shr { dst, a, b } => {
                     let sh = (ctx.read_u64(base, *b) & 63) as u32;
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a) >> sh);
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::I64Eq { dst, a, b } => {
+                ExecInstr::I64Eq { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) == ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Lt { dst, a, b } => {
+                ExecInstr::I64Lt { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) < ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Gt { dst, a, b } => {
+                ExecInstr::I64Gt { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) > ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Le { dst, a, b } => {
+                ExecInstr::I64Le { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) <= ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Ge { dst, a, b } => {
+                ExecInstr::I64Ge { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) >= ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::U64Eq { dst, a, b } => {
+                ExecInstr::U64Eq { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_u64(base, *a) == ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Lt { dst, a, b } => {
+                ExecInstr::U64Lt { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_u64(base, *a) < ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Gt { dst, a, b } => {
+                ExecInstr::U64Gt { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_u64(base, *a) > ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Le { dst, a, b } => {
+                ExecInstr::U64Le { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_u64(base, *a) <= ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Ge { dst, a, b } => {
+                ExecInstr::U64Ge { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_u64(base, *a) >= ctx.read_u64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::F64Eq { dst, a, b } => {
+                ExecInstr::F64Eq { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_f64(base, *a) == ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Lt { dst, a, b } => {
+                ExecInstr::F64Lt { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_f64(base, *a) < ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Gt { dst, a, b } => {
+                ExecInstr::F64Gt { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_f64(base, *a) > ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Le { dst, a, b } => {
+                ExecInstr::F64Le { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_f64(base, *a) <= ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64Ge { dst, a, b } => {
+                ExecInstr::F64Ge { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_f64(base, *a) >= ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::BoolNot { dst, a } => {
+                ExecInstr::BoolNot { dst, a } => {
                     ctx.write_bool(base, *dst, !ctx.read_bool(base, *a));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BoolAnd { dst, a, b } => {
+                ExecInstr::BoolAnd { dst, a, b } => {
                     ctx.write_bool(
                         base,
                         *dst,
@@ -1101,7 +1101,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BoolOr { dst, a, b } => {
+                ExecInstr::BoolOr { dst, a, b } => {
                     ctx.write_bool(
                         base,
                         *dst,
@@ -1109,7 +1109,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BoolXor { dst, a, b } => {
+                ExecInstr::BoolXor { dst, a, b } => {
                     ctx.write_bool(
                         base,
                         *dst,
@@ -1118,14 +1118,14 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::U64ToI64 { dst, a } => {
+                ExecInstr::U64ToI64 { dst, a } => {
                     let u = ctx.read_u64(base, *a);
                     let i = i64::try_from(u)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
                     ctx.write_i64(base, *dst, i);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64ToU64 { dst, a } => {
+                ExecInstr::I64ToU64 { dst, a } => {
                     let i = ctx.read_i64(base, *a);
                     let u = u64::try_from(i)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
@@ -1133,7 +1133,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::SelectUnit { dst, cond, a, b } => {
+                ExecInstr::SelectUnit { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_unit(base, *a)
                     } else {
@@ -1142,7 +1142,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_unit(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectBool { dst, cond, a, b } => {
+                ExecInstr::SelectBool { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_bool(base, *a)
                     } else {
@@ -1151,7 +1151,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bool(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectI64 { dst, cond, a, b } => {
+                ExecInstr::SelectI64 { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_i64(base, *a)
                     } else {
@@ -1160,7 +1160,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_i64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectU64 { dst, cond, a, b } => {
+                ExecInstr::SelectU64 { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_u64(base, *a)
                     } else {
@@ -1169,7 +1169,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectF64 { dst, cond, a, b } => {
+                ExecInstr::SelectF64 { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_f64(base, *a)
                     } else {
@@ -1178,7 +1178,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectDecimal { dst, cond, a, b } => {
+                ExecInstr::SelectDecimal { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_decimal(base, *a)
                     } else {
@@ -1187,7 +1187,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_decimal(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectBytes { dst, cond, a, b } => {
+                ExecInstr::SelectBytes { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_bytes_handle(base, *a)
                     } else {
@@ -1196,7 +1196,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bytes_handle(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectStr { dst, cond, a, b } => {
+                ExecInstr::SelectStr { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_str_handle(base, *a)
                     } else {
@@ -1205,7 +1205,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_str_handle(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectObj { dst, cond, a, b } => {
+                ExecInstr::SelectObj { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_obj(base, *a)
                     } else {
@@ -1214,7 +1214,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_obj(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectAgg { dst, cond, a, b } => {
+                ExecInstr::SelectAgg { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_agg_handle(base, *a)
                     } else {
@@ -1223,7 +1223,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_agg_handle(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::SelectFunc { dst, cond, a, b } => {
+                ExecInstr::SelectFunc { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_func(base, *a)
                     } else {
@@ -1233,32 +1233,35 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::Br {
+                ExecInstr::Br {
                     cond,
-                    pc_true,
-                    pc_false,
+                    true_ix,
+                    false_ix,
                 } => {
-                    let target_pc = if ctx.read_bool(base, *cond) {
-                        *pc_true
+                    let target_ix_u32 = if ctx.read_bool(base, *cond) {
+                        *true_ix
                     } else {
-                        *pc_false
+                        *false_ix
                     };
-                    let target_ix = vf
-                        .instr_ix_at_pc(target_pc)
+                    let target_ix = usize::try_from(target_ix_u32)
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let target_pc = vf
+                        .pc_at_ix(target_ix)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     ctx.frames[frame_index].pc = target_pc;
                     ctx.frames[frame_index].instr_ix = target_ix;
                 }
-                VerifiedInstr::Jmp { pc_target } => {
-                    let target_pc = *pc_target;
-                    let target_ix = vf
-                        .instr_ix_at_pc(target_pc)
+                ExecInstr::Jmp { target_ix } => {
+                    let target_ix = usize::try_from(*target_ix)
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let target_pc = vf
+                        .pc_at_ix(target_ix)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     ctx.frames[frame_index].pc = target_pc;
                     ctx.frames[frame_index].instr_ix = target_ix;
                 }
 
-                VerifiedInstr::Call {
+                ExecInstr::Call {
                     eff_out,
                     func_id: callee,
                     eff_in: _,
@@ -1331,7 +1334,7 @@ impl<H: Host> Vm<H> {
                     );
                 }
 
-                VerifiedInstr::Ret { eff_in: _, rets } => {
+                ExecInstr::Ret { eff_in: _, rets } => {
                     if trace_call {
                         trace.scope_exit(
                             program_ref,
@@ -1374,7 +1377,7 @@ impl<H: Host> Vm<H> {
                     let (_caller_opcode, caller_instr, _caller_pc, _caller_next_pc) = caller_vf
                         .fetch_at_ix(ret.call_instr_ix)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let VerifiedInstr::Call { rets: dst_rets, .. } = caller_instr else {
+                    let ExecInstr::Call { rets: dst_rets, .. } = caller_instr else {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
                     let dst_rets = caller_vf.vregs(*dst_rets);
@@ -1395,7 +1398,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[caller_index].instr_ix = ret.caller_instr_ix;
                 }
 
-                VerifiedInstr::HostCall {
+                ExecInstr::HostCall {
                     eff_out,
                     host_sig,
                     eff_in: _,
@@ -1534,7 +1537,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::TupleNew { dst, values } => {
+                ExecInstr::TupleNew { dst, values } => {
                     let values = vf.vregs(*values);
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
@@ -1547,7 +1550,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::TupleGet { dst, tuple, index } => {
+                ExecInstr::TupleGet { dst, tuple, index } => {
                     let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let out = self
                         .agg
@@ -1558,7 +1561,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::StructNew {
+                ExecInstr::StructNew {
                     dst,
                     type_id,
                     values,
@@ -1589,7 +1592,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::StructGet {
+                ExecInstr::StructGet {
                     dst,
                     st,
                     field_index,
@@ -1604,7 +1607,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::ArrayNew {
+                ExecInstr::ArrayNew {
                     dst,
                     elem_type_id,
                     len,
@@ -1634,7 +1637,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::ArrayLen { dst, arr } => {
+                ExecInstr::ArrayLen { dst, arr } => {
                     let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let n = self
                         .agg
@@ -1644,7 +1647,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::ArrayGet { dst, arr, index } => {
+                ExecInstr::ArrayGet { dst, arr, index } => {
                     let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let ix = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
                     let out = self
@@ -1656,7 +1659,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::ArrayGetImm { dst, arr, index } => {
+                ExecInstr::ArrayGetImm { dst, arr, index } => {
                     let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let ix = usize::try_from(*index).unwrap_or(usize::MAX);
                     let out = self
@@ -1668,7 +1671,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::TupleLen { dst, tuple } => {
+                ExecInstr::TupleLen { dst, tuple } => {
                     let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let n = self
                         .agg
@@ -1678,7 +1681,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::StructFieldCount { dst, st } => {
+                ExecInstr::StructFieldCount { dst, st } => {
                     let h = ctx.read_agg_handle(base, AggReg(st.0));
                     let n = self
                         .agg
@@ -1688,14 +1691,14 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::BytesLen { dst, bytes } => {
+                ExecInstr::BytesLen { dst, bytes } => {
                     let b = ctx
                         .read_bytes(bytes, base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_u64(base, *dst, u64::try_from(b.len()).unwrap_or(u64::MAX));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::StrLen { dst, s } => {
+                ExecInstr::StrLen { dst, s } => {
                     let s = ctx
                         .read_str(s, base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -1703,7 +1706,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::I64Div { dst, a, b } => {
+                ExecInstr::I64Div { dst, a, b } => {
                     let a = ctx.read_i64(base, *a);
                     let b = ctx.read_i64(base, *b);
                     if b == 0 {
@@ -1715,7 +1718,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_i64(base, *dst, a / b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64Rem { dst, a, b } => {
+                ExecInstr::I64Rem { dst, a, b } => {
                     let a = ctx.read_i64(base, *a);
                     let b = ctx.read_i64(base, *b);
                     if b == 0 {
@@ -1727,7 +1730,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_i64(base, *dst, a % b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Div { dst, a, b } => {
+                ExecInstr::U64Div { dst, a, b } => {
                     let a = ctx.read_u64(base, *a);
                     let b = ctx.read_u64(base, *b);
                     if b == 0 {
@@ -1736,7 +1739,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, a / b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64Rem { dst, a, b } => {
+                ExecInstr::U64Rem { dst, a, b } => {
                     let a = ctx.read_u64(base, *a);
                     let b = ctx.read_u64(base, *b);
                     if b == 0 {
@@ -1746,15 +1749,15 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::I64ToF64 { dst, a } => {
+                ExecInstr::I64ToF64 { dst, a } => {
                     ctx.write_f64(base, *dst, ctx.read_i64(base, *a) as f64);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64ToF64 { dst, a } => {
+                ExecInstr::U64ToF64 { dst, a } => {
                     ctx.write_f64(base, *dst, ctx.read_u64(base, *a) as f64);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64ToI64 { dst, a } => {
+                ExecInstr::F64ToI64 { dst, a } => {
                     let a = ctx.read_f64(base, *a);
                     if !a.is_finite() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
@@ -1770,7 +1773,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_i64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::F64ToU64 { dst, a } => {
+                ExecInstr::F64ToU64 { dst, a } => {
                     let a = ctx.read_f64(base, *a);
                     if !a.is_finite() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
@@ -1787,7 +1790,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::DecToI64 { dst, a } => {
+                ExecInstr::DecToI64 { dst, a } => {
                     let a = ctx.read_decimal(base, *a);
                     if a.scale != 0 {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
@@ -1795,7 +1798,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_i64(base, *dst, a.mantissa);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::DecToU64 { dst, a } => {
+                ExecInstr::DecToU64 { dst, a } => {
                     let a = ctx.read_decimal(base, *a);
                     if a.scale != 0 {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
@@ -1806,7 +1809,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, u64::try_from(a.mantissa).unwrap_or(u64::MAX));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::I64ToDec { dst, a, scale } => {
+                ExecInstr::I64ToDec { dst, a, scale } => {
                     let a = ctx.read_i64(base, *a);
                     let mut factor: i64 = 1;
                     for _ in 0..*scale {
@@ -1827,7 +1830,7 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::U64ToDec { dst, a, scale } => {
+                ExecInstr::U64ToDec { dst, a, scale } => {
                     let a = ctx.read_u64(base, *a);
                     let mut factor: i64 = 1;
                     for _ in 0..*scale {
@@ -1850,7 +1853,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                VerifiedInstr::BytesEq { dst, a, b } => {
+                ExecInstr::BytesEq { dst, a, b } => {
                     let a = ctx
                         .read_bytes(a, base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -1860,7 +1863,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bool(base, *dst, a == b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::StrEq { dst, a, b } => {
+                ExecInstr::StrEq { dst, a, b } => {
                     let a = ctx
                         .read_str(a, base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -1870,7 +1873,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bool(base, *dst, a == b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BytesConcat { dst, a, b } => {
+                ExecInstr::BytesConcat { dst, a, b } => {
                     let out = {
                         let a = ctx
                             .read_bytes(a, base)
@@ -1887,7 +1890,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::StrConcat { dst, a, b } => {
+                ExecInstr::StrConcat { dst, a, b } => {
                     let out = {
                         let a = ctx
                             .read_str(a, base)
@@ -1904,7 +1907,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BytesGet { dst, bytes, index } => {
+                ExecInstr::BytesGet { dst, bytes, index } => {
                     let bytes = ctx
                         .read_bytes(bytes, base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -1915,7 +1918,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, u64::from(*b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BytesGetImm { dst, bytes, index } => {
+                ExecInstr::BytesGetImm { dst, bytes, index } => {
                     let bytes = ctx
                         .read_bytes(bytes, base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -1926,7 +1929,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, u64::from(*b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BytesSlice {
+                ExecInstr::BytesSlice {
                     dst,
                     bytes,
                     start,
@@ -1948,7 +1951,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::StrSlice { dst, s, start, end } => {
+                ExecInstr::StrSlice { dst, s, start, end } => {
                     let out = {
                         let s = ctx
                             .read_str(s, base)
@@ -1968,7 +1971,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::StrToBytes { dst, s } => {
+                ExecInstr::StrToBytes { dst, s } => {
                     let out = {
                         let s = ctx
                             .read_str(s, base)
@@ -1979,7 +1982,7 @@ impl<H: Host> Vm<H> {
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                VerifiedInstr::BytesToStr { dst, bytes } => {
+                ExecInstr::BytesToStr { dst, bytes } => {
                     let out = {
                         let bytes = ctx
                             .read_bytes(bytes, base)
@@ -2007,7 +2010,7 @@ impl<H: Host> Vm<H> {
 }
 
 impl ExecutionContext {
-    fn alloc_frame(&mut self, vf: &VerifiedFunction) -> RegBase {
+    fn alloc_frame(&mut self, vf: &ExecFunc) -> RegBase {
         let counts = vf.reg_layout.counts;
         let base = RegBase {
             unit: self.units.len(),
@@ -2064,12 +2067,7 @@ impl ExecutionContext {
         self.funcs.truncate(base.funcs);
     }
 
-    fn init_args(
-        &mut self,
-        base: RegBase,
-        vf: &VerifiedFunction,
-        args: &[Value],
-    ) -> Result<(), Trap> {
+    fn init_args(&mut self, base: RegBase, vf: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
         if args.len() != vf.reg_layout.arg_regs.len() {
             return Err(Trap::InvalidPc);
         }
