@@ -363,7 +363,7 @@ impl<'a> TraceCtx<'a> {
     }
 
     #[inline]
-    fn instr(
+    fn instr_if_enabled(
         &mut self,
         program: &Program,
         func: FuncId,
@@ -372,42 +372,316 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         opcode: u8,
     ) {
-        if let Some(t) = self.sink.as_mut() {
+        if self.enabled(TraceMask::INSTR)
+            && let Some(t) = self.sink.as_mut()
+        {
             let t: &mut dyn TraceSink = &mut **t;
             t.instr(program, func, pc, next_pc, span_id, opcode);
         }
     }
 
     #[inline]
-    fn scope_enter(
+    fn call_scope_enter_if_enabled(
         &mut self,
         program: &Program,
-        kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         span_id: Option<u64>,
     ) {
-        if let Some(t) = self.sink.as_mut() {
+        if self.enabled(TraceMask::CALL)
+            && let Some(t) = self.sink.as_mut()
+        {
             let t: &mut dyn TraceSink = &mut **t;
-            t.scope_enter(program, kind, depth, func, pc, span_id);
+            t.scope_enter(
+                program,
+                ScopeKind::CallFrame { func },
+                depth,
+                func,
+                pc,
+                span_id,
+            );
         }
     }
 
     #[inline]
-    fn scope_exit(
+    fn call_scope_exit_if_enabled(
         &mut self,
         program: &Program,
-        kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         span_id: Option<u64>,
     ) {
-        if let Some(t) = self.sink.as_mut() {
+        if self.enabled(TraceMask::CALL)
+            && let Some(t) = self.sink.as_mut()
+        {
             let t: &mut dyn TraceSink = &mut **t;
-            t.scope_exit(program, kind, depth, func, pc, span_id);
+            t.scope_exit(
+                program,
+                ScopeKind::CallFrame { func },
+                depth,
+                func,
+                pc,
+                span_id,
+            );
         }
+    }
+
+    #[inline]
+    fn host_scope_enter_if_enabled(
+        &mut self,
+        program: &Program,
+        host_sig: crate::program::HostSigId,
+        symbol: crate::program::SymbolId,
+        sig_hash: crate::host::SigHash,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        if self.enabled(TraceMask::HOST)
+            && let Some(t) = self.sink.as_mut()
+        {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.scope_enter(
+                program,
+                ScopeKind::HostCall {
+                    host_sig,
+                    symbol,
+                    sig_hash,
+                },
+                depth,
+                func,
+                pc,
+                span_id,
+            );
+        }
+    }
+
+    #[inline]
+    fn host_scope_exit_if_enabled(
+        &mut self,
+        program: &Program,
+        host_sig: crate::program::HostSigId,
+        symbol: crate::program::SymbolId,
+        sig_hash: crate::host::SigHash,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        if self.enabled(TraceMask::HOST)
+            && let Some(t) = self.sink.as_mut()
+        {
+            let t: &mut dyn TraceSink = &mut **t;
+            t.scope_exit(
+                program,
+                ScopeKind::HostCall {
+                    host_sig,
+                    symbol,
+                    sig_hash,
+                },
+                depth,
+                func,
+                pc,
+                span_id,
+            );
+        }
+    }
+}
+
+trait TracePolicy {
+    fn instr(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        func: FuncId,
+        pc: u32,
+        next_pc: u32,
+        span_id: Option<u64>,
+        opcode: u8,
+    );
+
+    fn call_scope_enter(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    );
+
+    fn call_scope_exit(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    );
+
+    fn host_scope_enter(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        host_sig: crate::program::HostSigId,
+        symbol: crate::program::SymbolId,
+        sig_hash: crate::host::SigHash,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    );
+
+    fn host_scope_exit(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        host_sig: crate::program::HostSigId,
+        symbol: crate::program::SymbolId,
+        sig_hash: crate::host::SigHash,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    );
+}
+
+struct NoTracePolicy;
+struct WithTracePolicy;
+
+impl TracePolicy for NoTracePolicy {
+    #[inline(always)]
+    fn instr(
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _func: FuncId,
+        _pc: u32,
+        _next_pc: u32,
+        _span_id: Option<u64>,
+        _opcode: u8,
+    ) {
+    }
+
+    #[inline(always)]
+    fn call_scope_enter(
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+    }
+
+    #[inline(always)]
+    fn call_scope_exit(
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+    }
+
+    #[inline(always)]
+    fn host_scope_enter(
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _host_sig: crate::program::HostSigId,
+        _symbol: crate::program::SymbolId,
+        _sig_hash: crate::host::SigHash,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+    }
+
+    #[inline(always)]
+    fn host_scope_exit(
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _host_sig: crate::program::HostSigId,
+        _symbol: crate::program::SymbolId,
+        _sig_hash: crate::host::SigHash,
+        _depth: usize,
+        _func: FuncId,
+        _pc: u32,
+        _span_id: Option<u64>,
+    ) {
+    }
+}
+
+impl TracePolicy for WithTracePolicy {
+    #[inline(always)]
+    fn instr(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        func: FuncId,
+        pc: u32,
+        next_pc: u32,
+        span_id: Option<u64>,
+        opcode: u8,
+    ) {
+        trace.instr_if_enabled(program, func, pc, next_pc, span_id, opcode);
+    }
+
+    #[inline(always)]
+    fn call_scope_enter(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        trace.call_scope_enter_if_enabled(program, depth, func, pc, span_id);
+    }
+
+    #[inline(always)]
+    fn call_scope_exit(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        trace.call_scope_exit_if_enabled(program, depth, func, pc, span_id);
+    }
+
+    #[inline(always)]
+    fn host_scope_enter(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        host_sig: crate::program::HostSigId,
+        symbol: crate::program::SymbolId,
+        sig_hash: crate::host::SigHash,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        trace.host_scope_enter_if_enabled(
+            program, host_sig, symbol, sig_hash, depth, func, pc, span_id,
+        );
+    }
+
+    #[inline(always)]
+    fn host_scope_exit(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        host_sig: crate::program::HostSigId,
+        symbol: crate::program::SymbolId,
+        sig_hash: crate::host::SigHash,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        trace.host_scope_exit_if_enabled(
+            program, host_sig, symbol, sig_hash, depth, func, pc, span_id,
+        );
     }
 }
 
@@ -461,7 +735,17 @@ impl<H: Host> Vm<H> {
         let mut trace = TraceCtx::new(trace_mask, trace);
         trace.run_start(program_ref, entry, args.len());
 
-        let result = self.run_body(ctx, program, entry, args, &mut trace, access);
+        // Keep two interpreter-loop instantiations: one no-trace fast path and one trace-capable
+        // path with per-mask checks, instead of specializing every trace-mask combination.
+        let trace_active = trace.enabled(TraceMask::INSTR)
+            || trace.enabled(TraceMask::CALL)
+            || trace.enabled(TraceMask::HOST);
+
+        let result = if trace_active {
+            self.run_body::<WithTracePolicy>(ctx, program, entry, args, &mut trace, access)
+        } else {
+            self.run_body::<NoTracePolicy>(ctx, program, entry, args, &mut trace, access)
+        };
 
         let outcome = match &result {
             Ok(_) => TraceOutcome::Ok,
@@ -472,7 +756,7 @@ impl<H: Host> Vm<H> {
         result
     }
 
-    fn run_body(
+    fn run_body<P: TracePolicy>(
         &mut self,
         ctx: &mut ExecutionContext,
         program: &VerifiedProgram,
@@ -484,9 +768,6 @@ impl<H: Host> Vm<H> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
-        let trace_instr = trace.enabled(TraceMask::INSTR);
-        let trace_call = trace.enabled(TraceMask::CALL);
-        let trace_host = trace.enabled(TraceMask::HOST);
         ctx.reset(self.limits.fuel);
 
         let entry_fn = program_ref
@@ -514,16 +795,14 @@ impl<H: Host> Vm<H> {
             return_to: None,
         });
 
-        if trace_call {
-            trace.scope_enter(
-                program_ref,
-                ScopeKind::CallFrame { func: entry },
-                ctx.frames.len(),
-                entry,
-                0,
-                entry_vf.span_at_ix(0).map(|id| id.get()),
-            );
-        }
+        P::call_scope_enter(
+            trace,
+            program_ref,
+            ctx.frames.len(),
+            entry,
+            0,
+            entry_vf.span_at_ix(0).map(|id| id.get()),
+        );
 
         loop {
             if ctx.fuel == 0 {
@@ -566,9 +845,7 @@ impl<H: Host> Vm<H> {
             );
             let next_instr_ix = instr_ix.saturating_add(1);
 
-            if trace_instr {
-                trace.instr(program_ref, func_id, pc, next_pc, span_id, opcode);
-            }
+            P::instr(trace, program_ref, func_id, pc, next_pc, span_id, opcode);
 
             // Default fallthrough: advance to the next decoded instruction.
             ctx.frames[frame_index].pc = next_pc;
@@ -1298,16 +1575,14 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if trace_call {
-                        trace.scope_enter(
-                            program_ref,
-                            ScopeKind::CallFrame { func: *callee },
-                            ctx.frames.len(),
-                            *callee,
-                            0,
-                            callee_vf.span_at_ix(0).map(|id| id.get()),
-                        );
-                    }
+                    P::call_scope_enter(
+                        trace,
+                        program_ref,
+                        ctx.frames.len(),
+                        *callee,
+                        0,
+                        callee_vf.span_at_ix(0).map(|id| id.get()),
+                    );
 
                     debug_assert_eq!(
                         callee_fn.bytecode.len, callee_vf.byte_len,
@@ -1316,16 +1591,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::Ret { eff_in: _, rets } => {
-                    if trace_call {
-                        trace.scope_exit(
-                            program_ref,
-                            ScopeKind::CallFrame { func: func_id },
-                            ctx.frames.len(),
-                            func_id,
-                            pc,
-                            span_id,
-                        );
-                    }
+                    P::call_scope_exit(trace, program_ref, ctx.frames.len(), func_id, pc, span_id);
 
                     if ctx.frames.len() == 1 {
                         let rets = vf.vregs(*rets);
@@ -1433,20 +1699,17 @@ impl<H: Host> Vm<H> {
 
                     let call_args: &[ValueRef<'_>] = call_args_mut;
 
-                    if trace_host {
-                        trace.scope_enter(
-                            program_ref,
-                            ScopeKind::HostCall {
-                                host_sig: *host_sig,
-                                symbol: hs.symbol,
-                                sig_hash: hs.sig_hash,
-                            },
-                            ctx.frames.len(),
-                            func_id,
-                            pc,
-                            span_id,
-                        );
-                    }
+                    P::host_scope_enter(
+                        trace,
+                        program_ref,
+                        *host_sig,
+                        hs.symbol,
+                        hs.sig_hash,
+                        ctx.frames.len(),
+                        func_id,
+                        pc,
+                        span_id,
+                    );
 
                     // Stack buffer for the common case (0–8 rets); Vec fallback for the rest.
                     // Value is Clone but not Copy, so use `from_fn` instead of repeat syntax.
@@ -1470,20 +1733,17 @@ impl<H: Host> Vm<H> {
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
-                    if trace_host {
-                        trace.scope_exit(
-                            program_ref,
-                            ScopeKind::HostCall {
-                                host_sig: *host_sig,
-                                symbol: hs.symbol,
-                                sig_hash: hs.sig_hash,
-                            },
-                            ctx.frames.len(),
-                            func_id,
-                            pc,
-                            span_id,
-                        );
-                    }
+                    P::host_scope_exit(
+                        trace,
+                        program_ref,
+                        *host_sig,
+                        hs.symbol,
+                        hs.sig_hash,
+                        ctx.frames.len(),
+                        func_id,
+                        pc,
+                        span_id,
+                    );
 
                     // v1: effect token is `Unit`.
                     ctx.write_unit(base, *eff_out, 0);
