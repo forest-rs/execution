@@ -8,6 +8,7 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -56,6 +57,26 @@ enum AggNode {
     },
 }
 
+impl AggNode {
+    #[inline]
+    fn values(&self) -> &[Value] {
+        match self {
+            Self::Tuple { values } | Self::Struct { values, .. } | Self::Array { values, .. } => {
+                values
+            }
+        }
+    }
+
+    #[inline]
+    fn values_mut(&mut self) -> &mut [Value] {
+        match self {
+            Self::Tuple { values } | Self::Struct { values, .. } | Self::Array { values, .. } => {
+                values
+            }
+        }
+    }
+}
+
 /// An immutable aggregate heap.
 ///
 /// v1 uses a simple `Vec`-backed store and returns stable handles.
@@ -77,6 +98,177 @@ pub struct AggOverlay<'a> {
     base: &'a AggHeap,
     base_len: u32,
     staged: &'a mut AggHeap,
+}
+
+/// Staged aggregate allocations produced by one execute pass.
+///
+/// `base_len` is the base snapshot used to encode staged handles (`base_len + local_index`).
+#[derive(Clone, Debug, Default)]
+pub struct AggDelta {
+    base_len: u32,
+    staged: AggHeap,
+}
+
+impl AggDelta {
+    /// Creates an empty delta for a base snapshot length.
+    #[must_use]
+    pub fn new(base_len: u32) -> Self {
+        Self {
+            base_len,
+            staged: AggHeap::new(),
+        }
+    }
+
+    /// Returns the base snapshot length used by this delta.
+    #[must_use]
+    pub const fn base_len(&self) -> u32 {
+        self.base_len
+    }
+
+    /// Returns staged aggregate storage.
+    #[must_use]
+    pub fn staged(&self) -> &AggHeap {
+        &self.staged
+    }
+
+    /// Returns mutable staged aggregate storage.
+    pub fn staged_mut(&mut self) -> &mut AggHeap {
+        &mut self.staged
+    }
+
+    /// Deterministically merges reachable staged aggregates into `base`.
+    ///
+    /// Reachability is traced from `roots`. Only staged nodes reachable from at least one root are
+    /// appended, and append order is increasing staged index.
+    ///
+    /// Handles that appear staged-encoded but resolve outside this delta's staged range are treated
+    /// as unresolved and left unchanged by the returned remap.
+    #[must_use]
+    pub fn merge_into(&self, base: &mut AggHeap, roots: &[Value]) -> AggRemap {
+        let reachable = self.reachable_staged_nodes(roots);
+        let remap = AggRemap::from_reachable(self.base_len, base.len_u32(), &reachable);
+
+        for (idx, node) in self.staged.nodes.iter().enumerate() {
+            if !reachable[idx] {
+                continue;
+            }
+
+            let mut remapped = node.clone();
+            remap.remap_values_in_place(remapped.values_mut());
+            let _ = base.push(remapped);
+        }
+
+        remap
+    }
+
+    fn reachable_staged_nodes(&self, roots: &[Value]) -> Vec<bool> {
+        let mut reachable = vec![false; self.staged.nodes.len()];
+        let mut stack: Vec<usize> = Vec::new();
+
+        for root in roots {
+            self.push_reachable_from_value(root, &mut reachable, &mut stack);
+        }
+
+        while let Some(idx) = stack.pop() {
+            let Some(node) = self.staged.nodes.get(idx) else {
+                continue;
+            };
+            for value in node.values() {
+                self.push_reachable_from_value(value, &mut reachable, &mut stack);
+            }
+        }
+
+        reachable
+    }
+
+    fn push_reachable_from_value(
+        &self,
+        value: &Value,
+        reachable: &mut [bool],
+        stack: &mut Vec<usize>,
+    ) {
+        let Value::Agg(handle) = value else {
+            return;
+        };
+        let Some(idx) = self.staged_index(*handle) else {
+            return;
+        };
+        if reachable[idx] {
+            return;
+        }
+
+        reachable[idx] = true;
+        stack.push(idx);
+    }
+
+    fn staged_index(&self, handle: AggHandle) -> Option<usize> {
+        if handle.0 < self.base_len {
+            return None;
+        }
+        let local = handle.0 - self.base_len;
+        let idx = usize::try_from(local).ok()?;
+        (idx < self.staged.nodes.len()).then_some(idx)
+    }
+}
+
+/// Handle remapping produced by [`AggDelta::merge_into`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AggRemap {
+    base_len: u32,
+    staged_to_base: Vec<Option<AggHandle>>,
+}
+
+impl AggRemap {
+    fn from_reachable(base_len: u32, base_start_len: u32, reachable: &[bool]) -> Self {
+        let mut staged_to_base = vec![None; reachable.len()];
+        let mut next = base_start_len;
+
+        for (idx, is_reachable) in reachable.iter().copied().enumerate() {
+            if !is_reachable {
+                continue;
+            }
+            staged_to_base[idx] = Some(AggHandle(next));
+            next = next.saturating_add(1);
+        }
+
+        Self {
+            base_len,
+            staged_to_base,
+        }
+    }
+
+    /// Remaps one value from staged/base snapshot space to merged-base space.
+    ///
+    /// Non-aggregate values and unresolved staged handles are returned unchanged.
+    #[must_use]
+    pub fn remap_value(&self, value: &Value) -> Value {
+        match value {
+            Value::Agg(handle) => Value::Agg(self.remap_handle(*handle)),
+            _ => value.clone(),
+        }
+    }
+
+    /// Remaps values in place.
+    pub fn remap_values_in_place(&self, values: &mut [Value]) {
+        for value in values {
+            *value = self.remap_value(value);
+        }
+    }
+
+    fn remap_handle(&self, handle: AggHandle) -> AggHandle {
+        if handle.0 < self.base_len {
+            return handle;
+        }
+
+        let local = handle.0 - self.base_len;
+        let Some(idx) = usize::try_from(local).ok() else {
+            return handle;
+        };
+        let Some(mapped) = self.staged_to_base.get(idx).and_then(|h| *h) else {
+            return handle;
+        };
+        mapped
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -336,6 +528,13 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    fn agg_handle(v: Value) -> AggHandle {
+        match v {
+            Value::Agg(h) => h,
+            _ => panic!("expected Value::Agg"),
+        }
+    }
+
     #[test]
     fn tuple_roundtrip() {
         let mut h = AggHeap::new();
@@ -442,5 +641,109 @@ mod tests {
         assert_eq!(h0.0, base_len);
         assert_eq!(h1.0, base_len + 1);
         assert_eq!(overlay.base_len(), base_len);
+    }
+
+    #[test]
+    fn delta_merge_is_deterministic_for_identical_inputs() {
+        let mut base_a = AggHeap::new();
+        let _ = base_a.tuple_new(vec![Value::I64(7)]);
+        let mut base_b = base_a.clone();
+        let base_len = base_a.len_u32();
+
+        let mut delta = AggDelta::new(base_len);
+        let _ = delta.staged_mut().tuple_new(vec![Value::I64(1)]);
+        let _ = delta
+            .staged_mut()
+            .array_new(ElemTypeId(9), vec![Value::Agg(AggHandle(base_len))]);
+        let roots = vec![Value::Agg(AggHandle(base_len + 1))];
+
+        let remap_a = delta.merge_into(&mut base_a, &roots);
+        let remap_b = delta.merge_into(&mut base_b, &roots);
+
+        assert_eq!(remap_a, remap_b);
+        let mapped_root_a = agg_handle(remap_a.remap_value(&roots[0]));
+        let mapped_root_b = agg_handle(remap_b.remap_value(&roots[0]));
+        assert_eq!(mapped_root_a, mapped_root_b);
+        assert_eq!(base_a.len_u32(), base_b.len_u32());
+        assert_eq!(
+            base_a.array_get(mapped_root_a, 0),
+            base_b.array_get(mapped_root_b, 0)
+        );
+    }
+
+    #[test]
+    fn delta_merge_rewrites_nested_staged_handles() {
+        let mut base = AggHeap::new();
+        let base_len = base.len_u32();
+        let mut delta = AggDelta::new(base_len);
+
+        let _ = delta.staged_mut().tuple_new(vec![Value::I64(3)]);
+        let _ = delta
+            .staged_mut()
+            .tuple_new(vec![Value::Agg(AggHandle(base_len))]);
+        let roots = vec![Value::Agg(AggHandle(base_len + 1))];
+
+        let remap = delta.merge_into(&mut base, &roots);
+        let mapped_root = agg_handle(remap.remap_value(&roots[0]));
+        assert_eq!(mapped_root, AggHandle(1));
+        assert_eq!(base.tuple_get(mapped_root, 0), Ok(Value::Agg(AggHandle(0))));
+        assert_eq!(base.tuple_get(AggHandle(0), 0), Ok(Value::I64(3)));
+    }
+
+    #[test]
+    fn delta_merge_filters_unreachable_staged_nodes() {
+        let mut base = AggHeap::new();
+        let base_len = base.len_u32();
+        let mut delta = AggDelta::new(base_len);
+
+        let _ = delta.staged_mut().tuple_new(vec![Value::I64(10)]);
+        let _ = delta.staged_mut().tuple_new(vec![Value::I64(20)]);
+        let _ = delta
+            .staged_mut()
+            .tuple_new(vec![Value::Agg(AggHandle(base_len))]);
+        let roots = vec![Value::Agg(AggHandle(base_len + 2))];
+
+        let remap = delta.merge_into(&mut base, &roots);
+        let mapped_root = agg_handle(remap.remap_value(&roots[0]));
+
+        assert_eq!(base.len_u32(), 2);
+        assert_eq!(mapped_root, AggHandle(1));
+        assert_eq!(base.tuple_get(AggHandle(0), 0), Ok(Value::I64(10)));
+        assert_eq!(
+            base.tuple_get(AggHandle(1), 0),
+            Ok(Value::Agg(AggHandle(0)))
+        );
+        assert_eq!(base.tuple_get(AggHandle(2), 0), Err(AggError::BadHandle));
+    }
+
+    #[test]
+    fn delta_merge_leaves_malformed_staged_handles_unresolved() {
+        let mut base = AggHeap::new();
+        let _ = base.tuple_new(vec![Value::I64(7)]);
+        let base_len = base.len_u32();
+        let mut delta = AggDelta::new(base_len);
+        let _ = delta.staged_mut().tuple_new(vec![Value::I64(8)]);
+
+        let malformed = Value::Agg(AggHandle(base_len + 10));
+        let remap = delta.merge_into(&mut base, core::slice::from_ref(&malformed));
+        assert_eq!(base.len_u32(), base_len);
+        assert_eq!(remap.remap_value(&malformed), malformed);
+    }
+
+    #[test]
+    fn delta_merge_handles_u32_max_boundary_for_staged_decode() {
+        let mut base = AggHeap::new();
+        let mut delta = AggDelta::new(u32::MAX);
+        let _ = delta.staged_mut().tuple_new(vec![Value::I64(44)]);
+        let root = Value::Agg(AggHandle(u32::MAX));
+
+        let remap = delta.merge_into(&mut base, core::slice::from_ref(&root));
+        let mut remapped_values = vec![root.clone(), Value::I64(9)];
+        remap.remap_values_in_place(&mut remapped_values);
+
+        assert_eq!(base.len_u32(), 1);
+        assert_eq!(remapped_values[0], Value::Agg(AggHandle(0)));
+        assert_eq!(remapped_values[1], Value::I64(9));
+        assert_eq!(base.tuple_get(AggHandle(0), 0), Ok(Value::I64(44)));
     }
 }
