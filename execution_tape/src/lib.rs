@@ -80,6 +80,7 @@ pub mod host_catalog;
 pub(crate) mod instr_operands;
 pub mod opcode;
 pub mod program;
+pub mod program_memory;
 pub mod trace;
 pub(crate) mod typed;
 pub mod value;
