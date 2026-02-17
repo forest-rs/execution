@@ -325,7 +325,6 @@ impl<'a> AggOverlay<'a> {
     }
 
     /// Allocates a tuple in staged storage and returns a staged-encoded handle.
-    #[must_use]
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, AggError> {
         let local = self.staged.tuple_new(values);
         self.encode_staged_handle(local)
@@ -348,7 +347,6 @@ impl<'a> AggOverlay<'a> {
     }
 
     /// Allocates a struct in staged storage and returns a staged-encoded handle.
-    #[must_use]
     pub fn struct_new(
         &mut self,
         type_id: TypeId,
@@ -375,7 +373,6 @@ impl<'a> AggOverlay<'a> {
     }
 
     /// Allocates an array in staged storage and returns a staged-encoded handle.
-    #[must_use]
     pub fn array_new(
         &mut self,
         elem_type_id: ElemTypeId,
