@@ -64,6 +64,140 @@ pub struct AggHeap {
     nodes: Vec<AggNode>,
 }
 
+/// Base+staged aggregate view used by staged execution.
+///
+/// Reads resolve handles against a fixed `base_len` snapshot:
+/// - `h < base_len`: read from `base`
+/// - `h >= base_len`: read from `staged` at `h - base_len`
+///
+/// New allocations are always appended to `staged` and returned in staged-encoded form
+/// (`base_len + local_index`).
+#[derive(Debug)]
+pub struct AggOverlay<'a> {
+    base: &'a AggHeap,
+    base_len: u32,
+    staged: &'a mut AggHeap,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum OverlayHandle {
+    Base(AggHandle),
+    Staged(AggHandle),
+}
+
+impl<'a> AggOverlay<'a> {
+    /// Creates an overlay from a read-only base and writable staged heap.
+    #[must_use]
+    pub fn new(base: &'a AggHeap, base_len: u32, staged: &'a mut AggHeap) -> Self {
+        Self {
+            base,
+            base_len,
+            staged,
+        }
+    }
+
+    /// Returns the base-length snapshot used for handle routing.
+    #[must_use]
+    pub const fn base_len(&self) -> u32 {
+        self.base_len
+    }
+
+    /// Returns the aggregate type for `handle`.
+    pub fn agg_type(&self, handle: AggHandle) -> Result<AggType, AggError> {
+        match self.classify(handle) {
+            OverlayHandle::Base(h) => self.base.agg_type(h),
+            OverlayHandle::Staged(h) => self.staged.agg_type(h),
+        }
+    }
+
+    /// Allocates a tuple in staged storage and returns a staged-encoded handle.
+    #[must_use]
+    pub fn tuple_new(&mut self, values: Vec<Value>) -> AggHandle {
+        let local = self.staged.tuple_new(values);
+        self.encode_staged_handle(local)
+    }
+
+    /// Returns tuple element `index`.
+    pub fn tuple_get(&self, tuple: AggHandle, index: usize) -> Result<Value, AggError> {
+        match self.classify(tuple) {
+            OverlayHandle::Base(h) => self.base.tuple_get(h, index),
+            OverlayHandle::Staged(h) => self.staged.tuple_get(h, index),
+        }
+    }
+
+    /// Returns tuple length.
+    pub fn tuple_len(&self, tuple: AggHandle) -> Result<usize, AggError> {
+        match self.classify(tuple) {
+            OverlayHandle::Base(h) => self.base.tuple_len(h),
+            OverlayHandle::Staged(h) => self.staged.tuple_len(h),
+        }
+    }
+
+    /// Allocates a struct in staged storage and returns a staged-encoded handle.
+    #[must_use]
+    pub fn struct_new(&mut self, type_id: TypeId, values: Vec<Value>) -> AggHandle {
+        let local = self.staged.struct_new(type_id, values);
+        self.encode_staged_handle(local)
+    }
+
+    /// Returns struct field `field_index`.
+    pub fn struct_get(&self, st: AggHandle, field_index: usize) -> Result<Value, AggError> {
+        match self.classify(st) {
+            OverlayHandle::Base(h) => self.base.struct_get(h, field_index),
+            OverlayHandle::Staged(h) => self.staged.struct_get(h, field_index),
+        }
+    }
+
+    /// Returns struct field count.
+    pub fn struct_field_count(&self, st: AggHandle) -> Result<usize, AggError> {
+        match self.classify(st) {
+            OverlayHandle::Base(h) => self.base.struct_field_count(h),
+            OverlayHandle::Staged(h) => self.staged.struct_field_count(h),
+        }
+    }
+
+    /// Allocates an array in staged storage and returns a staged-encoded handle.
+    #[must_use]
+    pub fn array_new(&mut self, elem_type_id: ElemTypeId, values: Vec<Value>) -> AggHandle {
+        let local = self.staged.array_new(elem_type_id, values);
+        self.encode_staged_handle(local)
+    }
+
+    /// Returns array element `index`.
+    pub fn array_get(&self, arr: AggHandle, index: usize) -> Result<Value, AggError> {
+        match self.classify(arr) {
+            OverlayHandle::Base(h) => self.base.array_get(h, index),
+            OverlayHandle::Staged(h) => self.staged.array_get(h, index),
+        }
+    }
+
+    /// Returns array length.
+    pub fn array_len(&self, arr: AggHandle) -> Result<usize, AggError> {
+        match self.classify(arr) {
+            OverlayHandle::Base(h) => self.base.array_len(h),
+            OverlayHandle::Staged(h) => self.staged.array_len(h),
+        }
+    }
+
+    #[inline]
+    fn classify(&self, handle: AggHandle) -> OverlayHandle {
+        if handle.0 < self.base_len {
+            OverlayHandle::Base(handle)
+        } else {
+            OverlayHandle::Staged(AggHandle(handle.0 - self.base_len))
+        }
+    }
+
+    #[inline]
+    fn encode_staged_handle(&self, local: AggHandle) -> AggHandle {
+        // Saturating arithmetic preserves the staged-range invariant (`>= base_len`) even when
+        // indices approach the u32 handle ceiling.
+        let encoded = self.base_len.saturating_add(local.0);
+        debug_assert!(encoded >= self.base_len);
+        AggHandle(encoded)
+    }
+}
+
 impl AggHeap {
     /// Creates an empty heap.
     #[must_use]
@@ -241,5 +375,72 @@ mod tests {
 
         assert_eq!(h.len_u32(), 0);
         assert_eq!(h.nodes.capacity(), cap_before);
+    }
+
+    #[test]
+    fn overlay_reads_base_and_staged_by_handle_domain() {
+        let mut base = AggHeap::new();
+        let base_tuple = base.tuple_new(vec![Value::I64(11)]);
+        let base_array = base.array_new(ElemTypeId(3), vec![Value::U64(1), Value::U64(2)]);
+        let base_len = base.len_u32();
+        let mut staged = AggHeap::new();
+
+        let mut overlay = AggOverlay::new(&base, base_len, &mut staged);
+        let staged_tuple = overlay.tuple_new(vec![Value::I64(22)]);
+        let staged_array = overlay.array_new(ElemTypeId(4), vec![Value::U64(9)]);
+
+        assert!(staged_tuple.0 >= base_len);
+        assert!(staged_array.0 >= base_len);
+
+        assert_eq!(overlay.tuple_get(base_tuple, 0), Ok(Value::I64(11)));
+        assert_eq!(overlay.array_len(base_array), Ok(2));
+        assert_eq!(overlay.tuple_get(staged_tuple, 0), Ok(Value::I64(22)));
+        assert_eq!(overlay.array_get(staged_array, 0), Ok(Value::U64(9)));
+    }
+
+    #[test]
+    fn overlay_supports_struct_and_agg_type_across_spaces() {
+        let mut base = AggHeap::new();
+        let base_struct = base.struct_new(TypeId(10), vec![Value::Bool(true), Value::I64(8)]);
+        let base_len = base.len_u32();
+        let mut staged = AggHeap::new();
+        let mut overlay = AggOverlay::new(&base, base_len, &mut staged);
+
+        let staged_struct = overlay.struct_new(TypeId(12), vec![Value::I64(33)]);
+
+        assert_eq!(overlay.struct_field_count(base_struct), Ok(2));
+        assert_eq!(overlay.struct_get(base_struct, 1), Ok(Value::I64(8)));
+        assert_eq!(overlay.struct_field_count(staged_struct), Ok(1));
+        assert_eq!(overlay.struct_get(staged_struct, 0), Ok(Value::I64(33)));
+
+        assert_eq!(
+            overlay.agg_type(base_struct),
+            Ok(AggType::Struct {
+                type_id: TypeId(10)
+            })
+        );
+        assert_eq!(
+            overlay.agg_type(staged_struct),
+            Ok(AggType::Struct {
+                type_id: TypeId(12)
+            })
+        );
+    }
+
+    #[test]
+    fn overlay_new_allocations_are_staged_encoded() {
+        let mut base = AggHeap::new();
+        let _ = base.tuple_new(vec![Value::I64(1)]);
+        let _ = base.tuple_new(vec![Value::I64(2)]);
+        let base_len = base.len_u32();
+        let mut staged = AggHeap::new();
+        let mut overlay = AggOverlay::new(&base, base_len, &mut staged);
+
+        let h0 = overlay.tuple_new(vec![]);
+        let h1 = overlay.tuple_new(vec![]);
+
+        assert_eq!(h0.0, base_len);
+        assert_eq!(h1.0, base_len + 1);
+        assert_eq!(overlay.base_len(), base_len);
     }
 }
