@@ -28,6 +28,8 @@ pub enum AggError {
     BadArity,
     /// Aggregate handle arithmetic overflow.
     HandleOverflow,
+    /// Staged-encoded handle does not resolve to any reachable merged mapping.
+    UnresolvedStagedHandle,
 }
 
 impl fmt::Display for AggError {
@@ -38,6 +40,7 @@ impl fmt::Display for AggError {
             Self::OutOfBounds => write!(f, "index out of bounds"),
             Self::BadArity => write!(f, "arity mismatch"),
             Self::HandleOverflow => write!(f, "aggregate handle overflow"),
+            Self::UnresolvedStagedHandle => write!(f, "unresolved staged aggregate handle"),
         }
     }
 }
@@ -144,11 +147,14 @@ impl AggDelta {
     /// Reachability is traced from `roots`. Only staged nodes reachable from at least one root are
     /// appended, and append order is increasing staged index.
     ///
-    /// Handles that appear staged-encoded but resolve outside this delta's staged range are treated
-    /// as unresolved and left unchanged by the returned remap.
+    /// Returns [`AggError::UnresolvedStagedHandle`] if `roots` (or nested values in reachable
+    /// staged nodes) contain a staged-domain handle that does not resolve to this delta.
     pub fn merge_into(&self, base: &mut AggHeap, roots: &[Value]) -> Result<AggRemap, AggError> {
         let reachable = self.reachable_staged_nodes(roots);
         let remap = AggRemap::from_reachable(self.base_len, base.len_u32(), &reachable)?;
+        for root in roots {
+            let _ = remap.remap_value(root)?;
+        }
 
         for (idx, node) in self.staged.nodes.iter().enumerate() {
             if !reachable[idx] {
@@ -156,7 +162,7 @@ impl AggDelta {
             }
 
             let mut remapped = node.clone();
-            remap.remap_values_in_place(remapped.values_mut());
+            remap.remap_values_in_place(remapped.values_mut())?;
             let _ = base.push(remapped);
         }
 
@@ -252,36 +258,37 @@ impl AggRemap {
     }
 
     /// Remaps one value from staged/base snapshot space to merged-base space.
-    ///
-    /// Non-aggregate values and unresolved staged handles are returned unchanged.
-    #[must_use]
-    pub fn remap_value(&self, value: &Value) -> Value {
+    pub fn remap_value(&self, value: &Value) -> Result<Value, AggError> {
         match value {
-            Value::Agg(handle) => Value::Agg(self.remap_handle(*handle)),
-            _ => value.clone(),
+            Value::Agg(handle) => Ok(Value::Agg(self.remap_handle(*handle)?)),
+            _ => Ok(value.clone()),
         }
     }
 
     /// Remaps values in place.
-    pub fn remap_values_in_place(&self, values: &mut [Value]) {
+    ///
+    /// Returns [`AggError::UnresolvedStagedHandle`] if any staged-domain handle has no resolved
+    /// mapping.
+    pub fn remap_values_in_place(&self, values: &mut [Value]) -> Result<(), AggError> {
         for value in values {
-            *value = self.remap_value(value);
+            *value = self.remap_value(value)?;
         }
+        Ok(())
     }
 
-    fn remap_handle(&self, handle: AggHandle) -> AggHandle {
+    fn remap_handle(&self, handle: AggHandle) -> Result<AggHandle, AggError> {
         if handle.0 < self.base_len {
-            return handle;
+            return Ok(handle);
         }
 
         let local = handle.0 - self.base_len;
         let Some(idx) = usize::try_from(local).ok() else {
-            return handle;
+            return Err(AggError::UnresolvedStagedHandle);
         };
         let Some(mapped) = self.staged_to_base.get(idx).and_then(|h| *h) else {
-            return handle;
+            return Err(AggError::UnresolvedStagedHandle);
         };
-        mapped
+        Ok(mapped)
     }
 }
 
@@ -709,8 +716,8 @@ mod tests {
             .expect("merge should succeed");
 
         assert_eq!(remap_a, remap_b);
-        let mapped_root_a = agg_handle(remap_a.remap_value(&roots[0]));
-        let mapped_root_b = agg_handle(remap_b.remap_value(&roots[0]));
+        let mapped_root_a = agg_handle(remap_a.remap_value(&roots[0]).expect("remap should work"));
+        let mapped_root_b = agg_handle(remap_b.remap_value(&roots[0]).expect("remap should work"));
         assert_eq!(mapped_root_a, mapped_root_b);
         assert_eq!(base_a.len_u32(), base_b.len_u32());
         assert_eq!(
@@ -734,7 +741,7 @@ mod tests {
         let remap = delta
             .merge_into(&mut base, &roots)
             .expect("merge should succeed");
-        let mapped_root = agg_handle(remap.remap_value(&roots[0]));
+        let mapped_root = agg_handle(remap.remap_value(&roots[0]).expect("remap should work"));
         assert_eq!(mapped_root, AggHandle(1));
         assert_eq!(base.tuple_get(mapped_root, 0), Ok(Value::Agg(AggHandle(0))));
         assert_eq!(base.tuple_get(AggHandle(0), 0), Ok(Value::I64(3)));
@@ -756,7 +763,7 @@ mod tests {
         let remap = delta
             .merge_into(&mut base, &roots)
             .expect("merge should succeed");
-        let mapped_root = agg_handle(remap.remap_value(&roots[0]));
+        let mapped_root = agg_handle(remap.remap_value(&roots[0]).expect("remap should work"));
 
         assert_eq!(base.len_u32(), 2);
         assert_eq!(mapped_root, AggHandle(1));
@@ -769,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_merge_leaves_malformed_staged_handles_unresolved() {
+    fn delta_merge_rejects_out_of_range_staged_root_handle() {
         let mut base = AggHeap::new();
         let _ = base.tuple_new(vec![Value::I64(7)]);
         let base_len = base.len_u32();
@@ -777,11 +784,24 @@ mod tests {
         let _ = delta.staged_mut().tuple_new(vec![Value::I64(8)]);
 
         let malformed = Value::Agg(AggHandle(base_len + 10));
-        let remap = delta
-            .merge_into(&mut base, core::slice::from_ref(&malformed))
-            .expect("merge should succeed with unresolved roots");
+        let remap = delta.merge_into(&mut base, core::slice::from_ref(&malformed));
+        assert_eq!(remap, Err(AggError::UnresolvedStagedHandle));
         assert_eq!(base.len_u32(), base_len);
-        assert_eq!(remap.remap_value(&malformed), malformed);
+    }
+
+    #[test]
+    fn delta_merge_rejects_reachable_node_with_unresolved_nested_staged_handle() {
+        let mut base = AggHeap::new();
+        let base_len = base.len_u32();
+        let mut delta = AggDelta::new(base_len);
+        let _ = delta
+            .staged_mut()
+            .tuple_new(vec![Value::Agg(AggHandle(base_len + 99))]);
+        let roots = vec![Value::Agg(AggHandle(base_len))];
+
+        let remap = delta.merge_into(&mut base, &roots);
+        assert_eq!(remap, Err(AggError::UnresolvedStagedHandle));
+        assert_eq!(base.len_u32(), base_len);
     }
 
     #[test]
@@ -795,7 +815,9 @@ mod tests {
             .merge_into(&mut base, core::slice::from_ref(&root))
             .expect("merge should succeed at u32 max decode boundary");
         let mut remapped_values = vec![root.clone(), Value::I64(9)];
-        remap.remap_values_in_place(&mut remapped_values);
+        remap
+            .remap_values_in_place(&mut remapped_values)
+            .expect("remap should succeed");
 
         assert_eq!(base.len_u32(), 1);
         assert_eq!(remapped_values[0], Value::Agg(AggHandle(0)));
@@ -831,7 +853,9 @@ mod tests {
             .merge_into(&mut base, &outputs)
             .expect("merge should succeed");
         let mut remapped = outputs.clone();
-        remap.remap_values_in_place(&mut remapped);
+        remap
+            .remap_values_in_place(&mut remapped)
+            .expect("remap should succeed");
 
         let merged_len = base.len_u32();
         for value in &remapped {
