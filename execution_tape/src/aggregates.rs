@@ -71,6 +71,19 @@ impl AggHeap {
         Self { nodes: Vec::new() }
     }
 
+    /// Returns the current heap length as `u32`.
+    ///
+    /// This mirrors the handle index domain used by [`AggHandle`].
+    #[must_use]
+    pub fn len_u32(&self) -> u32 {
+        u32::try_from(self.nodes.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Removes all aggregate nodes while preserving allocated capacity.
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+    }
+
     /// Returns the aggregate type for `handle`.
     pub fn agg_type(&self, handle: AggHandle) -> Result<AggType, AggError> {
         match self.node(handle)? {
@@ -204,5 +217,29 @@ mod tests {
         let a = h.array_new(ElemTypeId(0), vec![Value::U64(7), Value::U64(8)]);
         assert_eq!(h.array_len(a), Ok(2));
         assert_eq!(h.array_get(a, 1), Ok(Value::U64(8)));
+    }
+
+    #[test]
+    fn len_u32_tracks_nodes() {
+        let mut h = AggHeap::new();
+        assert_eq!(h.len_u32(), 0);
+        let _ = h.tuple_new(vec![]);
+        assert_eq!(h.len_u32(), 1);
+        let _ = h.array_new(ElemTypeId(0), vec![]);
+        assert_eq!(h.len_u32(), 2);
+    }
+
+    #[test]
+    fn clear_empties_heap_and_preserves_capacity() {
+        let mut h = AggHeap::new();
+        let _ = h.tuple_new(vec![Value::I64(1)]);
+        let _ = h.struct_new(TypeId(7), vec![Value::Bool(true)]);
+        let cap_before = h.nodes.capacity();
+        assert!(cap_before > 0);
+
+        h.clear();
+
+        assert_eq!(h.len_u32(), 0);
+        assert_eq!(h.nodes.capacity(), cap_before);
     }
 }
