@@ -265,6 +265,19 @@ pub(crate) enum Instr {
         rets: Vec<u32>,
     },
 
+    /// Indirect call through a callee register with an expected call signature id.
+    CallIndirect {
+        eff_out: u32,
+        call_sig: u32,
+        callee: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
+
+    /// Construct a closure value from `func` and `env`.
+    ClosureNew { dst: u32, func: u32, env: u32 },
+
     /// Allocate a tuple aggregate.
     TupleNew { dst: u32, values: Vec<u32> },
     /// Read tuple element at an immediate index.
@@ -426,6 +439,16 @@ impl<'a> ReadsIter<'a> {
         Self {
             prefix: [first, 0, 0],
             prefix_len: 1,
+            prefix_idx: 0,
+            rest,
+            rest_idx: 0,
+        }
+    }
+
+    const fn two_plus_slice(a: u32, b: u32, rest: &'a [u32]) -> Self {
+        Self {
+            prefix: [a, b, 0],
+            prefix_len: 2,
             prefix_idx: 0,
             rest,
             rest_idx: 0,
@@ -654,6 +677,25 @@ mod tests {
                 },
             ),
             (
+                Opcode::CallIndirect,
+                Instr::CallIndirect {
+                    eff_out: 0,
+                    call_sig: 0,
+                    callee: 1,
+                    eff_in: 0,
+                    args: vec![2],
+                    rets: vec![3],
+                },
+            ),
+            (
+                Opcode::ClosureNew,
+                Instr::ClosureNew {
+                    dst: 1,
+                    func: 2,
+                    env: 3,
+                },
+            ),
+            (
                 Opcode::Ret,
                 Instr::Ret {
                     eff_in: 0,
@@ -779,6 +821,17 @@ mod tests {
         };
         assert_eq!(host.reads().collect::<Vec<_>>(), vec![0]);
         assert_eq!(host.writes().collect::<Vec<_>>(), vec![0, 8]);
+
+        let indirect = Instr::CallIndirect {
+            eff_out: 0,
+            call_sig: 1,
+            callee: 4,
+            eff_in: 0,
+            args: vec![5, 6],
+            rets: vec![7],
+        };
+        assert_eq!(indirect.reads().collect::<Vec<_>>(), vec![4, 0, 5, 6]);
+        assert_eq!(indirect.writes().collect::<Vec<_>>(), vec![0, 7]);
     }
 
     #[test]
@@ -847,6 +900,19 @@ mod tests {
                 eff_in: 0,
                 args: vec![1, 2, 3],
                 rets: vec![],
+            },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 3,
+                eff_in: 0,
+                args: vec![1, 2],
+                rets: vec![4],
+            },
+            Instr::ClosureNew {
+                dst: 3,
+                func: 4,
+                env: 5,
             },
             Instr::Ret {
                 eff_in: 0,

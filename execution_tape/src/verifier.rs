@@ -128,6 +128,15 @@ pub enum VerifyError {
         /// Opcode byte.
         opcode: u8,
     },
+    /// A decoded opcode is recognized but not yet supported by verifier lowering.
+    UnsupportedInstruction {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Opcode byte.
+        opcode: u8,
+    },
     /// A function references an out-of-bounds byte range.
     FunctionBytecodeOutOfBounds {
         /// Function index within the program.
@@ -528,6 +537,10 @@ impl fmt::Display for VerifyError {
             Self::InternalOpcodeSchemaMismatch { func, pc, opcode } => write!(
                 f,
                 "internal opcode schema mismatch: function {func} pc={pc} opcode=0x{opcode:02X}"
+            ),
+            Self::UnsupportedInstruction { func, pc, opcode } => write!(
+                f,
+                "unsupported instruction at this verifier/runtime stage: function {func} pc={pc} opcode=0x{opcode:02X}"
             ),
             Self::FunctionBytecodeOutOfBounds { func } => {
                 write!(f, "function {func} bytecode out of bounds")
@@ -2045,6 +2058,13 @@ fn verify_function_bytecode(
                 args: push_vregs(args)?,
                 rets: push_vregs(rets)?,
             },
+            Instr::CallIndirect { .. } | Instr::ClosureNew { .. } => {
+                return Err(VerifyError::UnsupportedInstruction {
+                    func: func_id,
+                    pc: di.offset,
+                    opcode: di.opcode,
+                });
+            }
 
             Instr::TupleNew { dst, values } => ExecInstr::TupleNew {
                 dst: map_agg(*dst)?,
@@ -2776,6 +2796,28 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
                 }
             }
         }
+        Instr::CallIndirect {
+            eff_out,
+            call_sig,
+            rets,
+            ..
+        } => {
+            set_value(state, *eff_out, ValueType::Unit);
+            if let Some(entry) = program.call_sig(crate::program::CallSigId(*call_sig))
+                && let Ok(types) = program.call_sig_rets(entry)
+            {
+                for (dst, t) in rets.iter().zip(types.iter().copied()) {
+                    set_value(state, *dst, t);
+                }
+                return;
+            }
+            for dst in rets {
+                set_ambiguous(state, *dst);
+            }
+        }
+        Instr::ClosureNew { dst, .. } => {
+            set_value(state, *dst, ValueType::Closure);
+        }
         Instr::TupleNew { dst, values } => {
             let mut elems: Vec<Option<ValueType>> = Vec::with_capacity(values.len());
             for &r in values {
@@ -3277,6 +3319,37 @@ fn validate_instr_types(
             for (&r, &expected) in rets.iter().zip(hs_rets.iter()) {
                 check_assignable(func_id, pc, r, t(r), expected)?;
             }
+        }
+        Instr::CallIndirect {
+            callee, args, rets, ..
+        } => {
+            if let Some(actual) = t(*callee) {
+                match actual {
+                    RegType::Concrete(ValueType::Func) | RegType::Concrete(ValueType::Closure) => {}
+                    RegType::Concrete(other) => {
+                        return Err(VerifyError::TypeMismatch {
+                            func: func_id,
+                            pc,
+                            expected: ValueType::Func,
+                            actual: other,
+                        });
+                    }
+                    RegType::Uninit => {
+                        return Err(VerifyError::UninitializedRead {
+                            func: func_id,
+                            pc,
+                            reg: *callee,
+                        });
+                    }
+                    RegType::Ambiguous => {}
+                }
+            }
+            let _ = args;
+            let _ = rets;
+        }
+        Instr::ClosureNew { func, env, .. } => {
+            check_expected(func_id, pc, *func, t(*func), ValueType::Func)?;
+            check_expected(func_id, pc, *env, t(*env), ValueType::Agg)?;
         }
         Instr::TupleNew { .. } => {}
         Instr::TupleGet { tuple, index, .. } => {

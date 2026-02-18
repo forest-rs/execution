@@ -852,6 +852,26 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
                 rets,
             });
         }
+        Instr::CallIndirect {
+            eff_out,
+            call_sig,
+            callee,
+            eff_in,
+            args,
+            rets,
+        } => {
+            view.dst = Some(eff_out);
+            view.input_index = Some(InputIndex::Index(call_sig));
+            view.srcs = Vec::with_capacity(2 + args.len() + rets.len());
+            view.srcs.push(callee);
+            view.srcs.push(eff_in);
+            view.srcs.extend(args.iter().copied());
+            view.srcs.extend(rets.iter().copied());
+        }
+        Instr::ClosureNew { dst, func, env } => {
+            view.dst = Some(dst);
+            view.srcs = vec![func, env];
+        }
 
         Instr::TupleNew { dst, values } => {
             view.dst = Some(dst);
