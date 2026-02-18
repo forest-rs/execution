@@ -2641,6 +2641,7 @@ impl Value {
             Self::Obj(o) => ValueType::Obj(o.host_type),
             Self::Agg(_) => ValueType::Agg,
             Self::Func(_) => ValueType::Func,
+            Self::Closure(_) => ValueType::Closure,
         }
     }
 

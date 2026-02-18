@@ -365,6 +365,8 @@ pub enum ValueType {
     Agg,
     /// Function reference.
     Func,
+    /// Closure reference.
+    Closure,
 }
 
 /// A host-call signature table entry.
@@ -1730,6 +1732,7 @@ enum ValueTypeTag {
     Obj = 8,
     Agg = 9,
     Func = 10,
+    Closure = 11,
 }
 
 impl ValueTypeTag {
@@ -1746,6 +1749,7 @@ impl ValueTypeTag {
             8 => Ok(Self::Obj),
             9 => Ok(Self::Agg),
             10 => Ok(Self::Func),
+            11 => Ok(Self::Closure),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -1764,6 +1768,7 @@ fn encode_value_type(w: &mut Writer, t: ValueType) {
         ValueType::Obj(_) => ValueTypeTag::Obj,
         ValueType::Agg => ValueTypeTag::Agg,
         ValueType::Func => ValueTypeTag::Func,
+        ValueType::Closure => ValueTypeTag::Closure,
     };
     w.write_u8(tag as u8);
     if let ValueType::Obj(host_type) = t {
@@ -1785,6 +1790,7 @@ fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
         ValueTypeTag::Obj => ValueType::Obj(HostTypeId(r.read_u64_le()?)),
         ValueTypeTag::Agg => ValueType::Agg,
         ValueTypeTag::Func => ValueType::Func,
+        ValueTypeTag::Closure => ValueType::Closure,
     })
 }
 
@@ -2290,6 +2296,14 @@ mod tests {
         encode_value_type(&mut p, ValueType::I64);
         p.write_uleb128_u64(0); // array elem_count
         assert_eq!(decode_types(p.as_slice()), Err(DecodeError::OutOfBounds));
+    }
+
+    #[test]
+    fn value_type_closure_tag_roundtrips() {
+        let mut w = Writer::new();
+        encode_value_type(&mut w, ValueType::Closure);
+        let mut r = Reader::new(w.as_slice());
+        assert_eq!(decode_value_type(&mut r).unwrap(), ValueType::Closure);
     }
 
     #[test]

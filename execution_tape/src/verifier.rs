@@ -153,6 +153,13 @@ pub enum VerifyError {
         /// Function index within the program.
         func: u32,
     },
+    /// A function uses a value type not yet supported by the verifier/runtime register model.
+    UnsupportedValueType {
+        /// Function index within the program.
+        func: u32,
+        /// Unsupported value type.
+        value_type: ValueType,
+    },
     /// A function input-name entry references an invalid argument index.
     FunctionInputNameArgOutOfBounds {
         /// Function index within the program.
@@ -536,6 +543,12 @@ impl fmt::Display for VerifyError {
             }
             Self::FunctionSigCountMismatch { func } => {
                 write!(f, "function {func} signature count mismatch")
+            }
+            Self::UnsupportedValueType { func, value_type } => {
+                write!(
+                    f,
+                    "function {func} uses unsupported value type in this verifier/runtime stage: {value_type:?}"
+                )
             }
             Self::FunctionInputNameArgOutOfBounds { func, arg } => {
                 write!(
@@ -1411,6 +1424,12 @@ fn verify_function_bytecode(
                 let r = FuncReg(idx_u32(counts.funcs));
                 counts.funcs += 1;
                 VReg::Func(r)
+            }
+            RegClass::Closure => {
+                return Err(VerifyError::UnsupportedValueType {
+                    func: func_id,
+                    value_type: t,
+                });
             }
         };
         reg_map.push(v);
@@ -3579,6 +3598,30 @@ mod tests {
             }],
         );
         verify_program(&p, &VerifyConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn verifier_rejects_closure_in_function_signature_before_closure_regs_exist() {
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![],
+                reg_count: 2,
+                bytecode: vec![Opcode::Ret as u8, 0x00, 0x00],
+                spans: vec![],
+            }],
+        );
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::UnsupportedValueType {
+                func: 0,
+                value_type: ValueType::Closure,
+            })
+        );
     }
 
     #[test]
