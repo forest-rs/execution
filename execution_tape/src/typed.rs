@@ -72,6 +72,8 @@ pub(crate) struct ObjReg(pub u32);
 pub(crate) struct AggReg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FuncReg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClosureReg(pub u32);
 
 /// A typed register reference (class + class-local index).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -87,6 +89,7 @@ pub(crate) enum VReg {
     Obj(ObjReg),
     Agg(AggReg),
     Func(FuncReg),
+    Closure(ClosureReg),
 }
 
 /// A slice of typed registers stored in a per-function operand pool.
@@ -119,6 +122,7 @@ pub(crate) struct RegCounts {
     pub(crate) objs: usize,
     pub(crate) aggs: usize,
     pub(crate) funcs: usize,
+    pub(crate) closures: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +192,10 @@ pub(crate) enum ExecInstr {
     MovFunc {
         dst: FuncReg,
         src: FuncReg,
+    },
+    MovClosure {
+        dst: ClosureReg,
+        src: ClosureReg,
     },
 
     ConstUnit {
@@ -584,6 +592,12 @@ pub(crate) enum ExecInstr {
         cond: BoolReg,
         a: FuncReg,
         b: FuncReg,
+    },
+    SelectClosure {
+        dst: ClosureReg,
+        cond: BoolReg,
+        a: ClosureReg,
+        b: ClosureReg,
     },
 
     Br {

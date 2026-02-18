@@ -24,8 +24,9 @@ use crate::program::{
     ConstEntry, ElemTypeId, Function, Program, SpanEntry, SpanId, SymbolId, TypeId, ValueType,
 };
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg, FuncReg,
-    I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, UnitReg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
+    FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, UnitReg, VReg,
+    VRegSlice,
 };
 use crate::value::FuncId;
 use crate::{analysis::bitset::BitSet, analysis::cfg};
@@ -1439,10 +1440,9 @@ fn verify_function_bytecode(
                 VReg::Func(r)
             }
             RegClass::Closure => {
-                return Err(VerifyError::UnsupportedValueType {
-                    func: func_id,
-                    value_type: t,
-                });
+                let r = ClosureReg(idx_u32(counts.closures));
+                counts.closures += 1;
+                VReg::Closure(r)
             }
         };
         reg_map.push(v);
@@ -1561,7 +1561,6 @@ fn verify_function_bytecode(
                 _ => Err(unstable(reg)),
             }
         };
-
         let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
             let start = operands.len();
             operands.reserve(regs.len());
@@ -1590,6 +1589,7 @@ fn verify_function_bytecode(
                 (VReg::Obj(d), VReg::Obj(s)) => ExecInstr::MovObj { dst: d, src: s },
                 (VReg::Agg(d), VReg::Agg(s)) => ExecInstr::MovAgg { dst: d, src: s },
                 (VReg::Func(d), VReg::Func(s)) => ExecInstr::MovFunc { dst: d, src: s },
+                (VReg::Closure(d), VReg::Closure(s)) => ExecInstr::MovClosure { dst: d, src: s },
                 _ => {
                     return Err(unstable(*dst));
                 }
@@ -2010,6 +2010,14 @@ fn verify_function_bytecode(
                     a: aa,
                     b: bb,
                 },
+                (VReg::Closure(d), VReg::Closure(aa), VReg::Closure(bb)) => {
+                    ExecInstr::SelectClosure {
+                        dst: d,
+                        cond: map_bool(*cond)?,
+                        a: aa,
+                        b: bb,
+                    }
+                }
                 _ => {
                     return Err(unstable(*dst));
                 }
@@ -3674,7 +3682,7 @@ mod tests {
     }
 
     #[test]
-    fn verifier_rejects_closure_in_function_signature_before_closure_regs_exist() {
+    fn verifier_accepts_closure_in_function_signature() {
         let p = Program::new(
             vec![],
             vec![],
@@ -3688,13 +3696,7 @@ mod tests {
                 spans: vec![],
             }],
         );
-        assert_eq!(
-            verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::UnsupportedValueType {
-                func: 0,
-                value_type: ValueType::Closure,
-            })
-        );
+        verify_program(&p, &VerifyConfig::default()).unwrap();
     }
 
     #[test]

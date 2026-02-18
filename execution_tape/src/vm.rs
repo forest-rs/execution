@@ -19,10 +19,10 @@ use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg, I64Reg, ObjReg,
-    StrReg, U64Reg, UnitReg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
+    I64Reg, ObjReg, StrReg, U64Reg, UnitReg, VReg, VRegSlice,
 };
-use crate::value::{AggHandle, Decimal, FuncId, Obj, ObjHandle, Value};
+use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
 
 /// Execution limits for a VM run.
@@ -202,6 +202,8 @@ struct RegBase {
     aggs: usize,
     /// Base offset for the function id register bank.
     funcs: usize,
+    /// Base offset for the closure register bank.
+    closures: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -270,6 +272,8 @@ pub struct ExecutionContext {
     aggs: Vec<AggHandle>,
     /// Function registers.
     funcs: Vec<FuncId>,
+    /// Closure registers.
+    closures: Vec<Closure>,
 
     /// Call stack.
     frames: Vec<Frame>,
@@ -298,6 +302,7 @@ impl ExecutionContext {
         self.objs.clear();
         self.aggs.clear();
         self.funcs.clear();
+        self.closures.clear();
         self.arena.clear();
 
         self.fuel = fuel;
@@ -923,6 +928,12 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
+                ExecInstr::MovClosure { dst, src } => {
+                    let v = ctx.read_closure(base, *src);
+                    ctx.write_closure(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
 
                 ExecInstr::ConstUnit { dst } => {
                     ctx.write_unit(base, *dst, 0);
@@ -1497,6 +1508,15 @@ impl<H: Host> Vm<H> {
                         ctx.read_func(base, *b)
                     };
                     ctx.write_func(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::SelectClosure { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_closure(base, *a)
+                    } else {
+                        ctx.read_closure(base, *b)
+                    };
+                    ctx.write_closure(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2258,6 +2278,7 @@ impl ExecutionContext {
             objs: self.objs.len(),
             aggs: self.aggs.len(),
             funcs: self.funcs.len(),
+            closures: self.closures.len(),
         };
 
         self.units.resize(base.unit + counts.unit, 0);
@@ -2283,6 +2304,13 @@ impl ExecutionContext {
         );
         self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
         self.funcs.resize(base.funcs + counts.funcs, FuncId(0));
+        self.closures.resize(
+            base.closures + counts.closures,
+            Closure {
+                func: FuncId(0),
+                env: AggHandle(0),
+            },
+        );
 
         base
     }
@@ -2299,6 +2327,7 @@ impl ExecutionContext {
         self.objs.truncate(base.objs);
         self.aggs.truncate(base.aggs);
         self.funcs.truncate(base.funcs);
+        self.closures.truncate(base.closures);
     }
 
     fn init_args(&mut self, base: RegBase, vf: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
@@ -2359,6 +2388,10 @@ impl ExecutionContext {
                 self.write_func(base, r, *f);
                 Ok(())
             }
+            (VReg::Closure(r), Value::Closure(c)) => {
+                self.write_closure(base, r, *c);
+                Ok(())
+            }
             _ => Err(Trap::InvalidPc),
         }
     }
@@ -2385,6 +2418,7 @@ impl ExecutionContext {
             VReg::Obj(r) => Value::Obj(self.read_obj(base, r)),
             VReg::Agg(r) => Value::Agg(self.read_agg_handle(base, r)),
             VReg::Func(r) => Value::Func(self.read_func(base, r)),
+            VReg::Closure(r) => Value::Closure(self.read_closure(base, r)),
         })
     }
 
@@ -2449,6 +2483,11 @@ impl ExecutionContext {
             (VReg::Func(s), VReg::Func(d)) => {
                 let v = self.read_func(src_base, s);
                 self.write_func(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::Closure(s), VReg::Closure(d)) => {
+                let v = self.read_closure(src_base, s);
+                self.write_closure(dst_base, d, v);
                 Ok(())
             }
             _ => Err(Trap::InvalidPc),
@@ -2563,6 +2602,16 @@ impl ExecutionContext {
     #[inline(always)]
     fn write_func(&mut self, base: RegBase, r: FuncReg, v: FuncId) {
         self.funcs[base.funcs + r.0 as usize] = v;
+    }
+
+    #[inline(always)]
+    #[must_use]
+    fn read_closure(&self, base: RegBase, r: ClosureReg) -> Closure {
+        self.closures[base.closures + r.0 as usize]
+    }
+    #[inline(always)]
+    fn write_closure(&mut self, base: RegBase, r: ClosureReg, v: Closure) {
+        self.closures[base.closures + r.0 as usize] = v;
     }
 
     #[inline]
@@ -2706,6 +2755,7 @@ fn read_value_ref_at<'a>(
         VReg::Obj(r) => ValueRef::Obj(objs[base.objs + r.0 as usize]),
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
         VReg::Func(r) => ValueRef::Func(funcs[base.funcs + r.0 as usize]),
+        VReg::Closure(_) => return Err(Trap::InvalidPc),
     })
 }
 
