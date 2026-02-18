@@ -21,7 +21,8 @@ use crate::host::sig_hash_slices;
 use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
-    ConstEntry, ElemTypeId, Function, Program, SpanEntry, SpanId, SymbolId, TypeId, ValueType,
+    CallSigId, ConstEntry, ElemTypeId, Function, Program, SpanEntry, SpanId, SymbolId, TypeId,
+    ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
@@ -402,6 +403,15 @@ pub enum VerifyError {
         /// Host signature id.
         host_sig: u32,
     },
+    /// A `call.indirect` references an out-of-bounds call signature id.
+    CallSigOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Call signature id.
+        call_sig: u32,
+    },
     /// A `const_pool` instruction references an out-of-bounds constant.
     ConstOutOfBounds {
         /// Function index within the program.
@@ -416,6 +426,11 @@ pub enum VerifyError {
         /// Host signature id.
         host_sig: u32,
     },
+    /// A call signature table entry is malformed.
+    CallSigMalformed {
+        /// Call signature id.
+        call_sig: u32,
+    },
     /// A `host_call` referenced a host signature, but that entry was malformed.
     HostCallSigMalformed {
         /// Function index within the program.
@@ -424,6 +439,15 @@ pub enum VerifyError {
         pc: u32,
         /// Host signature id.
         host_sig: u32,
+    },
+    /// A `call.indirect` referenced a call signature, but that entry was malformed.
+    CallIndirectSigMalformed {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Call signature id.
+        call_sig: u32,
     },
     /// The program's host signature hash does not match the canonical hash for its types.
     HostSigHashMismatch {
@@ -712,10 +736,23 @@ impl fmt::Display for VerifyError {
                     "function {func} pc={pc} host_sig out of bounds: {host_sig}"
                 )
             }
+            Self::CallSigOutOfBounds { func, pc, call_sig } => {
+                write!(
+                    f,
+                    "function {func} pc={pc} call_sig out of bounds: {call_sig}"
+                )
+            }
             Self::HostSigMalformed { host_sig } => write!(f, "host_sig {host_sig} malformed"),
+            Self::CallSigMalformed { call_sig } => {
+                write!(f, "call_sig {call_sig} malformed")
+            }
             Self::HostCallSigMalformed { func, pc, host_sig } => write!(
                 f,
                 "function {func} pc={pc} host_sig {host_sig} malformed (via host_call)"
+            ),
+            Self::CallIndirectSigMalformed { func, pc, call_sig } => write!(
+                f,
+                "function {func} pc={pc} call_sig {call_sig} malformed (via call.indirect)"
             ),
             Self::HostSigHashMismatch { host_sig } => {
                 write!(f, "host_sig {host_sig} sig_hash mismatch")
@@ -829,6 +866,7 @@ impl Default for VerifyConfig {
 /// Verifies `program` according to v1 container-level rules.
 pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), VerifyError> {
     verify_host_sigs(program)?;
+    verify_call_sigs(program)?;
     verify_function_value_names(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
@@ -844,6 +882,7 @@ pub fn verify_program_with_lints(
     cfg: &VerifyConfig,
 ) -> Result<Vec<VerifyLint>, VerifyError> {
     verify_host_sigs(program)?;
+    verify_call_sigs(program)?;
     verify_function_value_names(program)?;
 
     let mut lints: Vec<VerifyLint> = Vec::new();
@@ -861,6 +900,7 @@ pub fn verify_program_owned(
     cfg: &VerifyConfig,
 ) -> Result<VerifiedProgram, VerifyError> {
     verify_host_sigs(&program)?;
+    verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
@@ -881,6 +921,7 @@ pub fn verify_program_owned_with_lints(
     cfg: &VerifyConfig,
 ) -> Result<(VerifiedProgram, Vec<VerifyLint>), VerifyError> {
     verify_host_sigs(&program)?;
+    verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
@@ -997,6 +1038,19 @@ fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
         if hs.sig_hash != sig_hash_slices(args, rets) {
             return Err(VerifyError::HostSigHashMismatch { host_sig });
         }
+    }
+    Ok(())
+}
+
+fn verify_call_sigs(program: &Program) -> Result<(), VerifyError> {
+    for (i, cs) in program.call_sigs.iter().enumerate() {
+        let call_sig = u32::try_from(i).unwrap_or(u32::MAX);
+        let _ = program
+            .call_sig_args(cs)
+            .map_err(|_| VerifyError::CallSigMalformed { call_sig })?;
+        let _ = program
+            .call_sig_rets(cs)
+            .map_err(|_| VerifyError::CallSigMalformed { call_sig })?;
     }
     Ok(())
 }
@@ -1142,6 +1196,16 @@ fn verify_id_operands_in_bounds(
                 });
             }
         });
+
+        if let Instr::CallIndirect { call_sig, .. } = &di.instr
+            && program.call_sig(CallSigId(*call_sig)).is_none()
+        {
+            err = Some(VerifyError::CallSigOutOfBounds {
+                func,
+                pc,
+                call_sig: *call_sig,
+            });
+        }
 
         if let Some(err) = err {
             return Err(err);
@@ -2072,12 +2136,39 @@ fn verify_function_bytecode(
                 args: push_vregs(args)?,
                 rets: push_vregs(rets)?,
             },
-            Instr::CallIndirect { .. } => {
-                return Err(VerifyError::UnsupportedInstruction {
-                    func: func_id,
-                    pc: di.offset,
-                    opcode: di.opcode,
-                });
+            Instr::CallIndirect {
+                eff_out,
+                call_sig,
+                callee: callee_reg,
+                eff_in,
+                args,
+                rets,
+            } => {
+                let call_sig = CallSigId(*call_sig);
+                let callee = map(*callee_reg)?;
+                let args = push_vregs(args)?;
+                let rets = push_vregs(rets)?;
+                match callee {
+                    VReg::Func(callee) => ExecInstr::CallIndirectFunc {
+                        eff_out: map_unit(*eff_out)?,
+                        call_sig,
+                        callee,
+                        eff_in: map_unit(*eff_in)?,
+                        args,
+                        rets,
+                    },
+                    VReg::Closure(callee) => ExecInstr::CallIndirectClosure {
+                        eff_out: map_unit(*eff_out)?,
+                        call_sig,
+                        callee,
+                        eff_in: map_unit(*eff_in)?,
+                        args,
+                        rets,
+                    },
+                    _ => {
+                        return Err(unstable(*callee_reg));
+                    }
+                }
             }
             Instr::ClosureNew { dst, func, env } => ExecInstr::ClosureNew {
                 dst: map_closure(*dst)?,
@@ -2500,6 +2591,40 @@ fn validate_instr_reads_writes(
                 return Err(VerifyError::HostCallArityMismatch { func: func_id, pc });
             }
         }
+        Instr::CallIndirect {
+            eff_out,
+            call_sig,
+            eff_in,
+            args,
+            rets,
+            ..
+        } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
+
+            let cs = program
+                .call_sig(CallSigId(*call_sig))
+                .expect("validated by verify_id_operands_in_bounds");
+            let cs_args =
+                program
+                    .call_sig_args(cs)
+                    .map_err(|_| VerifyError::CallIndirectSigMalformed {
+                        func: func_id,
+                        pc,
+                        call_sig: *call_sig,
+                    })?;
+            let cs_rets =
+                program
+                    .call_sig_rets(cs)
+                    .map_err(|_| VerifyError::CallIndirectSigMalformed {
+                        func: func_id,
+                        pc,
+                        call_sig: *call_sig,
+                    })?;
+            if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
+                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+            }
+        }
         _ => {}
     }
 
@@ -2822,7 +2947,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             ..
         } => {
             set_value(state, *eff_out, ValueType::Unit);
-            if let Some(entry) = program.call_sig(crate::program::CallSigId(*call_sig))
+            if let Some(entry) = program.call_sig(CallSigId(*call_sig))
                 && let Ok(types) = program.call_sig_rets(entry)
             {
                 for (dst, t) in rets.iter().zip(types.iter().copied()) {
@@ -3340,8 +3465,35 @@ fn validate_instr_types(
             }
         }
         Instr::CallIndirect {
-            callee, args, rets, ..
+            call_sig,
+            callee,
+            args,
+            rets,
+            ..
         } => {
+            let cs = program
+                .call_sig(CallSigId(*call_sig))
+                .expect("validated by verify_id_operands_in_bounds");
+            let cs_args =
+                program
+                    .call_sig_args(cs)
+                    .map_err(|_| VerifyError::CallIndirectSigMalformed {
+                        func: func_id,
+                        pc,
+                        call_sig: *call_sig,
+                    })?;
+            let cs_rets =
+                program
+                    .call_sig_rets(cs)
+                    .map_err(|_| VerifyError::CallIndirectSigMalformed {
+                        func: func_id,
+                        pc,
+                        call_sig: *call_sig,
+                    })?;
+            if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
+                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+            }
+
             if let Some(actual) = t(*callee) {
                 match actual {
                     RegType::Concrete(ValueType::Func) | RegType::Concrete(ValueType::Closure) => {}
@@ -3360,11 +3512,22 @@ fn validate_instr_types(
                             reg: *callee,
                         });
                     }
-                    RegType::Ambiguous => {}
+                    RegType::Ambiguous => {
+                        return Err(VerifyError::UnknownTypeAtUse {
+                            func: func_id,
+                            pc,
+                            reg: *callee,
+                            expected: ValueType::Func,
+                        });
+                    }
                 }
             }
-            let _ = args;
-            let _ = rets;
+            for (&r, &expected) in args.iter().zip(cs_args.iter()) {
+                check_expected(func_id, pc, r, t(r), expected)?;
+            }
+            for (&r, &expected) in rets.iter().zip(cs_rets.iter()) {
+                check_assignable(func_id, pc, r, t(r), expected)?;
+            }
         }
         Instr::ClosureNew { func, env, .. } => {
             check_expected(func_id, pc, *func, t(*func), ValueType::Func)?;
@@ -3661,13 +3824,34 @@ mod tests {
     use crate::asm::{BuildError, FunctionSig, ProgramBuilder};
     use crate::opcode::Opcode;
     use crate::program::{
-        Const, FunctionDef, HostSymbol, SpanId, StructTypeDef, TypeTableDef, ValueType,
+        ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, SpanId, StructTypeDef,
+        TypeTableDef, ValueType,
     };
     use crate::value::FuncId;
     use alloc::vec;
 
     fn sid(v: u64) -> SpanId {
         SpanId::try_from(v).unwrap()
+    }
+
+    fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> u32 {
+        let args_offset = u32::try_from(p.value_types.len()).unwrap();
+        p.value_types.extend_from_slice(args);
+        let rets_offset = u32::try_from(p.value_types.len()).unwrap();
+        p.value_types.extend_from_slice(rets);
+
+        let id = u32::try_from(p.call_sigs.len()).unwrap();
+        p.call_sigs.push(CallSigEntry {
+            args: ByteRange {
+                offset: args_offset,
+                len: u32::try_from(args.len()).unwrap(),
+            },
+            rets: ByteRange {
+                offset: rets_offset,
+                len: u32::try_from(rets.len()).unwrap(),
+            },
+        });
+        id
     }
 
     #[test]
@@ -3865,6 +4049,238 @@ mod tests {
                 func: 0,
                 pc: 0,
                 reg: 3,
+            }
+        ));
+    }
+
+    #[test]
+    fn verifier_lowers_call_indirect_func() {
+        let caller_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![2],
+                rets: vec![3],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+        let callee_bytecode = crate::bytecode::encode_instructions(&[Instr::Ret {
+            eff_in: 0,
+            rets: vec![1],
+        }])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![
+                FunctionDef {
+                    arg_types: vec![ValueType::Func, ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 4,
+                    bytecode: caller_bytecode,
+                    spans: vec![],
+                },
+                FunctionDef {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                    bytecode: callee_bytecode,
+                    spans: vec![],
+                },
+            ],
+        );
+        assert_eq!(
+            add_call_sig(&mut p, &[ValueType::I64], &[ValueType::I64]),
+            0
+        );
+
+        let verified = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+        let f0 = verified.verified(FuncId(0)).unwrap();
+        match &f0.instrs[0].instr {
+            ExecInstr::CallIndirectFunc {
+                call_sig, callee, ..
+            } => {
+                assert_eq!(*call_sig, CallSigId(0));
+                assert_eq!(*callee, FuncReg(0));
+            }
+            other => panic!("expected CallIndirectFunc lowering, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verifier_lowers_call_indirect_closure() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![2],
+                rets: vec![3],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Closure, ValueType::I64],
+                ret_types: vec![ValueType::I64],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        assert_eq!(
+            add_call_sig(&mut p, &[ValueType::I64], &[ValueType::I64]),
+            0
+        );
+
+        let verified = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+        let f0 = verified.verified(FuncId(0)).unwrap();
+        match &f0.instrs[0].instr {
+            ExecInstr::CallIndirectClosure {
+                call_sig, callee, ..
+            } => {
+                assert_eq!(*call_sig, CallSigId(0));
+                assert_eq!(*callee, ClosureReg(0));
+            }
+            other => panic!("expected CallIndirectClosure lowering, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verifier_rejects_call_indirect_call_sig_out_of_bounds() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 7,
+                callee: 1,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![],
+            },
+        ])
+        .unwrap();
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Func],
+                ret_types: vec![],
+                reg_count: 2,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::CallSigOutOfBounds {
+                func: 0,
+                pc: 0,
+                call_sig: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_call_indirect_arity_mismatch() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![],
+            },
+        ])
+        .unwrap();
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Func],
+                ret_types: vec![],
+                reg_count: 2,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        assert_eq!(add_call_sig(&mut p, &[ValueType::I64], &[]), 0);
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::CallArityMismatch { func: 0, pc: 0 })
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_call_indirect_arg_type_mismatch() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![2],
+                rets: vec![],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![],
+            },
+        ])
+        .unwrap();
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Func, ValueType::Bool],
+                ret_types: vec![],
+                reg_count: 3,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        assert_eq!(add_call_sig(&mut p, &[ValueType::I64], &[]), 0);
+
+        let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            VerifyError::TypeMismatch {
+                func: 0,
+                pc: 0,
+                expected: ValueType::I64,
+                actual: ValueType::Bool,
             }
         ));
     }

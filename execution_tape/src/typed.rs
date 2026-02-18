@@ -10,7 +10,7 @@
 
 use alloc::vec::Vec;
 
-use crate::program::HostSigId;
+use crate::program::{CallSigId, HostSigId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
 use crate::value::FuncId;
@@ -624,6 +624,22 @@ pub(crate) enum ExecInstr {
     HostCall {
         eff_out: UnitReg,
         host_sig: HostSigId,
+        eff_in: UnitReg,
+        args: VRegSlice,
+        rets: VRegSlice,
+    },
+    CallIndirectFunc {
+        eff_out: UnitReg,
+        call_sig: CallSigId,
+        callee: FuncReg,
+        eff_in: UnitReg,
+        args: VRegSlice,
+        rets: VRegSlice,
+    },
+    CallIndirectClosure {
+        eff_out: UnitReg,
+        call_sig: CallSigId,
+        callee: ClosureReg,
         eff_in: UnitReg,
         args: VRegSlice,
         rets: VRegSlice,
