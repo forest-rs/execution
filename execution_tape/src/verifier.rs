@@ -1561,6 +1561,12 @@ fn verify_function_bytecode(
                 _ => Err(unstable(reg)),
             }
         };
+        let map_closure = |reg: u32| -> Result<ClosureReg, VerifyError> {
+            match map(reg)? {
+                VReg::Closure(r) => Ok(r),
+                _ => Err(unstable(reg)),
+            }
+        };
         let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
             let start = operands.len();
             operands.reserve(regs.len());
@@ -2066,13 +2072,18 @@ fn verify_function_bytecode(
                 args: push_vregs(args)?,
                 rets: push_vregs(rets)?,
             },
-            Instr::CallIndirect { .. } | Instr::ClosureNew { .. } => {
+            Instr::CallIndirect { .. } => {
                 return Err(VerifyError::UnsupportedInstruction {
                     func: func_id,
                     pc: di.offset,
                     opcode: di.opcode,
                 });
             }
+            Instr::ClosureNew { dst, func, env } => ExecInstr::ClosureNew {
+                dst: map_closure(*dst)?,
+                func: map_func(*func)?,
+                env: map_agg(*env)?,
+            },
 
             Instr::TupleNew { dst, values } => ExecInstr::TupleNew {
                 dst: map_agg(*dst)?,
@@ -3697,6 +3708,165 @@ mod tests {
             }],
         );
         verify_program(&p, &VerifyConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn verifier_lowers_closure_new() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ClosureNew {
+                dst: 3,
+                func: 1,
+                env: 2,
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Func, ValueType::Agg],
+                ret_types: vec![ValueType::Closure],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+
+        let verified = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+        let f0 = verified.verified(FuncId(0)).unwrap();
+        match &f0.instrs[0].instr {
+            ExecInstr::ClosureNew { dst, func, env } => {
+                assert_eq!(dst, &ClosureReg(0));
+                assert_eq!(func, &FuncReg(0));
+                assert_eq!(env, &AggReg(0));
+            }
+            other => panic!("expected ClosureNew lowering, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verifier_rejects_closure_new_with_non_func_operand() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ClosureNew {
+                dst: 3,
+                func: 1,
+                env: 2,
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![],
+            },
+        ])
+        .unwrap();
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::I64, ValueType::Agg],
+                ret_types: vec![],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+
+        let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            VerifyError::TypeMismatch {
+                func: 0,
+                pc: 0,
+                expected: ValueType::Func,
+                actual: ValueType::I64,
+            }
+        ));
+    }
+
+    #[test]
+    fn verifier_rejects_closure_new_with_non_agg_env() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ClosureNew {
+                dst: 3,
+                func: 1,
+                env: 2,
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![],
+            },
+        ])
+        .unwrap();
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Func, ValueType::I64],
+                ret_types: vec![],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+
+        let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            VerifyError::TypeMismatch {
+                func: 0,
+                pc: 0,
+                expected: ValueType::Agg,
+                actual: ValueType::I64,
+            }
+        ));
+    }
+
+    #[test]
+    fn verifier_rejects_closure_new_dst_type_conflict() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ClosureNew {
+                dst: 3,
+                func: 1,
+                env: 2,
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![],
+            },
+        ])
+        .unwrap();
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Func, ValueType::Agg, ValueType::I64],
+                ret_types: vec![],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+
+        let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
+        assert!(matches!(
+            err,
+            VerifyError::UnstableRegTypeAt {
+                func: 0,
+                pc: 0,
+                reg: 3,
+            }
+        ));
     }
 
     #[test]

@@ -1790,6 +1790,10 @@ impl<H: Host> Vm<H> {
                     }
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::ClosureNew { .. } => {
+                    // Lowering is enabled before runtime execution support lands.
+                    return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                }
 
                 ExecInstr::TupleNew { dst, values } => {
                     let values = vf.vregs(*values);

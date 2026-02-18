@@ -628,6 +628,11 @@ pub(crate) enum ExecInstr {
         args: VRegSlice,
         rets: VRegSlice,
     },
+    ClosureNew {
+        dst: ClosureReg,
+        func: FuncReg,
+        env: AggReg,
+    },
 
     TupleNew {
         dst: AggReg,
