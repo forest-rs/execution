@@ -28,6 +28,7 @@ pub(crate) enum RegClass {
     Obj,
     Agg,
     Func,
+    Closure,
 }
 
 impl RegClass {
@@ -44,6 +45,7 @@ impl RegClass {
             ValueType::Obj(_) => Self::Obj,
             ValueType::Agg => Self::Agg,
             ValueType::Func => Self::Func,
+            ValueType::Closure => Self::Closure,
         }
     }
 }

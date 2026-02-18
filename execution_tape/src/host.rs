@@ -478,6 +478,7 @@ fn encode_value_type_tag(t: ValueType) -> u8 {
         ValueType::Obj(_) => 8,
         ValueType::Agg => 9,
         ValueType::Func => 10,
+        ValueType::Closure => 11,
     }
 }
 
@@ -514,5 +515,18 @@ mod tests {
             rets: vec![ValueType::U64],
         };
         assert_ne!(sig_hash(&a), sig_hash(&b));
+    }
+
+    #[test]
+    fn sig_hash_distinguishes_func_and_closure_types() {
+        let func_sig = HostSig {
+            args: vec![ValueType::Func],
+            rets: vec![ValueType::Unit],
+        };
+        let closure_sig = HostSig {
+            args: vec![ValueType::Closure],
+            rets: vec![ValueType::Unit],
+        };
+        assert_ne!(sig_hash(&func_sig), sig_hash(&closure_sig));
     }
 }
