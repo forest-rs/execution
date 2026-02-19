@@ -23,6 +23,7 @@ fn bench_vm(c: &mut Criterion) {
     bench_str_const_len(c);
     bench_call_overhead(c);
     bench_call_loop(c);
+    bench_call_indirect_loop(c);
     bench_branch_hot_loop(c);
     bench_host_call(c);
     bench_host_call_loop(c);
@@ -165,6 +166,38 @@ fn bench_call_loop(c: &mut Criterion) {
                 black_box(out);
             });
         });
+    }
+    group.finish();
+}
+
+fn bench_call_indirect_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("call_indirect_loop");
+    for &iters in &[100_u64, 1_000, 10_000] {
+        let func_program = build_call_indirect_loop(iters, false);
+        let closure_program = build_call_indirect_loop(iters, true);
+        let mut func_vm = Vm::new(NopHost, wide_open_limits());
+        let mut closure_vm = Vm::new(NopHost, wide_open_limits());
+
+        group.bench_with_input(BenchmarkId::new("func", iters), &func_program, |b, p| {
+            b.iter(|| {
+                let out = func_vm
+                    .run(p, FuncId(0), &[], TraceMask::NONE, None)
+                    .unwrap();
+                black_box(out);
+            });
+        });
+        group.bench_with_input(
+            BenchmarkId::new("closure", iters),
+            &closure_program,
+            |b, p| {
+                b.iter(|| {
+                    let out = closure_vm
+                        .run(p, FuncId(0), &[], TraceMask::NONE, None)
+                        .unwrap();
+                    black_box(out);
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -420,6 +453,65 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     a0.ret(0, &[4]);
 
     pb.define_function(f0, a0).unwrap();
+    pb.build_verified().unwrap()
+}
+
+fn build_call_indirect_loop(
+    iters: u64,
+    closure_target: bool,
+) -> execution_tape::verifier::VerifiedProgram {
+    let mut pb = ProgramBuilder::new();
+    let call_sig = pb.call_sig(&[], &[]);
+
+    let f0 = pb.declare_function(FunctionSig {
+        arg_types: vec![],
+        ret_types: vec![ValueType::U64],
+    });
+    let f1 = pb.declare_function(FunctionSig {
+        arg_types: if closure_target {
+            vec![ValueType::Agg]
+        } else {
+            vec![]
+        },
+        ret_types: vec![],
+    });
+
+    let mut callee = Asm::new();
+    callee.ret(0, &[]);
+    pb.define_function(f1, callee).unwrap();
+
+    // r1: counter, r2: limit, r3: one, r4: done?
+    // r5: callee func register, r6: env aggregate, r7: callee closure register
+    // r8: env payload constant
+    let mut entry = Asm::new();
+    let l_loop = entry.label();
+    let l_body = entry.label();
+    let l_done = entry.label();
+
+    entry.const_u64(1, 0);
+    entry.const_u64(2, iters);
+    entry.const_u64(3, 1);
+    entry.const_func(5, f1);
+    if closure_target {
+        entry.const_i64(8, 7);
+        entry.tuple_new(6, &[8]);
+        entry.closure_new(7, 5, 6);
+    }
+
+    entry.jmp(l_loop);
+    entry.place(l_loop).unwrap();
+    entry.u64_eq(4, 1, 2);
+    entry.br(4, l_done, l_body);
+
+    entry.place(l_body).unwrap();
+    entry.call_indirect(0, call_sig, if closure_target { 7 } else { 5 }, 0, &[], &[]);
+    entry.u64_add(1, 1, 3);
+    entry.jmp(l_loop);
+
+    entry.place(l_done).unwrap();
+    entry.ret(0, &[1]);
+    pb.define_function(f0, entry).unwrap();
+
     pb.build_verified().unwrap()
 }
 

@@ -1500,6 +1500,90 @@
       ]
     },
     {
+      "name": "CallIndirect",
+      "mnemonic": "call.indirect",
+      "byte": "0x54",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Call a callee value in a register, checked against a call signature.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "callee",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        }
+      ]
+    },
+    {
+      "name": "ClosureNew",
+      "mnemonic": "closure.new",
+      "byte": "0x55",
+      "terminator": false,
+      "flags": [],
+      "doc": "Construct a closure from a function value register and env aggregate register.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "func",
+          "encoding": "reg_u32_uleb",
+          "field": "func",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "env",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "TupleNew",
       "mnemonic": "tuple.new",
       "byte": "0x60",

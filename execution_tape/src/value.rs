@@ -34,6 +34,15 @@ pub struct FuncId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AggHandle(pub u32);
 
+/// A closure value (function + captured environment).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Closure {
+    /// Function identifier for the closure body.
+    pub func: FuncId,
+    /// Captured immutable environment.
+    pub env: AggHandle,
+}
+
 /// Decimal value with per-value scale.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Decimal {
@@ -68,6 +77,8 @@ pub enum Value {
     Agg(AggHandle),
     /// Function reference.
     Func(FuncId),
+    /// Closure reference (function + captured environment).
+    Closure(Closure),
 }
 
 /// Aggregate type descriptor for host signatures and reflection.

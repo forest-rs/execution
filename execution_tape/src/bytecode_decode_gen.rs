@@ -493,6 +493,32 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 func_id,
             }
         },
+        Opcode::CallIndirect => {
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let callee = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            let rets = crate::codec_primitives::read_reg_list(r)?;
+            Instr::CallIndirect {
+                eff_out,
+                call_sig,
+                callee,
+                eff_in,
+                args,
+                rets,
+            }
+        },
+        Opcode::ClosureNew => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let func = crate::codec_primitives::read_reg(r)?;
+            let env = crate::codec_primitives::read_reg(r)?;
+            Instr::ClosureNew {
+                dst,
+                func,
+                env,
+            }
+        },
         Opcode::TupleNew => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let values = crate::codec_primitives::read_reg_list(r)?;

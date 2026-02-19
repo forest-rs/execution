@@ -29,6 +29,8 @@ mod tests {
     fn opcode_values_are_stable() {
         assert_eq!(Opcode::Call as u8, 0x50);
         assert_eq!(Opcode::Ret as u8, 0x51);
+        assert_eq!(Opcode::CallIndirect as u8, 0x54);
+        assert_eq!(Opcode::ClosureNew as u8, 0x55);
         assert_eq!(Opcode::BoolNot as u8, 0x30);
         assert_eq!(Opcode::BoolAnd as u8, 0x88);
         assert_eq!(Opcode::F64Neg as u8, 0x8B);

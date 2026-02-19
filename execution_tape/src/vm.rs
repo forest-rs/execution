@@ -19,10 +19,10 @@ use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg, I64Reg, ObjReg,
-    StrReg, U64Reg, UnitReg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
+    I64Reg, ObjReg, StrReg, U64Reg, UnitReg, VReg, VRegSlice,
 };
-use crate::value::{AggHandle, Decimal, FuncId, Obj, ObjHandle, Value};
+use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
 
 /// Execution limits for a VM run.
@@ -202,6 +202,8 @@ struct RegBase {
     aggs: usize,
     /// Base offset for the function id register bank.
     funcs: usize,
+    /// Base offset for the closure register bank.
+    closures: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -270,6 +272,8 @@ pub struct ExecutionContext {
     aggs: Vec<AggHandle>,
     /// Function registers.
     funcs: Vec<FuncId>,
+    /// Closure registers.
+    closures: Vec<Closure>,
 
     /// Call stack.
     frames: Vec<Frame>,
@@ -298,6 +302,7 @@ impl ExecutionContext {
         self.objs.clear();
         self.aggs.clear();
         self.funcs.clear();
+        self.closures.clear();
         self.arena.clear();
 
         self.fuel = fuel;
@@ -643,6 +648,12 @@ impl<H: Host> Vm<H> {
                 ExecInstr::MovFunc { dst, src } => {
                     let v = ctx.read_func(base, *src);
                     ctx.write_func(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
+                ExecInstr::MovClosure { dst, src } => {
+                    let v = ctx.read_closure(base, *src);
+                    ctx.write_closure(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
@@ -1222,6 +1233,15 @@ impl<H: Host> Vm<H> {
                     ctx.write_func(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::SelectClosure { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_closure(base, *a)
+                    } else {
+                        ctx.read_closure(base, *b)
+                    };
+                    ctx.write_closure(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
 
                 ExecInstr::Br {
                     cond,
@@ -1508,6 +1528,168 @@ impl<H: Host> Vm<H> {
                         ctx.intern_value_to_vreg(base, dst, &val)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::CallIndirectFunc {
+                    eff_out,
+                    call_sig,
+                    callee,
+                    eff_in: _,
+                    args,
+                    rets: dst_rets,
+                } => {
+                    if ctx.frames.len() >= max_call_depth {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    }
+
+                    let callee_func = ctx.read_func(base, *callee);
+                    let callee_fn = program_ref
+                        .functions
+                        .get(callee_func.0 as usize)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let callee_vf = program
+                        .verified(callee_func)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+
+                    validate_indirect_call_signature(
+                        program,
+                        *call_sig,
+                        callee_func,
+                        callee_fn,
+                        IndirectCalleeKind::Func,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+
+                    // v1: effect token is `Unit` (stored as 0).
+                    ctx.write_unit(base, *eff_out, 0);
+
+                    let callee_base = ctx.alloc_frame(callee_vf);
+                    let args = vf.vregs(*args);
+                    if args.len() != callee_vf.reg_layout.arg_regs.len() {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                    }
+                    for (src, dst) in args
+                        .iter()
+                        .copied()
+                        .zip(callee_vf.reg_layout.arg_regs.iter().copied())
+                    {
+                        ctx.copy_vreg(base, src, callee_base, dst)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
+
+                    ctx.frames.push(Frame {
+                        func: callee_func,
+                        pc: 0,
+                        instr_ix: 0,
+                        byte_len: callee_vf.byte_len,
+                        base: callee_base,
+                        return_to: Some(ReturnTo {
+                            dst_rets: *dst_rets,
+                        }),
+                    });
+
+                    if trace_call {
+                        trace.scope_enter(
+                            program_ref,
+                            ScopeKind::CallFrame { func: callee_func },
+                            ctx.frames.len(),
+                            callee_func,
+                            0,
+                            callee_vf.span_at_ix(0).map(|id| id.get()),
+                        );
+                    }
+
+                    debug_assert_eq!(
+                        callee_fn.bytecode.len, callee_vf.byte_len,
+                        "verified byte_len must match decoded bytecode length"
+                    );
+                }
+                ExecInstr::CallIndirectClosure {
+                    eff_out,
+                    call_sig,
+                    callee,
+                    eff_in: _,
+                    args,
+                    rets: dst_rets,
+                } => {
+                    if ctx.frames.len() >= max_call_depth {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    }
+
+                    let callee = ctx.read_closure(base, *callee);
+                    let callee_fn = program_ref
+                        .functions
+                        .get(callee.func.0 as usize)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let callee_vf = program
+                        .verified(callee.func)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+
+                    validate_indirect_call_signature(
+                        program,
+                        *call_sig,
+                        callee.func,
+                        callee_fn,
+                        IndirectCalleeKind::Closure,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+
+                    // v1: effect token is `Unit` (stored as 0).
+                    ctx.write_unit(base, *eff_out, 0);
+
+                    let callee_base = ctx.alloc_frame(callee_vf);
+                    let args = vf.vregs(*args);
+                    let Some((&env_dst, user_arg_dsts)) =
+                        callee_vf.reg_layout.arg_regs.split_first()
+                    else {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                    };
+                    let VReg::Agg(env_dst) = env_dst else {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                    };
+                    ctx.write_agg_handle(callee_base, env_dst, callee.env);
+
+                    if args.len() != user_arg_dsts.len() {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                    }
+                    for (src, dst) in args.iter().copied().zip(user_arg_dsts.iter().copied()) {
+                        ctx.copy_vreg(base, src, callee_base, dst)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
+
+                    ctx.frames.push(Frame {
+                        func: callee.func,
+                        pc: 0,
+                        instr_ix: 0,
+                        byte_len: callee_vf.byte_len,
+                        base: callee_base,
+                        return_to: Some(ReturnTo {
+                            dst_rets: *dst_rets,
+                        }),
+                    });
+
+                    if trace_call {
+                        trace.scope_enter(
+                            program_ref,
+                            ScopeKind::CallFrame { func: callee.func },
+                            ctx.frames.len(),
+                            callee.func,
+                            0,
+                            callee_vf.span_at_ix(0).map(|id| id.get()),
+                        );
+                    }
+
+                    debug_assert_eq!(
+                        callee_fn.bytecode.len, callee_vf.byte_len,
+                        "verified byte_len must match decoded bytecode length"
+                    );
+                }
+                ExecInstr::ClosureNew { dst, func, env } => {
+                    let closure = Closure {
+                        func: ctx.read_func(base, *func),
+                        env: ctx.read_agg_handle(base, *env),
+                    };
+                    ctx.write_closure(base, *dst, closure);
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -1998,6 +2180,7 @@ impl ExecutionContext {
             objs: self.objs.len(),
             aggs: self.aggs.len(),
             funcs: self.funcs.len(),
+            closures: self.closures.len(),
         };
 
         self.units.resize(base.unit + counts.unit, 0);
@@ -2023,6 +2206,13 @@ impl ExecutionContext {
         );
         self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
         self.funcs.resize(base.funcs + counts.funcs, FuncId(0));
+        self.closures.resize(
+            base.closures + counts.closures,
+            Closure {
+                func: FuncId(0),
+                env: AggHandle(0),
+            },
+        );
 
         base
     }
@@ -2039,6 +2229,7 @@ impl ExecutionContext {
         self.objs.truncate(base.objs);
         self.aggs.truncate(base.aggs);
         self.funcs.truncate(base.funcs);
+        self.closures.truncate(base.closures);
     }
 
     fn init_args(&mut self, base: RegBase, vf: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
@@ -2099,6 +2290,10 @@ impl ExecutionContext {
                 self.write_func(base, r, *f);
                 Ok(())
             }
+            (VReg::Closure(r), Value::Closure(c)) => {
+                self.write_closure(base, r, *c);
+                Ok(())
+            }
             _ => Err(Trap::InvalidPc),
         }
     }
@@ -2125,6 +2320,7 @@ impl ExecutionContext {
             VReg::Obj(r) => Value::Obj(self.read_obj(base, r)),
             VReg::Agg(r) => Value::Agg(self.read_agg_handle(base, r)),
             VReg::Func(r) => Value::Func(self.read_func(base, r)),
+            VReg::Closure(r) => Value::Closure(self.read_closure(base, r)),
         })
     }
 
@@ -2189,6 +2385,11 @@ impl ExecutionContext {
             (VReg::Func(s), VReg::Func(d)) => {
                 let v = self.read_func(src_base, s);
                 self.write_func(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::Closure(s), VReg::Closure(d)) => {
+                let v = self.read_closure(src_base, s);
+                self.write_closure(dst_base, d, v);
                 Ok(())
             }
             _ => Err(Trap::InvalidPc),
@@ -2305,6 +2506,16 @@ impl ExecutionContext {
         self.funcs[base.funcs + r.0 as usize] = v;
     }
 
+    #[inline(always)]
+    #[must_use]
+    fn read_closure(&self, base: RegBase, r: ClosureReg) -> Closure {
+        self.closures[base.closures + r.0 as usize]
+    }
+    #[inline(always)]
+    fn write_closure(&mut self, base: RegBase, r: ClosureReg, v: Closure) {
+        self.closures[base.closures + r.0 as usize] = v;
+    }
+
     #[inline]
     #[must_use = "reads can trap; handle the Result"]
     fn read_bytes<'a>(&'a self, reg: &BytesReg, base: RegBase) -> Result<&'a [u8], Trap> {
@@ -2381,6 +2592,7 @@ impl Value {
             Self::Obj(o) => ValueType::Obj(o.host_type),
             Self::Agg(_) => ValueType::Agg,
             Self::Func(_) => ValueType::Func,
+            Self::Closure(_) => ValueType::Closure,
         }
     }
 
@@ -2402,6 +2614,93 @@ fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -
     }
     for (v, &t) in args.iter().zip(arg_types.iter()) {
         v.check_type(t)?;
+    }
+    Ok(())
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum IndirectCalleeKind {
+    Func,
+    Closure,
+}
+
+#[inline]
+fn validate_indirect_call_signature(
+    verified: &VerifiedProgram,
+    call_sig: crate::program::CallSigId,
+    callee_func: FuncId,
+    callee_fn: &Function,
+    callee_kind: IndirectCalleeKind,
+) -> Result<(), Trap> {
+    let expected = verified
+        .call_sig_fingerprint(call_sig)
+        .ok_or(Trap::InvalidPc)?;
+    let actual = match callee_kind {
+        IndirectCalleeKind::Func => verified.function_direct_sig_fingerprint(callee_func),
+        IndirectCalleeKind::Closure => verified.function_closure_sig_fingerprint(callee_func),
+    };
+
+    if let Some(actual) = actual {
+        // Fast path: both hash and canonical signature key match.
+        if expected.hash == actual.hash && expected.key == actual.key {
+            return Ok(());
+        }
+    }
+
+    // Preserve exact trap behavior and remain collision-safe by validating the full type vectors
+    // whenever fingerprints do not prove equivalence.
+    validate_indirect_call_signature_types(
+        verified.program(),
+        call_sig,
+        callee_fn,
+        matches!(callee_kind, IndirectCalleeKind::Closure),
+    )
+}
+
+#[inline]
+fn validate_indirect_call_signature_types(
+    program: &Program,
+    call_sig: crate::program::CallSigId,
+    callee_fn: &Function,
+    is_closure: bool,
+) -> Result<(), Trap> {
+    let call_sig_entry = program.call_sig(call_sig).ok_or(Trap::InvalidPc)?;
+    let expected_args = program
+        .call_sig_args(call_sig_entry)
+        .map_err(|_| Trap::InvalidPc)?;
+    let expected_rets = program
+        .call_sig_rets(call_sig_entry)
+        .map_err(|_| Trap::InvalidPc)?;
+    let actual_args = callee_fn.arg_types(program).map_err(|_| Trap::InvalidPc)?;
+    let actual_rets = callee_fn.ret_types(program).map_err(|_| Trap::InvalidPc)?;
+
+    if is_closure {
+        let Some((first, rest)) = actual_args.split_first() else {
+            return Err(Trap::ArityMismatch);
+        };
+        if *first != ValueType::Agg {
+            return Err(Trap::TypeMismatch {
+                expected: ValueType::Agg,
+                actual: *first,
+            });
+        }
+        validate_signature_types(expected_args, rest)?;
+    } else {
+        validate_signature_types(expected_args, actual_args)?;
+    }
+
+    validate_signature_types(expected_rets, actual_rets)
+}
+
+#[inline]
+fn validate_signature_types(expected: &[ValueType], actual: &[ValueType]) -> Result<(), Trap> {
+    if expected.len() != actual.len() {
+        return Err(Trap::ArityMismatch);
+    }
+    for (&expected, &actual) in expected.iter().zip(actual.iter()) {
+        if expected != actual {
+            return Err(Trap::TypeMismatch { expected, actual });
+        }
     }
     Ok(())
 }
@@ -2445,6 +2744,7 @@ fn read_value_ref_at<'a>(
         VReg::Obj(r) => ValueRef::Obj(objs[base.objs + r.0 as usize]),
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
         VReg::Func(r) => ValueRef::Func(funcs[base.funcs + r.0 as usize]),
+        VReg::Closure(_) => return Err(Trap::InvalidPc),
     })
 }
 
@@ -2524,9 +2824,11 @@ fn f64_max_num(a: f64, b: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::bytecode::Instr;
     use crate::host::{AccessSink, HostSig, ResourceKeyRef, SigHash};
-    use crate::program::{Program, ValueType};
+    use crate::program::{ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
+    use crate::verifier::{VerifyConfig, verify_program_owned};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -2551,6 +2853,29 @@ mod tests {
                 _ => Err(HostError::UnknownSymbol),
             }
         }
+    }
+
+    fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> u32 {
+        let args_offset = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
+        p.value_types.extend_from_slice(args);
+        let args_len = u32::try_from(args.len()).unwrap_or(u32::MAX);
+
+        let rets_offset = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
+        p.value_types.extend_from_slice(rets);
+        let rets_len = u32::try_from(rets.len()).unwrap_or(u32::MAX);
+
+        let id = u32::try_from(p.call_sigs.len()).unwrap_or(u32::MAX);
+        p.call_sigs.push(CallSigEntry {
+            args: ByteRange {
+                offset: args_offset,
+                len: args_len,
+            },
+            rets: ByteRange {
+                offset: rets_offset,
+                len: rets_len,
+            },
+        });
+        id
     }
 
     #[test]
@@ -2893,6 +3218,454 @@ mod tests {
 
         assert_eq!(out, vec![Value::I64(9)]);
         assert!(access.reads > 0);
+    }
+
+    #[test]
+    fn vm_returns_closure_value() {
+        let mut a = Asm::new();
+        a.ret(0, &[1]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let closure = Closure {
+            func: FuncId(123),
+            env: AggHandle(456),
+        };
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(closure)],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure)]);
+    }
+
+    #[test]
+    fn vm_stores_and_loads_closure_via_tuple() {
+        let mut a = Asm::new();
+        a.tuple_new(2, &[1]);
+        a.tuple_get(3, 2, 0);
+        a.ret(0, &[3]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let closure = Closure {
+            func: FuncId(42),
+            env: AggHandle(7),
+        };
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(closure)],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure)]);
+    }
+
+    #[test]
+    fn vm_executes_closure_new() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstFunc {
+                dst: 2,
+                func_id: FuncId(0),
+            },
+            Instr::ClosureNew {
+                dst: 3,
+                func: 2,
+                env: 1,
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![ValueType::Closure],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let env = vm
+            .aggregates_mut()
+            .tuple_new(vec![Value::I64(11), Value::Bool(true)]);
+
+        let out = vm
+            .run(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
+            .unwrap();
+        let closure = match out.as_slice() {
+            [Value::Closure(c)] => *c,
+            other => panic!("expected single closure return, got {other:?}"),
+        };
+
+        assert_eq!(closure.func, FuncId(0));
+        assert_eq!(closure.env, env);
+        assert_eq!(vm.aggregates().tuple_len(closure.env), Ok(2));
+        assert_eq!(
+            vm.aggregates().tuple_get(closure.env, 0),
+            Ok(Value::I64(11))
+        );
+        assert_eq!(
+            vm.aggregates().tuple_get(closure.env, 1),
+            Ok(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn vm_executes_call_indirect_via_func() {
+        let entry_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstFunc {
+                dst: 1,
+                func_id: FuncId(1),
+            },
+            Instr::ConstI64 { dst: 2, imm: 9 },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![2],
+                rets: vec![3],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+        let callee_bytecode = crate::bytecode::encode_instructions(&[Instr::Ret {
+            eff_in: 0,
+            rets: vec![1],
+        }])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![
+                FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 4,
+                    bytecode: entry_bytecode,
+                    spans: vec![],
+                },
+                FunctionDef {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                    bytecode: callee_bytecode,
+                    spans: vec![],
+                },
+            ],
+        );
+        assert_eq!(
+            add_call_sig(&mut p, &[ValueType::I64], &[ValueType::I64]),
+            0
+        );
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        assert_eq!(out, vec![Value::I64(9)]);
+    }
+
+    #[test]
+    fn vm_executes_call_indirect_via_closure_with_env_injection() {
+        let entry_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstI64 { dst: 1, imm: 11 },
+            Instr::ConstI64 { dst: 2, imm: 22 },
+            Instr::TupleNew {
+                dst: 3,
+                values: vec![1, 2],
+            },
+            Instr::ConstFunc {
+                dst: 4,
+                func_id: FuncId(1),
+            },
+            Instr::ClosureNew {
+                dst: 5,
+                func: 4,
+                env: 3,
+            },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 5,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![6],
+            },
+            Instr::TupleLen { dst: 7, tuple: 6 },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![7],
+            },
+        ])
+        .unwrap();
+        let callee_bytecode = crate::bytecode::encode_instructions(&[Instr::Ret {
+            eff_in: 0,
+            rets: vec![1],
+        }])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![
+                FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::U64],
+                    reg_count: 8,
+                    bytecode: entry_bytecode,
+                    spans: vec![],
+                },
+                FunctionDef {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![ValueType::Agg],
+                    reg_count: 2,
+                    bytecode: callee_bytecode,
+                    spans: vec![],
+                },
+            ],
+        );
+        assert_eq!(add_call_sig(&mut p, &[], &[ValueType::Agg]), 0);
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        assert_eq!(out, vec![Value::U64(2)]);
+    }
+
+    #[test]
+    fn vm_traps_call_indirect_on_signature_arity_mismatch() {
+        let entry_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstFunc {
+                dst: 1,
+                func_id: FuncId(1),
+            },
+            Instr::ConstI64 { dst: 2, imm: 7 },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![2],
+                rets: vec![3],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+        let callee_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstI64 { dst: 1, imm: 99 },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![1],
+            },
+        ])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![
+                FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 4,
+                    bytecode: entry_bytecode,
+                    spans: vec![],
+                },
+                FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 2,
+                    bytecode: callee_bytecode,
+                    spans: vec![],
+                },
+            ],
+        );
+        assert_eq!(
+            add_call_sig(&mut p, &[ValueType::I64], &[ValueType::I64]),
+            0
+        );
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
+        assert_eq!(err.trap, Trap::ArityMismatch);
+    }
+
+    #[test]
+    fn vm_traps_call_indirect_on_signature_type_mismatch() {
+        let entry_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstFunc {
+                dst: 1,
+                func_id: FuncId(1),
+            },
+            Instr::ConstI64 { dst: 2, imm: 7 },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![2],
+                rets: vec![3],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+        let callee_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstI64 { dst: 2, imm: 99 },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![2],
+            },
+        ])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![
+                FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 4,
+                    bytecode: entry_bytecode,
+                    spans: vec![],
+                },
+                FunctionDef {
+                    arg_types: vec![ValueType::U64],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 3,
+                    bytecode: callee_bytecode,
+                    spans: vec![],
+                },
+            ],
+        );
+        assert_eq!(
+            add_call_sig(&mut p, &[ValueType::I64], &[ValueType::I64]),
+            0
+        );
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
+        assert_eq!(
+            err.trap,
+            Trap::TypeMismatch {
+                expected: ValueType::I64,
+                actual: ValueType::U64,
+            }
+        );
+    }
+
+    #[test]
+    fn vm_traps_call_indirect_when_closure_has_invalid_func_id() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 1,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![2],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![2],
+            },
+        ])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![ValueType::I64],
+                reg_count: 3,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        assert_eq!(add_call_sig(&mut p, &[], &[ValueType::I64]), 0);
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let err = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(Closure {
+                    func: FuncId(99),
+                    env: AggHandle(0),
+                })],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(err.trap, Trap::InvalidPc);
     }
 
     #[test]
