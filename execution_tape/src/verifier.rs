@@ -17,7 +17,7 @@ use crate::analysis::dataflow;
 use crate::analysis::liveness;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
-use crate::host::sig_hash_slices;
+use crate::host::{SigHash, sig_hash_slices};
 use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
@@ -48,6 +48,31 @@ use crate::vm::Vm;
 pub struct VerifiedProgram {
     program: Program,
     verified_functions: Vec<ExecFunc>,
+    signature_cache: SignatureCache,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SigFingerprint {
+    pub(crate) hash: SigHash,
+    pub(crate) key: u32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct FunctionSigFingerprints {
+    direct: SigFingerprint,
+    closure: Option<SigFingerprint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SignatureCache {
+    call_sigs: Vec<SigFingerprint>,
+    functions: Vec<FunctionSigFingerprints>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalSignature {
+    args: Vec<ValueType>,
+    rets: Vec<ValueType>,
 }
 
 /// A non-fatal verifier lint warning.
@@ -104,6 +129,30 @@ impl VerifiedProgram {
     #[must_use]
     pub(crate) fn verified(&self, func: FuncId) -> Option<&ExecFunc> {
         self.verified_functions.get(func.0 as usize)
+    }
+
+    #[must_use]
+    pub(crate) fn call_sig_fingerprint(&self, call_sig: CallSigId) -> Option<SigFingerprint> {
+        self.signature_cache
+            .call_sigs
+            .get(call_sig.0 as usize)
+            .copied()
+    }
+
+    #[must_use]
+    pub(crate) fn function_direct_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
+        self.signature_cache
+            .functions
+            .get(func.0 as usize)
+            .map(|s| s.direct)
+    }
+
+    #[must_use]
+    pub(crate) fn function_closure_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
+        self.signature_cache
+            .functions
+            .get(func.0 as usize)
+            .and_then(|s| s.closure)
     }
 
     /// Consumes `self` and returns the underlying program.
@@ -902,6 +951,7 @@ pub fn verify_program_owned(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
+    let signature_cache = build_signature_cache(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
@@ -912,6 +962,7 @@ pub fn verify_program_owned(
     Ok(VerifiedProgram {
         program,
         verified_functions,
+        signature_cache,
     })
 }
 
@@ -923,6 +974,7 @@ pub fn verify_program_owned_with_lints(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
+    let signature_cache = build_signature_cache(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     let mut lints: Vec<VerifyLint> = Vec::new();
@@ -937,9 +989,84 @@ pub fn verify_program_owned_with_lints(
         VerifiedProgram {
             program,
             verified_functions,
+            signature_cache,
         },
         lints,
     ))
+}
+
+fn build_signature_cache(program: &Program) -> Result<SignatureCache, VerifyError> {
+    let mut canonical: Vec<CanonicalSignature> = Vec::new();
+    let mut call_sigs: Vec<SigFingerprint> = Vec::with_capacity(program.call_sigs.len());
+    for (i, entry) in program.call_sigs.iter().enumerate() {
+        let call_sig = CallSigId(u32::try_from(i).unwrap_or(u32::MAX));
+        let args = program
+            .call_sig_args(entry)
+            .map_err(|_| VerifyError::CallSigMalformed {
+                call_sig: call_sig.0,
+            })?;
+        let rets = program
+            .call_sig_rets(entry)
+            .map_err(|_| VerifyError::CallSigMalformed {
+                call_sig: call_sig.0,
+            })?;
+        let key = intern_signature(&mut canonical, args, rets);
+        call_sigs.push(SigFingerprint {
+            hash: sig_hash_slices(args, rets),
+            key,
+        });
+    }
+
+    let mut functions: Vec<FunctionSigFingerprints> = Vec::with_capacity(program.functions.len());
+    for (i, func) in program.functions.iter().enumerate() {
+        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let args = program
+            .function_arg_types(func)
+            .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: func_id })?;
+        let rets = program
+            .function_ret_types(func)
+            .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: func_id })?;
+
+        let direct = SigFingerprint {
+            hash: sig_hash_slices(args, rets),
+            key: intern_signature(&mut canonical, args, rets),
+        };
+
+        let closure = match args.split_first() {
+            Some((ValueType::Agg, rest)) => Some(SigFingerprint {
+                hash: sig_hash_slices(rest, rets),
+                key: intern_signature(&mut canonical, rest, rets),
+            }),
+            _ => None,
+        };
+
+        functions.push(FunctionSigFingerprints { direct, closure });
+    }
+
+    Ok(SignatureCache {
+        call_sigs,
+        functions,
+    })
+}
+
+fn intern_signature(
+    canonical: &mut Vec<CanonicalSignature>,
+    args: &[ValueType],
+    rets: &[ValueType],
+) -> u32 {
+    if let Some(i) = canonical
+        .iter()
+        .position(|sig| sig.args.as_slice() == args && sig.rets.as_slice() == rets)
+    {
+        return u32::try_from(i).unwrap_or(u32::MAX);
+    }
+
+    let key = u32::try_from(canonical.len()).unwrap_or(u32::MAX);
+    canonical.push(CanonicalSignature {
+        args: args.to_vec(),
+        rets: rets.to_vec(),
+    });
+    key
 }
 
 struct ExecFuncContainer {

@@ -1811,8 +1811,14 @@ impl<H: Host> Vm<H> {
                         .verified(callee_func)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
-                    validate_indirect_call_signature(program_ref, *call_sig, callee_fn, false)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    validate_indirect_call_signature(
+                        program,
+                        *call_sig,
+                        callee_func,
+                        callee_fn,
+                        IndirectCalleeKind::Func,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     // v1: effect token is `Unit` (stored as 0).
                     ctx.write_unit(base, *eff_out, 0);
@@ -1879,8 +1885,14 @@ impl<H: Host> Vm<H> {
                         .verified(callee.func)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
-                    validate_indirect_call_signature(program_ref, *call_sig, callee_fn, true)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    validate_indirect_call_signature(
+                        program,
+                        *call_sig,
+                        callee.func,
+                        callee_fn,
+                        IndirectCalleeKind::Closure,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     // v1: effect token is `Unit` (stored as 0).
                     ctx.write_unit(base, *eff_out, 0);
@@ -2866,8 +2878,47 @@ fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -
     Ok(())
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum IndirectCalleeKind {
+    Func,
+    Closure,
+}
+
 #[inline]
 fn validate_indirect_call_signature(
+    verified: &VerifiedProgram,
+    call_sig: crate::program::CallSigId,
+    callee_func: FuncId,
+    callee_fn: &Function,
+    callee_kind: IndirectCalleeKind,
+) -> Result<(), Trap> {
+    let expected = verified
+        .call_sig_fingerprint(call_sig)
+        .ok_or(Trap::InvalidPc)?;
+    let actual = match callee_kind {
+        IndirectCalleeKind::Func => verified.function_direct_sig_fingerprint(callee_func),
+        IndirectCalleeKind::Closure => verified.function_closure_sig_fingerprint(callee_func),
+    };
+
+    if let Some(actual) = actual {
+        // Fast path: both hash and canonical signature key match.
+        if expected.hash == actual.hash && expected.key == actual.key {
+            return Ok(());
+        }
+    }
+
+    // Preserve exact trap behavior and remain collision-safe by validating the full type vectors
+    // whenever fingerprints do not prove equivalence.
+    validate_indirect_call_signature_types(
+        verified.program(),
+        call_sig,
+        callee_fn,
+        matches!(callee_kind, IndirectCalleeKind::Closure),
+    )
+}
+
+#[inline]
+fn validate_indirect_call_signature_types(
     program: &Program,
     call_sig: crate::program::CallSigId,
     callee_fn: &Function,
