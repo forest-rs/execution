@@ -3215,6 +3215,76 @@ mod tests {
     }
 
     #[test]
+    fn vm_returns_closure_value() {
+        let mut a = Asm::new();
+        a.ret(0, &[1]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let closure = Closure {
+            func: FuncId(123),
+            env: AggHandle(456),
+        };
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(closure)],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure)]);
+    }
+
+    #[test]
+    fn vm_stores_and_loads_closure_via_tuple() {
+        let mut a = Asm::new();
+        a.tuple_new(2, &[1]);
+        a.tuple_get(3, 2, 0);
+        a.ret(0, &[3]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let closure = Closure {
+            func: FuncId(42),
+            env: AggHandle(7),
+        };
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(closure)],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure)]);
+    }
+
+    #[test]
     fn vm_branches() {
         let mut a = Asm::new();
         let l_then = a.label();
