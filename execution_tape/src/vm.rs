@@ -1794,9 +1794,13 @@ impl<H: Host> Vm<H> {
                     // Lowering is enabled before runtime execution support lands.
                     return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                 }
-                ExecInstr::ClosureNew { .. } => {
-                    // Lowering is enabled before runtime execution support lands.
-                    return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                ExecInstr::ClosureNew { dst, func, env } => {
+                    let closure = Closure {
+                        func: ctx.read_func(base, *func),
+                        env: ctx.read_agg_handle(base, *env),
+                    };
+                    ctx.write_closure(base, *dst, closure);
+                    ctx.frames[frame_index].pc = next_pc;
                 }
 
                 ExecInstr::TupleNew { dst, values } => {
@@ -2843,9 +2847,11 @@ fn f64_max_num(a: f64, b: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::bytecode::Instr;
     use crate::host::{AccessSink, HostSig, ResourceKeyRef, SigHash};
-    use crate::program::{Program, ValueType};
+    use crate::program::{FunctionDef, Program, TypeTableDef, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
+    use crate::verifier::{VerifyConfig, verify_program_owned};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -3282,6 +3288,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(out, vec![Value::Closure(closure)]);
+    }
+
+    #[test]
+    fn vm_executes_closure_new() {
+        let bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstFunc {
+                dst: 2,
+                func_id: FuncId(0),
+            },
+            Instr::ClosureNew {
+                dst: 3,
+                func: 2,
+                env: 1,
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![3],
+            },
+        ])
+        .unwrap();
+
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![ValueType::Closure],
+                reg_count: 4,
+                bytecode,
+                spans: vec![],
+            }],
+        );
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let env = vm
+            .aggregates_mut()
+            .tuple_new(vec![Value::I64(11), Value::Bool(true)]);
+
+        let out = vm
+            .run(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
+            .unwrap();
+        let closure = match out.as_slice() {
+            [Value::Closure(c)] => *c,
+            other => panic!("expected single closure return, got {other:?}"),
+        };
+
+        assert_eq!(closure.func, FuncId(0));
+        assert_eq!(closure.env, env);
+        assert_eq!(vm.aggregates().tuple_len(closure.env), Ok(2));
+        assert_eq!(
+            vm.aggregates().tuple_get(closure.env, 0),
+            Ok(Value::I64(11))
+        );
+        assert_eq!(
+            vm.aggregates().tuple_get(closure.env, 1),
+            Ok(Value::Bool(true))
+        );
     }
 
     #[test]
