@@ -18,9 +18,9 @@ use crate::format::{write_sleb128_i64, write_uleb128_u64};
 use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
-    Const, ConstId, ElemTypeId, FunctionDef, FunctionNameEntry, HostSigDef, HostSigId, HostSymbol,
-    LabelNameEntry, Program, SpanEntry, SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef,
-    ValueType,
+    ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionDef, FunctionNameEntry,
+    HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry, SpanId, StructTypeDef,
+    SymbolId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -267,6 +267,7 @@ pub struct FunctionSig {
 pub struct ProgramBuilder {
     symbols: Vec<HostSymbol>,
     const_pool: Vec<Const>,
+    call_sigs: Vec<CallSigDef>,
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
     functions: Vec<FunctionDef>,
@@ -289,6 +290,12 @@ struct FunctionOutputNameDef {
     func: u32,
     ret: u32,
     name: SymbolId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CallSigDef {
+    args: Vec<ValueType>,
+    rets: Vec<ValueType>,
 }
 
 impl ProgramBuilder {
@@ -497,6 +504,23 @@ impl ProgramBuilder {
         self.host_sig(sym, sig)
     }
 
+    /// Interns a call signature and returns its [`CallSigId`].
+    pub fn call_sig(&mut self, args: &[ValueType], rets: &[ValueType]) -> CallSigId {
+        if let Some(i) = self
+            .call_sigs
+            .iter()
+            .position(|x| x.args == args && x.rets == rets)
+        {
+            return CallSigId(u32::try_from(i).unwrap_or(u32::MAX));
+        }
+        let id = CallSigId(u32::try_from(self.call_sigs.len()).unwrap_or(u32::MAX));
+        self.call_sigs.push(CallSigDef {
+            args: args.to_vec(),
+            rets: rets.to_vec(),
+        });
+        id
+    }
+
     /// Declares a function signature and returns its [`FuncId`].
     ///
     /// This is useful when assembling mutually recursive or out-of-order functions: you can
@@ -599,6 +623,26 @@ impl ProgramBuilder {
             self.types,
             self.functions,
         );
+        for cs in self.call_sigs {
+            let args_off = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
+            p.value_types.extend_from_slice(&cs.args);
+            let args_len = u32::try_from(cs.args.len()).unwrap_or(u32::MAX);
+
+            let rets_off = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
+            p.value_types.extend_from_slice(&cs.rets);
+            let rets_len = u32::try_from(cs.rets.len()).unwrap_or(u32::MAX);
+
+            p.call_sigs.push(CallSigEntry {
+                args: ByteRange {
+                    offset: args_off,
+                    len: args_len,
+                },
+                rets: ByteRange {
+                    offset: rets_off,
+                    len: rets_len,
+                },
+            });
+        }
         p.program_name = self.program_name;
         p.function_names = self.function_names;
         p.labels = self.labels;
@@ -623,14 +667,14 @@ impl ProgramBuilder {
                 let len = f.arg_count;
                 p.value_name_ids
                     .resize(p.value_name_ids.len() + len as usize, 0);
-                f.arg_name_ids = crate::program::ByteRange { offset, len };
+                f.arg_name_ids = ByteRange { offset, len };
             }
             if has_ret_names[i] {
                 let offset = u32::try_from(p.value_name_ids.len()).unwrap_or(u32::MAX);
                 let len = f.ret_count;
                 p.value_name_ids
                     .resize(p.value_name_ids.len() + len as usize, 0);
-                f.ret_name_ids = crate::program::ByteRange { offset, len };
+                f.ret_name_ids = ByteRange { offset, len };
             }
         }
 
@@ -1527,6 +1571,32 @@ impl Asm {
         self
     }
 
+    /// Encodes `call.indirect eff_out, call_sig, callee, eff_in, argc, args..., retc, rets...`.
+    pub fn call_indirect(
+        &mut self,
+        eff_out: u32,
+        call_sig: CallSigId,
+        callee: u32,
+        eff_in: u32,
+        args: &[u32],
+        rets: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::CallIndirect);
+        self.reg(eff_out);
+        self.uleb(call_sig.0);
+        self.reg(callee);
+        self.reg(eff_in);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &a in args {
+            self.reg(a);
+        }
+        self.uleb(u32::try_from(rets.len()).unwrap_or(u32::MAX));
+        for &r in rets {
+            self.reg(r);
+        }
+        self
+    }
+
     /// Encodes `ret eff_in, retc, rets...`.
     pub fn ret(&mut self, eff_in: u32, rets: &[u32]) -> &mut Self {
         self.opcode(Opcode::Ret);
@@ -1662,6 +1732,15 @@ impl Asm {
         self.opcode(Opcode::BytesLen);
         self.reg(dst);
         self.reg(bytes);
+        self
+    }
+
+    /// Encodes `closure.new dst, func, env`.
+    pub fn closure_new(&mut self, dst: u32, func: u32, env: u32) -> &mut Self {
+        self.opcode(Opcode::ClosureNew);
+        self.reg(dst);
+        self.reg(func);
+        self.reg(env);
         self
     }
 
@@ -1937,6 +2016,7 @@ fn inferred_reg_count_for_arg_count(inferred_reg_count: u32, arg_count: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bytecode::{Instr, decode_instructions};
     use crate::program::StructTypeDef;
     use alloc::vec;
 
@@ -2079,6 +2159,89 @@ mod tests {
         let e0 = pb.array_elem(ValueType::Bool);
         let e1 = pb.array_elem(ValueType::Bool);
         assert_eq!(e0, e1);
+    }
+
+    #[test]
+    fn program_builder_call_sig_interns_and_builds_program_table() {
+        let mut pb = ProgramBuilder::new();
+        let s0 = pb.call_sig(&[ValueType::I64, ValueType::Bool], &[ValueType::I64]);
+        let s1 = pb.call_sig(&[ValueType::I64, ValueType::Bool], &[ValueType::I64]);
+        let s2 = pb.call_sig(&[ValueType::Bool], &[]);
+        assert_eq!(s0, s1);
+        assert_ne!(s0, s2);
+
+        let p = pb.build();
+        let cs0 = p.call_sig(s0).unwrap();
+        let cs1 = p.call_sig(s2).unwrap();
+        assert_eq!(
+            p.call_sig_args(cs0).unwrap(),
+            &[ValueType::I64, ValueType::Bool]
+        );
+        assert_eq!(p.call_sig_rets(cs0).unwrap(), &[ValueType::I64]);
+        assert_eq!(p.call_sig_args(cs1).unwrap(), &[ValueType::Bool]);
+        assert_eq!(p.call_sig_rets(cs1).unwrap(), &[]);
+    }
+
+    #[test]
+    fn asm_encodes_closure_new_and_call_indirect() {
+        let mut a = Asm::new();
+        a.closure_new(3, 1, 2);
+        a.call_indirect(0, CallSigId(7), 3, 0, &[4, 5], &[6]);
+
+        let bytes = a.finish().unwrap();
+        let decoded = decode_instructions(&bytes).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(
+            decoded[0].instr,
+            Instr::ClosureNew {
+                dst: 3,
+                func: 1,
+                env: 2
+            }
+        );
+        assert_eq!(
+            decoded[1].instr,
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 7,
+                callee: 3,
+                eff_in: 0,
+                args: vec![4, 5],
+                rets: vec![6],
+            }
+        );
+    }
+
+    #[test]
+    fn program_builder_build_verified_preserves_call_sigs_for_call_indirect() {
+        let mut pb = ProgramBuilder::new();
+        let caller = pb.declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        });
+        let callee = pb.declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        });
+
+        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+
+        let mut callee_asm = Asm::new();
+        callee_asm.ret(0, &[1]);
+        pb.define_function(callee, callee_asm).unwrap();
+
+        let mut caller_asm = Asm::new();
+        caller_asm.const_func(1, callee);
+        caller_asm.const_i64(2, 7);
+        caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
+        caller_asm.ret(0, &[3]);
+        pb.define_function(caller, caller_asm).unwrap();
+
+        let vp = pb.build_verified().unwrap();
+        let program = vp.program();
+        let entry = program.call_sig(call_sig).unwrap();
+        assert_eq!(program.call_sig_args(entry).unwrap(), &[ValueType::I64]);
+        assert_eq!(program.call_sig_rets(entry).unwrap(), &[ValueType::I64]);
     }
 
     #[test]

@@ -1298,9 +1298,9 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
             }
         }
 
-        if list_read.is_some() && scalar_reads.len() > 1 {
+        if list_read.is_some() && scalar_reads.len() > 2 {
             bail!(
-                "opcode {} has reg_list reads plus {} scalar reads (only 0 or 1 supported)",
+                "opcode {} has reg_list reads plus {} scalar reads (max 2 supported)",
                 op.name,
                 scalar_reads.len()
             );
@@ -1348,6 +1348,9 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
             ([], Some(_)) => out.push_str("ReadsIter::slice(rest.as_slice()),\n"),
             ([a], Some(_)) => out.push_str(&format!(
                 "ReadsIter::one_plus_slice(*{a}, rest.as_slice()),\n"
+            )),
+            ([a, b], Some(_)) => out.push_str(&format!(
+                "ReadsIter::two_plus_slice(*{a}, *{b}, rest.as_slice()),\n"
             )),
             _ => bail!("unhandled reads shape for opcode {}", op.name),
         }

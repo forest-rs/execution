@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::num::{NonZeroU32, NonZeroU64};
 
 use crate::format::{DecodeError, Reader, Writer};
-use crate::host::{HostSig, SigHash, sig_hash};
+use crate::host::{HostSig, SigHash, sig_hash, sig_hash_slices};
 
 #[cfg(doc)]
 use crate::verifier;
@@ -125,6 +125,10 @@ pub struct ConstId(pub u32);
 /// Host signature identifier (index into [`Program::host_sigs`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostSigId(pub u32);
+
+/// Call signature identifier (index into [`Program::call_sigs`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CallSigId(pub u32);
 
 /// A byte range (offset/length) into a per-program arena buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -239,11 +243,13 @@ pub struct Program {
     pub const_bytes_data: Vec<u8>,
     /// Packed UTF-8 string arena for constant strings.
     pub const_str_data: String,
+    /// Program-owned call-signature table.
+    pub call_sigs: Vec<CallSigEntry>,
     /// Host signature table.
     pub host_sigs: Vec<HostSigEntry>,
     /// Type table (struct layouts and well-known ids).
     pub types: TypeTable,
-    /// Packed value-type arena for function/host signatures.
+    /// Packed value-type arena for function/host/call signatures.
     pub value_types: Vec<ValueType>,
     /// Packed optional value-name arena for function signatures.
     ///
@@ -359,6 +365,8 @@ pub enum ValueType {
     Agg,
     /// Function reference.
     Func,
+    /// Closure reference.
+    Closure,
 }
 
 /// A host-call signature table entry.
@@ -368,6 +376,15 @@ pub struct HostSigEntry {
     pub symbol: SymbolId,
     /// Stable signature hash (must match the canonical hash for `args`/`rets`).
     pub sig_hash: SigHash,
+    /// Argument types.
+    pub args: ByteRange,
+    /// Return types.
+    pub rets: ByteRange,
+}
+
+/// A call signature table entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallSigEntry {
     /// Argument types.
     pub args: ByteRange,
     /// Return types.
@@ -662,6 +679,7 @@ impl Program {
             const_pool: packed_consts,
             const_bytes_data,
             const_str_data,
+            call_sigs: Vec::new(),
             host_sigs: packed_host_sigs,
             types,
             value_types,
@@ -813,6 +831,36 @@ impl Program {
         self.host_sigs.get(id.0 as usize)
     }
 
+    /// Returns the call signature entry for `id`.
+    pub fn call_sig(&self, id: CallSigId) -> Option<&CallSigEntry> {
+        self.call_sigs.get(id.0 as usize)
+    }
+
+    /// Returns the call signature argument types for `entry`.
+    pub fn call_sig_args(&self, entry: &CallSigEntry) -> Result<&[ValueType], DecodeError> {
+        let start = entry.args.offset as usize;
+        let end = entry.args.end()? as usize;
+        self.value_types
+            .get(start..end)
+            .ok_or(DecodeError::OutOfBounds)
+    }
+
+    /// Returns the call signature return types for `entry`.
+    pub fn call_sig_rets(&self, entry: &CallSigEntry) -> Result<&[ValueType], DecodeError> {
+        let start = entry.rets.offset as usize;
+        let end = entry.rets.end()? as usize;
+        self.value_types
+            .get(start..end)
+            .ok_or(DecodeError::OutOfBounds)
+    }
+
+    /// Computes the canonical signature hash for `entry`.
+    pub fn call_sig_hash(&self, entry: &CallSigEntry) -> Result<SigHash, DecodeError> {
+        let args = self.call_sig_args(entry)?;
+        let rets = self.call_sig_rets(entry)?;
+        Ok(sig_hash_slices(args, rets))
+    }
+
     /// Returns the host signature argument types for `entry`.
     pub fn host_sig_args(&self, entry: &HostSigEntry) -> Result<&[ValueType], DecodeError> {
         let start = entry.args.offset as usize;
@@ -867,6 +915,9 @@ impl Program {
         // 4 = function_table
         // 5 = bytecode_blobs
         // 6 = span_tables
+        // 7 = function_sigs
+        // 8 = host_sigs
+        // 10 = call_sigs (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1004,6 +1055,25 @@ impl Program {
             write_section(&mut w, SectionTag::HostSigs, payload.as_slice());
         }
 
+        // call signature table section (typed, optional; omitted when empty)
+        if !self.call_sigs.is_empty() {
+            let mut payload = Writer::new();
+            payload.write_uleb128_u64(self.call_sigs.len() as u64);
+            for cs in &self.call_sigs {
+                let args = self.call_sig_args(cs).unwrap_or(&[]);
+                payload.write_uleb128_u64(args.len() as u64);
+                for &t in args {
+                    encode_value_type(&mut payload, t);
+                }
+                let rets = self.call_sig_rets(cs).unwrap_or(&[]);
+                payload.write_uleb128_u64(rets.len() as u64);
+                for &t in rets {
+                    encode_value_type(&mut payload, t);
+                }
+            }
+            write_section(&mut w, SectionTag::CallSigs, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1080,6 +1150,7 @@ enum SectionTag {
     FunctionSigs = 7,
     HostSigs = 8,
     Names = 9,
+    CallSigs = 10,
 }
 
 impl SectionTag {
@@ -1094,6 +1165,7 @@ impl SectionTag {
             7 => Some(Self::FunctionSigs),
             8 => Some(Self::HostSigs),
             9 => Some(Self::Names),
+            10 => Some(Self::CallSigs),
             _ => None,
         }
     }
@@ -1187,6 +1259,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut const_pool: Vec<ConstEntry> = Vec::new();
     let mut const_bytes_data: Vec<u8> = Vec::new();
     let mut const_str_data: String = String::new();
+    let mut call_sig_defs: Vec<DecodedCallSig> = Vec::new();
     let mut host_sig_defs: Vec<(SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry> = Vec::new();
@@ -1197,6 +1270,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
 
     let mut saw_symbols = false;
     let mut saw_const_pool = false;
+    let mut saw_call_sigs = false;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -1266,6 +1340,13 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_host_sigs = true;
                 host_sig_defs = decode_host_sigs(payload)?;
+            }
+            Some(SectionTag::CallSigs) => {
+                if saw_call_sigs {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                saw_call_sigs = true;
+                call_sig_defs = decode_call_sigs(payload)?;
             }
             Some(SectionTag::Names) => {
                 if saw_names {
@@ -1342,6 +1423,25 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
 
     let mut value_types: Vec<ValueType> = Vec::new();
     let mut value_name_ids: Vec<u32> = Vec::new();
+    let mut call_sigs: Vec<CallSigEntry> = Vec::with_capacity(call_sig_defs.len());
+    for (args, rets) in call_sig_defs {
+        let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        value_types.extend_from_slice(&args);
+        let args_len = u32::try_from(args.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        let rets_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        value_types.extend_from_slice(&rets);
+        let rets_len = u32::try_from(rets.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        call_sigs.push(CallSigEntry {
+            args: ByteRange {
+                offset: args_off,
+                len: args_len,
+            },
+            rets: ByteRange {
+                offset: rets_off,
+                len: rets_len,
+            },
+        });
+    }
     let mut host_sigs: Vec<HostSigEntry> = Vec::with_capacity(host_sig_defs.len());
     for (symbol, sig_hash, args, rets) in host_sig_defs {
         let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
@@ -1488,6 +1588,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         const_pool,
         const_bytes_data,
         const_str_data,
+        call_sigs,
         host_sigs,
         types: TypeTable::pack(types),
         value_types,
@@ -1631,6 +1732,7 @@ enum ValueTypeTag {
     Obj = 8,
     Agg = 9,
     Func = 10,
+    Closure = 11,
 }
 
 impl ValueTypeTag {
@@ -1647,6 +1749,7 @@ impl ValueTypeTag {
             8 => Ok(Self::Obj),
             9 => Ok(Self::Agg),
             10 => Ok(Self::Func),
+            11 => Ok(Self::Closure),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -1665,6 +1768,7 @@ fn encode_value_type(w: &mut Writer, t: ValueType) {
         ValueType::Obj(_) => ValueTypeTag::Obj,
         ValueType::Agg => ValueTypeTag::Agg,
         ValueType::Func => ValueTypeTag::Func,
+        ValueType::Closure => ValueTypeTag::Closure,
     };
     w.write_u8(tag as u8);
     if let ValueType::Obj(host_type) = t {
@@ -1686,6 +1790,7 @@ fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
         ValueTypeTag::Obj => ValueType::Obj(HostTypeId(r.read_u64_le()?)),
         ValueTypeTag::Agg => ValueType::Agg,
         ValueTypeTag::Func => ValueType::Func,
+        ValueTypeTag::Closure => ValueType::Closure,
     })
 }
 
@@ -1758,6 +1863,7 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
 
 type DecodedFunctionSig = (Vec<ValueType>, Vec<ValueType>, Vec<u32>, Vec<u32>);
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
+type DecodedCallSig = (Vec<ValueType>, Vec<ValueType>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
     let mut r = Reader::new(payload);
@@ -1821,6 +1927,26 @@ fn decode_host_sigs(payload: &[u8]) -> Result<Vec<DecodedHostSig>, DecodeError> 
             rets.push(decode_value_type(&mut r)?);
         }
         out.push((symbol, sig_hash, args, rets));
+    }
+    Ok(out)
+}
+
+fn decode_call_sigs(payload: &[u8]) -> Result<Vec<DecodedCallSig>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_usize(&mut r)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let argc = read_usize(&mut r)?;
+        let mut args = Vec::with_capacity(argc);
+        for _ in 0..argc {
+            args.push(decode_value_type(&mut r)?);
+        }
+        let retc = read_usize(&mut r)?;
+        let mut rets = Vec::with_capacity(retc);
+        for _ in 0..retc {
+            rets.push(decode_value_type(&mut r)?);
+        }
+        out.push((args, rets));
     }
     Ok(out)
 }
@@ -1896,6 +2022,38 @@ mod tests {
 
     fn sid(v: u64) -> SpanId {
         SpanId::try_from(v).unwrap()
+    }
+
+    fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> CallSigId {
+        let args_off = u32::try_from(p.value_types.len()).unwrap();
+        p.value_types.extend_from_slice(args);
+        let args_len = u32::try_from(args.len()).unwrap();
+        let rets_off = u32::try_from(p.value_types.len()).unwrap();
+        p.value_types.extend_from_slice(rets);
+        let rets_len = u32::try_from(rets.len()).unwrap();
+        let id = CallSigId(u32::try_from(p.call_sigs.len()).unwrap());
+        p.call_sigs.push(CallSigEntry {
+            args: ByteRange {
+                offset: args_off,
+                len: args_len,
+            },
+            rets: ByteRange {
+                offset: rets_off,
+                len: rets_len,
+            },
+        });
+        id
+    }
+
+    fn section_tags(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut r = Reader::new(&bytes[12..]);
+        while r.offset() < bytes.len() - 12 {
+            out.push(r.read_u8().unwrap());
+            let len = read_usize(&mut r).unwrap();
+            let _ = r.read_bytes(len).unwrap();
+        }
+        out
     }
 
     #[test]
@@ -2057,6 +2215,76 @@ mod tests {
     }
 
     #[test]
+    fn call_sigs_section_is_omitted_when_empty() {
+        let p = Program::new(
+            vec![HostSymbol { symbol: "x".into() }],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![],
+        );
+        let tags = section_tags(&p.encode());
+        assert!(!tags.contains(&(SectionTag::CallSigs as u8)));
+    }
+
+    #[test]
+    fn program_roundtrips_with_call_sigs() {
+        let mut p = Program::new(
+            vec![HostSymbol { symbol: "x".into() }],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![],
+        );
+        add_call_sig(
+            &mut p,
+            &[ValueType::I64, ValueType::Bool],
+            &[ValueType::U64],
+        );
+        add_call_sig(
+            &mut p,
+            &[ValueType::Agg],
+            &[ValueType::Unit, ValueType::Obj(HostTypeId(7))],
+        );
+
+        let bytes = p.encode();
+        let tags = section_tags(&bytes);
+        assert!(tags.contains(&(SectionTag::CallSigs as u8)));
+
+        let back = Program::decode(&bytes).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn call_sig_hash_is_stable_for_same_signature() {
+        let mut p = Program::new(
+            vec![HostSymbol { symbol: "x".into() }],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![],
+        );
+        let a = add_call_sig(
+            &mut p,
+            &[ValueType::I64, ValueType::Bool],
+            &[ValueType::U64],
+        );
+        let b = add_call_sig(
+            &mut p,
+            &[ValueType::I64, ValueType::Bool],
+            &[ValueType::U64],
+        );
+
+        let hash_a = p.call_sig_hash(p.call_sig(a).unwrap()).unwrap();
+        let hash_b = p.call_sig_hash(p.call_sig(b).unwrap()).unwrap();
+        assert_eq!(hash_a, hash_b);
+        assert_eq!(
+            hash_a,
+            sig_hash_slices(&[ValueType::I64, ValueType::Bool], &[ValueType::U64])
+        );
+    }
+
+    #[test]
     fn decode_types_rejects_out_of_range_field_name_id() {
         let mut p = Writer::new();
         p.write_uleb128_u64(1); // field_name_count
@@ -2068,6 +2296,14 @@ mod tests {
         encode_value_type(&mut p, ValueType::I64);
         p.write_uleb128_u64(0); // array elem_count
         assert_eq!(decode_types(p.as_slice()), Err(DecodeError::OutOfBounds));
+    }
+
+    #[test]
+    fn value_type_closure_tag_roundtrips() {
+        let mut w = Writer::new();
+        encode_value_type(&mut w, ValueType::Closure);
+        let mut r = Reader::new(w.as_slice());
+        assert_eq!(decode_value_type(&mut r).unwrap(), ValueType::Closure);
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::bytecode::{
 };
 use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
-use crate::program::{ConstId, ElemTypeId, HostSigId, Program, TypeId};
+use crate::program::{CallSigId, ConstId, ElemTypeId, HostSigId, Program, TypeId, ValueType};
 use crate::value::FuncId;
 use crate::verifier::VerifiedProgram;
 
@@ -222,6 +222,13 @@ pub enum CallTarget<'a> {
     Func(FuncId),
     /// A host signature table entry (id and best-effort resolved symbol).
     HostSig(HostSigId, Option<&'a str>),
+    /// A register-held callee plus an expected call signature id.
+    Indirect {
+        /// Expected call signature table id.
+        call_sig: CallSigId,
+        /// Register holding the dynamic callee value.
+        callee: u32,
+    },
 }
 
 /// Disassembled instruction operands.
@@ -557,6 +564,23 @@ impl<'a> InstrView<'a> {
                     args,
                     rets,
                 }),
+                Instr::CallIndirect {
+                    eff_out,
+                    call_sig,
+                    callee,
+                    eff_in,
+                    args,
+                    rets,
+                } => Operands::Call(CallOperands {
+                    eff_out: *eff_out,
+                    callee: CallTarget::Indirect {
+                        call_sig: CallSigId(*call_sig),
+                        callee: *callee,
+                    },
+                    eff_in: *eff_in,
+                    args,
+                    rets,
+                }),
                 Instr::Ret { eff_in, rets } => Operands::Ret { eff: *eff_in, rets },
                 _ => Operands::Simple,
             };
@@ -852,6 +876,26 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
                 rets,
             });
         }
+        Instr::CallIndirect {
+            eff_out,
+            call_sig,
+            callee,
+            eff_in,
+            args,
+            rets,
+        } => {
+            view.dst = Some(eff_out);
+            view.input_index = Some(InputIndex::Index(call_sig));
+            view.srcs = Vec::with_capacity(2 + args.len() + rets.len());
+            view.srcs.push(callee);
+            view.srcs.push(eff_in);
+            view.srcs.extend(args.iter().copied());
+            view.srcs.extend(rets.iter().copied());
+        }
+        Instr::ClosureNew { dst, func, env } => {
+            view.dst = Some(dst);
+            view.srcs = vec![func, env];
+        }
 
         Instr::TupleNew { dst, values } => {
             view.dst = Some(dst);
@@ -1092,6 +1136,57 @@ fn fmt_reg_iter(w: &mut fmt::Formatter<'_>, mut regs: RegIter<'_>) -> fmt::Resul
     write!(w, "]")
 }
 
+fn fmt_value_type(w: &mut fmt::Formatter<'_>, ty: ValueType) -> fmt::Result {
+    match ty {
+        ValueType::Unit => write!(w, "Unit"),
+        ValueType::Bool => write!(w, "Bool"),
+        ValueType::I64 => write!(w, "I64"),
+        ValueType::U64 => write!(w, "U64"),
+        ValueType::F64 => write!(w, "F64"),
+        ValueType::Decimal => write!(w, "Decimal"),
+        ValueType::Bytes => write!(w, "Bytes"),
+        ValueType::Str => write!(w, "Str"),
+        ValueType::Obj(host_type) => write!(w, "Obj({})", host_type.0),
+        ValueType::Agg => write!(w, "Agg"),
+        ValueType::Func => write!(w, "Func"),
+        ValueType::Closure => write!(w, "Closure"),
+    }
+}
+
+fn fmt_value_type_list(w: &mut fmt::Formatter<'_>, types: &[ValueType]) -> fmt::Result {
+    write!(w, "[")?;
+    for (i, ty) in types.iter().enumerate() {
+        if i != 0 {
+            write!(w, ", ")?;
+        }
+        fmt_value_type(w, *ty)?;
+    }
+    write!(w, "]")
+}
+
+fn fmt_call_sig_annotation(
+    w: &mut fmt::Formatter<'_>,
+    program: &Program,
+    call_sig: CallSigId,
+) -> fmt::Result {
+    write!(w, " ; sig=")?;
+    let Some(entry) = program.call_sig(call_sig) else {
+        write!(w, "<invalid>")?;
+        return Ok(());
+    };
+    let Ok(args) = program.call_sig_args(entry) else {
+        write!(w, "<malformed>")?;
+        return Ok(());
+    };
+    let Ok(rets) = program.call_sig_rets(entry) else {
+        write!(w, "<malformed>")?;
+        return Ok(());
+    };
+    fmt_value_type_list(w, args)?;
+    write!(w, " -> ")?;
+    fmt_value_type_list(w, rets)
+}
+
 impl fmt::Display for Disassembly<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(name) = self.program.name() {
@@ -1197,6 +1292,7 @@ fn fmt_instr_with_labels(
             fmt_reg(f, call.eff_out)?;
             write!(f, ", ")?;
             let mut callee_func_for_names: Option<FuncId> = None;
+            let mut call_sig_for_annotation: Option<CallSigId> = None;
             match call.callee {
                 CallTarget::Func(id) => {
                     callee_func_for_names = Some(id);
@@ -1207,6 +1303,12 @@ fn fmt_instr_with_labels(
                     if let Some(s) = sym {
                         write!(f, "(\"{s}\")")?;
                     }
+                }
+                CallTarget::Indirect { call_sig, callee } => {
+                    call_sig_for_annotation = Some(call_sig);
+                    write!(f, "call_sig#{}", call_sig.0)?;
+                    write!(f, ", callee=")?;
+                    fmt_reg(f, callee)?;
                 }
             }
             write!(f, ", eff_in=")?;
@@ -1222,6 +1324,9 @@ fn fmt_instr_with_labels(
                 fmt_named_ret_list(f, iv.program, callee, call.rets)?;
             } else {
                 fmt_reg_list(f, call.rets)?;
+            }
+            if let Some(call_sig) = call_sig_for_annotation {
+                fmt_call_sig_annotation(f, iv.program, call_sig)?;
             }
         }
         Operands::Ret { eff, rets } => {
@@ -1323,6 +1428,7 @@ impl fmt::Display for InstrView<'_> {
                 fmt_reg(f, call.eff_out)?;
                 write!(f, ", ")?;
                 let mut callee_func_for_names: Option<FuncId> = None;
+                let mut call_sig_for_annotation: Option<CallSigId> = None;
                 match call.callee {
                     CallTarget::Func(id) => {
                         callee_func_for_names = Some(id);
@@ -1334,6 +1440,12 @@ impl fmt::Display for InstrView<'_> {
                             write!(f, "(\"{s}\")")?;
                         }
                     }
+                    CallTarget::Indirect { call_sig, callee } => {
+                        call_sig_for_annotation = Some(call_sig);
+                        write!(f, "call_sig#{}", call_sig.0)?;
+                        write!(f, ", callee=")?;
+                        fmt_reg(f, callee)?;
+                    }
                 }
                 write!(f, ", eff_in=")?;
                 fmt_reg(f, call.eff_in)?;
@@ -1344,6 +1456,9 @@ impl fmt::Display for InstrView<'_> {
                     fmt_named_ret_list(f, self.program, callee, call.rets)?;
                 } else {
                     fmt_reg_list(f, call.rets)?;
+                }
+                if let Some(call_sig) = call_sig_for_annotation {
+                    fmt_call_sig_annotation(f, self.program, call_sig)?;
                 }
             }
             Operands::Ret { eff, rets } => {
@@ -1578,5 +1693,65 @@ mod tests {
         assert!(!first.is_terminator());
         let second = it.next().expect("expected ret");
         assert!(second.is_terminator());
+    }
+
+    #[test]
+    fn disasm_formats_call_indirect_with_callee_and_call_sig_annotation() {
+        let mut pb = ProgramBuilder::new();
+
+        let mut callee = Asm::new();
+        callee.ret(0, &[1]);
+        let callee_id = pb
+            .push_function_checked(
+                callee,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+
+        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        let mut caller = Asm::new();
+        caller.const_func(1, callee_id);
+        caller.const_i64(2, 7);
+        caller.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
+        caller.ret(0, &[3]);
+        pb.push_function_checked(
+            caller,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+
+        let vp = pb.build_verified().unwrap();
+        let text = disassemble(vp.program()).to_string();
+        assert!(text.contains("call.indirect"));
+        assert!(text.contains("call_sig#0, callee=r1"));
+        assert!(text.contains("args=[r2], rets=[r3]"));
+        assert!(text.contains("; sig=[I64] -> [I64]"));
+    }
+
+    #[test]
+    fn disasm_formats_closure_new_operands() {
+        let mut pb = ProgramBuilder::new();
+
+        let mut a = Asm::new();
+        a.closure_new(3, 1, 2);
+        a.ret(0, &[3]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Func, ValueType::Agg],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+
+        let vp = pb.build_verified().unwrap();
+        let text = disassemble(vp.program()).to_string();
+        assert!(text.contains("closure.new r3, [r1, r2]"));
     }
 }
