@@ -3721,6 +3721,327 @@ mod tests {
         assert_eq!(out, vec![Value::I64(16)]);
     }
 
+    #[test]
+    fn vm_mov_closure() {
+        // mov r2, r1; ret [r2] — r1 is the closure arg, r2 is the copy
+        let mut a = Asm::new();
+        a.mov(2, 1);
+        a.ret(0, &[2]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Closure],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let closure = Closure {
+            func: FuncId(42),
+            env: AggHandle(7),
+        };
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(closure)],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure)]);
+    }
+
+    #[test]
+    fn vm_select_closure() {
+        // select r4, r1, r2, r3; ret [r4]
+        // r1=cond (Bool), r2/r3=closures
+        let mut a = Asm::new();
+        a.select(4, 1, 2, 3);
+        a.ret(0, &[4]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Bool, ValueType::Closure, ValueType::Closure],
+                ret_types: vec![ValueType::Closure],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let closure_a = Closure {
+            func: FuncId(10),
+            env: AggHandle(100),
+        };
+        let closure_b = Closure {
+            func: FuncId(20),
+            env: AggHandle(200),
+        };
+
+        // cond=true → selects r2 (closure_a)
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[
+                    Value::Bool(true),
+                    Value::Closure(closure_a),
+                    Value::Closure(closure_b),
+                ],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure_a)]);
+
+        // cond=false → selects r3 (closure_b)
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm
+            .run(
+                &p,
+                FuncId(0),
+                &[
+                    Value::Bool(false),
+                    Value::Closure(closure_a),
+                    Value::Closure(closure_b),
+                ],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert_eq!(out, vec![Value::Closure(closure_b)]);
+    }
+
+    #[test]
+    fn vm_recursive_indirect_call_traps_at_depth_limit() {
+        // func0 (entry): creates closure wrapping func1, calls it via call.indirect
+        // func1 (recursive): sig (Agg, I64) -> I64
+        //   if n == 0 → return 0
+        //   else → create closure over same env, call.indirect with n-1
+
+        // -- func1 (recursive) --
+        // r0 = eff, r1 = env (Agg), r2 = n (I64)
+        // r3 = 0, r4 = (n == 0), branch on r4
+        // base case: ret [r3]
+        // recursive case: const_func r5 = FuncId(1), closure_new r6 = (r5, r1),
+        //   i64_sub r7 = r2 - r3_one, call_indirect r8 = r6(r7), ret [r8]
+        let mut a1 = Asm::new();
+        let l_base = a1.label();
+        let l_recurse = a1.label();
+        a1.const_i64(3, 0);
+        a1.i64_eq(4, 2, 3);
+        a1.br(4, l_base, l_recurse);
+        // base case
+        a1.place(l_base).unwrap();
+        a1.ret(0, &[3]);
+        // recursive case
+        a1.place(l_recurse).unwrap();
+        a1.const_func(5, FuncId(1));
+        a1.closure_new(6, 5, 1); // closure over same env
+        a1.const_i64(7, 1);
+        a1.i64_sub(8, 2, 7); // n - 1
+
+        let mut pb = ProgramBuilder::new();
+        let sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        a1.call_indirect(0, sig, 6, 0, &[8], &[9]);
+        a1.ret(0, &[9]);
+
+        // -- func0 (entry) --
+        // create a tuple env, create closure over func1, call it with n=100
+        let mut a0 = Asm::new();
+        a0.const_i64(1, 0);
+        a0.tuple_new(2, &[1]); // env = (0,)
+        a0.const_func(3, FuncId(1));
+        a0.closure_new(4, 3, 2);
+        a0.const_i64(5, 100); // n=100, well above depth limit
+        a0.call_indirect(0, sig, 4, 0, &[5], &[6]);
+        a0.ret(0, &[6]);
+
+        pb.push_function_checked(
+            a0,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+        pb.push_function_checked(
+            a1,
+            FunctionSig {
+                arg_types: vec![ValueType::Agg, ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(
+            TestHost,
+            Limits {
+                max_call_depth: 10,
+                ..Limits::default()
+            },
+        );
+        let err = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap_err();
+        assert_eq!(err.trap, Trap::CallDepthExceeded);
+    }
+
+    #[test]
+    fn vm_multiple_closures_same_func_different_envs() {
+        // callee (func1): sig (Agg) -> Agg — returns its env tuple directly
+        // entry (func0): creates two envs, two closures, calls each, returns both Agg results
+
+        // -- func1 (callee) --
+        // r0 = eff, r1 = env (Agg)
+        // ret [r1]
+        let mut a1 = Asm::new();
+        a1.ret(0, &[1]);
+
+        let mut pb = ProgramBuilder::new();
+        let sig = pb.call_sig(&[], &[ValueType::Agg]);
+
+        // -- func0 (entry) --
+        let mut a0 = Asm::new();
+        a0.const_i64(1, 11);
+        a0.tuple_new(2, &[1]); // env_a = (11,)
+        a0.const_i64(3, 22);
+        a0.tuple_new(4, &[3]); // env_b = (22,)
+        a0.const_func(5, FuncId(1));
+        a0.closure_new(6, 5, 2); // closure_a
+        a0.closure_new(7, 5, 4); // closure_b
+        a0.call_indirect(0, sig, 6, 0, &[], &[8]); // call closure_a → Agg
+        a0.call_indirect(0, sig, 7, 0, &[], &[9]); // call closure_b → Agg
+        a0.ret(0, &[8, 9]);
+
+        pb.push_function_checked(
+            a0,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::Agg, ValueType::Agg],
+            },
+        )
+        .unwrap();
+        pb.push_function_checked(
+            a1,
+            FunctionSig {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![ValueType::Agg],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+
+        // Each closure should have returned its own env
+        let (env_a, env_b) = match out.as_slice() {
+            [Value::Agg(a), Value::Agg(b)] => (*a, *b),
+            other => panic!("expected two Agg returns, got {other:?}"),
+        };
+        assert_eq!(vm.aggregates().tuple_get(env_a, 0), Ok(Value::I64(11)));
+        assert_eq!(vm.aggregates().tuple_get(env_b, 0), Ok(Value::I64(22)));
+    }
+
+    #[test]
+    fn vm_traps_call_indirect_closure_ret_type_mismatch() {
+        // callee (func1): sig (Agg) -> U64 (returns U64)
+        // call_sig: () -> I64 (expects I64 return)
+        // Should trap with TypeMismatch { expected: I64, actual: U64 }
+
+        // -- func1 (callee) --
+        // r0 = eff, r1 = env (Agg)
+        // const_u64 r2, 42; ret [r2]
+        let callee_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstU64 { dst: 2, imm: 42 },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![2],
+            },
+        ])
+        .unwrap();
+
+        // -- func0 (entry) --
+        // const_i64 r1, 0; tuple_new r2, [r1]  → env
+        // const_func r3, FuncId(1)
+        // closure_new r4, r3, r2
+        // call_indirect r5 = r4() with mismatched call_sig
+        // ret [r5]
+        let entry_bytecode = crate::bytecode::encode_instructions(&[
+            Instr::ConstI64 { dst: 1, imm: 0 },
+            Instr::TupleNew {
+                dst: 2,
+                values: vec![1],
+            },
+            Instr::ConstFunc {
+                dst: 3,
+                func_id: FuncId(1),
+            },
+            Instr::ClosureNew {
+                dst: 4,
+                func: 3,
+                env: 2,
+            },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: 0,
+                callee: 4,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![5],
+            },
+            Instr::Ret {
+                eff_in: 0,
+                rets: vec![5],
+            },
+        ])
+        .unwrap();
+
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            vec![
+                FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                    reg_count: 6,
+                    bytecode: entry_bytecode,
+                    spans: vec![],
+                },
+                FunctionDef {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![ValueType::U64],
+                    reg_count: 3,
+                    bytecode: callee_bytecode,
+                    spans: vec![],
+                },
+            ],
+        );
+        // call_sig: () -> I64 — mismatches callee's return type of U64
+        assert_eq!(add_call_sig(&mut p, &[], &[ValueType::I64]), 0);
+        let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let err = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap_err();
+        assert_eq!(
+            err.trap,
+            Trap::TypeMismatch {
+                expected: ValueType::I64,
+                actual: ValueType::U64,
+            }
+        );
+    }
+
     // Keep the rest of the legacy tests in conformance; PR6 focuses on the execution model.
     // (Full coverage remains in `execution_tape_conformance`.)
 }
