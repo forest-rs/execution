@@ -4150,7 +4150,9 @@ mod tests {
                 ..Limits::default()
             },
         );
-        let err = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap_err();
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
         assert_eq!(err.trap, Trap::CallDepthExceeded);
     }
 
@@ -4292,7 +4294,9 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let err = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap_err();
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
         assert_eq!(
             err.trap,
             Trap::TypeMismatch {
