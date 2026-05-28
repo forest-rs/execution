@@ -11,6 +11,7 @@ use core::fmt;
 
 use crate::program::ValueType;
 use crate::value::AggHandle;
+use crate::value::Closure;
 use crate::value::Decimal;
 use crate::value::FuncId;
 use crate::value::Obj;
@@ -365,6 +366,8 @@ pub enum ValueRef<'a> {
     Agg(AggHandle),
     /// Function reference.
     Func(FuncId),
+    /// Closure reference (function + captured environment).
+    Closure(Closure),
 }
 
 impl<'a> ValueRef<'a> {
@@ -385,6 +388,7 @@ impl<'a> ValueRef<'a> {
             Self::Obj(o) => Value::Obj(o),
             Self::Agg(h) => Value::Agg(h),
             Self::Func(f) => Value::Func(f),
+            Self::Closure(c) => Value::Closure(c),
         }
     }
 
@@ -403,6 +407,7 @@ impl<'a> ValueRef<'a> {
             Self::Obj(o) => ValueType::Obj(o.host_type),
             Self::Agg(_) => ValueType::Agg,
             Self::Func(_) => ValueType::Func,
+            Self::Closure(_) => ValueType::Closure,
         }
     }
 }

@@ -1711,6 +1711,7 @@ impl<H: Host> Vm<H> {
                             &ctx.objs,
                             &ctx.aggs,
                             &ctx.funcs,
+                            &ctx.closures,
                             base,
                             a,
                         )
@@ -2980,6 +2981,7 @@ fn read_value_ref_at<'a>(
     objs: &'a [Obj],
     aggs: &'a [AggHandle],
     funcs: &'a [FuncId],
+    closures: &'a [Closure],
     base: RegBase,
     v: VReg,
 ) -> Result<ValueRef<'a>, Trap> {
@@ -3004,7 +3006,7 @@ fn read_value_ref_at<'a>(
         VReg::Obj(r) => ValueRef::Obj(objs[base.objs + r.0 as usize]),
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
         VReg::Func(r) => ValueRef::Func(funcs[base.funcs + r.0 as usize]),
-        VReg::Closure(_) => return Err(Trap::InvalidPc),
+        VReg::Closure(r) => ValueRef::Closure(closures[base.closures + r.0 as usize]),
     })
 }
 
