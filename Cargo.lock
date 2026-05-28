@@ -194,7 +194,7 @@ version = "0.1.0"
 dependencies = [
  "execution_tape",
  "hashbrown",
- "understory_dirty",
+ "invalidation",
 ]
 
 [[package]]
@@ -290,9 +290,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.16.1"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "foldhash",
 ]
@@ -302,6 +302,15 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
+name = "invalidation"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2217040acf2f123ec9ed6c37c368ba66d1e5a9f2048478c1fdd861bb5cfdecd"
+dependencies = [
+ "hashbrown",
+]
 
 [[package]]
 name = "is-terminal"
@@ -699,14 +708,6 @@ checksum = "c5f7c95348f20c1c913d72157b3c6dee6ea3e30b3d19502c5a7f6d3f160dacbf"
 dependencies = [
  "cc",
  "windows-targets",
-]
-
-[[package]]
-name = "understory_dirty"
-version = "0.1.0"
-source = "git+https://github.com/endoli/understory.git?rev=e66fecdc521b57b76bb3b28ddc70ce3944926664#e66fecdc521b57b76bb3b28ddc70ce3944926664"
-dependencies = [
- "hashbrown",
 ]
 
 [[package]]

@@ -32,8 +32,8 @@ use crate::tape_access::{
     intern_host_state_key_id, intern_input_key_id, intern_opaque_host_key_id,
 };
 
-use understory_dirty::TraversalScratch;
-use understory_dirty::trace::OneParentRecorder;
+use invalidation::TraversalScratch;
+use invalidation::trace::OneParentRecorder;
 
 /// Graph execution errors.
 #[derive(Clone, Debug, PartialEq, Eq)]

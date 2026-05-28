@@ -1,10 +1,10 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Dirty-tracking integration built on `understory_dirty`.
+//! Dirty-tracking integration built on `invalidation`.
 //!
-//! This module is a thin adapter around [`understory_dirty`] that:
-//! - interns owned [`ResourceKey`] values into small `Copy` ids (required by `understory_dirty`)
+//! This module is a thin adapter around [`invalidation`] that:
+//! - interns owned [`ResourceKey`] values into small `Copy` ids (required by `invalidation`)
 //! - manages a single [`Channel`] namespace for the execution graph
 //! - provides helpers for marking and draining dirty keys in a deterministic order
 //!
@@ -23,10 +23,10 @@
 
 use alloc::vec::Vec;
 
-use understory_dirty::intern::Interner;
-use understory_dirty::trace::OneParentRecorder;
-use understory_dirty::{
-    Channel, CycleHandling, DirtyTracker, InternId, LazyPolicy, TraversalScratch,
+use invalidation::intern::Interner;
+use invalidation::trace::OneParentRecorder;
+use invalidation::{
+    Channel, CycleHandling, InternId, InvalidationTracker, LazyPolicy, TraversalScratch,
 };
 
 use crate::access::ResourceKey;
@@ -35,19 +35,19 @@ const EXECUTION_GRAPH_CHANNEL: Channel = Channel::new(0);
 
 /// Interned key id for dirty-tracking.
 ///
-/// `understory_dirty` operates on `Copy` keys. We intern [`ResourceKey`] values and use the
+/// `invalidation` operates on `Copy` keys. We intern [`ResourceKey`] values and use the
 /// resulting compact id for all operations.
 pub(crate) type DirtyKey = InternId;
 
 /// Dirty engine keyed by interned [`ResourceKey`] values.
 ///
-/// `understory_dirty` requires keys to be `Copy`, so this type uses an interner to translate
+/// `invalidation` requires keys to be `Copy`, so this type uses an interner to translate
 /// owned keys into compact ids.
 ///
 /// The interner grows monotonically for the lifetime of the graph: keys are not removed.
 #[derive(Debug)]
 pub(crate) struct DirtyEngine {
-    tracker: DirtyTracker<DirtyKey>,
+    tracker: InvalidationTracker<DirtyKey>,
     keys: Interner<ResourceKey>,
     // Reused by non-traced drains to avoid rebuilding traversal buffers each run.
     drain_scratch: TraversalScratch<DirtyKey>,
@@ -67,7 +67,7 @@ impl DirtyEngine {
     #[must_use]
     #[inline]
     pub(crate) fn new() -> Self {
-        let tracker = DirtyTracker::with_cycle_handling(CycleHandling::Error);
+        let tracker = InvalidationTracker::with_cycle_handling(CycleHandling::Error);
         Self {
             tracker,
             keys: Interner::new(),
@@ -185,19 +185,16 @@ impl DirtyEngine {
     /// Replaces `from`'s dependency set with `to`.
     ///
     /// This rejects cycles. If a cycle is detected, the dependency set is left unchanged (as
-    /// implemented by `understory_dirty`).
+    /// implemented by `invalidation`).
     #[inline]
     pub(crate) fn set_dependencies(
         &mut self,
         from: DirtyKey,
         to: impl IntoIterator<Item = DirtyKey>,
     ) {
-        let _ = self.tracker.graph_mut().replace_dependencies(
-            from,
-            EXECUTION_GRAPH_CHANNEL,
-            to,
-            CycleHandling::Error,
-        );
+        let _ = self
+            .tracker
+            .replace_dependencies(from, EXECUTION_GRAPH_CHANNEL, to);
     }
 
     /// Adds a single dependency edge `from -> to`.
