@@ -109,20 +109,29 @@ pub struct AggOverlay<'a> {
 /// Staged aggregate allocations produced by one execute pass.
 ///
 /// `base_len` is the base snapshot used to encode staged handles (`base_len + local_index`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AggDelta {
     base_len: u32,
     staged: AggHeap,
 }
 
 impl AggDelta {
-    /// Creates an empty delta for a base snapshot length.
-    #[must_use]
-    pub fn new(base_len: u32) -> Self {
+    /// Creates an empty delta for an explicit base snapshot length (low-level; see
+    /// [`Self::for_base`]).
+    fn new(base_len: u32) -> Self {
         Self {
             base_len,
             staged: AggHeap::new(),
         }
+    }
+
+    /// Creates an empty delta snapshotting `base`'s current length.
+    ///
+    /// Deriving `base_len` from `base` keeps the encode ([`Self::overlay`]) and decode
+    /// ([`Self::merge_into`]) sides on one snapshot; prefer this in execution code.
+    #[must_use]
+    pub fn for_base(base: &AggHeap) -> Self {
+        Self::new(base.len_u32())
     }
 
     /// Returns the base snapshot length used by this delta.
@@ -140,6 +149,20 @@ impl AggDelta {
     /// Returns mutable staged aggregate storage.
     pub fn staged_mut(&mut self) -> &mut AggHeap {
         &mut self.staged
+    }
+
+    /// Borrows `base` (read-only) and this delta's staged heap as an [`AggOverlay`].
+    ///
+    /// The overlay encodes handles with the delta's own `base_len`, so they decode in
+    /// [`Self::merge_into`] with no second `base_len` to keep in sync. `base` must be the heap
+    /// this delta was snapshotted from.
+    pub fn overlay<'a>(&'a mut self, base: &'a AggHeap) -> AggOverlay<'a> {
+        debug_assert_eq!(
+            self.base_len,
+            base.len_u32(),
+            "delta base_len must match the base it overlays"
+        );
+        AggOverlay::new(base, self.base_len, &mut self.staged)
     }
 
     /// Deterministically merges reachable staged aggregates into `base`.
@@ -306,9 +329,9 @@ enum OverlayHandle {
 }
 
 impl<'a> AggOverlay<'a> {
-    /// Creates an overlay from a read-only base and writable staged heap.
-    #[must_use]
-    pub fn new(base: &'a AggHeap, base_len: u32, staged: &'a mut AggHeap) -> Self {
+    /// Creates an overlay from a base, an encode-snapshot `base_len`, and a staged heap
+    /// (low-level; see [`AggDelta::overlay`]).
+    fn new(base: &'a AggHeap, base_len: u32, staged: &'a mut AggHeap) -> Self {
         Self {
             base,
             base_len,
@@ -680,6 +703,31 @@ mod tests {
         assert_eq!(h0.0, base_len);
         assert_eq!(h1.0, base_len + 1);
         assert_eq!(overlay.base_len(), base_len);
+    }
+
+    #[test]
+    fn overlay_allocations_round_trip_through_merge() {
+        let mut base = AggHeap::new();
+        let _ = base.tuple_new(vec![Value::I64(1)]); // base node 0
+
+        let mut delta = AggDelta::for_base(&base);
+        let root = {
+            let mut overlay = delta.overlay(&base);
+            let leaf = overlay.tuple_new(vec![Value::I64(42)]).expect("alloc");
+            overlay
+                .struct_new(TypeId(3), vec![Value::Agg(leaf), Value::Agg(AggHandle(0))])
+                .expect("alloc")
+        };
+
+        let mut outputs = vec![Value::Agg(root)];
+        let remap = delta.merge_into(&mut base, &outputs).expect("merge");
+        remap.remap_values_in_place(&mut outputs).expect("remap");
+
+        let root_h = agg_handle(outputs[0].clone());
+        let leaf_h = agg_handle(base.struct_get(root_h, 0).expect("field 0"));
+        assert!(root_h.0 < base.len_u32() && leaf_h.0 < base.len_u32());
+        assert_eq!(base.tuple_get(leaf_h, 0), Ok(Value::I64(42))); // staged leaf survived
+        assert_eq!(base.struct_get(root_h, 1), Ok(Value::Agg(AggHandle(0)))); // base ref kept
     }
 
     #[test]
