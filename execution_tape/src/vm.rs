@@ -1849,16 +1849,14 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if trace_call {
-                        trace.scope_enter(
-                            program_ref,
-                            ScopeKind::CallFrame { func: callee_func },
-                            ctx.frames.len(),
-                            callee_func,
-                            0,
-                            callee_vf.span_at_ix(0).map(|id| id.get()),
-                        );
-                    }
+                    P::call_scope_enter(
+                        trace,
+                        program_ref,
+                        ctx.frames.len(),
+                        callee_func,
+                        0,
+                        callee_vf.span_at_ix(0).map(|id| id.get()),
+                    );
 
                     debug_assert_eq!(
                         callee_fn.bytecode.len, callee_vf.byte_len,
@@ -1929,16 +1927,14 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if trace_call {
-                        trace.scope_enter(
-                            program_ref,
-                            ScopeKind::CallFrame { func: callee.func },
-                            ctx.frames.len(),
-                            callee.func,
-                            0,
-                            callee_vf.span_at_ix(0).map(|id| id.get()),
-                        );
-                    }
+                    P::call_scope_enter(
+                        trace,
+                        program_ref,
+                        ctx.frames.len(),
+                        callee.func,
+                        0,
+                        callee_vf.span_at_ix(0).map(|id| id.get()),
+                    );
 
                     debug_assert_eq!(
                         callee_fn.bytecode.len, callee_vf.byte_len,
