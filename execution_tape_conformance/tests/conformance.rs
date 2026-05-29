@@ -62,10 +62,10 @@ fn golden_program_bytes_v0_0_1() {
     );
 
     // Append one optional call sig so the golden pins the call_sigs section's bytes, not just roundtrip.
-    let args_off = p.value_types.len() as u32;
+    let args_off = u32::try_from(p.value_types.len()).unwrap();
     p.value_types
         .extend_from_slice(&[ValueType::I64, ValueType::Bool]);
-    let rets_off = p.value_types.len() as u32;
+    let rets_off = u32::try_from(p.value_types.len()).unwrap();
     p.value_types.push(ValueType::U64);
     p.call_sigs.push(CallSigEntry {
         args: ByteRange {

@@ -2268,25 +2268,26 @@ mod tests {
             },
         );
 
-        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::U64]);
+        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
         let caller = pb.declare_function(FunctionSig {
-            arg_types: vec![ValueType::I64],
-            ret_types: vec![ValueType::U64],
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
         });
         let callee = pb.declare_function(FunctionSig {
             arg_types: vec![ValueType::I64],
-            ret_types: vec![ValueType::U64],
+            ret_types: vec![ValueType::I64],
         });
 
         let mut callee_asm = Asm::new();
-        callee_asm.ret(0, &[0]);
+        callee_asm.ret(0, &[1]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
         caller_asm.const_func(1, callee);
-        caller_asm.call_indirect(0, call_sig, 1, 0, &[0], &[2]);
-        caller_asm.ret(0, &[2]);
+        caller_asm.const_i64(2, 7);
+        caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
+        caller_asm.ret(0, &[3]);
         pb.define_function(caller, caller_asm).unwrap();
 
         let program = pb.build();
