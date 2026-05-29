@@ -1421,27 +1421,11 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         span_ranges.push(ByteRange { offset, len });
     }
 
+    // Pack value types in builder order — host sigs, then functions, then call
+    // sigs (appended after the function loop) — so `decode(p.encode()) == p`
+    // holds for builder-produced programs. See `ProgramBuilder::build`.
     let mut value_types: Vec<ValueType> = Vec::new();
     let mut value_name_ids: Vec<u32> = Vec::new();
-    let mut call_sigs: Vec<CallSigEntry> = Vec::with_capacity(call_sig_defs.len());
-    for (args, rets) in call_sig_defs {
-        let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        value_types.extend_from_slice(&args);
-        let args_len = u32::try_from(args.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        let rets_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        value_types.extend_from_slice(&rets);
-        let rets_len = u32::try_from(rets.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        call_sigs.push(CallSigEntry {
-            args: ByteRange {
-                offset: args_off,
-                len: args_len,
-            },
-            rets: ByteRange {
-                offset: rets_off,
-                len: rets_len,
-            },
-        });
-    }
     let mut host_sigs: Vec<HostSigEntry> = Vec::with_capacity(host_sig_defs.len());
     for (symbol, sig_hash, args, rets) in host_sig_defs {
         let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
@@ -1527,6 +1511,27 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
             },
             arg_name_ids: arg_name_range,
             ret_name_ids: ret_name_range,
+        });
+    }
+
+    // Call sigs packed last, matching the builder (see the note above).
+    let mut call_sigs: Vec<CallSigEntry> = Vec::with_capacity(call_sig_defs.len());
+    for (args, rets) in call_sig_defs {
+        let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        value_types.extend_from_slice(&args);
+        let args_len = u32::try_from(args.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        let rets_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        value_types.extend_from_slice(&rets);
+        let rets_len = u32::try_from(rets.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        call_sigs.push(CallSigEntry {
+            args: ByteRange {
+                offset: args_off,
+                len: args_len,
+            },
+            rets: ByteRange {
+                offset: rets_off,
+                len: rets_len,
+            },
         });
     }
 

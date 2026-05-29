@@ -2245,6 +2245,54 @@ mod tests {
     }
 
     #[test]
+    fn program_builder_roundtrips_with_functions_host_sigs_and_call_sigs() {
+        // Regression: builder packs the value-type arena as [host, function, call]
+        // sigs; `Program::decode` must repack in the same order, or this roundtrip
+        // fails on `value_types` and the offsets that index into it.
+        let mut pb = ProgramBuilder::new();
+
+        pb.host_sig_for(
+            "host.do_thing",
+            HostSig {
+                args: vec![ValueType::I64, ValueType::Bool],
+                rets: vec![ValueType::U64],
+            },
+        );
+
+        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::U64]);
+
+        let caller = pb.declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::U64],
+        });
+        let callee = pb.declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::U64],
+        });
+
+        let mut callee_asm = Asm::new();
+        callee_asm.ret(0, &[0]);
+        pb.define_function(callee, callee_asm).unwrap();
+
+        let mut caller_asm = Asm::new();
+        caller_asm.const_func(1, callee);
+        caller_asm.call_indirect(0, call_sig, 1, 0, &[0], &[2]);
+        caller_asm.ret(0, &[2]);
+        pb.define_function(caller, caller_asm).unwrap();
+
+        let program = pb.build();
+
+        // All three groups must be present, or the test wouldn't exercise the order.
+        assert!(!program.host_sigs.is_empty());
+        assert!(!program.call_sigs.is_empty());
+        assert!(!program.functions.is_empty());
+
+        let bytes = program.encode();
+        let back = Program::decode(&bytes).unwrap();
+        assert_eq!(back, program);
+    }
+
+    #[test]
     fn asm_span_overwrites_at_same_pc() {
         let mut a = Asm::new();
         a.span(SpanId::try_from(1).unwrap());
