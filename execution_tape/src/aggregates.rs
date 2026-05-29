@@ -223,8 +223,10 @@ impl AggDelta {
         reachable: &mut [bool],
         stack: &mut Vec<usize>,
     ) -> Result<(), AggError> {
-        let Value::Agg(handle) = value else {
-            return Ok(());
+        let handle = match value {
+            Value::Agg(handle) => *handle,
+            Value::Closure(closure) => closure.env,
+            _ => return Ok(()),
         };
         if handle.0 < self.base_len {
             return Ok(());
@@ -283,10 +285,9 @@ impl AggRemap {
 
     /// Remaps one value from staged/base snapshot space to merged-base space.
     pub fn remap_value(&self, value: &Value) -> Result<Value, AggError> {
-        match value {
-            Value::Agg(handle) => Ok(Value::Agg(self.remap_handle(*handle)?)),
-            _ => Ok(value.clone()),
-        }
+        let mut value = value.clone();
+        self.remap_values_in_place(core::slice::from_mut(&mut value))?;
+        Ok(value)
     }
 
     /// Remaps values in place.
@@ -295,8 +296,10 @@ impl AggRemap {
     /// mapping.
     pub fn remap_values_in_place(&self, values: &mut [Value]) -> Result<(), AggError> {
         for value in values {
-            if let Value::Agg(handle) = value {
-                *handle = self.remap_handle(*handle)?;
+            match value {
+                Value::Agg(handle) => *handle = self.remap_handle(*handle)?,
+                Value::Closure(closure) => closure.env = self.remap_handle(closure.env)?,
+                _ => {}
             }
         }
         Ok(())
@@ -578,6 +581,7 @@ impl AggHeap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::{Closure, FuncId};
     use alloc::vec;
 
     fn agg_handle(v: Value) -> AggHandle {
@@ -964,5 +968,62 @@ mod tests {
             base.tuple_get(remapped_root, 0),
             Ok(Value::Agg(agg_handle(remapped[2].clone())))
         );
+    }
+
+    #[test]
+    fn delta_merge_traces_and_remaps_root_closure_env() {
+        let mut base = AggHeap::new();
+        let _ = base.tuple_new(vec![Value::I64(7)]); // base node 0
+
+        // An unreachable filler before the env makes the env's staged encoding (2) differ from
+        // its post-merge base index (1), so this proves the closure env is actually rewritten,
+        // not just left at a coincidentally-valid handle.
+        let (delta, env) = staged_delta(&base, |o| {
+            let _unreachable = o.tuple_new(vec![Value::I64(1)]).expect("alloc");
+            o.tuple_new(vec![Value::I64(42)]).expect("alloc")
+        });
+        let mut roots = vec![Value::Closure(Closure { func: FuncId(5), env })];
+
+        let remap = delta
+            .merge_into(&mut base, &roots)
+            .expect("merge should succeed");
+        remap
+            .remap_values_in_place(&mut roots)
+            .expect("remap should succeed");
+
+        let Value::Closure(merged) = &roots[0] else {
+            panic!("expected closure root");
+        };
+        assert_eq!(merged.func, FuncId(5)); // function id preserved
+        assert_eq!(merged.env, AggHandle(1)); // staged env remapped into base domain
+        assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(42)));
+    }
+
+    #[test]
+    fn delta_merge_rewrites_closure_env_nested_in_staged_aggregate() {
+        let mut base = AggHeap::new();
+
+        // The unreachable filler at staged index 0 makes the env's remap non-trivial (encoded 1
+        // -> base index 0): a closure left un-remapped would point at the wrong committed node.
+        let (delta, root) = staged_delta(&base, |o| {
+            let _unreachable = o.tuple_new(vec![Value::I64(7)]).expect("alloc");
+            let env = o.tuple_new(vec![Value::I64(3)]).expect("alloc");
+            let closure = Value::Closure(Closure { func: FuncId(8), env });
+            o.tuple_new(vec![closure]).expect("alloc")
+        });
+        let roots = vec![Value::Agg(root)];
+
+        let remap = delta
+            .merge_into(&mut base, &roots)
+            .expect("merge should succeed");
+        let mapped_root = agg_handle(remap.remap_value(&roots[0]).expect("remap should work"));
+
+        let field = base.tuple_get(mapped_root, 0).expect("field 0");
+        let Value::Closure(merged) = field else {
+            panic!("expected closure field");
+        };
+        assert_eq!(merged.func, FuncId(8));
+        assert!(merged.env.0 < base.len_u32()); // env rewritten into base domain
+        assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(3)));
     }
 }
