@@ -25,10 +25,14 @@ It does **not** own:
 - Structural (deep) aggregates: `Tuple`, `Struct`, `Array`, immutable and acyclic.
 
 ## Non-goals (v1)
-- Closures/captures (first-class function refs only).
 - Multi-lane effects (single linear effect token only).
 - In-VM recoverable errors (`Result`/`Option` values).
 - Incremental recompute (pure-region caching is a v2+ topic).
+
+> **Changed since the original draft:** closures/captures were initially a v1 non-goal but are now
+> supported. Function values remain first-class; a closure additionally pairs a function value with a
+> captured environment aggregate. See [Value kinds](#value-kinds), the `Closure` value type, the
+> `const_func`/`closure_new`/`call_indirect` opcodes, and the `call_sigs` section below.
 
 ## Terminology
 - **Value**: runtime datum computed by the VM. Some values (notably `Bytes`/`Str`) may be stored indirectly by
@@ -60,6 +64,7 @@ The VM defines a closed set of value kinds. v1 requires these kinds:
 - `Obj` (opaque handle)
 - `Agg` (aggregate handle: tuple/struct/array heap node)
 - `Func` (function reference)
+- `Closure` (function reference + captured environment aggregate)
 
 Implementation note: the VM may store registers in per-kind register files (`RegClass`) rather than as a tagged
 union `Value` in order to avoid runtime tag checks in the hot interpreter loop. This is safe because execution
@@ -248,8 +253,10 @@ crate) can be built as adapters without adding any dependency to the `execution_
 - `7 = function_sigs`
 - `8 = host_sigs`
 - `9 = names` (optional)
+- `10 = call_sigs` (optional)
 
-Sections `1..=8` are required in v1. Unknown section tags are skipped for forward compatibility.
+Sections `1..=8` are required in v1; `9 = names` and `10 = call_sigs` are optional (each omitted
+entirely when empty). Unknown section tags are skipped for forward compatibility.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -288,6 +295,7 @@ Tags:
 - `8 Obj(host_type_id: u64le)`
 - `9 Agg`
 - `10 Func`
+- `11 Closure`
 
 ### Struct types
 Field names are interned once per Types payload; each struct field references that table by id.
@@ -364,6 +372,18 @@ Host call targets are keyed by a stable `(symbol_id, sig_hash)` pair, but byteco
 
 The verifier recomputes `sig_hash` from the canonical encoding of `(arg_types, ret_types)` and requires it to match.
 
+## Call signatures (optional)
+Indirect calls (`call_indirect`) reference a program-owned call signature by index. Unlike host
+signatures, a call signature carries no `symbol_id` or `sig_hash` — it only constrains the argument and
+result types checked against the callee value at the call site. The section is optional and omitted
+entirely when there are no call signatures:
+- `count: ULEB128`
+- repeated `count` times:
+  - `arg_count: ULEB128`
+  - `arg_types[arg_count]: ValueType...`
+  - `ret_count: ULEB128`
+  - `ret_types[ret_count]: ValueType...`
+
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
 
@@ -406,6 +426,7 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `const_f64 r_dst, imm_f64_le`
 - `const_decimal r_dst, mantissa_sleb, scale_u8`
 - `const_pool r_dst, const_index` (typed by verifier/const tag)
+- `const_func r_dst, func_id` (materializes a first-class `Func` reference)
 
 ### Numeric (subset; expand later)
 - `i64_add r_dst, r_a, r_b`
@@ -453,6 +474,11 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - Fuel cost: base 1 + (optional) per-arg/ret cost (tbd).
 - `ret r_eff_out, r_eff_in, rets...`
   - Returns values to caller-provided return registers.
+- `call_indirect r_eff_out, call_sig_id, r_callee, r_eff_in, args... -> rets...`
+  - Calls a `Func` or `Closure` value held in `r_callee`, checked against `call_sigs[call_sig_id]`.
+  - Threads `eff` like `call`; traps if the callee's signature does not match the referenced call signature.
+- `closure_new r_dst, r_func, r_env`
+  - Builds a `Closure` value pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
 
 ### Host calls
 - `host_call r_eff_out, host_sig_id, r_eff_in, args... -> rets...`
@@ -550,6 +576,9 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x50 call eff_out, func_id, eff_in, argc, args..., retc, rets...`
 - `0x51 ret eff_in, retc, rets...`
 - `0x52 host_call eff_out, host_sig_id, eff_in, argc, args..., retc, rets...`
+- `0x53 const_func dst, func_id`
+- `0x54 call_indirect eff_out, call_sig_id, callee, eff_in, argc, args..., retc, rets...`
+- `0x55 closure_new dst, func, env`
 
 ### Aggregates
 Construction (all allocate):
