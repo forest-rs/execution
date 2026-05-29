@@ -79,21 +79,21 @@ impl fmt::Display for GraphError {
             Self::MissingInput { node, name } => {
                 write!(
                     f,
-                    "missing input binding: node={} name={name}",
+                    "missing input binding: node={} input={name}; bind it with set_input_value(...) or connect an upstream output to this input",
                     node.as_u64()
                 )
             }
             Self::MissingUpstreamOutput { node, name } => {
                 write!(
                     f,
-                    "missing upstream output: upstream_node={} output={name}",
+                    "missing upstream output: upstream_node={} output={name}; check the connect(...) output name and the producer's function output names",
                     node.as_u64()
                 )
             }
             Self::BadOutputArity { node } => {
                 write!(
                     f,
-                    "node produced unexpected output arity: node={}",
+                    "node produced unexpected output arity: node={}; returned value count must match the node's declared output names",
                     node.as_u64()
                 )
             }
@@ -103,11 +103,11 @@ impl fmt::Display for GraphError {
                 sig_hash,
             } => write!(
                 f,
-                "strict deps violation: node={} host_call={symbol} sig_hash={}",
+                "strict deps violation: node={} host_call={symbol} sig_hash={}; host call recorded no access keys, so strict dependency tracking cannot know what invalidates it",
                 node.as_u64(),
                 sig_hash.0
             ),
-            Self::Trap => write!(f, "vm trapped during execution"),
+            Self::Trap => write!(f, "vm trapped during graph node execution"),
         }
     }
 }
@@ -1041,6 +1041,7 @@ mod tests {
 
     use super::*;
     use crate::access::HostOpId;
+    use alloc::string::ToString;
     use alloc::vec;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
     use execution_tape::host::{AccessSink, HostError, SigHash, ValueRef};
@@ -1064,6 +1065,39 @@ mod tests {
         ) -> Result<u64, HostError> {
             Err(HostError::UnknownSymbol)
         }
+    }
+
+    #[test]
+    fn graph_error_display_includes_actionable_context() {
+        let missing_input = GraphError::MissingInput {
+            node: NodeId::new(7),
+            name: "subtotal".into(),
+        }
+        .to_string();
+        assert!(missing_input.contains("node=7"));
+        assert!(missing_input.contains("input=subtotal"));
+        assert!(missing_input.contains("set_input_value"));
+        assert!(missing_input.contains("connect"));
+
+        let missing_output = GraphError::MissingUpstreamOutput {
+            node: NodeId::new(3),
+            name: "total".into(),
+        }
+        .to_string();
+        assert!(missing_output.contains("upstream_node=3"));
+        assert!(missing_output.contains("output=total"));
+        assert!(missing_output.contains("function output names"));
+
+        let strict = GraphError::StrictDepsViolation {
+            node: NodeId::new(11),
+            symbol: "read_price".into(),
+            sig_hash: SigHash(42),
+        }
+        .to_string();
+        assert!(strict.contains("node=11"));
+        assert!(strict.contains("host_call=read_price"));
+        assert!(strict.contains("recorded no access keys"));
+        assert!(strict.contains("cannot know what invalidates it"));
     }
 
     #[test]
