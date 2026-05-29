@@ -149,15 +149,18 @@ impl AggDelta {
     /// Reachability is traced from `roots`. Only staged nodes reachable from at least one root are
     /// appended, and append order is increasing staged index.
     ///
+    /// This is atomic: on error `base` is left unchanged.
+    ///
     /// Returns [`AggError::UnresolvedStagedHandle`] if `roots` (or nested values in reachable
     /// staged nodes) contain a staged-domain handle that does not resolve to this delta.
     pub fn merge_into(self, base: &mut AggHeap, roots: &[Value]) -> Result<AggRemap, AggError> {
-        let reachable = self.reachable_staged_nodes(roots);
+        let reachable = self.reachable_staged_nodes(roots)?;
         let remap = AggRemap::from_reachable(self.base_len, base.len_u32(), &reachable)?;
-        for root in roots {
-            let _ = remap.remap_value(root)?;
-        }
 
+        // All validation ran above, before `base` is touched, so this append loop cannot fail
+        // and a rejected delta never partially mutates `base`.
+        let reachable_count = reachable.iter().filter(|&&r| r).count();
+        base.nodes.reserve(reachable_count);
         for (idx, mut node) in self.staged.nodes.into_iter().enumerate() {
             if !reachable[idx] {
                 continue;
@@ -170,12 +173,12 @@ impl AggDelta {
         Ok(remap)
     }
 
-    fn reachable_staged_nodes(&self, roots: &[Value]) -> Vec<bool> {
+    fn reachable_staged_nodes(&self, roots: &[Value]) -> Result<Vec<bool>, AggError> {
         let mut reachable = vec![false; self.staged.nodes.len()];
         let mut stack: Vec<usize> = Vec::new();
 
         for root in roots {
-            self.push_reachable_from_value(root, &mut reachable, &mut stack);
+            self.mark_reachable(root, &mut reachable, &mut stack)?;
         }
 
         while let Some(idx) = stack.pop() {
@@ -183,40 +186,41 @@ impl AggDelta {
                 continue;
             };
             for value in node.values() {
-                self.push_reachable_from_value(value, &mut reachable, &mut stack);
+                self.mark_reachable(value, &mut reachable, &mut stack)?;
             }
         }
 
-        reachable
+        Ok(reachable)
     }
 
-    fn push_reachable_from_value(
+    /// Marks the staged node referenced by `value` reachable (if any) and queues it.
+    ///
+    /// Base-domain handles (`< base_len`) are ignored; an out-of-range staged handle is a
+    /// malformed delta and is rejected here, before `merge_into` appends anything, keeping the
+    /// commit atomic.
+    fn mark_reachable(
         &self,
         value: &Value,
         reachable: &mut [bool],
         stack: &mut Vec<usize>,
-    ) {
+    ) -> Result<(), AggError> {
         let Value::Agg(handle) = value else {
-            return;
+            return Ok(());
         };
-        let Some(idx) = self.staged_index(*handle) else {
-            return;
-        };
-        if reachable[idx] {
-            return;
-        }
-
-        reachable[idx] = true;
-        stack.push(idx);
-    }
-
-    fn staged_index(&self, handle: AggHandle) -> Option<usize> {
         if handle.0 < self.base_len {
-            return None;
+            return Ok(());
         }
+
         let local = handle.0 - self.base_len;
-        let idx = usize::try_from(local).ok()?;
-        (idx < self.staged.nodes.len()).then_some(idx)
+        let idx = usize::try_from(local)
+            .ok()
+            .filter(|&idx| idx < self.staged.nodes.len())
+            .ok_or(AggError::UnresolvedStagedHandle)?;
+        if !reachable[idx] {
+            reachable[idx] = true;
+            stack.push(idx);
+        }
+        Ok(())
     }
 }
 
@@ -272,7 +276,9 @@ impl AggRemap {
     /// mapping.
     pub fn remap_values_in_place(&self, values: &mut [Value]) -> Result<(), AggError> {
         for value in values {
-            *value = self.remap_value(value)?;
+            if let Value::Agg(handle) = value {
+                *handle = self.remap_handle(*handle)?;
+            }
         }
         Ok(())
     }
@@ -801,6 +807,29 @@ mod tests {
         let remap = delta.merge_into(&mut base, &roots);
         assert_eq!(remap, Err(AggError::UnresolvedStagedHandle));
         assert_eq!(base.len_u32(), base_len);
+    }
+
+    #[test]
+    fn delta_merge_does_not_mutate_base_when_a_later_reachable_node_is_malformed() {
+        // node 0 -> node 1 -> out-of-range handle: the failure surfaces only on the second
+        // (reachable) node, so a non-atomic merge would have already appended node 0 to `base`.
+        let mut base = AggHeap::new();
+        let base_len = base.len_u32();
+        assert_eq!(base_len, 0);
+
+        let mut delta = AggDelta::new(base_len);
+        let _ = delta
+            .staged_mut()
+            .tuple_new(vec![Value::Agg(AggHandle(base_len + 1))]);
+        let _ = delta
+            .staged_mut()
+            .tuple_new(vec![Value::Agg(AggHandle(base_len + 99))]);
+        let roots = vec![Value::Agg(AggHandle(base_len))];
+
+        let result = delta.merge_into(&mut base, &roots);
+
+        assert_eq!(result, Err(AggError::UnresolvedStagedHandle));
+        assert_eq!(base.len_u32(), 0, "rejected merge must not mutate base");
     }
 
     #[test]
