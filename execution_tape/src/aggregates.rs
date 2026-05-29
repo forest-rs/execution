@@ -982,7 +982,10 @@ mod tests {
             let _unreachable = o.tuple_new(vec![Value::I64(1)]).expect("alloc");
             o.tuple_new(vec![Value::I64(42)]).expect("alloc")
         });
-        let mut roots = vec![Value::Closure(Closure { func: FuncId(5), env })];
+        let mut roots = vec![Value::Closure(Closure {
+            func: FuncId(5),
+            env,
+        })];
 
         let remap = delta
             .merge_into(&mut base, &roots)
@@ -1008,7 +1011,10 @@ mod tests {
         let (delta, root) = staged_delta(&base, |o| {
             let _unreachable = o.tuple_new(vec![Value::I64(7)]).expect("alloc");
             let env = o.tuple_new(vec![Value::I64(3)]).expect("alloc");
-            let closure = Value::Closure(Closure { func: FuncId(8), env });
+            let closure = Value::Closure(Closure {
+                func: FuncId(8),
+                env,
+            });
             o.tuple_new(vec![closure]).expect("alloc")
         });
         let roots = vec![Value::Agg(root)];
