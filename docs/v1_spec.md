@@ -375,8 +375,10 @@ The verifier recomputes `sig_hash` from the canonical encoding of `(arg_types, r
 ## Call signatures (optional)
 Indirect calls (`call_indirect`) reference a program-owned call signature by index. Unlike host
 signatures, a call signature carries no `symbol_id` or `sig_hash` — it only constrains the argument and
-result types checked against the callee value at the call site. The section is optional and omitted
-entirely when there are no call signatures:
+result types checked against the callee value at the call site. A call signature lists the
+*caller-visible* arguments: for a `Closure` callee the captured environment is injected by the VM as the
+callee's first (`Agg`) argument and is **not** part of the call signature. The section is optional and
+omitted entirely when there are no call signatures:
 - `count: ULEB128`
 - repeated `count` times:
   - `arg_count: ULEB128`
@@ -476,9 +478,13 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - Returns values to caller-provided return registers.
 - `call_indirect r_eff_out, call_sig_id, r_callee, r_eff_in, args... -> rets...`
   - Calls a `Func` or `Closure` value held in `r_callee`, checked against `call_sigs[call_sig_id]`.
-  - Threads `eff` like `call`; traps if the callee's signature does not match the referenced call signature.
+  - **Closure ABI:** for a `Closure` callee the VM injects the captured environment as the callee's first
+    argument (which must be `Agg`), so the callee's declared signature is `[Agg, <call_sig args>...]`; for
+    a `Func` callee nothing is injected and `call_sig` matches the callee 1:1. Return types match 1:1.
+  - Threads `eff` like `call`; traps if the callee's signature does not match.
 - `closure_new r_dst, r_func, r_env`
-  - Builds a `Closure` value pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
+  - Builds a `Closure` pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
+    When the closure is later invoked via `call_indirect`, `r_env` is passed as the callee's first argument.
 
 ### Host calls
 - `host_call r_eff_out, host_sig_id, r_eff_in, args... -> rets...`

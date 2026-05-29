@@ -1572,6 +1572,11 @@ impl Asm {
     }
 
     /// Encodes `call.indirect eff_out, call_sig, callee, eff_in, argc, args..., retc, rets...`.
+    ///
+    /// `call_sig` describes the caller-visible arguments. If `callee` holds a `Closure`, the VM injects
+    /// its captured environment as the callee's first argument (which must be an `Agg`), so the callee's
+    /// declared signature is `[Agg, <call_sig args>...]`. If `callee` holds a `Func`, nothing is injected
+    /// and `call_sig` matches the callee signature 1:1. Return types match 1:1 in both cases.
     pub fn call_indirect(
         &mut self,
         eff_out: u32,
@@ -1736,6 +1741,10 @@ impl Asm {
     }
 
     /// Encodes `closure.new dst, func, env`.
+    ///
+    /// Pairs the function reference in `func` with the captured environment aggregate in `env`. When the
+    /// resulting closure is invoked via `call.indirect`, `env` is passed as the callee's first argument
+    /// (an `Agg`); see [`Asm::call_indirect`].
     pub fn closure_new(&mut self, dst: u32, func: u32, env: u32) -> &mut Self {
         self.opcode(Opcode::ClosureNew);
         self.reg(dst);
