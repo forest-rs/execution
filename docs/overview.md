@@ -17,7 +17,6 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 
 ## Non-goals (v1)
 - Incremental recompute / dirty propagation (design should not preclude it).
-- Closures / captured environments (function refs only).
 - Multi-lane effects (single linear effect token only).
 - Recoverable in-VM errors (`Result`/`Option`): v1 is trap-first.
 
@@ -60,6 +59,12 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Aggregates are immutable heap values; handles refer to acyclic graphs.
 - Serialization is total for aggregates composed of serializable values; encountering `Obj` during serialization is a trap in v1.
 
+### Functions and closures
+- `Func`: a first-class reference to a program function.
+- `Closure { func_id, env }`: a `Func` paired with a captured environment aggregate. When called via
+  `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
+  only the caller-visible arguments (see [v1 spec](v1_spec.md)).
+
 ## Effects
 v1 uses a single linear effect token `eff`.
 
@@ -89,7 +94,6 @@ This provides an explicit sequencing mechanism that is easy to verify and extend
 
 ## Extension points (v2+)
 - Effect lanes (multiple tokens), plus rules for merging at control-flow joins.
-- Closures/captures (`Closure { func_id, env }`) and environment heap values.
 - Host-type capabilities (per-type eq/hash/serialization) and/or inline extern values.
 - Incremental recompute: cache pure regions; host-managed caching for effectful regions.
 
