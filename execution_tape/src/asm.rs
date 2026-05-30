@@ -457,6 +457,16 @@ impl ProgramBuilder {
         id
     }
 
+    /// Interns a UTF-8 string constant and returns its [`ConstId`].
+    pub fn const_str(&mut self, value: &str) -> ConstId {
+        self.constant(Const::Str(value.into()))
+    }
+
+    /// Interns a byte string constant and returns its [`ConstId`].
+    pub fn const_bytes(&mut self, value: &[u8]) -> ConstId {
+        self.constant(Const::Bytes(value.into()))
+    }
+
     /// Returns a mutable reference to the type table.
     pub fn types_mut(&mut self) -> &mut TypeTableDef {
         &mut self.types
@@ -2168,6 +2178,23 @@ mod tests {
         let e0 = pb.array_elem(ValueType::Bool);
         let e1 = pb.array_elem(ValueType::Bool);
         assert_eq!(e0, e1);
+    }
+
+    #[test]
+    fn program_builder_const_literal_helpers_intern_constants() {
+        let mut pb = ProgramBuilder::new();
+
+        let text = pb.const_str("hello");
+        let text_again = pb.constant(Const::Str("hello".into()));
+        assert_eq!(text, text_again);
+
+        let bytes = pb.const_bytes(&[1, 2, 3]);
+        let bytes_again = pb.constant(Const::Bytes(vec![1, 2, 3]));
+        assert_eq!(bytes, bytes_again);
+
+        let p = pb.build();
+        assert_eq!(p.const_str(text).unwrap(), "hello");
+        assert_eq!(p.const_bytes(bytes).unwrap(), &[1, 2, 3]);
     }
 
     #[test]
