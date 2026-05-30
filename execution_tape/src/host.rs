@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::aggregates::AggHeap;
+use crate::aggregates::{AggError, AggHeap};
 use crate::program::{Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::Closure;
@@ -219,7 +219,8 @@ pub trait AccessSink {
 ///
 /// A host context gives embedders access to VM-owned immutable data that cannot be represented by
 /// [`ValueRef`] alone. In particular, aggregate arguments are passed as [`AggHandle`]s in
-/// [`ValueRef::Agg`]; use [`Self::aggregates`] to read tuple, struct, or array contents.
+/// [`ValueRef::Agg`]; use [`Self::tuple_get`], [`Self::struct_get`], or [`Self::array_get`] to
+/// read aggregate contents.
 ///
 /// The context also carries the optional incremental-execution access sink for hosts whose results
 /// depend on external state.
@@ -266,6 +267,36 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     #[must_use]
     pub fn aggregates(&self) -> &AggHeap {
         self.aggregates
+    }
+
+    /// Returns tuple element `index`.
+    pub fn tuple_get(&self, tuple: AggHandle, index: usize) -> Result<Value, AggError> {
+        self.aggregates.tuple_get(tuple, index)
+    }
+
+    /// Returns tuple length.
+    pub fn tuple_len(&self, tuple: AggHandle) -> Result<usize, AggError> {
+        self.aggregates.tuple_len(tuple)
+    }
+
+    /// Returns struct field `field_index`.
+    pub fn struct_get(&self, st: AggHandle, field_index: usize) -> Result<Value, AggError> {
+        self.aggregates.struct_get(st, field_index)
+    }
+
+    /// Returns struct field count.
+    pub fn struct_field_count(&self, st: AggHandle) -> Result<usize, AggError> {
+        self.aggregates.struct_field_count(st)
+    }
+
+    /// Returns array element `index`.
+    pub fn array_get(&self, arr: AggHandle, index: usize) -> Result<Value, AggError> {
+        self.aggregates.array_get(arr, index)
+    }
+
+    /// Returns array length.
+    pub fn array_len(&self, arr: AggHandle) -> Result<usize, AggError> {
+        self.aggregates.array_len(arr)
     }
 
     /// Returns the access sink, when the caller is collecting incremental-execution accesses.

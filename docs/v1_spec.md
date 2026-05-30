@@ -653,7 +653,7 @@ The embedder provides a `Host` that can:
 - execute a call with:
   - `symbol` + `sig_hash`
   - argument `Value`s (passed as borrowed views; bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning)
-  - read-only VM context, including program metadata and aggregate heap reads for `Agg` arguments
+  - read-only VM context, including program metadata and tuple/struct/array reads for `Agg` arguments
   - optional access sink for incremental-execution dependency recording
   - ability to charge extra fuel
 

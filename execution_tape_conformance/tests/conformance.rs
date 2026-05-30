@@ -27,13 +27,31 @@ impl Host for TestHost {
         _sig_hash: SigHash,
         args: &[ValueRef<'_>],
         rets: &mut [Value],
-        _ctx: HostContext<'_, '_>,
+        ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         match symbol {
             "id" => {
                 for (slot, arg) in rets.iter_mut().zip(args) {
                     *slot = arg.to_value();
                 }
+                Ok(0)
+            }
+            "sum_tuple2" => {
+                let [ValueRef::Agg(tuple)] = args else {
+                    return Err(HostError::Failed);
+                };
+                if ctx.tuple_len(*tuple).map_err(|_| HostError::Failed)? != 2 {
+                    return Err(HostError::Failed);
+                }
+                let Value::I64(lhs) = ctx.tuple_get(*tuple, 0).map_err(|_| HostError::Failed)?
+                else {
+                    return Err(HostError::Failed);
+                };
+                let Value::I64(rhs) = ctx.tuple_get(*tuple, 1).map_err(|_| HostError::Failed)?
+                else {
+                    return Err(HostError::Failed);
+                };
+                rets[0] = Value::I64(lhs + rhs);
                 Ok(0)
             }
             _ => Err(HostError::UnknownSymbol),
@@ -720,6 +738,43 @@ fn roundtrip_verify_run_host_call() {
         .run(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
     assert_eq!(out, vec![Value::I64(9)]);
+}
+
+#[test]
+fn roundtrip_verify_run_host_call_with_aggregate_arg() {
+    let sig = HostSig {
+        args: vec![ValueType::Agg],
+        rets: vec![ValueType::I64],
+    };
+
+    let mut pb = ProgramBuilder::new();
+    let host_sig = pb.host_sig_for("sum_tuple2", sig);
+
+    let mut a = Asm::new();
+    a.const_i64(1, 20);
+    a.const_i64(2, 22);
+    a.tuple_new(3, &[1, 2]);
+    a.host_call(0, host_sig, 0, &[3], &[4]);
+    a.ret(0, &[4]);
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        },
+    )
+    .unwrap();
+
+    let p = pb.build_verified().unwrap();
+    let bytes = p.program().encode();
+    let back = Program::decode(&bytes).unwrap();
+    let back = verify_owned(back);
+
+    let mut vm = Vm::new(TestHost, Limits::default());
+    let out = vm
+        .run(&back, FuncId(0), &[], TraceMask::NONE, None)
+        .unwrap();
+    assert_eq!(out, vec![Value::I64(42)]);
 }
 
 #[test]
