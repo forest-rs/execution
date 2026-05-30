@@ -7,6 +7,7 @@
 //!
 //! The VM executes [`VerifiedProgram`]s only.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -77,7 +78,14 @@ pub enum Trap {
     /// Immediate/provided arity mismatch.
     ArityMismatch,
     /// Host call failed.
-    HostCallFailed(HostError),
+    HostCallFailed {
+        /// Host-call symbol.
+        symbol: Box<str>,
+        /// Signature hash carried by the host signature entry.
+        sig_hash: crate::host::SigHash,
+        /// Error returned by the host.
+        error: HostError,
+    },
     /// Host returned the wrong number of values.
     HostReturnArityMismatch {
         /// Expected number of return values.
@@ -123,7 +131,15 @@ impl fmt::Display for Trap {
             Self::TypeIdOutOfBounds => write!(f, "type id out of bounds"),
             Self::ElemTypeIdOutOfBounds => write!(f, "elem type id out of bounds"),
             Self::ArityMismatch => write!(f, "arity mismatch"),
-            Self::HostCallFailed(e) => write!(f, "host call failed: {e}"),
+            Self::HostCallFailed {
+                symbol,
+                sig_hash,
+                error,
+            } => write!(
+                f,
+                "host call failed: host_call={symbol} sig_hash={}: {error}",
+                sig_hash.0
+            ),
             Self::HostReturnArityMismatch { expected, actual } => {
                 write!(
                     f,
@@ -1754,7 +1770,18 @@ impl<H: Host> Vm<H> {
                     let extra_fuel = self
                         .host
                         .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx)
-                        .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
+                        .map_err(|error| {
+                            ctx.trap(
+                                func_id,
+                                pc,
+                                span_id,
+                                Trap::HostCallFailed {
+                                    symbol: Box::from(sym),
+                                    sig_hash: hs.sig_hash,
+                                    error,
+                                },
+                            )
+                        })?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
                     P::host_scope_exit(
@@ -3090,6 +3117,7 @@ mod tests {
     use crate::program::{ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
     use crate::verifier::{VerifyConfig, verify_program_owned};
+    use alloc::format;
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -3292,6 +3320,49 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::I64(42)]);
+    }
+
+    #[test]
+    fn host_call_trap_includes_symbol_and_signature() {
+        let sig = HostSig {
+            args: vec![],
+            rets: vec![],
+        };
+        let expected_hash = crate::host::sig_hash(&sig);
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("missing.literal", sig);
+
+        let mut a = Asm::new();
+        a.host_call(0, host_sig, 0, &[], &[]);
+        a.const_i64(1, 42);
+        a.ret(0, &[1]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let err = vm
+            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err();
+        assert_eq!(
+            err.trap,
+            Trap::HostCallFailed {
+                symbol: "missing.literal".into(),
+                sig_hash: expected_hash,
+                error: HostError::UnknownSymbol,
+            }
+        );
+        let rendered = format!("{err}");
+        assert!(rendered.contains("host_call=missing.literal"));
+        assert!(rendered.contains(&format!("sig_hash={}", expected_hash.0)));
+        assert!(rendered.contains("unknown host symbol"));
     }
 
     #[test]

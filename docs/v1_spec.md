@@ -161,7 +161,7 @@ Traps abort execution and return an error containing:
 - current `FuncId`
 - current `pc`
 - best-effort `SpanId` resolved from span table (if available)
-- optional host symbol (for host-call failures)
+- host-call symbol, signature hash, and host error (for host-call failures)
 
 Trap codes (minimum):
 - `InvalidProgram` (failed verification; not a runtime trap)
@@ -491,7 +491,7 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - Increments host-call count; traps if limit exceeded.
   - Host returns:
     - either success with return values and optional additional fuel cost
-    - or failure, which becomes `HostCallFailed` trap
+    - or failure, which becomes `HostCallFailed { symbol, sig_hash, error }`
 
 ## Draft encoding for minimal implemented opcodes
 This section documents the encoding currently implemented by the verifier decoder (subject to change).
