@@ -12,6 +12,7 @@ use execution_tape::program::{
     ValueType,
 };
 use execution_tape::trace::TraceMask;
+use execution_tape::value::AggType;
 use execution_tape::value::Decimal;
 use execution_tape::value::FuncId;
 use execution_tape::value::Value;
@@ -40,14 +41,20 @@ impl Host for TestHost {
                 let [ValueRef::Agg(tuple)] = args else {
                     return Err(HostError::Failed);
                 };
-                if ctx.tuple_len(*tuple).map_err(|_| HostError::Failed)? != 2 {
+                if ctx.agg_type(*tuple).map_err(|_| HostError::Failed)?
+                    != (AggType::Tuple { arity: 2 })
+                {
                     return Err(HostError::Failed);
                 }
-                let Value::I64(lhs) = ctx.tuple_get(*tuple, 0).map_err(|_| HostError::Failed)?
+                let ValueRef::I64(lhs) = ctx
+                    .tuple_get_ref(*tuple, 0)
+                    .map_err(|_| HostError::Failed)?
                 else {
                     return Err(HostError::Failed);
                 };
-                let Value::I64(rhs) = ctx.tuple_get(*tuple, 1).map_err(|_| HostError::Failed)?
+                let ValueRef::I64(rhs) = ctx
+                    .tuple_get_ref(*tuple, 1)
+                    .map_err(|_| HostError::Failed)?
                 else {
                     return Err(HostError::Failed);
                 };

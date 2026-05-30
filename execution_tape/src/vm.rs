@@ -3116,6 +3116,7 @@ mod tests {
     use crate::host::{AccessSink, HostContext, HostSig, ResourceKeyRef, SigHash};
     use crate::program::{ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
+    use crate::value::AggType;
     use crate::verifier::{VerifyConfig, verify_program_owned};
     use alloc::format;
     use alloc::vec;
@@ -3569,11 +3570,20 @@ mod tests {
                 let [ValueRef::Agg(tuple)] = args else {
                     return Err(HostError::Failed);
                 };
-                let Value::I64(lhs) = ctx.tuple_get(*tuple, 0).map_err(|_| HostError::Failed)?
+                if ctx.agg_type(*tuple).map_err(|_| HostError::Failed)?
+                    != (AggType::Tuple { arity: 2 })
+                {
+                    return Err(HostError::Failed);
+                }
+                let ValueRef::I64(lhs) = ctx
+                    .tuple_get_ref(*tuple, 0)
+                    .map_err(|_| HostError::Failed)?
                 else {
                     return Err(HostError::Failed);
                 };
-                let Value::I64(rhs) = ctx.tuple_get(*tuple, 1).map_err(|_| HostError::Failed)?
+                let ValueRef::I64(rhs) = ctx
+                    .tuple_get_ref(*tuple, 1)
+                    .map_err(|_| HostError::Failed)?
                 else {
                     return Err(HostError::Failed);
                 };

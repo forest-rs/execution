@@ -498,8 +498,13 @@ impl AggHeap {
 
     /// Returns tuple element `index`.
     pub fn tuple_get(&self, tuple: AggHandle, index: usize) -> Result<Value, AggError> {
+        self.tuple_get_ref(tuple, index).cloned()
+    }
+
+    /// Returns a borrowed tuple element `index`.
+    pub fn tuple_get_ref(&self, tuple: AggHandle, index: usize) -> Result<&Value, AggError> {
         match self.node(tuple)? {
-            AggNode::Tuple { values } => values.get(index).cloned().ok_or(AggError::OutOfBounds),
+            AggNode::Tuple { values } => values.get(index).ok_or(AggError::OutOfBounds),
             _ => Err(AggError::WrongKind),
         }
     }
@@ -514,11 +519,13 @@ impl AggHeap {
 
     /// Returns struct field `field_index` (index into the stable field ordering for `type_id`).
     pub fn struct_get(&self, st: AggHandle, field_index: usize) -> Result<Value, AggError> {
+        self.struct_get_ref(st, field_index).cloned()
+    }
+
+    /// Returns a borrowed struct field `field_index`.
+    pub fn struct_get_ref(&self, st: AggHandle, field_index: usize) -> Result<&Value, AggError> {
         match self.node(st)? {
-            AggNode::Struct { values, .. } => values
-                .get(field_index)
-                .cloned()
-                .ok_or(AggError::OutOfBounds),
+            AggNode::Struct { values, .. } => values.get(field_index).ok_or(AggError::OutOfBounds),
             _ => Err(AggError::WrongKind),
         }
     }
@@ -541,10 +548,13 @@ impl AggHeap {
 
     /// Returns array element `index`.
     pub fn array_get(&self, arr: AggHandle, index: usize) -> Result<Value, AggError> {
+        self.array_get_ref(arr, index).cloned()
+    }
+
+    /// Returns a borrowed array element `index`.
+    pub fn array_get_ref(&self, arr: AggHandle, index: usize) -> Result<&Value, AggError> {
         match self.node(arr)? {
-            AggNode::Array { values, .. } => {
-                values.get(index).cloned().ok_or(AggError::OutOfBounds)
-            }
+            AggNode::Array { values, .. } => values.get(index).ok_or(AggError::OutOfBounds),
             _ => Err(AggError::WrongKind),
         }
     }
@@ -610,8 +620,10 @@ mod tests {
         let mut h = AggHeap::new();
         let t = h.tuple_new(vec![Value::I64(1), Value::Bool(true)]);
         assert_eq!(h.tuple_get(t, 0), Ok(Value::I64(1)));
+        assert_eq!(h.tuple_get_ref(t, 0), Ok(&Value::I64(1)));
         assert_eq!(h.tuple_get(t, 1), Ok(Value::Bool(true)));
         assert_eq!(h.tuple_get(t, 2), Err(AggError::OutOfBounds));
+        assert_eq!(h.tuple_get_ref(t, 2), Err(AggError::OutOfBounds));
     }
 
     #[test]
@@ -620,6 +632,15 @@ mod tests {
         let a = h.array_new(ElemTypeId(0), vec![Value::U64(7), Value::U64(8)]);
         assert_eq!(h.array_len(a), Ok(2));
         assert_eq!(h.array_get(a, 1), Ok(Value::U64(8)));
+        assert_eq!(h.array_get_ref(a, 1), Ok(&Value::U64(8)));
+    }
+
+    #[test]
+    fn struct_get_ref_borrows_field() {
+        let mut h = AggHeap::new();
+        let st = h.struct_new(TypeId(3), vec![Value::Str("name".into())]);
+        assert_eq!(h.struct_get_ref(st, 0), Ok(&Value::Str("name".into())));
+        assert_eq!(h.struct_get_ref(st, 1), Err(AggError::OutOfBounds));
     }
 
     #[test]

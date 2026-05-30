@@ -12,6 +12,7 @@ use core::fmt;
 use crate::aggregates::{AggError, AggHeap};
 use crate::program::{Program, ValueType};
 use crate::value::AggHandle;
+use crate::value::AggType;
 use crate::value::Closure;
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -269,9 +270,21 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         self.aggregates
     }
 
+    /// Returns the kind and shape metadata for an aggregate.
+    pub fn agg_type(&self, handle: AggHandle) -> Result<AggType, AggError> {
+        self.aggregates.agg_type(handle)
+    }
+
     /// Returns tuple element `index`.
     pub fn tuple_get(&self, tuple: AggHandle, index: usize) -> Result<Value, AggError> {
         self.aggregates.tuple_get(tuple, index)
+    }
+
+    /// Returns tuple element `index` as a borrowed VM value.
+    pub fn tuple_get_ref(&self, tuple: AggHandle, index: usize) -> Result<ValueRef<'_>, AggError> {
+        self.aggregates
+            .tuple_get_ref(tuple, index)
+            .map(ValueRef::from_value)
     }
 
     /// Returns tuple length.
@@ -284,6 +297,17 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         self.aggregates.struct_get(st, field_index)
     }
 
+    /// Returns struct field `field_index` as a borrowed VM value.
+    pub fn struct_get_ref(
+        &self,
+        st: AggHandle,
+        field_index: usize,
+    ) -> Result<ValueRef<'_>, AggError> {
+        self.aggregates
+            .struct_get_ref(st, field_index)
+            .map(ValueRef::from_value)
+    }
+
     /// Returns struct field count.
     pub fn struct_field_count(&self, st: AggHandle) -> Result<usize, AggError> {
         self.aggregates.struct_field_count(st)
@@ -292,6 +316,13 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// Returns array element `index`.
     pub fn array_get(&self, arr: AggHandle, index: usize) -> Result<Value, AggError> {
         self.aggregates.array_get(arr, index)
+    }
+
+    /// Returns array element `index` as a borrowed VM value.
+    pub fn array_get_ref(&self, arr: AggHandle, index: usize) -> Result<ValueRef<'_>, AggError> {
+        self.aggregates
+            .array_get_ref(arr, index)
+            .map(ValueRef::from_value)
     }
 
     /// Returns array length.
@@ -472,6 +503,25 @@ pub enum ValueRef<'a> {
 }
 
 impl<'a> ValueRef<'a> {
+    /// Borrows an owned [`Value`] as a [`ValueRef`].
+    #[must_use]
+    pub fn from_value(value: &'a Value) -> Self {
+        match value {
+            Value::Unit => Self::Unit,
+            Value::Bool(v) => Self::Bool(*v),
+            Value::I64(v) => Self::I64(*v),
+            Value::U64(v) => Self::U64(*v),
+            Value::F64(v) => Self::F64(*v),
+            Value::Decimal(v) => Self::Decimal(*v),
+            Value::Bytes(v) => Self::Bytes(v.as_slice()),
+            Value::Str(v) => Self::Str(v.as_str()),
+            Value::Obj(v) => Self::Obj(*v),
+            Value::Agg(v) => Self::Agg(*v),
+            Value::Func(v) => Self::Func(*v),
+            Value::Closure(v) => Self::Closure(*v),
+        }
+    }
+
     /// Converts this borrowed view into an owned [`Value`].
     ///
     /// This allocates for bytes/strings and is mainly intended for tests and simple hosts.
