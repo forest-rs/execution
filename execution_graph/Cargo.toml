@@ -18,7 +18,7 @@ std = []
 workspace = true
 
 [dependencies]
-execution_tape = { path = "../execution_tape" }
+execution_tape = { workspace = true }
 hashbrown = { default-features = false, features = [
   "default-hasher",
 ], version = "0.17.0" }

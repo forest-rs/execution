@@ -11,5 +11,5 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-execution_graph = { path = "../execution_graph", features = ["std"] }
-execution_tape = { path = "../execution_tape" }
+execution_graph = { workspace = true, features = ["std"] }
+execution_tape = { workspace = true }

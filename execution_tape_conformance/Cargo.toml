@@ -1,5 +1,6 @@
 [package]
 name = "execution_tape_conformance"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,4 +15,4 @@ categories = ["development-tools::testing"]
 workspace = true
 
 [dependencies]
-execution_tape = { path = "../execution_tape" }
+execution_tape = { workspace = true }

@@ -190,7 +190,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "execution_graph"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "execution_tape",
  "hashbrown",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "execution_graph_examples"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "execution_graph",
  "execution_tape",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "execution_graph_wind_tunnel"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "criterion",
  "execution_graph",
@@ -220,7 +220,7 @@ version = "0.0.1"
 
 [[package]]
 name = "execution_tape_codegen"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -229,14 +229,14 @@ dependencies = [
 
 [[package]]
 name = "execution_tape_conformance"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "execution_tape",
 ]
 
 [[package]]
 name = "execution_tape_profiling"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "execution_tape",
  "tracy-client",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "execution_tape_wind_tunnel"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "criterion",
  "execution_tape",

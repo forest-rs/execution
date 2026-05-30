@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
 # and with the MSRV in the `Unreleased` section of CHANGELOG.md.
@@ -21,6 +21,10 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/execution"
 
 [workspace.dependencies]
+# Internal crates are centralized here so that their path dependencies also carry
+# the version requirements that `cargo package`/`cargo publish` need.
+execution_tape = { path = "execution_tape", version = "0.0.1" }
+execution_graph = { path = "execution_graph", version = "0.0.1" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

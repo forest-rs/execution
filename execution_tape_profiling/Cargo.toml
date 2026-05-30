@@ -1,5 +1,6 @@
 [package]
 name = "execution_tape_profiling"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +12,7 @@ keywords = ["profiling", "tracing", "vm"]
 categories = ["development-tools::profiling"]
 
 [dependencies]
-execution_tape = { path = "../execution_tape" }
+execution_tape = { workspace = true }
 tracy-client = "0.18"
 
 [lints]

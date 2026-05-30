@@ -1,6 +1,6 @@
 [package]
 name = "execution_tape_wind_tunnel"
-version = "0.1.0"
+version.workspace = true
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-execution_tape = { path = "../execution_tape", features = ["std"] }
+execution_tape = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 criterion = "0.5"
