@@ -5,7 +5,7 @@
 
 use execution_tape::aggregates::AggError;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-use execution_tape::host::{AccessSink, Host, HostError, HostSig, SigHash, ValueRef};
+use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::program::{
     ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, StructTypeDef, TypeTableDef,
@@ -27,7 +27,7 @@ impl Host for TestHost {
         _sig_hash: SigHash,
         args: &[ValueRef<'_>],
         rets: &mut [Value],
-        _access: Option<&mut dyn AccessSink>,
+        _ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         match symbol {
             "id" => {
@@ -980,7 +980,7 @@ fn vm_traps_host_call_limit_in_loop() {
             _sig_hash: SigHash,
             _args: &[ValueRef<'_>],
             _rets: &mut [Value],
-            _access: Option<&mut dyn AccessSink>,
+            _ctx: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
             self.calls += 1;
             Ok(0)

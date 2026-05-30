@@ -9,7 +9,8 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::program::ValueType;
+use crate::aggregates::AggHeap;
+use crate::program::{Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::Closure;
 use crate::value::Decimal;
@@ -17,13 +18,10 @@ use crate::value::FuncId;
 use crate::value::Obj;
 use crate::value::Value;
 
-#[cfg(doc)]
-use crate::program::Program;
-
 /// Sink for recording resource accesses during execution.
 ///
 /// This is an optional integration point intended for incremental execution systems (e.g.
-/// `execution_graph`). A sink is provided to host calls via [`Host::call`].
+/// `execution_graph`). A sink is provided to host calls via [`HostContext`].
 ///
 /// ## Semantics
 ///
@@ -69,7 +67,8 @@ use crate::program::Program;
 ///
 /// use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 /// use execution_tape::host::{
-///     sig_hash, AccessSink, Host, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef,
+///     sig_hash, AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash,
+///     ValueRef,
 /// };
 /// use execution_tape::program::ValueType;
 /// use execution_tape::trace::TraceMask;
@@ -109,7 +108,7 @@ use crate::program::Program;
 ///         sig_hash: SigHash,
 ///         args: &[ValueRef<'_>],
 ///         rets: &mut [Value],
-///         access: Option<&mut dyn AccessSink>,
+///         mut ctx: HostContext<'_, '_>,
 ///     ) -> Result<u64, HostError> {
 ///         match symbol {
 ///             "kv.get" => {
@@ -119,12 +118,10 @@ use crate::program::Program;
 ///                 let [ValueRef::U64(key)] = args else {
 ///                     return Err(HostError::Failed);
 ///                 };
-///                 if let Some(a) = access {
-///                     a.read(ResourceKeyRef::HostState {
-///                         op: sig_hash,
-///                         key: *key,
-///                     });
-///                 }
+///                 ctx.record_read(ResourceKeyRef::HostState {
+///                     op: sig_hash,
+///                     key: *key,
+///                 });
 ///                 let v = *self.kv.get(key).unwrap_or(&0);
 ///                 rets[0] = Value::I64(v);
 ///                 Ok(0)
@@ -136,12 +133,10 @@ use crate::program::Program;
 ///                 let [ValueRef::U64(key), ValueRef::I64(value)] = args else {
 ///                     return Err(HostError::Failed);
 ///                 };
-///                 if let Some(a) = access {
-///                     a.write(ResourceKeyRef::HostState {
-///                         op: sig_hash,
-///                         key: *key,
-///                     });
-///                 }
+///                 ctx.record_write(ResourceKeyRef::HostState {
+///                     op: sig_hash,
+///                     key: *key,
+///                 });
 ///                 self.kv.insert(*key, *value);
 ///                 rets[0] = Value::Unit;
 ///                 Ok(0)
@@ -218,6 +213,81 @@ pub trait AccessSink {
     fn read(&mut self, key: ResourceKeyRef<'_>);
     /// Records a write of `key` (an invalidation source).
     fn write(&mut self, key: ResourceKeyRef<'_>);
+}
+
+/// Read-only VM context available during one host call.
+///
+/// A host context gives embedders access to VM-owned immutable data that cannot be represented by
+/// [`ValueRef`] alone. In particular, aggregate arguments are passed as [`AggHandle`]s in
+/// [`ValueRef::Agg`]; use [`Self::aggregates`] to read tuple, struct, or array contents.
+///
+/// The context also carries the optional incremental-execution access sink for hosts whose results
+/// depend on external state.
+pub struct HostContext<'vm, 'access> {
+    program: &'vm Program,
+    aggregates: &'vm AggHeap,
+    access: Option<&'access mut dyn AccessSink>,
+}
+
+impl fmt::Debug for HostContext<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostContext")
+            .field("program_name", &self.program.name())
+            .field("aggregate_count", &self.aggregates.len_u32())
+            .field("has_access", &self.access.is_some())
+            .finish()
+    }
+}
+
+impl<'vm, 'access> HostContext<'vm, 'access> {
+    /// Creates a host context for one VM host call.
+    pub(crate) fn new(
+        program: &'vm Program,
+        aggregates: &'vm AggHeap,
+        access: Option<&'access mut dyn AccessSink>,
+    ) -> Self {
+        Self {
+            program,
+            aggregates,
+            access,
+        }
+    }
+
+    /// Returns the verified program being executed.
+    #[must_use]
+    pub fn program(&self) -> &Program {
+        self.program
+    }
+
+    /// Returns the VM aggregate heap for reading aggregate argument contents.
+    ///
+    /// Aggregates are immutable from the host ABI. Hosts may inspect values reachable from
+    /// aggregate handles, but cannot mutate or allocate aggregate nodes through this context.
+    #[must_use]
+    pub fn aggregates(&self) -> &AggHeap {
+        self.aggregates
+    }
+
+    /// Returns the access sink, when the caller is collecting incremental-execution accesses.
+    pub fn access(&mut self) -> Option<&mut (dyn AccessSink + '_)> {
+        self.access
+            .as_mut()
+            .map(|access| &mut **access as &mut dyn AccessSink)
+    }
+
+    /// Records a read access if an access sink is present.
+    pub fn record_read(&mut self, key: ResourceKeyRef<'_>) {
+        if let Some(access) = self.access() {
+            access.read(key);
+        }
+    }
+
+    /// Records a write access if an access sink is present.
+    pub fn record_write(&mut self, key: ResourceKeyRef<'_>) {
+        if let Some(access) = self.access() {
+            access.write(key);
+        }
+    }
 }
 
 /// A borrowed resource key used to model dependencies for incremental execution.
@@ -421,6 +491,7 @@ impl<'a> ValueRef<'a> {
 /// - argument values as `args`
 /// - a pre-sized `rets` slice (one slot per declared return value, pre-filled with
 ///   [`Value::Unit`])
+/// - a [`HostContext`] for read-only VM metadata/aggregates and optional access recording
 ///
 /// The host writes return values into `rets` and returns an optional additional fuel charge
 /// (charged by the VM). Every slot in `rets` whose declared type is not `Unit` **must** be
@@ -431,15 +502,15 @@ pub trait Host {
     /// `rets` is pre-sized by the VM to match the declared return count and pre-filled with
     /// [`Value::Unit`]. The host must overwrite each slot with the correct return value.
     ///
-    /// If `access` is present, the host should record any external reads and writes that are
-    /// relevant for incremental execution.
+    /// If [`HostContext::access`] is present, the host should record any external reads and
+    /// writes that are relevant for incremental execution.
     fn call(
         &mut self,
         symbol: &str,
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
         rets: &mut [Value],
-        access: Option<&mut dyn AccessSink>,
+        ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError>;
 }
 

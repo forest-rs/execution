@@ -18,7 +18,7 @@ use core::cell::RefCell;
 use execution_graph::{ExecutionGraph, GraphError, NodeId, ReportDetailMask, ResourceKey};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
-    AccessSink, Host, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
+    Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
 };
 use execution_tape::program::ValueType;
 use execution_tape::value::{FuncId, Value};
@@ -41,16 +41,14 @@ impl Host for TaxHost {
         sig_hash: SigHash,
         _args: &[ValueRef<'_>],
         rets: &mut [Value],
-        mut access: Option<&mut dyn AccessSink>,
+        mut ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         match symbol {
             "tax_rate_bp" => {
-                if let Some(sink) = access.as_mut() {
-                    sink.read(ResourceKeyRef::HostState {
-                        op: sig_hash,
-                        key: Self::TAX_RATE_KEY,
-                    });
-                }
+                ctx.record_read(ResourceKeyRef::HostState {
+                    op: sig_hash,
+                    key: Self::TAX_RATE_KEY,
+                });
                 rets[0] = Value::I64(*self.rate_bp.borrow());
                 Ok(0)
             }

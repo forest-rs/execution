@@ -1044,7 +1044,7 @@ mod tests {
     use alloc::string::ToString;
     use alloc::vec;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-    use execution_tape::host::{AccessSink, HostError, SigHash, ValueRef};
+    use execution_tape::host::{HostContext, HostError, SigHash, ValueRef};
     use execution_tape::host::{HostSig, ResourceKeyRef, sig_hash};
     use execution_tape::program::ValueType;
     use std::cell::RefCell;
@@ -1061,7 +1061,7 @@ mod tests {
             _sig_hash: SigHash,
             _args: &[ValueRef<'_>],
             _rets: &mut [Value],
-            _access: Option<&mut dyn AccessSink>,
+            _ctx: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
             Err(HostError::UnknownSymbol)
         }
@@ -1379,7 +1379,7 @@ mod tests {
                 _sig_hash: SigHash,
                 _args: &[ValueRef<'_>],
                 rets: &mut [Value],
-                _access: Option<&mut dyn AccessSink>,
+                _ctx: HostContext<'_, '_>,
             ) -> Result<u64, HostError> {
                 if symbol != "no_access" {
                     return Err(HostError::UnknownSymbol);
@@ -1533,7 +1533,7 @@ mod tests {
                 sig_hash: SigHash,
                 args: &[ValueRef<'_>],
                 rets: &mut [Value],
-                access: Option<&mut dyn AccessSink>,
+                mut ctx: HostContext<'_, '_>,
             ) -> Result<u64, HostError> {
                 if symbol != "kv.get" {
                     return Err(HostError::UnknownSymbol);
@@ -1544,12 +1544,10 @@ mod tests {
                 let [ValueRef::U64(key)] = args else {
                     return Err(HostError::Failed);
                 };
-                if let Some(a) = access {
-                    a.read(ResourceKeyRef::HostState {
-                        op: sig_hash,
-                        key: *key,
-                    });
-                }
+                ctx.record_read(ResourceKeyRef::HostState {
+                    op: sig_hash,
+                    key: *key,
+                });
                 let v = *self.kv.borrow().get(key).unwrap_or(&0);
                 rets[0] = Value::I64(v);
                 Ok(0)
@@ -1631,7 +1629,7 @@ mod tests {
                 sig_hash: SigHash,
                 _args: &[ValueRef<'_>],
                 rets: &mut [Value],
-                access: Option<&mut dyn AccessSink>,
+                mut ctx: HostContext<'_, '_>,
             ) -> Result<u64, HostError> {
                 if symbol != "flip.reads" {
                     return Err(HostError::UnknownSymbol);
@@ -1648,16 +1646,14 @@ mod tests {
                 };
                 *flip = !*flip;
 
-                if let Some(sink) = access {
-                    sink.read(ResourceKeyRef::HostState {
-                        op: sig_hash,
-                        key: a,
-                    });
-                    sink.read(ResourceKeyRef::HostState {
-                        op: sig_hash,
-                        key: b,
-                    });
-                }
+                ctx.record_read(ResourceKeyRef::HostState {
+                    op: sig_hash,
+                    key: a,
+                });
+                ctx.record_read(ResourceKeyRef::HostState {
+                    op: sig_hash,
+                    key: b,
+                });
                 rets[0] = Value::I64(0);
                 Ok(0)
             }
@@ -1724,7 +1720,7 @@ mod tests {
                 sig_hash: SigHash,
                 args: &[ValueRef<'_>],
                 rets: &mut [Value],
-                access: Option<&mut dyn AccessSink>,
+                mut ctx: HostContext<'_, '_>,
             ) -> Result<u64, HostError> {
                 if symbol != "kv.get" {
                     return Err(HostError::UnknownSymbol);
@@ -1735,9 +1731,7 @@ mod tests {
                 let [ValueRef::U64(key)] = args else {
                     return Err(HostError::Failed);
                 };
-                if let Some(a) = access {
-                    a.read(ResourceKeyRef::OpaqueHost { op: sig_hash });
-                }
+                ctx.record_read(ResourceKeyRef::OpaqueHost { op: sig_hash });
                 let v = *self.kv.borrow().get(key).unwrap_or(&0);
                 rets[0] = Value::I64(v);
                 Ok(0)
