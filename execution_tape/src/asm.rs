@@ -229,6 +229,41 @@ pub struct FunctionSig {
     pub ret_types: Vec<ValueType>,
 }
 
+impl FunctionSig {
+    /// Creates a closure body signature from caller-visible call signature parts.
+    ///
+    /// [`Asm::call_indirect`] uses the caller-visible `call_sig` for both function values and
+    /// closure values. When the callee is a closure, the VM injects the captured environment as the
+    /// callee body's first argument. This helper creates that body signature by prepending
+    /// [`ValueType::Agg`] to the caller-visible argument list and copying the caller-visible return
+    /// list unchanged.
+    ///
+    /// ```
+    /// # use execution_tape::asm::{FunctionSig, ProgramBuilder};
+    /// # use execution_tape::program::ValueType;
+    /// let call_args = [ValueType::I64];
+    /// let call_rets = [ValueType::Bool];
+    ///
+    /// let mut builder = ProgramBuilder::new();
+    /// let call_sig = builder.call_sig(&call_args, &call_rets);
+    /// let body_sig = FunctionSig::closure_body(&call_args, &call_rets);
+    ///
+    /// assert_eq!(body_sig.arg_types, vec![ValueType::Agg, ValueType::I64]);
+    /// assert_eq!(body_sig.ret_types, vec![ValueType::Bool]);
+    /// # let _ = call_sig;
+    /// ```
+    #[must_use]
+    pub fn closure_body(call_arg_types: &[ValueType], call_ret_types: &[ValueType]) -> Self {
+        let mut arg_types = Vec::with_capacity(call_arg_types.len().saturating_add(1));
+        arg_types.push(ValueType::Agg);
+        arg_types.extend_from_slice(call_arg_types);
+        Self {
+            arg_types,
+            ret_types: call_ret_types.to_vec(),
+        }
+    }
+}
+
 /// Convenience builder for constructing small [`Program`]s.
 ///
 /// This is primarily intended for tests and prototypes. For production usage you may want a more
@@ -1586,7 +1621,8 @@ impl Asm {
     /// `call_sig` describes the caller-visible arguments. If `callee` holds a `Closure`, the VM injects
     /// its captured environment as the callee's first argument (which must be an `Agg`), so the callee's
     /// declared signature is `[Agg, <call_sig args>...]`. If `callee` holds a `Func`, nothing is injected
-    /// and `call_sig` matches the callee signature 1:1. Return types match 1:1 in both cases.
+    /// and `call_sig` matches the callee signature 1:1. Return types match 1:1 in both cases. Use
+    /// [`FunctionSig::closure_body`] to build the declared signature for a closure body.
     pub fn call_indirect(
         &mut self,
         eff_out: u32,
@@ -2244,6 +2280,22 @@ mod tests {
                 eff_in: 0,
                 args: vec![4, 5],
                 rets: vec![6],
+            }
+        );
+    }
+
+    #[test]
+    fn function_sig_closure_body_prepends_env_argument() {
+        let sig = FunctionSig::closure_body(
+            &[ValueType::I64, ValueType::Bool],
+            &[ValueType::Obj(crate::program::HostTypeId(3))],
+        );
+
+        assert_eq!(
+            sig,
+            FunctionSig {
+                arg_types: vec![ValueType::Agg, ValueType::I64, ValueType::Bool],
+                ret_types: vec![ValueType::Obj(crate::program::HostTypeId(3))],
             }
         );
     }
