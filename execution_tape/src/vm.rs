@@ -3498,17 +3498,11 @@ mod tests {
                 let [ValueRef::Agg(tuple)] = args else {
                     return Err(HostError::Failed);
                 };
-                let Value::I64(lhs) = ctx
-                    .aggregates()
-                    .tuple_get(*tuple, 0)
-                    .map_err(|_| HostError::Failed)?
+                let Value::I64(lhs) = ctx.tuple_get(*tuple, 0).map_err(|_| HostError::Failed)?
                 else {
                     return Err(HostError::Failed);
                 };
-                let Value::I64(rhs) = ctx
-                    .aggregates()
-                    .tuple_get(*tuple, 1)
-                    .map_err(|_| HostError::Failed)?
+                let Value::I64(rhs) = ctx.tuple_get(*tuple, 1).map_err(|_| HostError::Failed)?
                 else {
                     return Err(HostError::Failed);
                 };
