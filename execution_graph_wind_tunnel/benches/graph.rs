@@ -10,7 +10,7 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 use execution_graph::{ExecutionGraph, HostOpId, ResourceKey};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
-    AccessSink, Host, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
+    Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
 };
 use execution_tape::program::ValueType;
 use execution_tape::value::{FuncId, Value};
@@ -45,7 +45,7 @@ impl Host for NopHost {
         _sig_hash: SigHash,
         _args: &[ValueRef<'_>],
         _rets: &mut [Value],
-        _access: Option<&mut dyn AccessSink>,
+        _ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         Err(HostError::UnknownSymbol)
     }
@@ -252,7 +252,7 @@ impl Host for FlappingOrderHost {
         sig_hash: SigHash,
         _args: &[ValueRef<'_>],
         rets: &mut [Value],
-        mut access: Option<&mut dyn AccessSink>,
+        mut ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         if symbol != "flap_reads_i64" {
             return Err(HostError::UnknownSymbol);
@@ -265,16 +265,12 @@ impl Host for FlappingOrderHost {
         if reverse {
             for i in (0..self.read_count).rev() {
                 let key = u64::try_from(i).map_err(|_| HostError::Failed)?;
-                if let Some(sink) = access.as_mut() {
-                    sink.read(ResourceKeyRef::HostState { op: sig_hash, key });
-                }
+                ctx.record_read(ResourceKeyRef::HostState { op: sig_hash, key });
             }
         } else {
             for i in 0..self.read_count {
                 let key = u64::try_from(i).map_err(|_| HostError::Failed)?;
-                if let Some(sink) = access.as_mut() {
-                    sink.read(ResourceKeyRef::HostState { op: sig_hash, key });
-                }
+                ctx.record_read(ResourceKeyRef::HostState { op: sig_hash, key });
             }
         }
 
@@ -404,7 +400,7 @@ impl Host for ParamHost {
         sig_hash: SigHash,
         args: &[ValueRef<'_>],
         rets: &mut [Value],
-        mut access: Option<&mut dyn AccessSink>,
+        mut ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
         if symbol != "param_i64" {
             return Err(HostError::UnknownSymbol);
@@ -413,12 +409,10 @@ impl Host for ParamHost {
             return Err(HostError::SignatureMismatch);
         };
         let k = *k;
-        if let Some(sink) = access.as_mut() {
-            sink.read(ResourceKeyRef::HostState {
-                op: sig_hash,
-                key: k,
-            });
-        }
+        ctx.record_read(ResourceKeyRef::HostState {
+            op: sig_hash,
+            key: k,
+        });
 
         let i = usize::try_from(k).map_err(|_| HostError::Failed)?;
         let v = self

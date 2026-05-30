@@ -16,7 +16,7 @@
 //! use alloc::vec::Vec;
 //!
 //! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-//! use execution_tape::host::{AccessSink, Host, HostError, SigHash, ValueRef};
+//! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
 //! use execution_tape::trace::TraceMask;
 //! use execution_tape::value::Value;
@@ -31,7 +31,7 @@
 //!         _sig_hash: SigHash,
 //!         _args: &[ValueRef<'_>],
 //!         _rets: &mut [Value],
-//!         _access: Option<&mut dyn AccessSink>,
+//!         _ctx: HostContext<'_, '_>,
 //!     ) -> Result<u64, HostError> {
 //!         Err(HostError::UnknownSymbol)
 //!     }

@@ -31,6 +31,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - **`SpanId`**: stable identifier for tracing and source mapping (e.g. node GUID).
 - **Host call**: effectful operation implemented by the embedder.
 - Host-call arguments are passed as borrowed views (bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning).
+- Hosts also receive read-only VM context for program metadata, aggregate heap inspection, and optional incremental access recording.
 - **Effect token**: SSA-like value that enforces effect ordering.
 
 ## Execution model (v1)

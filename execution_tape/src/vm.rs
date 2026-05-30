@@ -14,7 +14,7 @@ use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap};
 use crate::arena::{BytesHandle, StrHandle, ValueArena};
-use crate::host::{AccessSink, Host, HostError, ValueRef};
+use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
@@ -1747,10 +1747,13 @@ impl<H: Host> Vm<H> {
                         &mut ret_vec_fallback
                     };
 
-                    let access_for_call = access.as_mut().map(|a| &mut **a as &mut dyn AccessSink);
+                    let access_for_call = access
+                        .as_mut()
+                        .map(|access| &mut **access as &mut dyn AccessSink);
+                    let host_ctx = HostContext::new(program_ref, &self.agg, access_for_call);
                     let extra_fuel = self
                         .host
-                        .call(sym, hs.sig_hash, call_args, ret_slots, access_for_call)
+                        .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::HostCallFailed(e)))?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
@@ -3083,7 +3086,7 @@ mod tests {
     use super::*;
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
     use crate::bytecode::Instr;
-    use crate::host::{AccessSink, HostSig, ResourceKeyRef, SigHash};
+    use crate::host::{AccessSink, HostContext, HostSig, ResourceKeyRef, SigHash};
     use crate::program::{ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
     use crate::verifier::{VerifyConfig, verify_program_owned};
@@ -3099,7 +3102,7 @@ mod tests {
             _sig_hash: SigHash,
             args: &[ValueRef<'_>],
             rets: &mut [Value],
-            _access: Option<&mut dyn AccessSink>,
+            _ctx: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
             match symbol {
                 "id" => {
@@ -3347,7 +3350,7 @@ mod tests {
                 _sig_hash: SigHash,
                 _args: &[ValueRef<'_>],
                 _rets: &mut [Value],
-                _access: Option<&mut dyn AccessSink>,
+                _ctx: HostContext<'_, '_>,
             ) -> Result<u64, HostError> {
                 // Deliberately leave rets[0] as Value::Unit.
                 Ok(0)
@@ -3413,15 +3416,13 @@ mod tests {
             sig_hash: SigHash,
             args: &[ValueRef<'_>],
             rets: &mut [Value],
-            access: Option<&mut dyn AccessSink>,
+            mut ctx: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
-            if let Some(a) = access {
-                a.read(ResourceKeyRef::OpaqueHost { op: sig_hash });
-                a.read(ResourceKeyRef::HostState {
-                    op: sig_hash,
-                    key: 123,
-                });
-            }
+            ctx.record_read(ResourceKeyRef::OpaqueHost { op: sig_hash });
+            ctx.record_read(ResourceKeyRef::HostState {
+                op: sig_hash,
+                key: 123,
+            });
             match symbol {
                 "id" => {
                     for (slot, arg) in rets.iter_mut().zip(args) {
@@ -3476,6 +3477,74 @@ mod tests {
 
         assert_eq!(out, vec![Value::I64(9)]);
         assert!(access.reads > 0);
+    }
+
+    #[test]
+    fn vm_host_call_can_read_aggregate_argument() {
+        struct SumTupleHost;
+
+        impl Host for SumTupleHost {
+            fn call(
+                &mut self,
+                symbol: &str,
+                _sig_hash: SigHash,
+                args: &[ValueRef<'_>],
+                rets: &mut [Value],
+                ctx: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                if symbol != "tuple.sum2" {
+                    return Err(HostError::UnknownSymbol);
+                }
+                let [ValueRef::Agg(tuple)] = args else {
+                    return Err(HostError::Failed);
+                };
+                let Value::I64(lhs) = ctx
+                    .aggregates()
+                    .tuple_get(*tuple, 0)
+                    .map_err(|_| HostError::Failed)?
+                else {
+                    return Err(HostError::Failed);
+                };
+                let Value::I64(rhs) = ctx
+                    .aggregates()
+                    .tuple_get(*tuple, 1)
+                    .map_err(|_| HostError::Failed)?
+                else {
+                    return Err(HostError::Failed);
+                };
+                rets[0] = Value::I64(lhs + rhs);
+                Ok(0)
+            }
+        }
+
+        let sig = HostSig {
+            args: vec![ValueType::Agg],
+            rets: vec![ValueType::I64],
+        };
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for("tuple.sum2", sig);
+        let mut a = Asm::new();
+        a.const_i64(1, 20);
+        a.const_i64(2, 22);
+        a.tuple_new(3, &[1, 2]);
+        a.host_call(0, host_sig, 0, &[3], &[4]);
+        a.ret(0, &[4]);
+        let entry = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut vm = Vm::new(SumTupleHost, Limits::default());
+        let out = vm
+            .run(&p, entry, &[], TraceMask::NONE, None)
+            .expect("host should read tuple contents");
+        assert_eq!(out, vec![Value::I64(42)]);
     }
 
     #[test]
