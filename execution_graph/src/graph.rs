@@ -1982,7 +1982,7 @@ mod tests {
         };
 
         let mut g = ExecutionGraph::new(host, Limits::default());
-        let reader = g.add_node(get_prog, get_entry, vec![]);
+        let reader = g.add_node(get_prog, get_entry, vec![]).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
@@ -1991,7 +1991,7 @@ mod tests {
         );
         assert_eq!(g.node_run_count(reader), Some(1));
 
-        let writer = g.add_node(set_prog, set_entry, vec![]);
+        let writer = g.add_node(set_prog, set_entry, vec![]).unwrap();
         g.run_node(writer).unwrap();
         assert_eq!(g.node_run_count(reader), Some(1));
 
