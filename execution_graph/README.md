@@ -5,6 +5,63 @@ Incremental execution graph built on `execution_tape`.
 This crate provides a small `no_std` graph that executes verified `execution_tape` programs as
 nodes and re-executes only the nodes that are affected by changes.
 
+## Quick Start
+
+Use `execution_tape` to build verified programs, then wire them as graph nodes:
+
+```rust
+use std::sync::Arc;
+
+use execution_graph::ExecutionGraph;
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
+use execution_tape::program::ValueType;
+use execution_tape::value::Value;
+use execution_tape::vm::Limits;
+
+struct NoHost;
+
+impl Host for NoHost {
+    fn call(
+        &mut self,
+        _symbol: &str,
+        _sig_hash: SigHash,
+        _args: &[ValueRef<'_>],
+        _rets: &mut [Value],
+        _ctx: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        Err(HostError::UnknownSymbol)
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut asm = Asm::new();
+    asm.const_i64(2, 1);
+    asm.i64_add(3, 1, 2);
+    asm.ret(0, &[3]);
+
+    let mut builder = ProgramBuilder::new();
+    let entry = builder.push_function_checked(
+        asm,
+        FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        },
+    )?;
+    builder.set_function_output_name(entry, 0, "y")?;
+    let program = Arc::new(builder.build_verified()?);
+
+    let mut graph = ExecutionGraph::new(NoHost, Limits::default());
+    let node = graph.add_node(program, entry, vec!["x".into()]);
+    graph.set_input_value(node, "x", Value::I64(41));
+
+    let summary = graph.run_all()?;
+    assert_eq!(summary.executed_nodes, 1);
+    assert_eq!(graph.node_outputs(node).unwrap().get("y"), Some(&Value::I64(42)));
+    Ok(())
+}
+```
+
 ## Model
 
 - **Nodes** are `(VerifiedProgram, entry FuncId)` pairs.
@@ -48,7 +105,21 @@ Run the demo with:
 cargo run -p execution_graph_examples --bin tax
 ```
 
+Emit Graphviz DOT for the same graph:
+
+```sh
+cargo run -p execution_graph_examples --bin tax -- --dot
+```
+
 ## Current limitations
 
 - `execution_graph` intentionally stays close to the VM: traps expose `execution_tape::vm::TrapInfo`
   rather than source-language diagnostics.
+- VM traps are still collapsed to `GraphError::Trap` at the graph boundary. Missing inputs,
+  missing upstream outputs, bad output arity, and strict-deps failures are reported with context.
+- Graph nodes are currently `execution_tape` entrypoints only; custom dispatch can be layered later
+  without changing the resource-key model.
+
+## Minimum supported Rust Version (MSRV)
+
+This crate has been verified to compile with **Rust 1.88** and later.
