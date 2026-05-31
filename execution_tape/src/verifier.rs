@@ -21,8 +21,8 @@ use crate::host::{SigHash, sig_hash_slices};
 use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
-    CallSigId, ConstEntry, ElemTypeId, Function, Program, SpanEntry, SpanId, SymbolId, TypeId,
-    ValueType,
+    AggShape, CallSigId, ConstEntry, ElemTypeId, Function, Program, SpanEntry, SpanId, SymbolId,
+    TypeId, ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
@@ -212,6 +212,52 @@ pub enum VerifyError {
     FunctionSigCountMismatch {
         /// Function index within the program.
         func: u32,
+    },
+    /// Function argument aggregate-shape metadata references an unknown function.
+    FunctionArgAggShapeFuncOutOfBounds {
+        /// Function index referenced by the metadata entry.
+        func: u32,
+    },
+    /// Function argument aggregate-shape metadata references an invalid argument index.
+    FunctionArgAggShapeArgOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Argument index within the function signature.
+        arg: u32,
+    },
+    /// Function argument aggregate-shape metadata was duplicated for the same argument.
+    FunctionArgAggShapeDuplicate {
+        /// Function index within the program.
+        func: u32,
+        /// Argument index within the function signature.
+        arg: u32,
+    },
+    /// Function argument aggregate-shape metadata was attached to a non-aggregate argument.
+    FunctionArgAggShapeOnNonAggArg {
+        /// Function index within the program.
+        func: u32,
+        /// Argument index within the function signature.
+        arg: u32,
+        /// Actual declared argument type.
+        actual: ValueType,
+    },
+    /// Function argument aggregate-shape metadata references an unknown struct type.
+    FunctionArgAggShapeStructTypeOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Argument index within the function signature.
+        arg: u32,
+        /// Struct type id.
+        type_id: u32,
+    },
+    /// Function argument aggregate-shape metadata references an unknown array element type.
+    FunctionArgAggShapeArrayElemTypeOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Argument index within the function signature.
+        arg: u32,
+        /// Element type id.
+        elem_type_id: u32,
     },
     /// A function uses a value type not yet supported by the verifier/runtime register model.
     UnsupportedValueType {
@@ -631,6 +677,46 @@ impl fmt::Display for VerifyError {
             Self::FunctionSigCountMismatch { func } => {
                 write!(f, "function {func} signature count mismatch")
             }
+            Self::FunctionArgAggShapeFuncOutOfBounds { func } => {
+                write!(
+                    f,
+                    "function argument aggregate shape references unknown function {func}"
+                )
+            }
+            Self::FunctionArgAggShapeArgOutOfBounds { func, arg } => {
+                write!(
+                    f,
+                    "function {func} aggregate shape arg index out of bounds: {arg}"
+                )
+            }
+            Self::FunctionArgAggShapeDuplicate { func, arg } => {
+                write!(
+                    f,
+                    "function {func} aggregate shape is duplicated for arg {arg}"
+                )
+            }
+            Self::FunctionArgAggShapeOnNonAggArg { func, arg, actual } => {
+                write!(
+                    f,
+                    "function {func} aggregate shape on non-Agg arg {arg} (got {actual:?})"
+                )
+            }
+            Self::FunctionArgAggShapeStructTypeOutOfBounds { func, arg, type_id } => {
+                write!(
+                    f,
+                    "function {func} aggregate shape for arg {arg} references unknown struct type_id {type_id}"
+                )
+            }
+            Self::FunctionArgAggShapeArrayElemTypeOutOfBounds {
+                func,
+                arg,
+                elem_type_id,
+            } => {
+                write!(
+                    f,
+                    "function {func} aggregate shape for arg {arg} references unknown array elem_type_id {elem_type_id}"
+                )
+            }
             Self::UnsupportedValueType { func, value_type } => {
                 write!(
                     f,
@@ -917,6 +1003,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     verify_function_value_names(program)?;
+    verify_function_arg_agg_shapes(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
@@ -933,6 +1020,7 @@ pub fn verify_program_with_lints(
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     verify_function_value_names(program)?;
+    verify_function_arg_agg_shapes(program)?;
 
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
@@ -951,6 +1039,7 @@ pub fn verify_program_owned(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
+    verify_function_arg_agg_shapes(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
@@ -974,6 +1063,7 @@ pub fn verify_program_owned_with_lints(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
+    verify_function_arg_agg_shapes(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
@@ -1141,6 +1231,71 @@ fn verify_function_value_names(program: &Program) -> Result<(), VerifyError> {
                             core::num::NonZeroU32::new(a)
                                 .ok_or(VerifyError::Decode(DecodeError::OutOfBounds))?,
                         ),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_function_arg_agg_shapes(program: &Program) -> Result<(), VerifyError> {
+    let mut seen: Vec<(u32, u32)> = Vec::new();
+
+    for e in &program.function_arg_agg_shapes {
+        let Some(func) = program.functions.get(e.func as usize) else {
+            return Err(VerifyError::FunctionArgAggShapeFuncOutOfBounds { func: e.func });
+        };
+        let arg_types = func
+            .arg_types(program)
+            .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: e.func })?;
+        let Some(actual) = arg_types.get(e.arg as usize).copied() else {
+            return Err(VerifyError::FunctionArgAggShapeArgOutOfBounds {
+                func: e.func,
+                arg: e.arg,
+            });
+        };
+        if !seen
+            .iter()
+            .any(|&(func, arg)| func == e.func && arg == e.arg)
+        {
+            seen.push((e.func, e.arg));
+        } else {
+            return Err(VerifyError::FunctionArgAggShapeDuplicate {
+                func: e.func,
+                arg: e.arg,
+            });
+        }
+        if actual != ValueType::Agg {
+            return Err(VerifyError::FunctionArgAggShapeOnNonAggArg {
+                func: e.func,
+                arg: e.arg,
+                actual,
+            });
+        }
+        match &e.shape {
+            AggShape::Tuple { .. } => {}
+            AggShape::Struct(type_id) => {
+                if program.types.structs.get(type_id.0 as usize).is_none() {
+                    return Err(VerifyError::FunctionArgAggShapeStructTypeOutOfBounds {
+                        func: e.func,
+                        arg: e.arg,
+                        type_id: type_id.0,
+                    });
+                }
+            }
+            AggShape::Array(elem_type_id) => {
+                if program
+                    .types
+                    .array_elems
+                    .get(elem_type_id.0 as usize)
+                    .is_none()
+                {
+                    return Err(VerifyError::FunctionArgAggShapeArrayElemTypeOutOfBounds {
+                        func: e.func,
+                        arg: e.arg,
+                        elem_type_id: elem_type_id.0,
                     });
                 }
             }
@@ -1466,7 +1621,8 @@ fn verify_function_bytecode(
     }
 
     // Type analysis + validation.
-    let entry_types = initial_types(reg_count, arg_types);
+    let arg_agg_metas = initial_arg_agg_metas(program, func_id, arg_types);
+    let entry_types = initial_types(reg_count, arg_types, &arg_agg_metas);
     let (type_in, type_out) = compute_must_types(
         program,
         &blocks,
@@ -2784,6 +2940,16 @@ enum AggMeta {
     Array(ElemTypeId),
 }
 
+impl From<&AggShape> for AggMeta {
+    fn from(shape: &AggShape) -> Self {
+        match shape {
+            AggShape::Tuple { elems } => Self::Tuple(elems.clone()),
+            AggShape::Struct(type_id) => Self::Struct(*type_id),
+            AggShape::Array(elem_type_id) => Self::Array(*elem_type_id),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RegType {
     Uninit,
@@ -2803,18 +2969,43 @@ struct TypeState {
     aggs: Vec<Option<AggMeta>>,
 }
 
-fn initial_types(reg_count: usize, arg_types: &[ValueType]) -> TypeState {
+fn initial_types(
+    reg_count: usize,
+    arg_types: &[ValueType],
+    arg_agg_metas: &[Option<AggMeta>],
+) -> TypeState {
     let mut values: Vec<Option<RegType>> = vec![Some(RegType::Uninit); reg_count];
-    let aggs: Vec<Option<AggMeta>> = vec![None; reg_count];
+    let mut aggs: Vec<Option<AggMeta>> = vec![None; reg_count];
     if reg_count != 0 {
         values[0] = Some(RegType::Concrete(ValueType::Unit)); // effect token
         for (i, &t) in arg_types.iter().enumerate() {
             if 1 + i < reg_count {
                 values[1 + i] = Some(RegType::Concrete(t));
+                if t == ValueType::Agg {
+                    aggs[1 + i] = arg_agg_metas.get(i).cloned().unwrap_or(None);
+                }
             }
         }
     }
     TypeState { values, aggs }
+}
+
+fn initial_arg_agg_metas(
+    program: &Program,
+    func_id: u32,
+    arg_types: &[ValueType],
+) -> Vec<Option<AggMeta>> {
+    let mut out = vec![None; arg_types.len()];
+    for e in program
+        .function_arg_agg_shapes
+        .iter()
+        .filter(|e| e.func == func_id)
+    {
+        if let Some(slot) = out.get_mut(e.arg as usize) {
+            *slot = Some(AggMeta::from(&e.shape));
+        }
+    }
+    out
 }
 
 fn meet_value(a: Option<RegType>, b: Option<RegType>) -> Option<RegType> {
@@ -3951,8 +4142,8 @@ mod tests {
     use crate::asm::{BuildError, FunctionSig, ProgramBuilder};
     use crate::opcode::Opcode;
     use crate::program::{
-        ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, SpanId, StructTypeDef,
-        TypeTableDef, ValueType,
+        AggShape, ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, SpanId,
+        StructTypeDef, TypeTableDef, ValueType,
     };
     use crate::value::FuncId;
     use alloc::vec;
@@ -4957,6 +5148,53 @@ mod tests {
         )
         .unwrap();
         pb.build_checked().unwrap();
+    }
+
+    #[test]
+    fn verifier_types_tuple_get_from_abi_arg_shape() {
+        let mut a = Asm::new();
+        a.tuple_get(2, 1, 0);
+        a.i64_add(3, 2, 2);
+        a.ret(0, &[3]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![ValueType::I64],
+            }
+            .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+        )
+        .unwrap();
+        pb.build_checked().unwrap();
+    }
+
+    #[test]
+    fn verifier_rejects_abi_arg_shape_on_non_agg_arg() {
+        let mut a = Asm::new();
+        a.ret(0, &[]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![],
+            }
+            .with_arg_agg_shape(0, AggShape::tuple(vec![])),
+        )
+        .unwrap();
+        let p = pb.build();
+
+        assert_eq!(
+            verify_program(&p, &VerifyConfig::default()),
+            Err(VerifyError::FunctionArgAggShapeOnNonAggArg {
+                func: 0,
+                arg: 0,
+                actual: ValueType::I64,
+            })
+        );
     }
 
     #[test]

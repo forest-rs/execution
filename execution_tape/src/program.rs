@@ -262,6 +262,12 @@ pub struct Program {
     pub spans: Vec<SpanEntry>,
     /// Program functions.
     pub functions: Vec<Function>,
+    /// Optional aggregate shape metadata for function arguments.
+    ///
+    /// Function signatures still use [`ValueType::Agg`] as the runtime ABI kind. These entries add
+    /// verifier-visible shape facts for specific aggregate arguments, such as a closure environment
+    /// argument that is known to be a tuple of captured values.
+    pub function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry>,
     /// Optional program name.
     pub program_name: Option<SymbolId>,
     /// Optional function-name entries.
@@ -294,6 +300,17 @@ pub struct LabelNameEntry {
     pub pc: u32,
     /// Symbol id naming the label.
     pub name: SymbolId,
+}
+
+/// Verifier-visible shape metadata for a function argument whose type is [`ValueType::Agg`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionArgAggShapeEntry {
+    /// Function index within the program.
+    pub func: u32,
+    /// Argument index within the function signature.
+    pub arg: u32,
+    /// Aggregate shape attached to the argument.
+    pub shape: AggShape,
 }
 
 /// A constant-pool entry stored in a compact representation.
@@ -367,6 +384,37 @@ pub enum ValueType {
     Func,
     /// Closure reference.
     Closure,
+}
+
+/// Verifier-visible aggregate shape metadata.
+///
+/// This refines aggregate arguments without changing the runtime ABI kind: signatures still carry
+/// [`ValueType::Agg`], while the shape lets the verifier type-check projections from known tuple,
+/// struct, or array aggregate arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AggShape {
+    /// Tuple aggregate with optional per-element value types.
+    ///
+    /// `None` means the tuple element is known to exist but its value type is not known to the
+    /// verifier.
+    Tuple {
+        /// Element type metadata in tuple index order.
+        elems: Vec<Option<ValueType>>,
+    },
+    /// Struct aggregate with a type-table id.
+    Struct(TypeId),
+    /// Array aggregate with an element-type table id.
+    Array(ElemTypeId),
+}
+
+impl AggShape {
+    /// Creates a tuple aggregate shape from element type metadata.
+    #[must_use]
+    pub fn tuple(elems: impl Into<Vec<Option<ValueType>>>) -> Self {
+        Self::Tuple {
+            elems: elems.into(),
+        }
+    }
 }
 
 /// A host-call signature table entry.
@@ -687,6 +735,7 @@ impl Program {
             bytecode_data,
             spans,
             functions: packed_functions,
+            function_arg_agg_shapes: Vec::new(),
             program_name: None,
             function_names: Vec::new(),
             labels: Vec::new(),
@@ -715,6 +764,17 @@ impl Program {
             .iter()
             .find(|e| e.func == func && e.pc == pc)
             .and_then(|e| self.symbol_str(e.name).ok())
+    }
+
+    /// Returns aggregate shape metadata for function argument `arg`, if present.
+    ///
+    /// This metadata only refines arguments whose declared type is [`ValueType::Agg`].
+    #[must_use]
+    pub fn function_arg_agg_shape(&self, func: u32, arg: u32) -> Option<&AggShape> {
+        self.function_arg_agg_shapes
+            .iter()
+            .find(|e| e.func == func && e.arg == arg)
+            .map(|e| &e.shape)
     }
 
     /// Returns the function input name for `func` and `arg`, if present.
@@ -918,6 +978,7 @@ impl Program {
         // 7 = function_sigs
         // 8 = host_sigs
         // 10 = call_sigs (optional)
+        // 11 = function_arg_agg_shapes (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1074,6 +1135,18 @@ impl Program {
             write_section(&mut w, SectionTag::CallSigs, payload.as_slice());
         }
 
+        // function argument aggregate shape metadata section (optional)
+        if !self.function_arg_agg_shapes.is_empty() {
+            let mut payload = Writer::new();
+            payload.write_uleb128_u64(self.function_arg_agg_shapes.len() as u64);
+            for e in &self.function_arg_agg_shapes {
+                payload.write_uleb128_u32(e.func);
+                payload.write_uleb128_u32(e.arg);
+                encode_agg_shape(&mut payload, &e.shape);
+            }
+            write_section(&mut w, SectionTag::FunctionArgAggShapes, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1151,6 +1224,7 @@ enum SectionTag {
     HostSigs = 8,
     Names = 9,
     CallSigs = 10,
+    FunctionArgAggShapes = 11,
 }
 
 impl SectionTag {
@@ -1166,6 +1240,7 @@ impl SectionTag {
             8 => Some(Self::HostSigs),
             9 => Some(Self::Names),
             10 => Some(Self::CallSigs),
+            11 => Some(Self::FunctionArgAggShapes),
             _ => None,
         }
     }
@@ -1266,6 +1341,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut function_sig_defs: Vec<DecodedFunctionSig> = Vec::new();
     let mut bytecode_blobs: Vec<Vec<u8>> = Vec::new();
     let mut span_tables: Vec<Vec<SpanEntry>> = Vec::new();
+    let mut function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry> = Vec::new();
     let mut names: NamesDef = NamesDef::default();
 
     let mut saw_symbols = false;
@@ -1277,6 +1353,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_function_sigs = false;
     let mut saw_bytecode_blobs = false;
     let mut saw_span_tables = false;
+    let mut saw_function_arg_agg_shapes = false;
     let mut saw_names = false;
 
     while r.offset() < bytes.len() {
@@ -1347,6 +1424,13 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_call_sigs = true;
                 call_sig_defs = decode_call_sigs(payload)?;
+            }
+            Some(SectionTag::FunctionArgAggShapes) => {
+                if saw_function_arg_agg_shapes {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                saw_function_arg_agg_shapes = true;
+                function_arg_agg_shapes = decode_function_arg_agg_shapes(payload)?;
             }
             Some(SectionTag::Names) => {
                 if saw_names {
@@ -1587,6 +1671,15 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         }
     }
 
+    for e in &function_arg_agg_shapes {
+        let Some(func) = usize::try_from(e.func).ok().and_then(|i| functions.get(i)) else {
+            return Err(DecodeError::OutOfBounds);
+        };
+        if e.arg >= func.arg_count {
+            return Err(DecodeError::OutOfBounds);
+        }
+    }
+
     Ok(Program {
         symbols,
         symbol_data,
@@ -1601,6 +1694,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         bytecode_data,
         spans,
         functions,
+        function_arg_agg_shapes,
         program_name: names.program_name,
         function_names: names.function_names,
         labels: names.labels,
@@ -1799,6 +1893,73 @@ fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
     })
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum AggShapeTag {
+    Tuple = 1,
+    Struct = 2,
+    Array = 3,
+}
+
+impl AggShapeTag {
+    fn from_u8(v: u8) -> Result<Self, DecodeError> {
+        match v {
+            1 => Ok(Self::Tuple),
+            2 => Ok(Self::Struct),
+            3 => Ok(Self::Array),
+            _ => Err(DecodeError::OutOfBounds),
+        }
+    }
+}
+
+fn encode_agg_shape(w: &mut Writer, shape: &AggShape) {
+    match shape {
+        AggShape::Tuple { elems } => {
+            w.write_u8(AggShapeTag::Tuple as u8);
+            w.write_uleb128_u64(elems.len() as u64);
+            for elem in elems {
+                match elem {
+                    Some(ty) => {
+                        w.write_u8(1);
+                        encode_value_type(w, *ty);
+                    }
+                    None => w.write_u8(0),
+                }
+            }
+        }
+        AggShape::Struct(type_id) => {
+            w.write_u8(AggShapeTag::Struct as u8);
+            w.write_uleb128_u32(type_id.0);
+        }
+        AggShape::Array(elem_type_id) => {
+            w.write_u8(AggShapeTag::Array as u8);
+            w.write_uleb128_u32(elem_type_id.0);
+        }
+    }
+}
+
+fn decode_agg_shape(r: &mut Reader<'_>) -> Result<AggShape, DecodeError> {
+    Ok(match AggShapeTag::from_u8(r.read_u8()?)? {
+        AggShapeTag::Tuple => {
+            let elem_count = read_usize(r)?;
+            let mut elems = Vec::with_capacity(elem_count);
+            for _ in 0..elem_count {
+                let has_type = r.read_u8()?;
+                if has_type == 0 {
+                    elems.push(None);
+                } else if has_type == 1 {
+                    elems.push(Some(decode_value_type(r)?));
+                } else {
+                    return Err(DecodeError::OutOfBounds);
+                }
+            }
+            AggShape::Tuple { elems }
+        }
+        AggShapeTag::Struct => AggShape::Struct(TypeId(r.read_uleb128_u32()?)),
+        AggShapeTag::Array => AggShape::Array(ElemTypeId(r.read_uleb128_u32()?)),
+    })
+}
+
 fn encode_types(w: &mut Writer, t: &TypeTable) {
     w.write_uleb128_u64(t.field_name_ranges.len() as u64);
     for name in &t.field_name_ranges {
@@ -1952,6 +2113,25 @@ fn decode_call_sigs(payload: &[u8]) -> Result<Vec<DecodedCallSig>, DecodeError> 
             rets.push(decode_value_type(&mut r)?);
         }
         out.push((args, rets));
+    }
+    Ok(out)
+}
+
+fn decode_function_arg_agg_shapes(
+    payload: &[u8],
+) -> Result<Vec<FunctionArgAggShapeEntry>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_usize(&mut r)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(FunctionArgAggShapeEntry {
+            func: r.read_uleb128_u32()?,
+            arg: r.read_uleb128_u32()?,
+            shape: decode_agg_shape(&mut r)?,
+        });
+    }
+    if r.offset() != payload.len() {
+        return Err(DecodeError::OutOfBounds);
     }
     Ok(out)
 }
@@ -2120,6 +2300,57 @@ mod tests {
         let bytes = p.encode();
         let back = Program::decode(&bytes).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn program_roundtrips_function_arg_agg_shapes() {
+        let mut p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef {
+                structs: vec![StructTypeDef {
+                    field_names: vec!["count".into()],
+                    field_types: vec![ValueType::I64],
+                }],
+                array_elems: vec![ValueType::Bool],
+            },
+            vec![FunctionDef {
+                arg_types: vec![ValueType::Agg, ValueType::Agg, ValueType::Agg],
+                ret_types: vec![],
+                reg_count: 4,
+                bytecode: vec![],
+                spans: vec![],
+            }],
+        );
+        p.function_arg_agg_shapes = vec![
+            FunctionArgAggShapeEntry {
+                func: 0,
+                arg: 0,
+                shape: AggShape::tuple(vec![Some(ValueType::I64), None]),
+            },
+            FunctionArgAggShapeEntry {
+                func: 0,
+                arg: 1,
+                shape: AggShape::Struct(TypeId(0)),
+            },
+            FunctionArgAggShapeEntry {
+                func: 0,
+                arg: 2,
+                shape: AggShape::Array(ElemTypeId(0)),
+            },
+        ];
+
+        let bytes = p.encode();
+        let tags = section_tags(&bytes);
+        assert!(tags.contains(&(SectionTag::FunctionArgAggShapes as u8)));
+
+        let back = Program::decode(&bytes).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(
+            back.function_arg_agg_shape(0, 0),
+            Some(&AggShape::tuple(vec![Some(ValueType::I64), None]))
+        );
     }
 
     #[test]

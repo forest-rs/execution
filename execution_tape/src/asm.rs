@@ -18,9 +18,10 @@ use crate::format::{write_sleb128_i64, write_uleb128_u64};
 use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
-    ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionDef, FunctionNameEntry,
-    HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry, SpanId, StructTypeDef,
-    SymbolId, TypeId, TypeTableDef, ValueType,
+    AggShape, ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId,
+    FunctionArgAggShapeEntry, FunctionDef, FunctionNameEntry, HostSigDef, HostSigId, HostSymbol,
+    LabelNameEntry, Program, SpanEntry, SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef,
+    ValueType,
 };
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -262,6 +263,85 @@ impl FunctionSig {
             ret_types: call_ret_types.to_vec(),
         }
     }
+
+    /// Attaches aggregate shape metadata to argument `arg`.
+    ///
+    /// The argument's signature type remains [`ValueType::Agg`]. The shape is verifier metadata
+    /// used to type-check aggregate projections from ABI-provided values.
+    #[must_use]
+    pub fn with_arg_agg_shape(self, arg: u32, shape: AggShape) -> FunctionAbi {
+        let mut abi = FunctionAbi::from(self);
+        abi.set_arg_agg_shape(arg, shape);
+        abi
+    }
+
+    /// Creates a closure body ABI and attaches shape metadata to the injected environment argument.
+    ///
+    /// This is the typed-shape counterpart to [`FunctionSig::closure_body`]. It preserves the
+    /// caller-visible call signature while telling the verifier what shape the hidden closure
+    /// environment argument has inside the body.
+    #[must_use]
+    pub fn closure_body_with_env_shape(
+        call_arg_types: &[ValueType],
+        call_ret_types: &[ValueType],
+        env_shape: AggShape,
+    ) -> FunctionAbi {
+        Self::closure_body(call_arg_types, call_ret_types).with_arg_agg_shape(0, env_shape)
+    }
+}
+
+/// Function ABI metadata used by [`ProgramBuilder`].
+///
+/// The signature carries runtime value kinds, while `arg_agg_shapes` carries optional verifier
+/// refinements for arguments whose runtime kind is [`ValueType::Agg`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionAbi {
+    /// Runtime function signature.
+    pub sig: FunctionSig,
+    /// Optional aggregate shape metadata by argument index.
+    ///
+    /// Entries beyond the signature arity are preserved so checked builders can report a verifier
+    /// error instead of silently dropping caller intent.
+    pub arg_agg_shapes: Vec<Option<AggShape>>,
+}
+
+impl FunctionAbi {
+    /// Creates ABI metadata from a runtime function signature with no aggregate shape refinements.
+    #[must_use]
+    pub fn new(sig: FunctionSig) -> Self {
+        let arg_agg_shapes = vec![None; sig.arg_types.len()];
+        Self {
+            sig,
+            arg_agg_shapes,
+        }
+    }
+
+    /// Attaches aggregate shape metadata to argument `arg`.
+    pub fn set_arg_agg_shape(&mut self, arg: u32, shape: AggShape) {
+        let arg = arg as usize;
+        if self.arg_agg_shapes.len() <= arg {
+            self.arg_agg_shapes.resize_with(arg + 1, || None);
+        }
+        self.arg_agg_shapes[arg] = Some(shape);
+    }
+}
+
+impl From<FunctionSig> for FunctionAbi {
+    fn from(sig: FunctionSig) -> Self {
+        Self::new(sig)
+    }
+}
+
+impl From<&FunctionSig> for FunctionAbi {
+    fn from(sig: &FunctionSig) -> Self {
+        Self::new(sig.clone())
+    }
+}
+
+impl From<&Self> for FunctionAbi {
+    fn from(abi: &Self) -> Self {
+        abi.clone()
+    }
 }
 
 /// Convenience builder for constructing small [`Program`]s.
@@ -306,6 +386,7 @@ pub struct ProgramBuilder {
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
     functions: Vec<FunctionDef>,
+    function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry>,
     program_name: Option<SymbolId>,
     function_names: Vec<FunctionNameEntry>,
     labels: Vec<LabelNameEntry>,
@@ -566,11 +647,68 @@ impl ProgramBuilder {
         id
     }
 
+    fn store_function_arg_agg_shapes(
+        &mut self,
+        func: FuncId,
+        arg_agg_shapes: Vec<Option<AggShape>>,
+    ) {
+        self.function_arg_agg_shapes.retain(|e| e.func != func.0);
+        for (arg, shape) in arg_agg_shapes.into_iter().enumerate() {
+            let Some(shape) = shape else {
+                continue;
+            };
+            self.function_arg_agg_shapes.push(FunctionArgAggShapeEntry {
+                func: func.0,
+                arg: u32::try_from(arg).unwrap_or(u32::MAX),
+                shape,
+            });
+        }
+    }
+
+    /// Sets aggregate shape metadata for a function argument.
+    ///
+    /// This refines an argument whose declared type is [`ValueType::Agg`] so the verifier can
+    /// type-check aggregate projections from ABI-provided values.
+    pub fn set_function_arg_agg_shape(
+        &mut self,
+        func: FuncId,
+        arg: u32,
+        shape: AggShape,
+    ) -> Result<(), BuildError> {
+        let Some(def) = self.functions.get(func.0 as usize) else {
+            return Err(BuildError::BadFuncId { func: func.0 });
+        };
+        if (arg as usize) >= def.arg_types.len() {
+            let arg_count = u32::try_from(def.arg_types.len()).unwrap_or(u32::MAX);
+            return Err(BuildError::BadArgIndex {
+                func: func.0,
+                arg,
+                arg_count,
+            });
+        }
+        if let Some(entry) = self
+            .function_arg_agg_shapes
+            .iter_mut()
+            .find(|e| e.func == func.0 && e.arg == arg)
+        {
+            entry.shape = shape;
+        } else {
+            self.function_arg_agg_shapes.push(FunctionArgAggShapeEntry {
+                func: func.0,
+                arg,
+                shape,
+            });
+        }
+        Ok(())
+    }
+
     /// Declares a function signature and returns its [`FuncId`].
     ///
     /// This is useful when assembling mutually recursive or out-of-order functions: you can
     /// declare all functions up front, then reference them by [`FuncId`] in [`Asm::call`].
-    pub fn declare_function(&mut self, sig: FunctionSig) -> FuncId {
+    pub fn declare_function(&mut self, abi: impl Into<FunctionAbi>) -> FuncId {
+        let abi = abi.into();
+        let sig = abi.sig;
         let reg_count = min_reg_count_for_arg_count(sig.arg_types.len());
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
         self.functions.push(FunctionDef {
@@ -580,6 +718,7 @@ impl ProgramBuilder {
             bytecode: Vec::new(),
             spans: Vec::new(),
         });
+        self.store_function_arg_agg_shapes(id, abi.arg_agg_shapes);
         id
     }
 
@@ -636,7 +775,13 @@ impl ProgramBuilder {
     ///
     /// This resolves labels and records the typed signature. Full verification (including host-call
     /// signature checks and cross-function call checks) is performed by `build_checked`.
-    pub fn push_function_checked(&mut self, a: Asm, sig: FunctionSig) -> Result<FuncId, AsmError> {
+    pub fn push_function_checked(
+        &mut self,
+        a: Asm,
+        abi: impl Into<FunctionAbi>,
+    ) -> Result<FuncId, AsmError> {
+        let abi = abi.into();
+        let sig = abi.sig;
         let reg_count = a.inferred_reg_count_for_args(sig.arg_types.len());
         let parts = a.finish_parts()?;
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
@@ -655,6 +800,7 @@ impl ProgramBuilder {
                 name: sym,
             });
         }
+        self.store_function_arg_agg_shapes(id, abi.arg_agg_shapes);
         Ok(id)
     }
 
@@ -691,6 +837,7 @@ impl ProgramBuilder {
         p.program_name = self.program_name;
         p.function_names = self.function_names;
         p.labels = self.labels;
+        p.function_arg_agg_shapes = self.function_arg_agg_shapes;
 
         let func_count = p.functions.len();
         let mut has_arg_names = vec![false; func_count];
@@ -957,34 +1104,36 @@ impl Asm {
     ///
     /// This constructs a tiny single-function [`Program`] wrapper and runs the verifier. It is
     /// intended as a quick sanity check for builder users.
-    pub fn finish_checked(self, sig: &FunctionSig) -> Result<Vec<u8>, AsmError> {
-        self.finish_checked_with(sig, &VerifyConfig::default())
+    pub fn finish_checked(self, abi: impl Into<FunctionAbi>) -> Result<Vec<u8>, AsmError> {
+        self.finish_checked_with(abi, &VerifyConfig::default())
     }
 
     /// Finalizes, then verifies the resulting bytecode and span table under `sig`.
-    pub fn finish_checked_parts(self, sig: &FunctionSig) -> Result<AsmParts, AsmError> {
-        self.finish_checked_parts_with(sig, &VerifyConfig::default())
+    pub fn finish_checked_parts(self, abi: impl Into<FunctionAbi>) -> Result<AsmParts, AsmError> {
+        self.finish_checked_parts_with(abi, &VerifyConfig::default())
     }
 
     /// Finalizes, then verifies the resulting bytecode under `sig` with a custom verifier config.
     pub fn finish_checked_with(
         self,
-        sig: &FunctionSig,
+        abi: impl Into<FunctionAbi>,
         cfg: &VerifyConfig,
     ) -> Result<Vec<u8>, AsmError> {
-        Ok(self.finish_checked_parts_with(sig, cfg)?.bytecode)
+        Ok(self.finish_checked_parts_with(abi, cfg)?.bytecode)
     }
 
     /// Finalizes, then verifies the resulting bytecode and span table under `sig` with a custom
     /// verifier config.
     pub fn finish_checked_parts_with(
         self,
-        sig: &FunctionSig,
+        abi: impl Into<FunctionAbi>,
         cfg: &VerifyConfig,
     ) -> Result<AsmParts, AsmError> {
+        let abi = abi.into();
+        let sig = abi.sig;
         let reg_count = self.inferred_reg_count_for_args(sig.arg_types.len());
         let parts = self.finish_parts()?;
-        let p = Program::new(
+        let mut p = Program::new(
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -997,6 +1146,16 @@ impl Asm {
                 spans: parts.spans.clone(),
             }],
         );
+        for (arg, shape) in abi.arg_agg_shapes.into_iter().enumerate() {
+            let Some(shape) = shape else {
+                continue;
+            };
+            p.function_arg_agg_shapes.push(FunctionArgAggShapeEntry {
+                func: 0,
+                arg: u32::try_from(arg).unwrap_or(u32::MAX),
+                shape,
+            });
+        }
         verify_program(&p, cfg)?;
         Ok(parts)
     }
@@ -2297,6 +2456,52 @@ mod tests {
                 arg_types: vec![ValueType::Agg, ValueType::I64, ValueType::Bool],
                 ret_types: vec![ValueType::Obj(crate::program::HostTypeId(3))],
             }
+        );
+    }
+
+    #[test]
+    fn function_sig_closure_body_with_env_shape_marks_env_arg() {
+        let abi = FunctionSig::closure_body_with_env_shape(
+            &[ValueType::I64],
+            &[ValueType::I64],
+            AggShape::tuple(vec![Some(ValueType::I64)]),
+        );
+
+        assert_eq!(
+            abi.sig,
+            FunctionSig {
+                arg_types: vec![ValueType::Agg, ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            }
+        );
+        assert_eq!(
+            abi.arg_agg_shapes,
+            vec![Some(AggShape::tuple(vec![Some(ValueType::I64)])), None]
+        );
+    }
+
+    #[test]
+    fn program_builder_preserves_function_arg_agg_shapes() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.tuple_get(2, 1, 0);
+        a.ret(0, &[2]);
+
+        let func = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![ValueType::I64],
+                }
+                .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+            )
+            .unwrap();
+
+        let program = pb.build_checked().unwrap();
+        assert_eq!(
+            program.function_arg_agg_shape(func.0, 0),
+            Some(&AggShape::tuple(vec![Some(ValueType::I64)]))
         );
     }
 

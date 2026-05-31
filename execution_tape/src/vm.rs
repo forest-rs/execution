@@ -3114,7 +3114,9 @@ mod tests {
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
     use crate::bytecode::Instr;
     use crate::host::{AccessSink, HostContext, HostSig, ResourceKeyRef, SigHash};
-    use crate::program::{ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType};
+    use crate::program::{
+        AggShape, ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType,
+    };
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
     use crate::value::AggType;
     use crate::verifier::{VerifyConfig, verify_program_owned};
@@ -3880,6 +3882,48 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
         assert_eq!(out, vec![Value::U64(2)]);
+    }
+
+    #[test]
+    fn vm_executes_closure_that_reads_typed_tuple_env() {
+        let mut pb = ProgramBuilder::new();
+        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+
+        let mut entry = Asm::new();
+        entry.const_i64(1, 40);
+        entry.tuple_new(2, &[1]);
+        entry.const_func(3, FuncId(1));
+        entry.closure_new(4, 3, 2);
+        entry.const_i64(5, 2);
+        entry.call_indirect(0, call_sig, 4, 0, &[5], &[6]);
+        entry.ret(0, &[6]);
+        pb.push_function_checked(
+            entry,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+
+        let mut body = Asm::new();
+        body.tuple_get(3, 1, 0);
+        body.i64_add(4, 3, 2);
+        body.ret(0, &[4]);
+        pb.push_function_checked(
+            body,
+            FunctionSig::closure_body_with_env_shape(
+                &[ValueType::I64],
+                &[ValueType::I64],
+                AggShape::tuple(vec![Some(ValueType::I64)]),
+            ),
+        )
+        .unwrap();
+
+        let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        assert_eq!(out, vec![Value::I64(42)]);
     }
 
     #[test]
