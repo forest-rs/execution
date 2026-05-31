@@ -98,13 +98,13 @@ impl AccessSink for CollectingAccessSink<'_> {
 
     fn write(&mut self, key: ResourceKeyRef<'_>) {
         self.counter.set(self.counter.get().saturating_add(1));
-        let key = match key {
-            ResourceKeyRef::Input(name) => ResourceKey::input(name),
-            ResourceKeyRef::HostState { op, key } => {
-                ResourceKey::host_state(HostOpId::new(op.0), key)
-            }
-            ResourceKeyRef::OpaqueHost { op } => ResourceKey::opaque_host(HostOpId::new(op.0)),
-        };
+        let key = mark_tape_key_dirty(
+            self.dirty,
+            self.input_ids,
+            self.host_state_ids,
+            self.opaque_host_ids,
+            key,
+        );
         self.log.push(Access::Write(key));
     }
 }
@@ -157,6 +157,35 @@ pub(crate) fn intern_opaque_host_key_id(
     let id = dirty.intern(ResourceKey::opaque_host(op));
     opaque_host_ids.insert(op, id);
     id
+}
+
+#[inline]
+fn mark_tape_key_dirty(
+    dirty: &mut DirtyEngine,
+    input_ids: &mut BTreeMap<Box<str>, DirtyKey>,
+    host_state_ids: &mut HashMap<(HostOpId, u64), DirtyKey>,
+    opaque_host_ids: &mut HashMap<HostOpId, DirtyKey>,
+    key: ResourceKeyRef<'_>,
+) -> ResourceKey {
+    match key {
+        ResourceKeyRef::Input(name) => {
+            let id = intern_input_key_id(dirty, input_ids, name);
+            dirty.mark_dirty(id);
+            ResourceKey::input(name)
+        }
+        ResourceKeyRef::HostState { op, key } => {
+            let op = HostOpId::new(op.0);
+            let id = intern_host_state_key_id(dirty, host_state_ids, op, key);
+            dirty.mark_dirty(id);
+            ResourceKey::host_state(op, key)
+        }
+        ResourceKeyRef::OpaqueHost { op } => {
+            let op = HostOpId::new(op.0);
+            let id = intern_opaque_host_key_id(dirty, opaque_host_ids, op);
+            dirty.mark_dirty(id);
+            ResourceKey::opaque_host(op)
+        }
+    }
 }
 
 /// Fast-path access sink used when per-node access log collection is disabled.
@@ -217,9 +246,16 @@ impl AccessSink for DepsOnlyAccessSink<'_> {
     }
 
     #[inline]
-    fn write(&mut self, _key: ResourceKeyRef<'_>) {
+    fn write(&mut self, key: ResourceKeyRef<'_>) {
         // Strict-deps mode requires host scopes to emit at least one access event.
         self.counter.set(self.counter.get().saturating_add(1));
+        let _ = mark_tape_key_dirty(
+            self.dirty,
+            self.input_ids,
+            self.host_state_ids,
+            self.opaque_host_ids,
+            key,
+        );
     }
 }
 
