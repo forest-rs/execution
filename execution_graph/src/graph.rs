@@ -1615,6 +1615,143 @@ mod tests {
     }
 
     #[test]
+    fn host_write_invalidates_prior_readers_of_same_key() {
+        #[derive(Clone)]
+        struct KvHost {
+            kv: Rc<RefCell<BTreeMap<u64, i64>>>,
+            get_sig: SigHash,
+            set_sig: SigHash,
+        }
+
+        impl Host for KvHost {
+            fn call(
+                &mut self,
+                symbol: &str,
+                sig_hash: SigHash,
+                args: &[ValueRef<'_>],
+                rets: &mut [Value],
+                mut ctx: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                match symbol {
+                    "kv.get" => {
+                        if sig_hash != self.get_sig {
+                            return Err(HostError::SignatureMismatch);
+                        }
+                        let [ValueRef::U64(key)] = args else {
+                            return Err(HostError::Failed);
+                        };
+                        ctx.record_read(ResourceKeyRef::HostState {
+                            op: self.get_sig,
+                            key: *key,
+                        });
+                        let v = *self.kv.borrow().get(key).unwrap_or(&0);
+                        rets[0] = Value::I64(v);
+                        Ok(0)
+                    }
+                    "kv.set" => {
+                        if sig_hash != self.set_sig {
+                            return Err(HostError::SignatureMismatch);
+                        }
+                        let [ValueRef::U64(key), ValueRef::I64(value)] = args else {
+                            return Err(HostError::Failed);
+                        };
+                        self.kv.borrow_mut().insert(*key, *value);
+                        // Use the reader's key namespace so this write invalidates prior reads.
+                        ctx.record_write(ResourceKeyRef::HostState {
+                            op: self.get_sig,
+                            key: *key,
+                        });
+                        rets[0] = Value::Unit;
+                        Ok(0)
+                    }
+                    _ => Err(HostError::UnknownSymbol),
+                }
+            }
+        }
+
+        let get_sig = HostSig {
+            args: vec![ValueType::U64],
+            rets: vec![ValueType::I64],
+        };
+        let set_sig = HostSig {
+            args: vec![ValueType::U64, ValueType::I64],
+            rets: vec![ValueType::Unit],
+        };
+        let get_hash = sig_hash(&get_sig);
+        let set_hash = sig_hash(&set_sig);
+
+        let mut get_builder = ProgramBuilder::new();
+        let get_host = get_builder.host_sig_for("kv.get", get_sig);
+        let mut get_asm = Asm::new();
+        get_asm.const_u64(1, 1);
+        get_asm.host_call(0, get_host, 0, &[1], &[2]);
+        get_asm.ret(0, &[2]);
+        let get_entry = get_builder
+            .push_function_checked(
+                get_asm,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        get_builder
+            .set_function_output_name(get_entry, 0, "value")
+            .unwrap();
+        let get_prog = Arc::new(get_builder.build_verified().unwrap());
+
+        let mut set_builder = ProgramBuilder::new();
+        let set_host = set_builder.host_sig_for("kv.set", set_sig);
+        let mut set_asm = Asm::new();
+        set_asm.const_u64(1, 1);
+        set_asm.const_i64(2, 8);
+        set_asm.host_call(0, set_host, 0, &[1, 2], &[3]);
+        set_asm.ret(0, &[3]);
+        let set_entry = set_builder
+            .push_function_checked(
+                set_asm,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::Unit],
+                },
+            )
+            .unwrap();
+        set_builder
+            .set_function_output_name(set_entry, 0, "done")
+            .unwrap();
+        let set_prog = Arc::new(set_builder.build_verified().unwrap());
+
+        let kv = Rc::new(RefCell::new(BTreeMap::new()));
+        kv.borrow_mut().insert(1, 7);
+        let host = KvHost {
+            kv,
+            get_sig: get_hash,
+            set_sig: set_hash,
+        };
+
+        let mut g = ExecutionGraph::new(host, Limits::default());
+        let reader = g.add_node(get_prog, get_entry, vec![]);
+
+        g.run_all().unwrap();
+        assert_eq!(
+            g.node_outputs(reader).unwrap().get("value"),
+            Some(&Value::I64(7))
+        );
+        assert_eq!(g.node_run_count(reader), Some(1));
+
+        let writer = g.add_node(set_prog, set_entry, vec![]);
+        g.run_node(writer).unwrap();
+        assert_eq!(g.node_run_count(reader), Some(1));
+
+        g.run_all().unwrap();
+        assert_eq!(
+            g.node_outputs(reader).unwrap().get("value"),
+            Some(&Value::I64(8))
+        );
+        assert_eq!(g.node_run_count(reader), Some(2));
+    }
+
+    #[test]
     fn host_read_order_changes_do_not_change_last_read_ids() {
         #[derive(Clone)]
         struct FlippingReadHost {

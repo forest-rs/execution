@@ -134,8 +134,10 @@ use crate::value::Value;
 ///                 let [ValueRef::U64(key), ValueRef::I64(value)] = args else {
 ///                     return Err(HostError::Failed);
 ///                 };
+///                 // Use the same `(op, key)` namespace as `kv.get` so this write invalidates
+///                 // prior reads of the key.
 ///                 ctx.record_write(ResourceKeyRef::HostState {
-///                     op: sig_hash,
+///                     op: self.get_sig,
 ///                     key: *key,
 ///                 });
 ///                 self.kv.insert(*key, *value);
@@ -364,10 +366,11 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
 ///   The string is an embedder-chosen stable name.
 ///
 /// - [`ResourceKeyRef::HostState`] is the main “precise” form for host-managed state.
-///   It is explicitly namespaced by the host operation’s [`SigHash`], so different host ops can
-///   reuse the same numeric `key` without colliding. The `key: u64` should identify *which*
-///   piece of state was consulted/mutated for that operation (often a stable hash of a structured
-///   key, or an intern id managed by the embedder).
+///   It is explicitly namespaced by a stable [`SigHash`] chosen by the host, so unrelated state
+///   domains can reuse the same numeric `key` without colliding. The `key: u64` should identify
+///   *which* piece of state was consulted/mutated for that namespace (often a stable hash of a
+///   structured key, or an intern id managed by the embedder). Writes that should invalidate
+///   previous reads must use the same `(op, key)` pair those reads recorded.
 ///
 /// - [`ResourceKeyRef::OpaqueHost`] is a conservative escape hatch for operations that depend on
 ///   (or mutate) host state but cannot (or choose not to) produce a more precise key.
