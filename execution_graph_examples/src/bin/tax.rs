@@ -172,9 +172,9 @@ fn main() -> Result<(), GraphError> {
     let (t_prog, t_entry) = program_tax_amount();
     let (sum_prog, sum_entry) = program_total();
 
-    let n_price = g.add_node(p_prog, p_entry, vec!["qty".into(), "unit_price".into()]);
-    let n_tax = g.add_node(t_prog, t_entry, vec!["subtotal".into()]);
-    let n_total = g.add_node(sum_prog, sum_entry, vec!["subtotal".into(), "tax".into()]);
+    let n_price = g.add_node(p_prog, p_entry, vec!["qty".into(), "unit_price".into()])?;
+    let n_tax = g.add_node(t_prog, t_entry, vec!["subtotal".into()])?;
+    let n_total = g.add_node(sum_prog, sum_entry, vec!["subtotal".into(), "tax".into()])?;
 
     let node_labels: BTreeMap<u64, &'static str> = BTreeMap::from([
         (n_price.as_u64(), label_for(n_price)),
@@ -182,12 +182,12 @@ fn main() -> Result<(), GraphError> {
         (n_total.as_u64(), label_for(n_total)),
     ]);
 
-    g.set_input_value(n_price, "qty", Value::I64(2));
-    g.set_input_value(n_price, "unit_price", Value::I64(120));
+    g.set_input_value(n_price, "qty", Value::I64(2))?;
+    g.set_input_value(n_price, "unit_price", Value::I64(120))?;
 
-    g.connect(n_price, "subtotal", n_tax, "subtotal");
-    g.connect(n_price, "subtotal", n_total, "subtotal");
-    g.connect(n_tax, "tax", n_total, "tax");
+    g.connect(n_price, "subtotal", n_tax, "subtotal")?;
+    g.connect(n_price, "subtotal", n_total, "subtotal")?;
+    g.connect(n_tax, "tax", n_total, "tax")?;
 
     if emit_dot {
         g.run_all()?;
@@ -205,7 +205,7 @@ fn main() -> Result<(), GraphError> {
     // Change 1: the order quantity changes.
     println!();
     println!("🟦 change: qty");
-    g.set_input_value(n_price, "qty", Value::I64(3));
+    g.set_input_value(n_price, "qty", Value::I64(3))?;
     g.invalidate_input("qty");
 
     let report = g.run_all_with_report(ReportDetailMask::FULL)?;

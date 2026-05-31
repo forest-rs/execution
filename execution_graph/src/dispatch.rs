@@ -177,8 +177,10 @@ mod tests {
         let (const_prog, const_entry) = make_const_program("value", 7);
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n_err = g.add_node(needs_input_prog, needs_input_entry, vec!["in".into()]);
-        let n_ok = g.add_node(const_prog, const_entry, vec![]);
+        let n_err = g
+            .add_node(needs_input_prog, needs_input_entry, vec!["in".into()])
+            .unwrap();
+        let n_ok = g.add_node(const_prog, const_entry, vec![]).unwrap();
         let plan = RunPlan::all(vec![n_err, n_ok]);
         let mut dispatcher = InlineDispatcher;
 
@@ -199,8 +201,8 @@ mod tests {
         let (prog, entry) = make_const_program("value", 11);
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n0 = g.add_node(prog.clone(), entry, vec![]);
-        let n1 = g.add_node(prog, entry, vec![]);
+        let n0 = g.add_node(prog.clone(), entry, vec![]).unwrap();
+        let n1 = g.add_node(prog, entry, vec![]).unwrap();
 
         let r0 = NodeRunDetail {
             node: n0,
@@ -233,7 +235,7 @@ mod tests {
     fn inline_dispatcher_with_report_handles_short_trace_vectors() {
         let (prog, entry) = make_const_program("value", 5);
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let node = g.add_node(prog, entry, vec![]);
+        let node = g.add_node(prog, entry, vec![]).unwrap();
 
         // Empty trace payload: execution should still succeed and simply produce no traced rows.
         let trace = RunPlanTrace::from_node_reports(vec![]);
