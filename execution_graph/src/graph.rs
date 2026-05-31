@@ -19,7 +19,7 @@ use execution_tape::host::SigHash;
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use execution_tape::vm::{ExecutionContext, Limits, TrapInfo, Vm};
 use hashbrown::HashMap;
 
 use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
@@ -40,6 +40,34 @@ use invalidation::trace::OneParentRecorder;
 pub enum GraphError {
     /// A node id was invalid.
     BadNodeId,
+    /// A function id was not present in the verified program supplied for a node.
+    BadEntryFunc {
+        /// Invalid entry function id.
+        func: FuncId,
+    },
+    /// A node's declared graph inputs did not match its tape function arity.
+    BadInputArity {
+        /// Entry function id for the node being added.
+        func: FuncId,
+        /// Expected graph input count from the tape function signature.
+        expected: usize,
+        /// Actual input count supplied by the caller.
+        actual: usize,
+    },
+    /// A named node input does not exist.
+    UnknownInput {
+        /// Node whose input was requested.
+        node: NodeId,
+        /// Input name.
+        name: Box<str>,
+    },
+    /// A named node output does not exist.
+    UnknownOutput {
+        /// Node whose output was requested.
+        node: NodeId,
+        /// Output name.
+        name: Box<str>,
+    },
     /// A required input binding was missing.
     MissingInput {
         /// Node that is missing the binding.
@@ -69,13 +97,44 @@ pub enum GraphError {
         sig_hash: SigHash,
     },
     /// VM execution trapped.
-    Trap,
+    Trap {
+        /// Node being executed when the VM trapped.
+        node: NodeId,
+        /// Underlying VM trap information.
+        trap: TrapInfo,
+    },
 }
 
 impl fmt::Display for GraphError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadNodeId => write!(f, "bad node id"),
+            Self::BadEntryFunc { func } => {
+                write!(
+                    f,
+                    "bad entry function: f{} is not in the node program",
+                    func.0
+                )
+            }
+            Self::BadInputArity {
+                func,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "bad node input arity: entry=f{} expected {expected} inputs, got {actual}",
+                func.0
+            ),
+            Self::UnknownInput { node, name } => write!(
+                f,
+                "unknown node input: node={} input={name}; check the input_names passed to add_node(...)",
+                node.as_u64()
+            ),
+            Self::UnknownOutput { node, name } => write!(
+                f,
+                "unknown node output: node={} output={name}; check the producer's function output names",
+                node.as_u64()
+            ),
             Self::MissingInput { node, name } => {
                 write!(
                     f,
@@ -107,7 +166,13 @@ impl fmt::Display for GraphError {
                 node.as_u64(),
                 sig_hash.0
             ),
-            Self::Trap => write!(f, "vm trapped during graph node execution"),
+            Self::Trap { node, trap } => {
+                write!(
+                    f,
+                    "vm trapped during graph node execution: node={} {trap}",
+                    node.as_u64()
+                )
+            }
         }
     }
 }
@@ -300,20 +365,33 @@ impl<H: Host> ExecutionGraph<H> {
     /// Adds a node and returns its [`NodeId`].
     ///
     /// `input_names` defines the mapping from per-node binding names to positional function args.
+    ///
+    /// Returns [`GraphError::BadEntryFunc`] if `entry` is not present in `program`, or
+    /// [`GraphError::BadInputArity`] if `input_names` does not match the entry function's
+    /// argument count.
     pub fn add_node(
         &mut self,
         program: Arc<VerifiedProgram>,
         entry: FuncId,
         input_names: Vec<Box<str>>,
-    ) -> NodeId {
+    ) -> Result<NodeId, GraphError> {
         let node = NodeId::new(u64::try_from(self.nodes.len()).unwrap_or(u64::MAX));
 
         let program_ref = program.program();
-        let ret_count = program_ref
+        let func = program_ref
             .functions
             .get(entry.0 as usize)
-            .map(|f| f.ret_count as usize)
-            .unwrap_or(0);
+            .ok_or(GraphError::BadEntryFunc { func: entry })?;
+        let expected_inputs = func.arg_count as usize;
+        let actual_inputs = input_names.len();
+        if actual_inputs != expected_inputs {
+            return Err(GraphError::BadInputArity {
+                func: entry,
+                expected: expected_inputs,
+                actual: actual_inputs,
+            });
+        }
+        let ret_count = func.ret_count as usize;
 
         let mut output_names: Vec<Box<str>> = Vec::with_capacity(ret_count);
         for i in 0..ret_count {
@@ -360,7 +438,7 @@ impl<H: Host> ExecutionGraph<H> {
         };
 
         self.nodes.push(n);
-        node
+        Ok(node)
     }
 
     /// Binds a named input to a concrete value.
@@ -371,23 +449,30 @@ impl<H: Host> ExecutionGraph<H> {
     ///
     /// If a node declares duplicate input names (for example `["x", "x"]`), those slots are
     /// treated as aliases: setting `"x"` binds all matching slots.
-    pub fn set_input_value(&mut self, node: NodeId, name: impl Into<Box<str>>, value: Value) {
-        let Ok(index) = usize::try_from(node.as_u64()) else {
-            return;
-        };
+    ///
+    /// Returns [`GraphError::BadNodeId`] for an unknown node or [`GraphError::UnknownInput`] for
+    /// an input name that was not declared when the node was added.
+    pub fn set_input_value(
+        &mut self,
+        node: NodeId,
+        name: impl Into<Box<str>>,
+        value: Value,
+    ) -> Result<(), GraphError> {
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
         let name: Box<str> = name.into();
         // Validate node and slot exist before interning to avoid memory churn on bad inputs.
-        if self
+        let Some(slots) = self
             .nodes
             .get(index)
             .and_then(|n| n.input_slots.get(name.as_ref()))
-            .is_none()
-        {
-            return;
-        }
+            .cloned()
+        else {
+            let _ = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+            return Err(GraphError::UnknownInput { node, name });
+        };
         let read_id = self.intern_input_id(name.as_ref());
         let n = &mut self.nodes[index];
-        for &slot in n.input_slots.get(name.as_ref()).unwrap() {
+        for slot in slots {
             if let Some(binding) = n.inputs.get_mut(slot) {
                 *binding = Some(Binding::External {
                     value: value.clone(),
@@ -395,34 +480,54 @@ impl<H: Host> ExecutionGraph<H> {
                 });
             }
         }
+        Ok(())
     }
 
     /// Connects `from.output` into `to.input`.
     ///
     /// If `to` declares duplicate input names, all slots matching `to.input` are connected.
+    ///
+    /// Returns [`GraphError::BadNodeId`] for an unknown source or target node,
+    /// [`GraphError::UnknownOutput`] for an output name not produced by the source node, or
+    /// [`GraphError::UnknownInput`] for an input name not declared by the target node.
     pub fn connect(
         &mut self,
         from: NodeId,
         output: impl Into<Box<str>>,
         to: NodeId,
         input: impl Into<Box<str>>,
-    ) {
+    ) -> Result<(), GraphError> {
         let output: Box<str> = output.into();
         let input: Box<str> = input.into();
-        let Ok(index) = usize::try_from(to.as_u64()) else {
-            return;
-        };
-        // Validate target node exists before interning to avoid memory churn on bad inputs.
-        if self.nodes.get(index).is_none() {
-            return;
+        let from_index = usize::try_from(from.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let from_node = self.nodes.get(from_index).ok_or(GraphError::BadNodeId)?;
+        if !from_node
+            .output_names
+            .iter()
+            .any(|candidate| candidate.as_ref() == output.as_ref())
+        {
+            return Err(GraphError::UnknownOutput {
+                node: from,
+                name: output,
+            });
         }
+        let to_index = usize::try_from(to.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let slots = self
+            .nodes
+            .get(to_index)
+            .ok_or(GraphError::BadNodeId)?
+            .input_slots
+            .get(input.as_ref())
+            .cloned()
+            .ok_or(GraphError::UnknownInput {
+                node: to,
+                name: input,
+            })?;
         let read_id = self
             .dirty
             .intern(ResourceKey::node_output(from, output.clone()));
-        if let Some(n) = self.nodes.get_mut(index)
-            && let Some(slots) = n.input_slots.get(input.as_ref())
-        {
-            for &slot in slots {
+        if let Some(n) = self.nodes.get_mut(to_index) {
+            for slot in slots {
                 if let Some(binding) = n.inputs.get_mut(slot) {
                     *binding = Some(Binding::FromNode {
                         node: from,
@@ -438,11 +543,8 @@ impl<H: Host> ExecutionGraph<H> {
         //
         // This ensures initial runs are topologically ordered even before dependencies have been
         // observed dynamically.
-        let Ok(to_index) = usize::try_from(to.as_u64()) else {
-            return;
-        };
         let Some(to_node) = self.nodes.get(to_index) else {
-            return;
+            return Err(GraphError::BadNodeId);
         };
         let output_count = to_node.output_ids.len();
         let src = read_id;
@@ -451,6 +553,7 @@ impl<H: Host> ExecutionGraph<H> {
             self.dirty.add_dependency(dst, src);
             self.dirty.mark_dirty(dst);
         }
+        Ok(())
     }
 
     /// Marks an input key dirty (propagating to dependents after dependencies are established).
@@ -841,6 +944,7 @@ impl<H: Host> ExecutionGraph<H> {
     }
 
     fn execute_kind(
+        node: NodeId,
         kind: &mut NodeKind,
         vm: &mut Vm<H>,
         ctx: &mut ExecutionContext,
@@ -860,7 +964,7 @@ impl<H: Host> ExecutionGraph<H> {
                     trace,
                     Some(tape_access),
                 )
-                .map_err(|_| GraphError::Trap),
+                .map_err(|trap| GraphError::Trap { node, trap }),
         }
     }
 
@@ -952,6 +1056,7 @@ impl<H: Host> ExecutionGraph<H> {
                 ))
             };
             Self::execute_kind(
+                node,
                 &mut self.nodes[node_index].kind,
                 &mut self.vm,
                 &mut self.ctx,
@@ -1047,6 +1152,7 @@ mod tests {
     use execution_tape::host::{HostContext, HostError, SigHash, ValueRef};
     use execution_tape::host::{HostSig, ResourceKeyRef, sig_hash};
     use execution_tape::program::ValueType;
+    use execution_tape::vm::Trap;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::rc::Rc;
@@ -1069,6 +1175,38 @@ mod tests {
 
     #[test]
     fn graph_error_display_includes_actionable_context() {
+        let bad_entry = GraphError::BadEntryFunc { func: FuncId(99) }.to_string();
+        assert!(bad_entry.contains("f99"));
+        assert!(bad_entry.contains("not in the node program"));
+
+        let bad_arity = GraphError::BadInputArity {
+            func: FuncId(1),
+            expected: 2,
+            actual: 1,
+        }
+        .to_string();
+        assert!(bad_arity.contains("entry=f1"));
+        assert!(bad_arity.contains("expected 2 inputs"));
+        assert!(bad_arity.contains("got 1"));
+
+        let unknown_input = GraphError::UnknownInput {
+            node: NodeId::new(5),
+            name: "qty".into(),
+        }
+        .to_string();
+        assert!(unknown_input.contains("node=5"));
+        assert!(unknown_input.contains("input=qty"));
+        assert!(unknown_input.contains("add_node"));
+
+        let unknown_output = GraphError::UnknownOutput {
+            node: NodeId::new(6),
+            name: "subtotal".into(),
+        }
+        .to_string();
+        assert!(unknown_output.contains("node=6"));
+        assert!(unknown_output.contains("output=subtotal"));
+        assert!(unknown_output.contains("function output names"));
+
         let missing_input = GraphError::MissingInput {
             node: NodeId::new(7),
             name: "subtotal".into(),
@@ -1121,7 +1259,7 @@ mod tests {
         let a_prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let na = g.add_node(a_prog, a_node, vec![]);
+        let na = g.add_node(a_prog, a_node, vec![]).unwrap();
         g.run_all().unwrap();
         let first = g.node_run_count(na).unwrap();
         g.run_all().unwrap();
@@ -1154,24 +1292,25 @@ mod tests {
         let (b_prog, b_entry) = make_identity_program("value");
 
         // Target chain: A -> B
-        let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
-        g.set_input_value(na, "a", Value::I64(1));
-        g.connect(na, "value", nb, "b");
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]).unwrap();
+        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.connect(na, "value", nb, "b").unwrap();
 
         // Many unrelated chains: X_i -> Y_i
         let mut unrelated_leaves: Vec<NodeId> = Vec::new();
         for i in 0..32_u64 {
             let (x_prog, x_entry) = make_identity_program("value");
             let (y_prog, y_entry) = make_identity_program("value");
-            let nx = g.add_node(x_prog, x_entry, vec!["x".into()]);
-            let ny = g.add_node(y_prog, y_entry, vec!["y".into()]);
+            let nx = g.add_node(x_prog, x_entry, vec!["x".into()]).unwrap();
+            let ny = g.add_node(y_prog, y_entry, vec!["y".into()]).unwrap();
             g.set_input_value(
                 nx,
                 "x",
                 Value::I64(10 + i64::try_from(i).unwrap_or(i64::MAX)),
-            );
-            g.connect(nx, "value", ny, "y");
+            )
+            .unwrap();
+            g.connect(nx, "value", ny, "y").unwrap();
             unrelated_leaves.push(ny);
         }
 
@@ -1182,7 +1321,7 @@ mod tests {
         }
 
         // Dirty target chain and all unrelated chains.
-        g.set_input_value(na, "a", Value::I64(2));
+        g.set_input_value(na, "a", Value::I64(2)).unwrap();
         g.invalidate_input("a");
 
         // This invalidates the shared input key for all unrelated chains. The key property we
@@ -1230,14 +1369,14 @@ mod tests {
         let (a_prog, a_entry) = make_identity_program("value");
         let (b_prog, b_entry) = make_identity_program("value");
 
-        let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
-        g.set_input_value(na, "a", Value::I64(1));
-        g.connect(na, "value", nb, "b");
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]).unwrap();
+        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.connect(na, "value", nb, "b").unwrap();
 
         g.run_all().unwrap();
 
-        g.set_input_value(na, "a", Value::I64(2));
+        g.set_input_value(na, "a", Value::I64(2)).unwrap();
         g.invalidate_input("a");
 
         let r = g.run_node_with_report(nb, ReportDetailMask::FULL).unwrap();
@@ -1303,10 +1442,10 @@ mod tests {
         let (a_prog, a_entry) = make_identity_program("value");
         let (b_prog, b_entry) = make_identity_program("value");
 
-        let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
-        g.set_input_value(na, "a", Value::I64(1));
-        g.connect(na, "value", nb, "b");
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]).unwrap();
+        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.connect(na, "value", nb, "b").unwrap();
 
         let first = g.run_all().unwrap();
         assert_eq!(first.executed_nodes, 2);
@@ -1338,13 +1477,13 @@ mod tests {
         let (a_prog, a_entry) = make_identity_program("value");
         let (b_prog, b_entry) = make_identity_program("value");
 
-        let na = g.add_node(a_prog, a_entry, vec!["a".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]);
-        g.set_input_value(na, "a", Value::I64(1));
-        g.connect(na, "value", nb, "b");
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]).unwrap();
+        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.connect(na, "value", nb, "b").unwrap();
 
         g.run_all().unwrap();
-        g.set_input_value(na, "a", Value::I64(2));
+        g.set_input_value(na, "a", Value::I64(2)).unwrap();
         g.invalidate_input("a");
 
         let minimal = g.run_node_with_report(nb, ReportDetailMask::NONE).unwrap();
@@ -1354,7 +1493,7 @@ mod tests {
             assert!(e.why_path.is_none());
         }
 
-        g.set_input_value(na, "a", Value::I64(3));
+        g.set_input_value(na, "a", Value::I64(3)).unwrap();
         g.invalidate_input("a");
 
         let because_only = g
@@ -1417,7 +1556,7 @@ mod tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoAccess, Limits::default());
-        let n = g.add_node(prog, f, vec![]);
+        let n = g.add_node(prog, f, vec![]).unwrap();
         g.set_strict_deps(true);
 
         assert_eq!(
@@ -1451,7 +1590,7 @@ mod tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n = g.add_node(prog, f, vec!["in".into()]);
+        let n = g.add_node(prog, f, vec!["in".into()]).unwrap();
 
         assert_eq!(
             g.run_all(),
@@ -1463,7 +1602,115 @@ mod tests {
     }
 
     #[test]
-    fn run_all_errors_on_missing_upstream_output() {
+    fn run_all_preserves_vm_trap_info() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.const_i64(1, 1);
+        a.const_i64(2, 0);
+        a.i64_div(3, 1, 2);
+        a.ret(0, &[3]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n = g.add_node(prog, f, vec![]).unwrap();
+
+        let Err(GraphError::Trap { node, trap }) = g.run_all() else {
+            panic!("divide-by-zero should surface as a graph trap");
+        };
+        assert_eq!(node, n);
+        assert_eq!(trap.func, f);
+        assert_eq!(trap.trap, Trap::DivByZero);
+    }
+
+    #[test]
+    fn graph_builder_errors_on_bad_entry_func() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.ret(0, &[]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        assert_eq!(
+            g.add_node(prog, FuncId(99), vec![]),
+            Err(GraphError::BadEntryFunc { func: FuncId(99) })
+        );
+    }
+
+    #[test]
+    fn graph_builder_errors_on_input_arity_mismatch() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        assert_eq!(
+            g.add_node(prog, f, vec![]),
+            Err(GraphError::BadInputArity {
+                func: f,
+                expected: 1,
+                actual: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn set_input_value_errors_on_unknown_input() {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        let prog = Arc::new(pb.build_verified().unwrap());
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n = g.add_node(prog, f, vec!["qty".into()]).unwrap();
+
+        assert_eq!(
+            g.set_input_value(n, "unit_price", Value::I64(10)),
+            Err(GraphError::UnknownInput {
+                node: n,
+                name: "unit_price".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn connect_errors_on_unknown_names() {
         fn make_const_program(output_name: &str, v: i64) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
@@ -1503,16 +1750,21 @@ mod tests {
         let (b_prog, b_entry) = make_identity_program("value");
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let na = g.add_node(a_prog, a_entry, vec![]);
-        let nb = g.add_node(b_prog, b_entry, vec!["x".into()]);
-
-        // Wire a non-existent output name.
-        g.connect(na, "does_not_exist", nb, "x");
+        let na = g.add_node(a_prog, a_entry, vec![]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["x".into()]).unwrap();
 
         assert_eq!(
-            g.run_all(),
-            Err(GraphError::MissingUpstreamOutput {
+            g.connect(na, "does_not_exist", nb, "x"),
+            Err(GraphError::UnknownOutput {
                 node: na,
+                name: "does_not_exist".into(),
+            })
+        );
+
+        assert_eq!(
+            g.connect(na, "value", nb, "does_not_exist"),
+            Err(GraphError::UnknownInput {
+                node: nb,
                 name: "does_not_exist".into()
             })
         );
@@ -1589,7 +1841,7 @@ mod tests {
         };
 
         let mut g = ExecutionGraph::new(host, Limits::default());
-        let n = g.add_node(prog, f, vec![]);
+        let n = g.add_node(prog, f, vec![]).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
@@ -1826,7 +2078,7 @@ mod tests {
             },
             Limits::default(),
         );
-        let n = g.add_node(prog, f, vec![]);
+        let n = g.add_node(prog, f, vec![]).unwrap();
 
         g.run_all().unwrap();
         let first_ids = g.nodes[usize::try_from(n.as_u64()).unwrap()]
@@ -1910,7 +2162,7 @@ mod tests {
         };
 
         let mut g = ExecutionGraph::new(host, Limits::default());
-        let n = g.add_node(prog, f, vec![]);
+        let n = g.add_node(prog, f, vec![]).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
@@ -1955,13 +2207,13 @@ mod tests {
         let (c_prog, c_entry) = make_identity_program("value");
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let na = g.add_node(a_prog, a_entry, vec!["in".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["x".into()]);
-        let nc = g.add_node(c_prog, c_entry, vec!["y".into()]);
+        let na = g.add_node(a_prog, a_entry, vec!["in".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["x".into()]).unwrap();
+        let nc = g.add_node(c_prog, c_entry, vec!["y".into()]).unwrap();
 
-        g.set_input_value(na, "in", Value::I64(7));
-        g.connect(na, "value", nb, "x");
-        g.connect(nb, "value", nc, "y");
+        g.set_input_value(na, "in", Value::I64(7)).unwrap();
+        g.connect(na, "value", nb, "x").unwrap();
+        g.connect(nb, "value", nc, "y").unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
@@ -1979,7 +2231,7 @@ mod tests {
         assert_eq!(g.node_run_count(nc), Some(1));
 
         // Change the external input and invalidate its key.
-        g.set_input_value(na, "in", Value::I64(8));
+        g.set_input_value(na, "in", Value::I64(8)).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
 
@@ -2033,19 +2285,25 @@ mod tests {
         let (b_prog, b_entry) = make_const_program("value", 9);
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let na = g.add_node(a_prog, a_entry, vec!["in".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec![]);
+        let na = g.add_node(a_prog, a_entry, vec!["in".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec![]).unwrap();
 
-        // This creates conservative dirty edges from A -> B, but B has zero observed reads.
-        g.connect(na, "value", nb, "not_an_input");
-        g.set_input_value(na, "in", Value::I64(1));
+        // Seed the same conservative dirty edge that `connect` creates before dynamic access
+        // refinement, but keep B input-free so its first run observes zero reads.
+        let na_index = usize::try_from(na.as_u64()).unwrap();
+        let nb_index = usize::try_from(nb.as_u64()).unwrap();
+        let src = g.nodes[na_index].output_ids[0];
+        let dst = g.nodes[nb_index].output_ids[0];
+        g.dirty.add_dependency(dst, src);
+        g.dirty.mark_dirty(dst);
+        g.set_input_value(na, "in", Value::I64(1)).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(g.node_run_count(na), Some(1));
         assert_eq!(g.node_run_count(nb), Some(1));
 
         // If conservative deps were not replaced on first run, this would spuriously rerun B.
-        g.set_input_value(na, "in", Value::I64(2));
+        g.set_input_value(na, "in", Value::I64(2)).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
 
@@ -2079,8 +2337,8 @@ mod tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n = g.add_node(prog, f, vec!["x".into(), "x".into()]);
-        g.set_input_value(n, "x", Value::I64(7));
+        let n = g.add_node(prog, f, vec!["x".into(), "x".into()]).unwrap();
+        g.set_input_value(n, "x", Value::I64(7)).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
@@ -2112,7 +2370,7 @@ mod tests {
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         g.set_collect_access_log(true);
-        let n = g.add_node(prog, f, vec![]);
+        let n = g.add_node(prog, f, vec![]).unwrap();
         g.run_all().unwrap();
 
         let log = g.node_last_access(n);
@@ -2143,8 +2401,8 @@ mod tests {
 
         let (prog, entry) = make_identity_program("value");
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n = g.add_node(prog, entry, vec!["in".into()]);
-        g.set_input_value(n, "in", Value::I64(1));
+        let n = g.add_node(prog, entry, vec!["in".into()]).unwrap();
+        g.set_input_value(n, "in", Value::I64(1)).unwrap();
 
         // Run with collection enabled — should produce a log.
         g.set_collect_access_log(true);
@@ -2153,7 +2411,7 @@ mod tests {
 
         // Disable collection, rerun — stale log must be cleared.
         g.set_collect_access_log(false);
-        g.set_input_value(n, "in", Value::I64(2));
+        g.set_input_value(n, "in", Value::I64(2)).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
         assert!(
@@ -2183,10 +2441,10 @@ mod tests {
 
         let (prog, entry) = make_identity_program("value");
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n = g.add_node(prog, entry, vec!["in".into()]);
+        let n = g.add_node(prog, entry, vec!["in".into()]).unwrap();
 
         // First run populates the output map.
-        g.set_input_value(n, "in", Value::I64(10));
+        g.set_input_value(n, "in", Value::I64(10)).unwrap();
         g.run_all().unwrap();
         assert_eq!(
             g.node_outputs(n).unwrap().get("value"),
@@ -2194,7 +2452,7 @@ mod tests {
         );
 
         // Second run uses in-place update path.
-        g.set_input_value(n, "in", Value::I64(20));
+        g.set_input_value(n, "in", Value::I64(20)).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
         assert_eq!(
@@ -2203,7 +2461,7 @@ mod tests {
         );
 
         // Third run confirms stability.
-        g.set_input_value(n, "in", Value::I64(30));
+        g.set_input_value(n, "in", Value::I64(30)).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
         assert_eq!(

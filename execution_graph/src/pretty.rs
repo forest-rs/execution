@@ -73,8 +73,7 @@ impl<H: Host> ExecutionGraph<H> {
     /// Renders the graph as Graphviz DOT.
     ///
     /// Nodes are rendered as record-shaped boxes with one input and output port per declared
-    /// argument/return. If a connection references a non-existent upstream output name, the edge
-    /// is still emitted as a dashed fallback edge so broken wiring remains visible.
+    /// argument/return.
     #[must_use]
     pub fn to_dot(&self) -> String {
         let mut dot = String::from(
@@ -206,10 +205,12 @@ mod tests {
         let (a_prog, a_entry) = make_identity_program("subtotal");
         let (b_prog, b_entry) = make_identity_program("total");
 
-        let na = g.add_node(a_prog, a_entry, vec!["qty".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["subtotal".into()]);
-        g.set_input_value(na, "qty", Value::I64(2));
-        g.connect(na, "subtotal", nb, "subtotal");
+        let na = g.add_node(a_prog, a_entry, vec!["qty".into()]).unwrap();
+        let nb = g
+            .add_node(b_prog, b_entry, vec!["subtotal".into()])
+            .unwrap();
+        g.set_input_value(na, "qty", Value::I64(2)).unwrap();
+        g.connect(na, "subtotal", nb, "subtotal").unwrap();
 
         let dot = g.to_dot();
 
@@ -218,24 +219,6 @@ mod tests {
         assert!(dot.contains("<in0> subtotal \\<- 0.subtotal"));
         assert!(dot.contains("<out0> subtotal"));
         assert!(dot.contains("n0:out0 -> n1:in0;"));
-    }
-
-    #[test]
-    fn to_dot_marks_unknown_upstream_outputs_with_dashed_edges() {
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let (a_prog, a_entry) = make_identity_program("subtotal");
-        let (b_prog, b_entry) = make_identity_program("total");
-
-        let na = g.add_node(a_prog, a_entry, vec!["qty".into()]);
-        let nb = g.add_node(b_prog, b_entry, vec!["subtotal".into()]);
-        g.set_input_value(na, "qty", Value::I64(2));
-        g.connect(na, "missing", nb, "subtotal");
-
-        let dot = g.to_dot();
-
-        assert!(
-            dot.contains("n0 -> n1:in0 [label=\"missing\", style=dashed, color=\"firebrick\"];")
-        );
     }
 
     #[test]
@@ -258,8 +241,8 @@ mod tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n = g.add_node(prog, f, vec!["x".into()]);
-        g.set_input_value(n, "x", Value::I64(1));
+        let n = g.add_node(prog, f, vec!["x".into()]).unwrap();
+        g.set_input_value(n, "x", Value::I64(1)).unwrap();
 
         let dot = g.to_dot();
         assert!(dot.contains("node#0 (named_program)"));

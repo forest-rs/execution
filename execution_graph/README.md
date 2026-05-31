@@ -10,7 +10,7 @@ nodes and re-executes only the nodes that are affected by changes.
 - **Nodes** are `(VerifiedProgram, entry FuncId)` pairs.
 - **Edges** represent data dependencies; they are recorded dynamically from each node run:
   - reading an external input records `ResourceKey::Input(name)`
-  - reading another node's output records `ResourceKey::TapeOutput { node, output }`
+  - reading another node's output records `ResourceKey::NodeOutput { node, output }`
   - host ops can record additional dependencies via `execution_tape::host::AccessSink`
 - **Invalidation** is done by name: calling `invalidate_input("foo")` marks the input key
   `ResourceKey::Input("foo")` dirty, which may trigger re-execution of transitive dependents.
@@ -23,6 +23,10 @@ Host state invalidation uses the same key space: if a host op records a
 `ResourceKeyRef::HostState { op, key }` read during execution, you can invalidate that state later
 via `ExecutionGraph::invalidate_tape_key(...)` (or by constructing the corresponding owned
 `execution_graph::ResourceKey` and calling `ExecutionGraph::invalidate(...)`).
+
+Graph construction is checked at the public API boundary: `add_node`, `set_input_value`, and
+`connect` return `GraphError` values for unknown entry functions, input arity mismatches, unknown
+input names, and unknown output names.
 
 ## Execution behavior
 
@@ -46,5 +50,5 @@ cargo run -p execution_graph_examples --bin tax
 
 ## Current limitations
 
-- Error reporting is intentionally minimal (`GraphError::Trap` is opaque); richer error surfaces
-  are expected to be layered on in follow-up PRs.
+- `execution_graph` intentionally stays close to the VM: traps expose `execution_tape::vm::TrapInfo`
+  rather than source-language diagnostics.

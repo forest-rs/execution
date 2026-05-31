@@ -72,13 +72,13 @@ fn build_chain_graph(len: usize) -> (ExecutionGraph<NopHost>, execution_graph::N
     let (prog, entry) = build_identity_program("value");
     let mut g = ExecutionGraph::new(NopHost, Limits::default());
 
-    let n0 = g.add_node(prog.clone(), entry, vec!["in".into()]);
-    g.set_input_value(n0, "in", Value::I64(1));
+    let n0 = g.add_node(prog.clone(), entry, vec!["in".into()]).unwrap();
+    g.set_input_value(n0, "in", Value::I64(1)).unwrap();
 
     let mut prev = n0;
     for _ in 1..len {
-        let n = g.add_node(prog.clone(), entry, vec!["x".into()]);
-        g.connect(prev, "value", n, "x");
+        let n = g.add_node(prog.clone(), entry, vec!["x".into()]).unwrap();
+        g.connect(prev, "value", n, "x").unwrap();
         prev = n;
     }
 
@@ -115,11 +115,12 @@ fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
     let input_names: Vec<Box<str>> = (0..input_count)
         .map(|i| format!("in{i}").into_boxed_str())
         .collect();
-    let node = g.add_node(prog, entry, input_names.clone());
+    let node = g.add_node(prog, entry, input_names.clone()).unwrap();
 
     for (i, name) in input_names.iter().enumerate() {
         let value = i64::try_from(i).unwrap_or(i64::MAX);
-        g.set_input_value(node, name.as_ref(), Value::I64(value));
+        g.set_input_value(node, name.as_ref(), Value::I64(value))
+            .unwrap();
     }
 
     g.run_all().unwrap();
@@ -140,15 +141,16 @@ fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
 fn bench_single_node_rerun(c: &mut Criterion) {
     let (prog, entry) = build_identity_program("value");
     let mut g = ExecutionGraph::new(NopHost, Limits::default());
-    let n0 = g.add_node(prog, entry, vec!["in".into()]);
-    g.set_input_value(n0, "in", Value::I64(0));
+    let n0 = g.add_node(prog, entry, vec!["in".into()]).unwrap();
+    g.set_input_value(n0, "in", Value::I64(0)).unwrap();
     g.run_all().unwrap();
 
     c.bench_function("single_node_rerun", |b| {
         let mut v = 0_i64;
         b.iter(|| {
             v = v.wrapping_add(1);
-            g.set_input_value(n0, "in", Value::I64(black_box(v)));
+            g.set_input_value(n0, "in", Value::I64(black_box(v)))
+                .unwrap();
             g.invalidate_input("in");
             g.run_all().unwrap();
         });
@@ -173,7 +175,8 @@ fn bench_chain_rerun(c: &mut Criterion) {
             let mut v = 0_i64;
             b.iter(|| {
                 v = v.wrapping_add(1);
-                g.set_input_value(n0, "in", Value::I64(black_box(v)));
+                g.set_input_value(n0, "in", Value::I64(black_box(v)))
+                    .unwrap();
                 g.invalidate_input("in");
                 g.run_all().unwrap();
             });
@@ -316,7 +319,7 @@ fn build_stable_deps_flapping_order_graph(
         flip: Rc::new(RefCell::new(false)),
     };
     let mut g = ExecutionGraph::new(host, Limits::default());
-    g.add_node(prog, entry, vec![]);
+    g.add_node(prog, entry, vec![]).unwrap();
     g.run_all().unwrap();
     (g, op)
 }
@@ -347,12 +350,12 @@ fn build_fanout_graph(fanout: usize) -> (ExecutionGraph<NopHost>, execution_grap
     let (prog, entry) = build_identity_program("value");
     let mut g = ExecutionGraph::new(NopHost, Limits::default());
 
-    let root = g.add_node(prog.clone(), entry, vec!["in".into()]);
-    g.set_input_value(root, "in", Value::I64(1));
+    let root = g.add_node(prog.clone(), entry, vec!["in".into()]).unwrap();
+    g.set_input_value(root, "in", Value::I64(1)).unwrap();
 
     for _ in 0..fanout {
-        let leaf = g.add_node(prog.clone(), entry, vec!["x".into()]);
-        g.connect(root, "value", leaf, "x");
+        let leaf = g.add_node(prog.clone(), entry, vec!["x".into()]).unwrap();
+        g.connect(root, "value", leaf, "x").unwrap();
     }
 
     g.run_all().unwrap();
@@ -379,7 +382,8 @@ fn bench_fanout_rerun(c: &mut Criterion) {
             let mut v = 0_i64;
             b.iter(|| {
                 v = v.wrapping_add(1);
-                g.set_input_value(root, "in", Value::I64(black_box(v)));
+                g.set_input_value(root, "in", Value::I64(black_box(v)))
+                    .unwrap();
                 g.invalidate_input("in");
                 g.run_all().unwrap();
             });
@@ -468,17 +472,22 @@ fn build_disjoint_chains(
     let (id_prog, id_entry) = build_identity_program("value");
 
     for i in 0..chains {
-        let root = g.add_node(param_prog.clone(), param_entry, vec!["key".into()]);
+        let root = g
+            .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+            .unwrap();
         g.set_input_value(
             root,
             "key",
             Value::U64(u64::try_from(i).unwrap_or(u64::MAX)),
-        );
+        )
+        .unwrap();
 
         let mut prev = root;
         for _ in 1..chain_len {
-            let n = g.add_node(id_prog.clone(), id_entry, vec!["x".into()]);
-            g.connect(prev, "value", n, "x");
+            let n = g
+                .add_node(id_prog.clone(), id_entry, vec!["x".into()])
+                .unwrap();
+            g.connect(prev, "value", n, "x").unwrap();
             prev = n;
         }
     }
@@ -567,25 +576,34 @@ fn build_shared_upstream(
     let (add_prog, add_entry) = build_add2_program("value");
     let (id_prog, id_entry) = build_identity_program("value");
 
-    let global = g.add_node(param_prog.clone(), param_entry, vec!["key".into()]);
-    g.set_input_value(global, "key", Value::U64(0));
+    let global = g
+        .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+        .unwrap();
+    g.set_input_value(global, "key", Value::U64(0)).unwrap();
 
     for i in 0..tenants {
-        let per = g.add_node(param_prog.clone(), param_entry, vec!["key".into()]);
+        let per = g
+            .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+            .unwrap();
         g.set_input_value(
             per,
             "key",
             Value::U64(u64::try_from(i + 1).unwrap_or(u64::MAX)),
-        );
+        )
+        .unwrap();
 
-        let base = g.add_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()]);
-        g.connect(global, "value", base, "a");
-        g.connect(per, "value", base, "b");
+        let base = g
+            .add_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()])
+            .unwrap();
+        g.connect(global, "value", base, "a").unwrap();
+        g.connect(per, "value", base, "b").unwrap();
 
         let mut prev = base;
         for _ in 1..chain_len {
-            let n = g.add_node(id_prog.clone(), id_entry, vec!["x".into()]);
-            g.connect(prev, "value", n, "x");
+            let n = g
+                .add_node(id_prog.clone(), id_entry, vec!["x".into()])
+                .unwrap();
+            g.connect(prev, "value", n, "x").unwrap();
             prev = n;
         }
     }
@@ -687,19 +705,24 @@ fn build_layered_dag(
 
     let mut prev: Vec<execution_graph::NodeId> = Vec::with_capacity(width);
     for i in 0..width {
-        let n = g.add_node(param_prog.clone(), param_entry, vec!["key".into()]);
-        g.set_input_value(n, "key", Value::U64(u64::try_from(i).unwrap_or(u64::MAX)));
+        let n = g
+            .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+            .unwrap();
+        g.set_input_value(n, "key", Value::U64(u64::try_from(i).unwrap_or(u64::MAX)))
+            .unwrap();
         prev.push(n);
     }
 
     for _ in 1..layers {
         let mut next: Vec<execution_graph::NodeId> = Vec::with_capacity(width);
         for i in 0..width {
-            let n = g.add_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()]);
+            let n = g
+                .add_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()])
+                .unwrap();
             let a0 = prev[i];
             let b0 = prev[(i + 1) % width];
-            g.connect(a0, "value", n, "a");
-            g.connect(b0, "value", n, "b");
+            g.connect(a0, "value", n, "a").unwrap();
+            g.connect(b0, "value", n, "b").unwrap();
             next.push(n);
         }
         prev = next;
