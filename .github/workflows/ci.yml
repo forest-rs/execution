@@ -13,6 +13,7 @@ env:
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS: >-
     -p execution_tape
+    -p execution_graph
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
     --exclude execution_graph_examples
