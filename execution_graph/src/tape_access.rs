@@ -100,10 +100,12 @@ impl AccessSink for CollectingAccessSink<'_> {
     }
 
     fn write(&mut self, key: ResourceKeyRef<'_>) {
-        self.counter.set(self.counter.get().saturating_add(1));
         if let Some((id, key)) =
             mark_tape_key_dirty(self.dirty, self.host_state_ids, self.opaque_host_ids, key)
         {
+            // Count only accepted writes as strict-deps access events: an ignored write (e.g. to a
+            // graph-owned Input key) reports nothing usable, so it must not satisfy strict-deps.
+            self.counter.set(self.counter.get().saturating_add(1));
             // Record the write so a node is not re-triggered by its own write (see
             // `run_node_internal`, which excludes self-written keys from the node's dependency set).
             self.write_ids.push(id);
@@ -261,11 +263,12 @@ impl AccessSink for DepsOnlyAccessSink<'_> {
 
     #[inline]
     fn write(&mut self, key: ResourceKeyRef<'_>) {
-        // Strict-deps mode requires host scopes to emit at least one access event.
-        self.counter.set(self.counter.get().saturating_add(1));
         if let Some((id, _key)) =
             mark_tape_key_dirty(self.dirty, self.host_state_ids, self.opaque_host_ids, key)
         {
+            // Count only accepted writes as strict-deps access events: an ignored write (e.g. to a
+            // graph-owned Input key) reports nothing usable, so it must not satisfy strict-deps.
+            self.counter.set(self.counter.get().saturating_add(1));
             // Record the write so a node is not re-triggered by its own write (see
             // `run_node_internal`, which excludes self-written keys from the node's dependency set).
             self.write_ids.push(id);

@@ -1602,6 +1602,77 @@ mod tests {
     }
 
     #[test]
+    fn strict_deps_rejects_host_call_whose_only_access_is_an_ignored_input_write() {
+        // Writes to graph-owned Input keys are ignored (no dependency, no invalidation, no log).
+        // In strict-deps mode such a write must NOT count as "this host call recorded an access":
+        // a call whose only event is an ignored Input write reports nothing usable and must trip a
+        // StrictDepsViolation, just like a call that records nothing at all.
+        #[derive(Debug, Default)]
+        struct InputWriteOnly;
+
+        impl Host for InputWriteOnly {
+            fn call(
+                &mut self,
+                symbol: &str,
+                _sig_hash: SigHash,
+                _args: &[ValueRef<'_>],
+                rets: &mut [Value],
+                mut ctx: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                if symbol != "write_input" {
+                    return Err(HostError::UnknownSymbol);
+                }
+                ctx.record_write(ResourceKeyRef::Input("x"));
+                rets[0] = Value::I64(7);
+                Ok(0)
+            }
+        }
+
+        let mut pb = ProgramBuilder::new();
+        let host_sig = pb.host_sig_for(
+            "write_input",
+            HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64],
+            },
+        );
+
+        let mut a = Asm::new();
+        a.const_i64(1, 42);
+        a.host_call(0, host_sig, 0, &[1], &[2]);
+        a.ret(0, &[2]);
+
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+
+        let prog = Arc::new(pb.build_verified().unwrap());
+
+        let mut g = ExecutionGraph::new(InputWriteOnly, Limits::default());
+        let n = g.add_node(prog, f, vec![]).unwrap();
+        g.set_strict_deps(true);
+
+        assert_eq!(
+            g.run_all(),
+            Err(GraphError::StrictDepsViolation {
+                node: n,
+                symbol: "write_input".into(),
+                sig_hash: sig_hash(&HostSig {
+                    args: vec![ValueType::I64],
+                    rets: vec![ValueType::I64],
+                }),
+            })
+        );
+    }
+
+    #[test]
     fn run_all_errors_on_missing_input_binding() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
