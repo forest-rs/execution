@@ -2105,10 +2105,7 @@ mod tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let kv = Rc::new(RefCell::new(BTreeMap::new()));
-        let host = BumpHost {
-            kv,
-            sig: bump_hash,
-        };
+        let host = BumpHost { kv, sig: bump_hash };
 
         let mut g = ExecutionGraph::new(host, Limits::default());
         let n = g.add_node(prog, entry, vec![]).unwrap();
@@ -2158,7 +2155,7 @@ mod tests {
                 let [ValueRef::I64(v)] = args else {
                     return Err(HostError::Failed);
                 };
-                // Host (mis)uses a graph-owned Input key as a write target.
+                // Host misuses a graph-owned Input key as a write target.
                 ctx.record_write(ResourceKeyRef::Input("x"));
                 rets[0] = Value::I64(*v);
                 Ok(0)

@@ -101,12 +101,9 @@ impl AccessSink for CollectingAccessSink<'_> {
 
     fn write(&mut self, key: ResourceKeyRef<'_>) {
         self.counter.set(self.counter.get().saturating_add(1));
-        if let Some((id, key)) = mark_tape_key_dirty(
-            self.dirty,
-            self.host_state_ids,
-            self.opaque_host_ids,
-            key,
-        ) {
+        if let Some((id, key)) =
+            mark_tape_key_dirty(self.dirty, self.host_state_ids, self.opaque_host_ids, key)
+        {
             // Record the write so a node is not re-triggered by its own write (see
             // `run_node_internal`, which excludes self-written keys from the node's dependency set).
             self.write_ids.push(id);
@@ -266,12 +263,9 @@ impl AccessSink for DepsOnlyAccessSink<'_> {
     fn write(&mut self, key: ResourceKeyRef<'_>) {
         // Strict-deps mode requires host scopes to emit at least one access event.
         self.counter.set(self.counter.get().saturating_add(1));
-        if let Some((id, _key)) = mark_tape_key_dirty(
-            self.dirty,
-            self.host_state_ids,
-            self.opaque_host_ids,
-            key,
-        ) {
+        if let Some((id, _key)) =
+            mark_tape_key_dirty(self.dirty, self.host_state_ids, self.opaque_host_ids, key)
+        {
             // Record the write so a node is not re-triggered by its own write (see
             // `run_node_internal`, which excludes self-written keys from the node's dependency set).
             self.write_ids.push(id);
