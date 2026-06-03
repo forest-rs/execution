@@ -881,9 +881,7 @@ impl<H: Host> ExecutionGraph<H> {
     fn run_plan(&mut self, plan: RunPlan) -> Result<RunSummary, GraphError> {
         let executed_nodes = plan.node_count();
         let mut dispatcher = InlineDispatcher;
-        let to_run = dispatcher.dispatch(self, plan)?;
-        // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
-        self.scratch.to_run = to_run;
+        dispatcher.dispatch(self, plan)?;
         Ok(RunSummary { executed_nodes })
     }
 
@@ -891,10 +889,7 @@ impl<H: Host> ExecutionGraph<H> {
     #[inline]
     fn run_plan_with_report(&mut self, plan: RunPlan) -> Result<RunDetailReport, GraphError> {
         let mut dispatcher = InlineDispatcher;
-        let (to_run, report) = dispatcher.dispatch_with_report(self, plan)?;
-        // Reclaim the drained schedule buffer to reuse its capacity on the next planning pass.
-        self.scratch.to_run = to_run;
-        Ok(report)
+        dispatcher.dispatch_with_report(self, plan)
     }
 
     /// Runs all currently dirty work in dependency order and returns a cheap summary.
@@ -969,6 +964,16 @@ impl<H: Host> ExecutionGraph<H> {
                 self.dirty.mark_dirty(out_id);
             }
         }
+    }
+
+    /// Internal dispatch hook: returns a spent scheduling buffer to the scratch workspace.
+    ///
+    /// Dispatch takes the schedule out of the plan to execute it; handing the (cleared) buffer
+    /// back here on every exit path lets the next planning pass reuse its capacity.
+    #[inline]
+    pub(crate) fn reclaim_schedule_buffer(&mut self, mut buf: Vec<NodeId>) {
+        buf.clear();
+        self.scratch.to_run = buf;
     }
 
     fn execute_kind(
