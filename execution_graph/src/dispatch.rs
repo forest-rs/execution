@@ -24,11 +24,7 @@ pub(crate) trait Dispatcher<H: Host> {
     ///
     /// The drained scheduling buffer is returned to the graph's scratch workspace (for capacity
     /// reuse on the next planning pass) on every exit path, success or error.
-    fn dispatch(
-        &mut self,
-        graph: &mut ExecutionGraph<H>,
-        plan: RunPlan,
-    ) -> Result<(), GraphError>;
+    fn dispatch(&mut self, graph: &mut ExecutionGraph<H>, plan: RunPlan) -> Result<(), GraphError>;
 
     /// Executes `plan` and returns traced reporting if available.
     ///
