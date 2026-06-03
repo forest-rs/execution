@@ -898,6 +898,10 @@ impl<H: Host> ExecutionGraph<H> {
     }
 
     /// Runs all currently dirty work in dependency order and returns a cheap summary.
+    ///
+    /// Execution is fail-fast: if a node errors, the run stops and returns that error, but the
+    /// dirty state of any not-yet-executed scheduled work is preserved so a subsequent run
+    /// re-attempts it.
     pub fn run_all(&mut self) -> Result<RunSummary, GraphError> {
         let plan = self.plan_all();
         self.run_plan(plan)
@@ -919,6 +923,9 @@ impl<H: Host> ExecutionGraph<H> {
     ///
     /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
     /// Unrelated dirty work remains dirty and is not drained.
+    ///
+    /// Execution is fail-fast: if a node errors, the run stops and returns that error, but the
+    /// dirty state of not-yet-executed work in the closure is preserved for a subsequent run.
     pub fn run_node(&mut self, node: NodeId) -> Result<RunSummary, GraphError> {
         let plan = self.plan_within_dependencies_of(node)?;
         self.run_plan(plan)
@@ -941,6 +948,27 @@ impl<H: Host> ExecutionGraph<H> {
     #[inline]
     pub(crate) fn execute_scheduled_node(&mut self, node: NodeId) -> Result<(), GraphError> {
         self.run_node_internal(node)
+    }
+
+    /// Internal dispatch hook: re-marks the output keys of `nodes` dirty.
+    ///
+    /// Planning drains (and clears) the scheduled dirty set up front, so when dispatch stops
+    /// fail-fast on an error the un-run nodes would otherwise be left permanently clean and their
+    /// pending work silently dropped. Re-marking their outputs keeps that work recoverable on the
+    /// next run.
+    #[inline]
+    pub(crate) fn remark_scheduled_dirty(&mut self, nodes: &[NodeId]) {
+        for &node in nodes {
+            let Ok(index) = usize::try_from(node.as_u64()) else {
+                continue;
+            };
+            if index >= self.nodes.len() {
+                continue;
+            }
+            for &out_id in self.nodes[index].output_ids.iter() {
+                self.dirty.mark_dirty(out_id);
+            }
+        }
     }
 
     fn execute_kind(
@@ -1171,6 +1199,46 @@ mod tests {
         ) -> Result<u64, HostError> {
             Err(HostError::UnknownSymbol)
         }
+    }
+
+    /// A no-input program that traps at runtime (divide-by-zero).
+    fn trap_program() -> (Arc<VerifiedProgram>, FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.const_i64(1, 1);
+        a.const_i64(2, 0);
+        a.i64_div(3, 1, 2);
+        a.ret(0, &[3]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+        (Arc::new(pb.build_verified().unwrap()), f)
+    }
+
+    /// A no-input program returning the constant `v` as output "value".
+    fn const_program(v: i64) -> (Arc<VerifiedProgram>, FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.const_i64(1, v);
+        a.ret(0, &[1]);
+        let f = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(f, 0, "value").unwrap();
+        (Arc::new(pb.build_verified().unwrap()), f)
     }
 
     #[test]
@@ -1603,23 +1671,7 @@ mod tests {
 
     #[test]
     fn run_all_preserves_vm_trap_info() {
-        let mut pb = ProgramBuilder::new();
-        let mut a = Asm::new();
-        a.const_i64(1, 1);
-        a.const_i64(2, 0);
-        a.i64_div(3, 1, 2);
-        a.ret(0, &[3]);
-        let f = pb
-            .push_function_checked(
-                a,
-                FunctionSig {
-                    arg_types: vec![],
-                    ret_types: vec![ValueType::I64],
-                },
-            )
-            .unwrap();
-        pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = Arc::new(pb.build_verified().unwrap());
+        let (prog, f) = trap_program();
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let n = g.add_node(prog, f, vec![]).unwrap();
@@ -1630,6 +1682,120 @@ mod tests {
         assert_eq!(node, n);
         assert_eq!(trap.func, f);
         assert_eq!(trap.trap, Trap::DivByZero);
+    }
+
+    #[test]
+    fn run_all_trap_keeps_independent_node_recoverable() {
+        // node0 traps; node1 is an independent constant scheduled after it. A trap mid-pass must
+        // not silently discard node1's pending dirty work.
+        let (trap_prog, trap_f) = trap_program();
+        let (const_prog, const_f) = const_program(42);
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let node0 = g.add_node(trap_prog, trap_f, vec![]).unwrap();
+        let node1 = g.add_node(const_prog, const_f, vec![]).unwrap();
+
+        // node0 is scheduled first and traps; fail-fast leaves node1 unrun.
+        assert!(matches!(g.run_all(), Err(GraphError::Trap { .. })));
+        assert_eq!(g.node_run_count(node0), Some(0));
+        assert_eq!(
+            g.node_run_count(node1),
+            Some(0),
+            "precondition: node1 must not have run in the trapping pass"
+        );
+
+        // node1's dirty state survived: a targeted re-run executes it and produces its value.
+        let summary = g.run_node(node1).unwrap();
+        assert_eq!(summary.executed_nodes, 1);
+        assert_eq!(
+            g.node_outputs(node1).and_then(|o| o.get("value")),
+            Some(&Value::I64(42))
+        );
+    }
+
+    #[test]
+    fn run_all_trap_does_not_remark_already_executed_nodes() {
+        // Scheduled order is [node_a, node0, node_c]: node_a runs, node0 traps, node_c is unrun.
+        // The fix must re-mark only the failed node and the unrun tail, never the node that
+        // already executed successfully.
+        let (a_prog, a_f) = const_program(7);
+        let (trap_prog, trap_f) = trap_program();
+        let (c_prog, c_f) = const_program(99);
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let node_a = g.add_node(a_prog, a_f, vec![]).unwrap();
+        let _node0 = g.add_node(trap_prog, trap_f, vec![]).unwrap();
+        let node_c = g.add_node(c_prog, c_f, vec![]).unwrap();
+
+        assert!(matches!(g.run_all(), Err(GraphError::Trap { .. })));
+        assert_eq!(
+            g.node_run_count(node_a),
+            Some(1),
+            "precondition: node_a must have executed before the trap"
+        );
+
+        // node_a already ran and must not have been re-marked, so a targeted re-run is a no-op.
+        assert_eq!(g.run_node(node_a).unwrap().executed_nodes, 0);
+        assert_eq!(g.node_run_count(node_a), Some(1));
+
+        // node_c was unrun and re-marked, so it remains recoverable.
+        assert_eq!(g.run_node(node_c).unwrap().executed_nodes, 1);
+        assert_eq!(
+            g.node_outputs(node_c).and_then(|o| o.get("value")),
+            Some(&Value::I64(99))
+        );
+    }
+
+    #[test]
+    fn run_node_trap_keeps_closure_sibling_recoverable() {
+        // target depends on node0 (traps) and node_sib (independent constant). Running target's
+        // closure traps on node0; node_sib must remain recoverable rather than being dropped.
+        fn passthrough2_program() -> (Arc<VerifiedProgram>, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.i64_add(3, 1, 2);
+            a.ret(0, &[3]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64, ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, "value").unwrap();
+            (Arc::new(pb.build_verified().unwrap()), f)
+        }
+
+        let (trap_prog, trap_f) = trap_program();
+        let (sib_prog, sib_f) = const_program(42);
+        let (tgt_prog, tgt_f) = passthrough2_program();
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let node0 = g.add_node(trap_prog, trap_f, vec![]).unwrap();
+        let node_sib = g.add_node(sib_prog, sib_f, vec![]).unwrap();
+        let target = g
+            .add_node(tgt_prog, tgt_f, vec!["x".into(), "y".into()])
+            .unwrap();
+        g.connect(node0, "value", target, "x").unwrap();
+        g.connect(node_sib, "value", target, "y").unwrap();
+
+        // node0 is scheduled before node_sib inside target's closure and traps.
+        assert!(matches!(g.run_node(target), Err(GraphError::Trap { .. })));
+        assert_eq!(
+            g.node_run_count(node_sib),
+            Some(0),
+            "precondition: node_sib must not have run in the trapping pass"
+        );
+
+        // node_sib's dirty state survived the closure trap and re-runs cleanly.
+        let summary = g.run_node(node_sib).unwrap();
+        assert_eq!(summary.executed_nodes, 1);
+        assert_eq!(
+            g.node_outputs(node_sib).and_then(|o| o.get("value")),
+            Some(&Value::I64(42))
+        );
     }
 
     #[test]

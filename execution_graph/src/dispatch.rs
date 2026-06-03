@@ -59,9 +59,16 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
         }
 
         let mut to_run: Vec<NodeId> = plan.take_nodes();
-        for node in to_run.drain(..) {
-            graph.execute_scheduled_node(node)?;
+        for i in 0..to_run.len() {
+            if let Err(e) = graph.execute_scheduled_node(to_run[i]) {
+                // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Their dirty marks
+                // were cleared when the plan was drained, so re-mark them to keep that pending
+                // work recoverable on the next run instead of silently dropping it.
+                graph.remark_scheduled_dirty(&to_run[i..]);
+                return Err(e);
+            }
         }
+        to_run.clear();
         Ok(to_run)
     }
 
@@ -80,8 +87,14 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
         let mut report = RunDetailReport::default();
         let mut to_run: Vec<NodeId> = plan.take_nodes();
 
-        for node in to_run.drain(..) {
-            graph.execute_scheduled_node(node)?;
+        for i in 0..to_run.len() {
+            let node = to_run[i];
+            if let Err(e) = graph.execute_scheduled_node(node) {
+                // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Re-mark them so
+                // their drained dirty state is not silently lost (see `dispatch`).
+                graph.remark_scheduled_dirty(&to_run[i..]);
+                return Err(e);
+            }
             if let Some(t) = trace.as_mut()
                 && let Some(r) = t.take_report_for(node)
             {
@@ -89,6 +102,7 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
             }
         }
 
+        to_run.clear();
         Ok((to_run, report))
     }
 }
