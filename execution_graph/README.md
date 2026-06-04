@@ -1,5 +1,12 @@
 # execution_graph
 
+<!-- We use cargo-rdme to keep this README in sync with the crate-level docs in src/lib.rs.
+To update the section below, edit the doc comment in src/lib.rs, then run:
+cargo rdme --workspace-project=execution_graph --heading-base-level=0
+Full documentation at https://github.com/orium/cargo-rdme -->
+
+<!-- cargo-rdme start -->
+
 Incremental execution graph built on `execution_tape`.
 
 This crate provides a small `no_std` graph that executes verified `execution_tape` programs as
@@ -52,8 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let program = Arc::new(builder.build_verified()?);
 
     let mut graph = ExecutionGraph::new(NoHost, Limits::default());
-    let node = graph.add_node(program, entry, vec!["x".into()]);
-    graph.set_input_value(node, "x", Value::I64(41));
+    let node = graph.add_node(program, entry, vec!["x".into()])?;
+    graph.set_input_value(node, "x", Value::I64(41))?;
 
     let summary = graph.run_all()?;
     assert_eq!(summary.executed_nodes, 1);
@@ -73,22 +80,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   `ResourceKey::Input("foo")` dirty, which may trigger re-execution of transitive dependents.
 
 Input names are part of the dependency key space: the string you pass to `set_input_value(node,
-"foo", ..)` must match the string you pass to `invalidate_input("foo")` for incremental scheduling
-to work.
+"foo", ..)` must match the string you pass to `invalidate_input("foo")` for incremental
+scheduling to work.
 
 Host state invalidation uses the same key space: if a host op records a
-`ResourceKeyRef::HostState { op, key }` read during execution, you can invalidate that state later
-via `ExecutionGraph::invalidate_tape_key(...)` (or by constructing the corresponding owned
+`ResourceKeyRef::HostState { op, key }` read during execution, you can invalidate that state
+later via `ExecutionGraph::invalidate_tape_key(...)` (or by constructing the corresponding owned
 `execution_graph::ResourceKey` and calling `ExecutionGraph::invalidate(...)`).
 
 Graph construction is checked at the public API boundary: `add_node`, `set_input_value`, and
-`connect` return `GraphError` values for unknown entry functions, input arity mismatches, unknown
-input names, and unknown output names.
+`connect` return `GraphError` values for unknown entry functions, input arity mismatches,
+unknown input names, and unknown output names.
 
 ## Execution behavior
 
 `run_node` drains and executes only the dirty work within the dependency closure of the target
-node’s outputs, leaving unrelated dirty work dirty to be handled by a later `run_all`.
+node's outputs, leaving unrelated dirty work dirty to be handled by a later `run_all`.
 
 For low overhead telemetry, `run_all` / `run_node` return only an executed-node summary.
 
@@ -113,12 +120,14 @@ cargo run -p execution_graph_examples --bin tax -- --dot
 
 ## Current limitations
 
-- `execution_graph` intentionally stays close to the VM: traps expose `execution_tape::vm::TrapInfo`
-  rather than source-language diagnostics.
+- `execution_graph` intentionally stays close to the VM: traps expose
+  `execution_tape::vm::TrapInfo` rather than source-language diagnostics.
 - VM traps are still collapsed to `GraphError::Trap` at the graph boundary. Missing inputs,
   missing upstream outputs, bad output arity, and strict-deps failures are reported with context.
-- Graph nodes are currently `execution_tape` entrypoints only; custom dispatch can be layered later
-  without changing the resource-key model.
+- Graph nodes are currently `execution_tape` entrypoints only; custom dispatch can be layered
+  later without changing the resource-key model.
+
+<!-- cargo-rdme end -->
 
 ## Minimum supported Rust Version (MSRV)
 

@@ -1,19 +1,27 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! `execution_tape`: a portable, verifiable bytecode format and register VM runtime.
+// After you edit the crate's doc comment, regenerate README.md by running:
+// cargo rdme --workspace-project=execution_tape --heading-base-level=0
+
+//! Portable, verifiable bytecode container format and register VM runtime (draft).
 //!
-//! This crate is in early design/implementation. The current v1 draft spec lives in:
-//! - `docs/v1_spec.md`
-//! - `docs/overview.md`
+//! `execution_tape` is the low-level execution layer for already-lowered programs. It owns the
+//! portable program format, verifier, register VM, host-call ABI, aggregate values, tracing hooks,
+//! and disassembly tools. It does not own language semantics, graph authoring, or host object
+//! lifetimes.
 //!
-//! ## Example
+//! The crate is `no_std + alloc` by default. The `std` feature is currently reserved for
+//! integrations that need standard-library support.
 //!
-//! ```no_run
+//! ## Quick Start
+//!
+//! Build, verify, and run a one-function program:
+//!
+//! ```rust
 //! extern crate alloc;
 //!
 //! use alloc::vec;
-//! use alloc::vec::Vec;
 //!
 //! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
@@ -37,29 +45,57 @@
 //!     }
 //! }
 //!
-//! let mut a = Asm::new();
-//! a.const_i64(2, 1);
-//! a.i64_add(3, 1, 2);
-//! a.ret(0, &[3]);
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut asm = Asm::new();
+//!     asm.const_i64(2, 1);
+//!     asm.i64_add(3, 1, 2);
+//!     asm.ret(0, &[3]);
 //!
-//! let mut pb = ProgramBuilder::new();
-//! let entry = pb.push_function_checked(
-//!     a,
-//!     FunctionSig {
-//!         arg_types: vec![ValueType::I64],
-//!         ret_types: vec![ValueType::I64],
-//!     },
-//! )?;
-//! pb.set_function_input_name(entry, 0, "x")?;
-//! pb.set_function_output_name(entry, 0, "y")?;
-//! let program = pb.build_verified()?;
+//!     let mut builder = ProgramBuilder::new();
+//!     builder.set_program_name("add_one");
+//!     let entry = builder.push_function_checked(
+//!         asm,
+//!         FunctionSig {
+//!             arg_types: vec![ValueType::I64],
+//!             ret_types: vec![ValueType::I64],
+//!         },
+//!     )?;
+//!     builder.set_function_input_name(entry, 0, "x")?;
+//!     builder.set_function_output_name(entry, 0, "y")?;
 //!
-//! let mut vm = Vm::new(NoHost, Limits::default());
-//! let out = vm
-//!     .run(&program, entry, &[Value::I64(7)], TraceMask::NONE, None)
-//!     .unwrap();
-//! assert_eq!(out, vec![Value::I64(8)]);
-//! # Ok::<(), execution_tape::asm::BuildError>(())
+//!     let program = builder.build_verified()?;
+//!     let mut vm = Vm::new(NoHost, Limits::default());
+//!     let out = vm.run(&program, entry, &[Value::I64(41)], TraceMask::NONE, None)?;
+//!     assert_eq!(out, vec![Value::I64(42)]);
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Core Pieces
+//!
+//! - `asm`: ergonomic builders for functions, call signatures, constants, host signatures, and
+//!   bytecode emission.
+//! - `program`: serialized program model, type tables, constants, host signatures, and names.
+//! - `verifier`: validation and lowering into an execution-ready `VerifiedProgram`.
+//! - `vm`: bounded interpreter for verified programs.
+//! - `host`: host-call trait, borrowed argument views, aggregate readers, and access recording
+//!   hooks.
+//! - `trace`: low-overhead tracing events for profiling and diagnostics.
+//! - `disasm`: human-readable disassembly for verified programs.
+//!
+//! ## Design Docs
+//!
+//! The repository-level design notes live outside the packaged crate:
+//!
+//! - <https://github.com/forest-rs/execution/blob/main/docs/overview.md>
+//! - <https://github.com/forest-rs/execution/blob/main/docs/v1_spec.md>
+//!
+//! ## Examples
+//!
+//! Print disassembly for a small branching program:
+//!
+//! ```sh
+//! cargo run -p execution_tape --example disasm
 //! ```
 
 #![no_std]

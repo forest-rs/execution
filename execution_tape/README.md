@@ -1,13 +1,21 @@
 # `execution_tape`
 
+<!-- We use cargo-rdme to keep this README in sync with the crate-level docs in src/lib.rs.
+To update the section below, edit the doc comment in src/lib.rs, then run:
+cargo rdme --workspace-project=execution_tape --heading-base-level=0
+Full documentation at https://github.com/orium/cargo-rdme -->
+
+<!-- cargo-rdme start -->
+
 Portable, verifiable bytecode container format and register VM runtime (draft).
 
 `execution_tape` is the low-level execution layer for already-lowered programs. It owns the
-portable program format, verifier, register VM, host-call ABI, aggregate values, tracing hooks, and
-disassembly tools. It does not own language semantics, graph authoring, or host object lifetimes.
+portable program format, verifier, register VM, host-call ABI, aggregate values, tracing hooks,
+and disassembly tools. It does not own language semantics, graph authoring, or host object
+lifetimes.
 
-The crate is `no_std + alloc` by default. The `std` feature is currently reserved for integrations
-that need standard-library support.
+The crate is `no_std + alloc` by default. The `std` feature is currently reserved for
+integrations that need standard-library support.
 
 ## Quick Start
 
@@ -73,7 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `program`: serialized program model, type tables, constants, host signatures, and names.
 - `verifier`: validation and lowering into an execution-ready `VerifiedProgram`.
 - `vm`: bounded interpreter for verified programs.
-- `host`: host-call trait, borrowed argument views, aggregate readers, and access recording hooks.
+- `host`: host-call trait, borrowed argument views, aggregate readers, and access recording
+  hooks.
 - `trace`: low-overhead tracing events for profiling and diagnostics.
 - `disasm`: human-readable disassembly for verified programs.
 
@@ -91,6 +100,8 @@ Print disassembly for a small branching program:
 ```sh
 cargo run -p execution_tape --example disasm
 ```
+
+<!-- cargo-rdme end -->
 
 ## Minimum supported Rust Version (MSRV)
 

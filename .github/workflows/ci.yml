@@ -316,6 +316,31 @@ jobs:
         env:
           RUSTDOCFLAGS: '--cfg docsrs -D warnings'
 
+  cargo-rdme:
+    name: cargo rdme
+    # Checks that each crate's README.md is in sync with its crate-level docs (src/lib.rs).
+    # To fix a failure, edit the doc comment in src/lib.rs and regenerate the README by running
+    # the same command without `--check`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE_VER }}
+
+      - name: install cargo-rdme
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-rdme
+
+      - name: check execution_tape README
+        run: cargo rdme --workspace-project=execution_tape --heading-base-level=0 --check
+
+      - name: check execution_graph README
+        run: cargo rdme --workspace-project=execution_graph --heading-base-level=0 --check
+
   # If this fails, consider changing your text or adding something to .typos.toml.
   typos:
     runs-on: ubuntu-latest
