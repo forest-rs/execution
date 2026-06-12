@@ -108,6 +108,7 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
                     node_label: None,
                     because_of: None,
                     why_path: None,
+                    why_path_traced: None,
                 });
             }
         }
@@ -233,12 +234,14 @@ mod tests {
             node_label: Some("first".into()),
             because_of: Some(ResourceKey::node_output(n0, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
+            why_path_traced: Some(true),
         };
         let r1 = NodeRunDetail {
             node: n1,
             node_label: Some("second".into()),
             because_of: Some(ResourceKey::node_output(n1, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
+            why_path_traced: Some(true),
         };
 
         let mut node_reports = vec![None; 2];
@@ -273,12 +276,14 @@ mod tests {
             node_label: Some("ok".into()),
             because_of: Some(ResourceKey::node_output(n_ok, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
+            why_path_traced: Some(true),
         };
         let r_err = NodeRunDetail {
             node: n_err,
             node_label: Some("err".into()),
             because_of: Some(ResourceKey::node_output(n_err, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
+            why_path_traced: Some(true),
         };
 
         let mut node_reports = vec![None; 2];
@@ -332,12 +337,14 @@ mod tests {
                     node_label: None,
                     because_of: None,
                     why_path: None,
+                    why_path_traced: None,
                 },
                 NodeRunDetail {
                     node: n0,
                     node_label: None,
                     because_of: None,
                     why_path: None,
+                    why_path_traced: None,
                 },
             ]
         );
