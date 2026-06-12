@@ -7,6 +7,7 @@
 //! run") and execution strategy ("how to run"), so future scheduler work can swap dispatch
 //! implementations without reshaping `ExecutionGraph` public APIs.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use execution_tape::host::Host;
 
@@ -89,12 +90,13 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
             let node = to_run[i];
             if let Err(e) = graph.execute_scheduled_node(node) {
                 // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Re-mark them so
-                // their drained dirty state is not silently lost (see `dispatch`). NOTE: the
-                // partial report accumulated so far is dropped here; surfacing it on error is a
-                // follow-up.
+                // their drained dirty state is not silently lost (see `dispatch`).
                 graph.remark_scheduled_dirty(&to_run[i..]);
                 graph.reclaim_schedule_buffer(to_run);
-                return Err(e);
+                return Err(GraphError::RunReportFailed {
+                    source: Box::new(e),
+                    partial_report: report,
+                });
             }
             if let Some(t) = trace.as_mut()
                 && let Some(r) = t.take_report_for(node)
@@ -246,6 +248,61 @@ mod tests {
         assert_eq!(report.executed.len(), 2);
         assert_eq!(report.executed[0], r1);
         assert_eq!(report.executed[1], r0);
+    }
+
+    #[test]
+    fn inline_dispatcher_with_report_returns_partial_report_on_error() {
+        let (const_prog, const_entry) = make_const_program("value", 11);
+        let (needs_input_prog, needs_input_entry) = make_identity_program("value");
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n_ok = g.add_node(const_prog, const_entry, vec![]).unwrap();
+        let n_err = g
+            .add_node(needs_input_prog, needs_input_entry, vec!["in".into()])
+            .unwrap();
+
+        let r_ok = NodeRunDetail {
+            node: n_ok,
+            node_label: Some("ok".into()),
+            because_of: Some(ResourceKey::node_output(n_ok, "value")),
+            why_path: Some(vec![ResourceKey::input("seed")]),
+        };
+        let r_err = NodeRunDetail {
+            node: n_err,
+            node_label: Some("err".into()),
+            because_of: Some(ResourceKey::node_output(n_err, "value")),
+            why_path: Some(vec![ResourceKey::input("seed")]),
+        };
+
+        let mut node_reports = vec![None; 2];
+        node_reports[0] = Some(r_ok.clone());
+        node_reports[1] = Some(r_err);
+
+        let plan = RunPlan::all(vec![n_ok, n_err])
+            .with_trace(RunPlanTrace::from_node_reports(node_reports));
+        let mut dispatcher = InlineDispatcher;
+        let err = dispatcher
+            .dispatch_with_report(&mut g, plan)
+            .expect_err("second node should fail");
+
+        let GraphError::RunReportFailed {
+            source,
+            partial_report,
+        } = err
+        else {
+            panic!("expected partial report error");
+        };
+
+        assert_eq!(
+            *source,
+            GraphError::MissingInput {
+                node: n_err,
+                name: "in".into()
+            }
+        );
+        assert_eq!(partial_report.executed, vec![r_ok]);
+        assert_eq!(g.node_run_count(n_ok), Some(1));
+        assert_eq!(g.node_run_count(n_err), Some(0));
     }
 
     #[test]
