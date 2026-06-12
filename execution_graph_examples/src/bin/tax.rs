@@ -159,7 +159,11 @@ fn print_report(g: &ExecutionGraph<TaxHost>, report: RunDetailReport) {
             "  - {label} (node={}): because this is dirty: {because_of}",
             r.node.as_u64()
         );
-        println!("    path:");
+        let path_suffix = match r.why_path_traced {
+            Some(false) => " (fallback)",
+            _ => "",
+        };
+        println!("    path{path_suffix}:");
         for k in r.why_path.unwrap_or_default() {
             println!("      - {}", fmt_key(g, &k));
         }

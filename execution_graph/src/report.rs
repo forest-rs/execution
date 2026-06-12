@@ -122,8 +122,16 @@ pub struct NodeRunDetail {
     pub because_of: Option<ResourceKey>,
     /// One plausible cause path from a dirty root to the output key for this node.
     ///
-    /// The vector is ordered from root to leaf (inclusive).
+    /// The vector is ordered from root to leaf (inclusive). If tracing cannot reconstruct a path,
+    /// this falls back to a one-key path containing the scheduled key; check
+    /// [`NodeRunDetail::why_path_traced`] to distinguish that fallback from a traced one-key path.
     pub why_path: Option<Vec<ResourceKey>>,
+    /// Whether [`NodeRunDetail::why_path`] came from the dirty-engine trace.
+    ///
+    /// This is `Some(true)` when a traced path was available, `Some(false)` when `why_path` is the
+    /// one-key fallback, and `None` when the report mask did not request
+    /// [`ReportDetailMask::WHY_PATH`].
+    pub why_path_traced: Option<bool>,
 }
 
 /// Detail report for a graph run.

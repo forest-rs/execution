@@ -137,6 +137,7 @@ mod tests {
             node_label: Some("report-node".into()),
             because_of: Some(ResourceKey::node_output(node, "value")),
             why_path: Some(alloc::vec![ResourceKey::input("in")]),
+            why_path_traced: Some(true),
         };
 
         let mut trace =

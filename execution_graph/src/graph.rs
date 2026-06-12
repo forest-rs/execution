@@ -793,10 +793,11 @@ impl<H: Host> ExecutionGraph<H> {
                     continue;
                 }
 
-                let why_path = self
-                    .dirty
-                    .explain_path(&trace, key_id)
-                    .unwrap_or_else(|| alloc::vec![because_of.clone()]);
+                let (why_path, why_path_traced) =
+                    self.dirty.explain_path(&trace, key_id).map_or_else(
+                        || (alloc::vec![because_of.clone()], Some(false)),
+                        |path| (path, Some(true)),
+                    );
 
                 let because_of = if collect_because {
                     Some(because_of)
@@ -809,6 +810,7 @@ impl<H: Host> ExecutionGraph<H> {
                     collect_label,
                     because_of,
                     Some(why_path),
+                    why_path_traced,
                 ));
             }
         } else {
@@ -837,6 +839,7 @@ impl<H: Host> ExecutionGraph<H> {
                     *node,
                     collect_label,
                     because_of,
+                    None,
                     None,
                 ));
             }
@@ -928,10 +931,11 @@ impl<H: Host> ExecutionGraph<H> {
                         continue;
                     }
 
-                    let why_path = self
-                        .dirty
-                        .explain_path(&trace, key_id)
-                        .unwrap_or_else(|| alloc::vec![because_of.clone()]);
+                    let (why_path, why_path_traced) =
+                        self.dirty.explain_path(&trace, key_id).map_or_else(
+                            || (alloc::vec![because_of.clone()], Some(false)),
+                            |path| (path, Some(true)),
+                        );
 
                     let because_of = if collect_because {
                         Some(because_of)
@@ -944,6 +948,7 @@ impl<H: Host> ExecutionGraph<H> {
                         collect_label,
                         because_of,
                         Some(why_path),
+                        why_path_traced,
                     ));
                 }
             }
@@ -980,6 +985,7 @@ impl<H: Host> ExecutionGraph<H> {
                         collect_label,
                         because_of,
                         None,
+                        None,
                     ));
                 }
             }
@@ -997,12 +1003,14 @@ impl<H: Host> ExecutionGraph<H> {
         collect_label: bool,
         because_of: Option<ResourceKey>,
         why_path: Option<Vec<ResourceKey>>,
+        why_path_traced: Option<bool>,
     ) -> NodeRunDetail {
         NodeRunDetail {
             node,
             node_label: Self::report_node_label(nodes, node, collect_label),
             because_of,
             why_path,
+            why_path_traced,
         }
     }
 
@@ -1492,6 +1500,7 @@ mod tests {
                 node_label: Some("subtotal".into()),
                 because_of: Some(ResourceKey::node_output(NodeId::new(1), "value")),
                 why_path: None,
+                why_path_traced: None,
             }],
         };
         let wrapped = GraphError::RunReportFailed {
@@ -1669,6 +1678,7 @@ mod tests {
                 .last(),
             Some(&ResourceKey::node_output(na, "value"))
         );
+        assert_eq!(r.executed[0].why_path_traced, Some(true));
 
         assert_eq!(
             r.executed[1]
@@ -1686,6 +1696,7 @@ mod tests {
                 .last(),
             Some(&ResourceKey::node_output(nb, "value"))
         );
+        assert_eq!(r.executed[1].why_path_traced, Some(true));
     }
 
     #[test]
@@ -1760,6 +1771,7 @@ mod tests {
         for e in &minimal.executed {
             assert!(e.because_of.is_none());
             assert!(e.why_path.is_none());
+            assert!(e.why_path_traced.is_none());
         }
 
         g.set_input_value(na, "a", Value::I64(3)).unwrap();
@@ -1772,6 +1784,7 @@ mod tests {
         for e in &because_only.executed {
             assert!(e.because_of.is_some());
             assert!(e.why_path.is_none());
+            assert!(e.why_path_traced.is_none());
         }
 
         g.set_input_value(na, "a", Value::I64(4)).unwrap();
@@ -1784,6 +1797,7 @@ mod tests {
         for e in &why_only.executed {
             assert!(e.because_of.is_none());
             assert!(e.why_path.is_some());
+            assert_eq!(e.why_path_traced, Some(true));
         }
 
         g.set_input_value(na, "a", Value::I64(5)).unwrap();
@@ -1799,6 +1813,7 @@ mod tests {
         for e in &full.executed {
             assert!(e.because_of.is_some());
             assert!(e.why_path.is_some());
+            assert_eq!(e.why_path_traced, Some(true));
         }
     }
 
@@ -1847,10 +1862,12 @@ mod tests {
         );
         assert!(labels_only.executed[0].because_of.is_none());
         assert!(labels_only.executed[0].why_path.is_none());
+        assert!(labels_only.executed[0].why_path_traced.is_none());
         assert_eq!(labels_only.executed[1].node, nb);
         assert_eq!(labels_only.executed[1].node_label.as_deref(), Some("sink"));
         assert!(labels_only.executed[1].because_of.is_none());
         assert!(labels_only.executed[1].why_path.is_none());
+        assert!(labels_only.executed[1].why_path_traced.is_none());
 
         g.set_input_value(na, "a", Value::I64(3)).unwrap();
         g.invalidate_input("a");
@@ -1863,6 +1880,7 @@ mod tests {
             assert!(e.node_label.is_none());
             assert!(e.because_of.is_none());
             assert!(e.why_path.is_some());
+            assert_eq!(e.why_path_traced, Some(true));
         }
     }
 
