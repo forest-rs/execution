@@ -13,6 +13,16 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ## [Unreleased]
 
+### Added
+
+- Added advisory graph node labels via `ExecutionGraph::set_node_label`,
+  `ExecutionGraph::clear_node_label`, and `ExecutionGraph::node_label`; labels can be included in
+  execution reports with `ReportDetailMask::NODE_LABEL` and are rendered in Graphviz DOT output.
+
+### Changed
+
+- `ReportDetailMask::FULL` now includes `ReportDetailMask::NODE_LABEL`.
+
 ## [0.0.1][] (2026-05-31)
 
 This release has an [MSRV][] of 1.88.

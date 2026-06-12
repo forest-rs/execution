@@ -221,11 +221,13 @@ mod tests {
 
         let r0 = NodeRunDetail {
             node: n0,
+            node_label: Some("first".into()),
             because_of: Some(ResourceKey::node_output(n0, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
         };
         let r1 = NodeRunDetail {
             node: n1,
+            node_label: Some("second".into()),
             because_of: Some(ResourceKey::node_output(n1, "value")),
             why_path: Some(vec![ResourceKey::input("seed")]),
         };
