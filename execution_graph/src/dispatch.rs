@@ -14,7 +14,7 @@ use execution_tape::host::Host;
 use crate::access::NodeId;
 use crate::graph::{ExecutionGraph, GraphError};
 use crate::plan::{PlanScope, RunPlan};
-use crate::report::RunDetailReport;
+use crate::report::{NodeRunDetail, RunDetailReport};
 
 /// Internal dispatcher contract.
 ///
@@ -102,6 +102,13 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
                 && let Some(r) = t.take_report_for(node)
             {
                 report.executed.push(r);
+            } else if trace.is_none() {
+                report.executed.push(NodeRunDetail {
+                    node,
+                    node_label: None,
+                    because_of: None,
+                    why_path: None,
+                });
             }
         }
 
@@ -303,6 +310,37 @@ mod tests {
         assert_eq!(partial_report.executed, vec![r_ok]);
         assert_eq!(g.node_run_count(n_ok), Some(1));
         assert_eq!(g.node_run_count(n_err), Some(0));
+    }
+
+    #[test]
+    fn inline_dispatcher_with_report_synthesizes_minimal_rows_without_trace() {
+        let (prog, entry) = make_const_program("value", 5);
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let n0 = g.add_node(prog.clone(), entry, vec![]).unwrap();
+        let n1 = g.add_node(prog, entry, vec![]).unwrap();
+
+        let mut dispatcher = InlineDispatcher;
+        let out = dispatcher
+            .dispatch_with_report(&mut g, RunPlan::all(vec![n1, n0]))
+            .expect("dispatch should succeed");
+
+        assert_eq!(
+            out.executed,
+            vec![
+                NodeRunDetail {
+                    node: n1,
+                    node_label: None,
+                    because_of: None,
+                    why_path: None,
+                },
+                NodeRunDetail {
+                    node: n0,
+                    node_label: None,
+                    because_of: None,
+                    why_path: None,
+                },
+            ]
+        );
     }
 
     #[test]

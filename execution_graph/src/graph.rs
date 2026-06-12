@@ -751,6 +751,10 @@ impl<H: Host> ExecutionGraph<H> {
     /// Builds a report-capable plan from all currently affected dirty work.
     #[inline]
     fn plan_all_report(&mut self, detail_mask: ReportDetailMask) -> RunPlan {
+        if detail_mask.is_empty() {
+            return self.plan_all();
+        }
+
         let collect_label = detail_mask.contains(ReportDetailMask::NODE_LABEL);
         let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
@@ -794,16 +798,18 @@ impl<H: Host> ExecutionGraph<H> {
                     .explain_path(&trace, key_id)
                     .unwrap_or_else(|| alloc::vec![because_of.clone()]);
 
-                node_report[index] = Some(NodeRunDetail {
+                let because_of = if collect_because {
+                    Some(because_of)
+                } else {
+                    None
+                };
+                node_report[index] = Some(Self::report_node_detail(
+                    &self.nodes,
                     node,
-                    node_label: Self::report_node_label(&self.nodes, node, collect_label),
-                    because_of: if collect_because {
-                        Some(because_of)
-                    } else {
-                        None
-                    },
-                    why_path: Some(why_path),
-                });
+                    collect_label,
+                    because_of,
+                    Some(why_path),
+                ));
             }
         } else {
             for (_key_id, key) in self.dirty.drain() {
@@ -821,16 +827,18 @@ impl<H: Host> ExecutionGraph<H> {
                     continue;
                 }
 
-                node_report[index] = Some(NodeRunDetail {
-                    node: *node,
-                    node_label: Self::report_node_label(&self.nodes, *node, collect_label),
-                    because_of: if collect_because {
-                        Some(key.clone())
-                    } else {
-                        None
-                    },
-                    why_path: None,
-                });
+                let because_of = if collect_because {
+                    Some(key.clone())
+                } else {
+                    None
+                };
+                node_report[index] = Some(Self::report_node_detail(
+                    &self.nodes,
+                    *node,
+                    collect_label,
+                    because_of,
+                    None,
+                ));
             }
         }
 
@@ -866,6 +874,10 @@ impl<H: Host> ExecutionGraph<H> {
         node: NodeId,
         detail_mask: ReportDetailMask,
     ) -> Result<RunPlan, GraphError> {
+        if detail_mask.is_empty() {
+            return self.plan_within_dependencies_of(node);
+        }
+
         let Ok(index) = usize::try_from(node.as_u64()) else {
             return Err(GraphError::BadNodeId);
         };
@@ -921,20 +933,18 @@ impl<H: Host> ExecutionGraph<H> {
                         .explain_path(&trace, key_id)
                         .unwrap_or_else(|| alloc::vec![because_of.clone()]);
 
-                    node_report[scheduled_index] = Some(NodeRunDetail {
-                        node: scheduled_node,
-                        node_label: Self::report_node_label(
-                            &self.nodes,
-                            scheduled_node,
-                            collect_label,
-                        ),
-                        because_of: if collect_because {
-                            Some(because_of)
-                        } else {
-                            None
-                        },
-                        why_path: Some(why_path),
-                    });
+                    let because_of = if collect_because {
+                        Some(because_of)
+                    } else {
+                        None
+                    };
+                    node_report[scheduled_index] = Some(Self::report_node_detail(
+                        &self.nodes,
+                        scheduled_node,
+                        collect_label,
+                        because_of,
+                        Some(why_path),
+                    ));
                 }
             }
         } else {
@@ -959,16 +969,18 @@ impl<H: Host> ExecutionGraph<H> {
                         continue;
                     }
 
-                    node_report[scheduled_index] = Some(NodeRunDetail {
-                        node: *node,
-                        node_label: Self::report_node_label(&self.nodes, *node, collect_label),
-                        because_of: if collect_because {
-                            Some(key.clone())
-                        } else {
-                            None
-                        },
-                        why_path: None,
-                    });
+                    let because_of = if collect_because {
+                        Some(key.clone())
+                    } else {
+                        None
+                    };
+                    node_report[scheduled_index] = Some(Self::report_node_detail(
+                        &self.nodes,
+                        *node,
+                        collect_label,
+                        because_of,
+                        None,
+                    ));
                 }
             }
         }
@@ -976,6 +988,22 @@ impl<H: Host> ExecutionGraph<H> {
         let nodes = core::mem::take(&mut self.scratch.to_run);
         Ok(RunPlan::within_dependencies_of(node, nodes)
             .with_trace(RunPlanTrace::from_node_reports(node_report)))
+    }
+
+    #[inline]
+    fn report_node_detail(
+        nodes: &[Node],
+        node: NodeId,
+        collect_label: bool,
+        because_of: Option<ResourceKey>,
+        why_path: Option<Vec<ResourceKey>>,
+    ) -> NodeRunDetail {
+        NodeRunDetail {
+            node,
+            node_label: Self::report_node_label(nodes, node, collect_label),
+            because_of,
+            why_path,
+        }
     }
 
     #[inline]
