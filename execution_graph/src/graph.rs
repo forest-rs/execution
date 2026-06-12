@@ -103,6 +103,24 @@ pub enum GraphError {
         /// Underlying VM trap information.
         trap: TrapInfo,
     },
+    /// A report-producing run failed after collecting a partial report.
+    RunReportFailed {
+        /// Original execution error.
+        source: Box<Self>,
+        /// Report rows collected for nodes that completed before the failure.
+        partial_report: RunDetailReport,
+    },
+}
+
+impl GraphError {
+    /// Returns the partial report carried by a failed report-producing run, if present.
+    #[must_use]
+    pub fn partial_report(&self) -> Option<&RunDetailReport> {
+        match self {
+            Self::RunReportFailed { partial_report, .. } => Some(partial_report),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for GraphError {
@@ -173,11 +191,26 @@ impl fmt::Display for GraphError {
                     node.as_u64()
                 )
             }
+            Self::RunReportFailed {
+                source,
+                partial_report,
+            } => write!(
+                f,
+                "graph run failed after collecting {} report rows: {source}",
+                partial_report.executed.len()
+            ),
         }
     }
 }
 
-impl core::error::Error for GraphError {}
+impl core::error::Error for GraphError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::RunReportFailed { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// Stable output map for a node run.
 pub type NodeOutputs = BTreeMap<Box<str>, Value>;
@@ -992,6 +1025,9 @@ impl<H: Host> ExecutionGraph<H> {
     ///
     /// Detail payloads are selected by `detail_mask`; this keeps heavy cause-path construction
     /// opt-in. Use [`ReportDetailMask::FULL`] for the full path-rich report.
+    ///
+    /// If execution fails after some nodes complete, this returns
+    /// [`GraphError::RunReportFailed`] with the original error and the partial report.
     pub fn run_all_with_report(
         &mut self,
         detail_mask: ReportDetailMask,
@@ -1016,6 +1052,9 @@ impl<H: Host> ExecutionGraph<H> {
     ///
     /// Detail payloads are selected by `detail_mask`; this keeps heavy cause-path construction
     /// opt-in. Use [`ReportDetailMask::FULL`] for the full path-rich report.
+    ///
+    /// If execution fails after some nodes complete, this returns
+    /// [`GraphError::RunReportFailed`] with the original error and the partial report.
     pub fn run_node_with_report(
         &mut self,
         node: NodeId,
@@ -1418,6 +1457,26 @@ mod tests {
         assert!(strict.contains("host_call=read_price"));
         assert!(strict.contains("recorded no access keys"));
         assert!(strict.contains("cannot know what invalidates it"));
+
+        let partial_report = RunDetailReport {
+            executed: vec![NodeRunDetail {
+                node: NodeId::new(1),
+                node_label: Some("subtotal".into()),
+                because_of: Some(ResourceKey::node_output(NodeId::new(1), "value")),
+                why_path: None,
+            }],
+        };
+        let wrapped = GraphError::RunReportFailed {
+            source: Box::new(GraphError::MissingInput {
+                node: NodeId::new(2),
+                name: "tax".into(),
+            }),
+            partial_report,
+        };
+        let wrapped_display = wrapped.to_string();
+        assert!(wrapped_display.contains("1 report rows"));
+        assert!(wrapped_display.contains("missing input binding"));
+        assert_eq!(wrapped.partial_report().unwrap().executed.len(), 1);
     }
 
     #[test]

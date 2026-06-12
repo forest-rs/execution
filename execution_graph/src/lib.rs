@@ -101,6 +101,8 @@
 //!   cheaper detail levels (for example, node + immediate cause key without path tracing).
 //! - Use `set_node_label` to attach advisory debug names that can appear in reports and DOT.
 //! - Use `ReportDetailMask::FULL` when you want labels plus full per-node cause paths.
+//! - If a report-producing run fails after some nodes complete, `GraphError::RunReportFailed`
+//!   carries the partial report rows collected before the error.
 //!
 //! ## Demo
 //!
