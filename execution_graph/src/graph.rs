@@ -677,8 +677,7 @@ impl<H: Host> ExecutionGraph<H> {
     /// Builds a report-capable plan from all currently affected dirty work.
     #[inline]
     fn plan_all_report(&mut self, detail_mask: ReportDetailMask) -> RunPlan {
-        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF)
-            || detail_mask.contains(ReportDetailMask::WHY_PATH);
+        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
         self.scratch.start_drain(self.nodes.len());
@@ -797,8 +796,7 @@ impl<H: Host> ExecutionGraph<H> {
             return Err(GraphError::BadNodeId);
         };
         let output_count = n.output_ids.len();
-        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF)
-            || detail_mask.contains(ReportDetailMask::WHY_PATH);
+        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
         self.scratch.start_drain(self.nodes.len());
@@ -1605,6 +1603,33 @@ mod tests {
         for e in &because_only.executed {
             assert!(e.because_of.is_some());
             assert!(e.why_path.is_none());
+        }
+
+        g.set_input_value(na, "a", Value::I64(4)).unwrap();
+        g.invalidate_input("a");
+
+        let why_only = g
+            .run_node_with_report(nb, ReportDetailMask::WHY_PATH)
+            .unwrap();
+        assert_eq!(why_only.executed.len(), 2);
+        for e in &why_only.executed {
+            assert!(e.because_of.is_none());
+            assert!(e.why_path.is_some());
+        }
+
+        g.set_input_value(na, "a", Value::I64(5)).unwrap();
+        g.invalidate_input("a");
+
+        let full = g
+            .run_node_with_report(
+                nb,
+                ReportDetailMask::BECAUSE_OF | ReportDetailMask::WHY_PATH,
+            )
+            .unwrap();
+        assert_eq!(full.executed.len(), 2);
+        for e in &full.executed {
+            assert!(e.because_of.is_some());
+            assert!(e.why_path.is_some());
         }
     }
 
