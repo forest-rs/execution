@@ -102,7 +102,8 @@ For low overhead telemetry, `run_all` / `run_node` return only an executed-node 
 For debugging and instrumentation:
 - `run_all_with_report` / `run_node_with_report` accept a `ReportDetailMask` so you can choose
   cheaper detail levels (for example, node + immediate cause key without path tracing).
-- Use `ReportDetailMask::FULL` when you want full per-node cause paths.
+- Use `set_node_label` to attach advisory debug names that can appear in reports and DOT.
+- Use `ReportDetailMask::FULL` when you want labels plus full per-node cause paths.
 
 ## Demo
 

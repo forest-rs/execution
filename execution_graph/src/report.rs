@@ -6,6 +6,7 @@
 //! This module provides small, allocation-based report types intended for debugging and
 //! instrumentation. Formatting and UI are left to embedders.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
@@ -33,8 +34,10 @@ impl ReportDetailMask {
     /// This does not imply [`ReportDetailMask::BECAUSE_OF`]. Use
     /// [`ReportDetailMask::FULL`] or combine masks when both fields are needed.
     pub const WHY_PATH: Self = Self(1 << 1);
+    /// Include the node's advisory debug label, if one was set.
+    pub const NODE_LABEL: Self = Self(1 << 2);
     /// Include all optional fields.
-    pub const FULL: Self = Self(Self::BECAUSE_OF.0 | Self::WHY_PATH.0);
+    pub const FULL: Self = Self(Self::BECAUSE_OF.0 | Self::WHY_PATH.0 | Self::NODE_LABEL.0);
 
     /// Returns a mask with the bits from `self` and `other`.
     #[must_use]
@@ -110,6 +113,11 @@ impl BitAndAssign for ReportDetailMask {
 pub struct NodeRunDetail {
     /// The node that executed.
     pub node: NodeId,
+    /// Advisory debug label for [`NodeRunDetail::node`].
+    ///
+    /// This is populated when the report mask contains [`ReportDetailMask::NODE_LABEL`] and the
+    /// node has a label.
+    pub node_label: Option<Box<str>>,
     /// The (graph-local) key whose dirtiness caused this node to be scheduled.
     pub because_of: Option<ResourceKey>,
     /// One plausible cause path from a dirty root to the output key for this node.
@@ -132,14 +140,17 @@ mod tests {
 
     #[test]
     fn report_detail_mask_composes_with_methods_and_operators() {
-        const FULL_FROM_UNION: ReportDetailMask =
-            ReportDetailMask::BECAUSE_OF.union(ReportDetailMask::WHY_PATH);
+        const FULL_FROM_UNION: ReportDetailMask = ReportDetailMask::BECAUSE_OF
+            .union(ReportDetailMask::WHY_PATH)
+            .union(ReportDetailMask::NODE_LABEL);
 
         assert_eq!(ReportDetailMask::default(), ReportDetailMask::NONE);
         assert!(ReportDetailMask::NONE.is_empty());
         assert_eq!(FULL_FROM_UNION, ReportDetailMask::FULL);
         assert_eq!(
-            ReportDetailMask::BECAUSE_OF | ReportDetailMask::WHY_PATH,
+            ReportDetailMask::BECAUSE_OF
+                | ReportDetailMask::WHY_PATH
+                | ReportDetailMask::NODE_LABEL,
             ReportDetailMask::FULL
         );
         assert_eq!(
@@ -149,6 +160,11 @@ mod tests {
 
         let mut mask = ReportDetailMask::BECAUSE_OF;
         mask |= ReportDetailMask::WHY_PATH;
+        assert_eq!(
+            mask,
+            ReportDetailMask::BECAUSE_OF | ReportDetailMask::WHY_PATH
+        );
+        mask |= ReportDetailMask::NODE_LABEL;
         assert_eq!(mask, ReportDetailMask::FULL);
         mask &= ReportDetailMask::WHY_PATH;
         assert_eq!(mask, ReportDetailMask::WHY_PATH);

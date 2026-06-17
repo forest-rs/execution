@@ -134,6 +134,7 @@ mod tests {
         let node = NodeId::new(3);
         let report = NodeRunDetail {
             node,
+            node_label: Some("report-node".into()),
             because_of: Some(ResourceKey::node_output(node, "value")),
             why_path: Some(alloc::vec![ResourceKey::input("in")]),
         };

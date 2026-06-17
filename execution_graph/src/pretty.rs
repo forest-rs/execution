@@ -91,9 +91,13 @@ impl<H: Host> ExecutionGraph<H> {
             let (node_line, entry_line) = match &node.kind {
                 NodeKind::Tape { program, entry } => {
                     let p = program.program();
-                    let nl = match p.name() {
+                    let node_line = match p.name() {
                         Some(name) => format!("node#{node_id} ({name})"),
                         None => format!("node#{node_id}"),
+                    };
+                    let nl = match node.label.as_deref() {
+                        Some(label) => format!("{label}\n{node_line}"),
+                        None => node_line,
                     };
                     let el = match p.function_name(entry.0) {
                         Some(name) => format!("entry=f{} ({name})", entry.0),
@@ -242,9 +246,11 @@ mod tests {
 
         let mut g = ExecutionGraph::new(HostNoop, Limits::default());
         let n = g.add_node(prog, f, vec!["x".into()]).unwrap();
+        g.set_node_label(n, "friendly node").unwrap();
         g.set_input_value(n, "x", Value::I64(1)).unwrap();
 
         let dot = g.to_dot();
+        assert!(dot.contains("friendly node"));
         assert!(dot.contains("node#0 (named_program)"));
         assert!(dot.contains("entry=f0 (named_entry)"));
     }

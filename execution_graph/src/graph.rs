@@ -206,6 +206,7 @@ pub(crate) enum NodeKind {
 #[derive(Debug)]
 pub(crate) struct Node {
     pub(crate) kind: NodeKind,
+    pub(crate) label: Option<Box<str>>,
     pub(crate) input_names: Vec<Box<str>>,
     pub(crate) input_slots: BTreeMap<Box<str>, Vec<usize>>,
     pub(crate) inputs: Vec<Option<Binding>>,
@@ -390,6 +391,45 @@ impl<H: Host> ExecutionGraph<H> {
         self.nodes.get(index)?.last_access.as_ref()
     }
 
+    /// Sets an advisory debug label for `node`.
+    ///
+    /// Labels do not affect scheduling, dependency keys, or graph identity. They are intended for
+    /// reports and DOT output, where a domain name is easier to read than a raw [`NodeId`].
+    ///
+    /// Returns [`GraphError::BadNodeId`] for an unknown node.
+    pub fn set_node_label(
+        &mut self,
+        node: NodeId,
+        label: impl Into<Box<str>>,
+    ) -> Result<(), GraphError> {
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let Some(n) = self.nodes.get_mut(index) else {
+            return Err(GraphError::BadNodeId);
+        };
+        n.label = Some(label.into());
+        Ok(())
+    }
+
+    /// Clears the advisory debug label for `node`.
+    ///
+    /// Returns [`GraphError::BadNodeId`] for an unknown node.
+    pub fn clear_node_label(&mut self, node: NodeId) -> Result<(), GraphError> {
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let Some(n) = self.nodes.get_mut(index) else {
+            return Err(GraphError::BadNodeId);
+        };
+        n.label = None;
+        Ok(())
+    }
+
+    /// Returns the advisory debug label for `node`, if one was set.
+    #[must_use]
+    #[inline]
+    pub fn node_label(&self, node: NodeId) -> Option<&str> {
+        let index = usize::try_from(node.as_u64()).ok()?;
+        self.nodes.get(index)?.label.as_deref()
+    }
+
     /// Adds a node and returns its [`NodeId`].
     ///
     /// `input_names` defines the mapping from per-node binding names to positional function args.
@@ -453,6 +493,7 @@ impl<H: Host> ExecutionGraph<H> {
 
         let n = Node {
             kind: NodeKind::Tape { program, entry },
+            label: None,
             input_names,
             input_slots,
             inputs: alloc::vec![None; input_count],
@@ -677,6 +718,7 @@ impl<H: Host> ExecutionGraph<H> {
     /// Builds a report-capable plan from all currently affected dirty work.
     #[inline]
     fn plan_all_report(&mut self, detail_mask: ReportDetailMask) -> RunPlan {
+        let collect_label = detail_mask.contains(ReportDetailMask::NODE_LABEL);
         let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
@@ -721,6 +763,7 @@ impl<H: Host> ExecutionGraph<H> {
 
                 node_report[index] = Some(NodeRunDetail {
                     node,
+                    node_label: Self::report_node_label(&self.nodes, node, collect_label),
                     because_of: if collect_because {
                         Some(because_of)
                     } else {
@@ -747,6 +790,7 @@ impl<H: Host> ExecutionGraph<H> {
 
                 node_report[index] = Some(NodeRunDetail {
                     node: *node,
+                    node_label: Self::report_node_label(&self.nodes, *node, collect_label),
                     because_of: if collect_because {
                         Some(key.clone())
                     } else {
@@ -796,6 +840,7 @@ impl<H: Host> ExecutionGraph<H> {
             return Err(GraphError::BadNodeId);
         };
         let output_count = n.output_ids.len();
+        let collect_label = detail_mask.contains(ReportDetailMask::NODE_LABEL);
         let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
@@ -845,6 +890,11 @@ impl<H: Host> ExecutionGraph<H> {
 
                     node_report[scheduled_index] = Some(NodeRunDetail {
                         node: scheduled_node,
+                        node_label: Self::report_node_label(
+                            &self.nodes,
+                            scheduled_node,
+                            collect_label,
+                        ),
                         because_of: if collect_because {
                             Some(because_of)
                         } else {
@@ -878,6 +928,7 @@ impl<H: Host> ExecutionGraph<H> {
 
                     node_report[scheduled_index] = Some(NodeRunDetail {
                         node: *node,
+                        node_label: Self::report_node_label(&self.nodes, *node, collect_label),
                         because_of: if collect_because {
                             Some(key.clone())
                         } else {
@@ -892,6 +943,15 @@ impl<H: Host> ExecutionGraph<H> {
         let nodes = core::mem::take(&mut self.scratch.to_run);
         Ok(RunPlan::within_dependencies_of(node, nodes)
             .with_trace(RunPlanTrace::from_node_reports(node_report)))
+    }
+
+    #[inline]
+    fn report_node_label(nodes: &[Node], node: NodeId, collect_label: bool) -> Option<Box<str>> {
+        if !collect_label {
+            return None;
+        }
+        let index = usize::try_from(node.as_u64()).ok()?;
+        nodes.get(index)?.label.clone()
     }
 
     #[inline]
@@ -1274,6 +1334,28 @@ mod tests {
     }
 
     #[test]
+    fn node_labels_are_advisory_metadata() {
+        let (prog, entry) = const_program(7);
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let node = g.add_node(prog, entry, vec![]).unwrap();
+
+        assert_eq!(g.node_label(node), None);
+        g.set_node_label(node, "total").unwrap();
+        assert_eq!(g.node_label(node), Some("total"));
+        g.clear_node_label(node).unwrap();
+        assert_eq!(g.node_label(node), None);
+
+        assert_eq!(
+            g.set_node_label(NodeId::new(99), "missing"),
+            Err(GraphError::BadNodeId)
+        );
+        assert_eq!(
+            g.clear_node_label(NodeId::new(99)),
+            Err(GraphError::BadNodeId)
+        );
+    }
+
+    #[test]
     fn graph_error_display_includes_actionable_context() {
         let bad_entry = GraphError::BadEntryFunc { func: FuncId(99) }.to_string();
         assert!(bad_entry.contains("f99"));
@@ -1629,6 +1711,70 @@ mod tests {
         assert_eq!(full.executed.len(), 2);
         for e in &full.executed {
             assert!(e.because_of.is_some());
+            assert!(e.why_path.is_some());
+        }
+    }
+
+    #[test]
+    fn run_node_with_report_includes_node_labels_when_requested() {
+        fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
+            let mut pb = ProgramBuilder::new();
+            let mut a = Asm::new();
+            a.ret(0, &[1]);
+            let f = pb
+                .push_function_checked(
+                    a,
+                    FunctionSig {
+                        arg_types: vec![ValueType::I64],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap();
+            pb.set_function_output_name(f, 0, output_name).unwrap();
+            (Arc::new(pb.build_verified().unwrap()), f)
+        }
+
+        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let (a_prog, a_entry) = make_identity_program("value");
+        let (b_prog, b_entry) = make_identity_program("value");
+
+        let na = g.add_node(a_prog, a_entry, vec!["a".into()]).unwrap();
+        let nb = g.add_node(b_prog, b_entry, vec!["b".into()]).unwrap();
+        g.set_node_label(na, "source").unwrap();
+        g.set_node_label(nb, "sink").unwrap();
+        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.connect(na, "value", nb, "b").unwrap();
+
+        g.run_all().unwrap();
+        g.set_input_value(na, "a", Value::I64(2)).unwrap();
+        g.invalidate_input("a");
+
+        let labels_only = g
+            .run_node_with_report(nb, ReportDetailMask::NODE_LABEL)
+            .unwrap();
+        assert_eq!(labels_only.executed.len(), 2);
+        assert_eq!(labels_only.executed[0].node, na);
+        assert_eq!(
+            labels_only.executed[0].node_label.as_deref(),
+            Some("source")
+        );
+        assert!(labels_only.executed[0].because_of.is_none());
+        assert!(labels_only.executed[0].why_path.is_none());
+        assert_eq!(labels_only.executed[1].node, nb);
+        assert_eq!(labels_only.executed[1].node_label.as_deref(), Some("sink"));
+        assert!(labels_only.executed[1].because_of.is_none());
+        assert!(labels_only.executed[1].why_path.is_none());
+
+        g.set_input_value(na, "a", Value::I64(3)).unwrap();
+        g.invalidate_input("a");
+
+        let why_only = g
+            .run_node_with_report(nb, ReportDetailMask::WHY_PATH)
+            .unwrap();
+        assert_eq!(why_only.executed.len(), 2);
+        for e in &why_only.executed {
+            assert!(e.node_label.is_none());
+            assert!(e.because_of.is_none());
             assert!(e.why_path.is_some());
         }
     }

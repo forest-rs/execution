@@ -10,12 +10,11 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::cell::RefCell;
 
-use execution_graph::{ExecutionGraph, GraphError, NodeId, ReportDetailMask, ResourceKey};
+use execution_graph::{ExecutionGraph, GraphError, ReportDetailMask, ResourceKey, RunDetailReport};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
@@ -132,27 +131,38 @@ fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
     (Arc::new(pb.build_verified().unwrap()), f)
 }
 
-fn label_for(node: NodeId) -> &'static str {
-    match node.as_u64() {
-        0 => "price_subtotal",
-        1 => "tax_amount",
-        2 => "total",
-        _ => "<unknown>",
-    }
-}
-
-fn fmt_key(node_labels: &BTreeMap<u64, &'static str>, key: &ResourceKey) -> String {
+fn fmt_key(g: &ExecutionGraph<TaxHost>, key: &ResourceKey) -> String {
     match key {
         ResourceKey::Input(name) => format!("Input({name})"),
         ResourceKey::NodeOutput { node, output } => {
-            let label = node_labels
-                .get(&node.as_u64())
-                .copied()
-                .unwrap_or("<unknown>");
+            let label = g.node_label(*node).unwrap_or("<unknown>");
             format!("NodeOutput({label}:{output})")
         }
         ResourceKey::HostState { op, key } => format!("HostState(op={}, key={key})", op.as_u64()),
         ResourceKey::OpaqueHost(op) => format!("OpaqueHost(op={})", op.as_u64()),
+    }
+}
+
+fn print_report(g: &ExecutionGraph<TaxHost>, report: RunDetailReport) {
+    for r in report.executed {
+        let label = r
+            .node_label
+            .as_deref()
+            .or_else(|| g.node_label(r.node))
+            .unwrap_or("<unknown>");
+        let because_of = r
+            .because_of
+            .as_ref()
+            .map(|k| fmt_key(g, k))
+            .unwrap_or_else(|| "<none>".to_string());
+        println!(
+            "  - {label} (node={}): because this is dirty: {because_of}",
+            r.node.as_u64()
+        );
+        println!("    path:");
+        for k in r.why_path.unwrap_or_default() {
+            println!("      - {}", fmt_key(g, &k));
+        }
     }
 }
 
@@ -175,12 +185,9 @@ fn main() -> Result<(), GraphError> {
     let n_price = g.add_node(p_prog, p_entry, vec!["qty".into(), "unit_price".into()])?;
     let n_tax = g.add_node(t_prog, t_entry, vec!["subtotal".into()])?;
     let n_total = g.add_node(sum_prog, sum_entry, vec!["subtotal".into(), "tax".into()])?;
-
-    let node_labels: BTreeMap<u64, &'static str> = BTreeMap::from([
-        (n_price.as_u64(), label_for(n_price)),
-        (n_tax.as_u64(), label_for(n_tax)),
-        (n_total.as_u64(), label_for(n_total)),
-    ]);
+    g.set_node_label(n_price, "price_subtotal")?;
+    g.set_node_label(n_tax, "tax_amount")?;
+    g.set_node_label(n_total, "total")?;
 
     g.set_input_value(n_price, "qty", Value::I64(2))?;
     g.set_input_value(n_price, "unit_price", Value::I64(120))?;
@@ -218,25 +225,7 @@ fn main() -> Result<(), GraphError> {
     println!();
     println!("🟧 why re-ran after qty change (one plausible path per executed node):");
     println!("  🟫 note: this is not an exhaustive explanation; other causes may exist.");
-    for r in report.executed {
-        let label = node_labels
-            .get(&r.node.as_u64())
-            .copied()
-            .unwrap_or("<unknown>");
-        let because_of = r
-            .because_of
-            .as_ref()
-            .map(|k| fmt_key(&node_labels, k))
-            .unwrap_or_else(|| "<none>".to_string());
-        println!(
-            "  - {label} (node={}): because this is dirty: {because_of}",
-            r.node.as_u64()
-        );
-        println!("    path:");
-        for k in r.why_path.unwrap_or_default() {
-            println!("      - {}", fmt_key(&node_labels, &k));
-        }
-    }
+    print_report(&g, report);
 
     // Change 2: the tax rate changes (host state). This should re-run only the nodes that depend
     // on that host state (tax_amount and total), not price_subtotal.
@@ -264,25 +253,7 @@ fn main() -> Result<(), GraphError> {
     println!();
     println!("🟧 why re-ran after tax rate change (one plausible path per executed node):");
     println!("  🟫 note: this is not an exhaustive explanation; other causes may exist.");
-    for r in report.executed {
-        let label = node_labels
-            .get(&r.node.as_u64())
-            .copied()
-            .unwrap_or("<unknown>");
-        let because_of = r
-            .because_of
-            .as_ref()
-            .map(|k| fmt_key(&node_labels, k))
-            .unwrap_or_else(|| "<none>".to_string());
-        println!(
-            "  - {label} (node={}): because this is dirty: {because_of}",
-            r.node.as_u64()
-        );
-        println!("    path:");
-        for k in r.why_path.unwrap_or_default() {
-            println!("      - {}", fmt_key(&node_labels, &k));
-        }
-    }
+    print_report(&g, report);
 
     Ok(())
 }
