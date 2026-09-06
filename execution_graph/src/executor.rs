@@ -7,9 +7,13 @@
 //! and reporting. It does not know what a node body is. An [`Executor`] supplies that: the value
 //! type carried on edges, the node body type, and the code that turns bound inputs into outputs.
 //!
-//! [`TapeExecutor`](crate::TapeExecutor) runs verified `execution_tape` programs (behind the
-//! `tape` feature). An embedder with several kinds of node writes an executor whose node type is
-//! an enum over them and delegates each variant.
+//! Two executors ship with this crate:
+//! - [`FnExecutor`](crate::FnExecutor) runs native Rust closures.
+//! - [`TapeExecutor`](crate::TapeExecutor) runs verified `execution_tape` programs (behind the
+//!   `tape` feature).
+//!
+//! An embedder that needs both kinds of node in one graph writes an executor whose node type is an
+//! enum over the two and delegates each variant.
 
 use alloc::string::String;
 use alloc::vec::Vec;

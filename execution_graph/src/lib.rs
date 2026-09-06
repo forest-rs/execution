@@ -12,9 +12,59 @@
 //! supplied by an [`Executor`]: the value type carried on edges, the node body type, and the
 //! code that turns bound inputs into outputs.
 //!
-//! [`TapeExecutor`] runs verified `execution_tape` programs ([`TapeNode`]) as nodes; it is
-//! behind the default-on `tape` feature. Embedders with their own node kinds implement
-//! [`Executor`] directly.
+//! Two executors ship with the crate:
+//! - [`FnExecutor`] runs native Rust closures ([`FnNode`]).
+//! - [`TapeExecutor`] runs verified `execution_tape` programs ([`TapeNode`]); it is behind the
+//!   default-on `tape` feature.
+//!
+//! An embedder that needs both kinds of node in one graph writes an executor whose node type is
+//! an enum over the two and delegates each variant.
+//!
+//! ## Quick Start
+//!
+//! ```rust
+//! use core::convert::Infallible;
+//!
+//! use execution_graph::{ExecutionGraph, FnExecutor, FnNode};
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut graph = ExecutionGraph::new(FnExecutor::<i64, Infallible>::new());
+//!
+//!     let double = graph.add_node(
+//!         FnNode::named("double", |inputs, outputs, _access| {
+//!             outputs.push(inputs[0] * 2);
+//!             Ok(())
+//!         }),
+//!         vec!["x".into()],
+//!         vec!["doubled".into()],
+//!     )?;
+//!     let increment = graph.add_node(
+//!         FnNode::named("increment", |inputs, outputs, _access| {
+//!             outputs.push(inputs[0] + 1);
+//!             Ok(())
+//!         }),
+//!         vec!["value".into()],
+//!         vec!["result".into()],
+//!     )?;
+//!
+//!     graph.set_input_value(double, "x", 20)?;
+//!     graph.connect(double, "doubled", increment, "value")?;
+//!
+//!     let summary = graph.run_all()?;
+//!     assert_eq!(summary.executed_nodes, 2);
+//!     assert_eq!(graph.node_outputs(increment).unwrap().get("result"), Some(&41));
+//!
+//!     // Nothing changed, so nothing re-runs.
+//!     assert_eq!(graph.run_all()?.executed_nodes, 0);
+//!
+//!     // Invalidating an input by name re-runs exactly its dependents.
+//!     graph.set_input_value(double, "x", 21)?;
+//!     graph.invalidate_input("x");
+//!     assert_eq!(graph.run_all()?.executed_nodes, 2);
+//!     assert_eq!(graph.node_outputs(increment).unwrap().get("result"), Some(&43));
+//!     Ok(())
+//! }
+//! ```
 //!
 //! ## Model
 //!
@@ -38,7 +88,7 @@
 //! `connect` return [`GraphError`] values for duplicate output names, input arity mismatches,
 //! unknown input names, and unknown output names.
 //!
-//! ## Quick Start
+//! ## Tape programs
 //!
 //! With the `tape` feature, [`TapeExecutor`] runs verified `execution_tape` programs as nodes.
 //! Host calls record dependency keys through `execution_tape::host::AccessSink`, and those keys
@@ -149,6 +199,7 @@ mod dirty;
 mod dispatch;
 mod executor;
 mod graph;
+mod native;
 mod node_access;
 mod plan;
 mod pretty;
@@ -159,6 +210,7 @@ pub mod tape;
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 pub use executor::Executor;
 pub use graph::{ExecutionGraph, GraphError, NodeOutputs};
+pub use native::{FnExecutor, FnNode, NodeFn};
 pub use node_access::NodeAccess;
 pub use report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
 #[cfg(feature = "tape")]

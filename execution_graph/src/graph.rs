@@ -3090,3 +3090,378 @@ mod tape_tests {
         assert_eq!(g.node_run_count(n), Some(3));
     }
 }
+
+#[cfg(test)]
+mod native_tests {
+    extern crate std;
+
+    use alloc::rc::Rc;
+    use alloc::string::ToString;
+    use alloc::vec;
+    use core::cell::Cell;
+    use core::convert::Infallible;
+
+    use super::*;
+    use crate::native::{FnExecutor, FnNode};
+
+    type Graph = ExecutionGraph<FnExecutor<i64, &'static str>>;
+
+    fn const_node(value: i64) -> FnNode<i64, &'static str> {
+        FnNode::new(move |_inputs, outputs, _access| {
+            outputs.push(value);
+            Ok(())
+        })
+    }
+
+    fn sum_node() -> FnNode<i64, &'static str> {
+        FnNode::new(|inputs, outputs, _access| {
+            outputs.push(inputs.iter().sum());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn closures_run_in_dependency_order_and_only_when_dirty() {
+        let mut g = Graph::new(FnExecutor::new());
+        let a = g
+            .add_node(const_node(2), vec![], vec!["value".into()])
+            .unwrap();
+        let b = g
+            .add_node(
+                sum_node(),
+                vec!["lhs".into(), "rhs".into()],
+                vec!["sum".into()],
+            )
+            .unwrap();
+        g.set_input_value(b, "rhs", 40).unwrap();
+        g.connect(a, "value", b, "lhs").unwrap();
+
+        assert_eq!(g.run_all().unwrap().executed_nodes, 2);
+        assert_eq!(g.node_outputs(b).unwrap().get("sum"), Some(&42));
+        assert_eq!(g.run_all().unwrap().executed_nodes, 0);
+
+        g.set_input_value(b, "rhs", 41).unwrap();
+        g.invalidate_input("rhs");
+        let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
+        assert_eq!(report.executed.len(), 1);
+        assert_eq!(report.executed[0].node, b);
+        assert_eq!(
+            report.executed[0].because_of,
+            Some(ResourceKey::node_output(b, "sum"))
+        );
+        assert_eq!(g.node_outputs(b).unwrap().get("sum"), Some(&43));
+        assert_eq!(g.node_run_count(a), Some(1));
+    }
+
+    #[test]
+    fn executor_errors_are_wrapped_with_the_node_id() {
+        let mut g = Graph::new(FnExecutor::new());
+        let ok = g
+            .add_node(const_node(1), vec![], vec!["value".into()])
+            .unwrap();
+        let failing = g
+            .add_node(
+                FnNode::new(|_inputs, _outputs, _access| Err("boom")),
+                vec![],
+                vec!["value".into()],
+            )
+            .unwrap();
+
+        let err = g.run_all().unwrap_err();
+        assert_eq!(
+            err,
+            GraphError::Node {
+                node: failing,
+                source: "boom",
+            }
+        );
+        assert!(err.to_string().contains("node execution failed"));
+        assert!(err.to_string().contains("boom"));
+
+        // The failed node's pending work survives for a later run; the healthy node ran once.
+        assert_eq!(g.node_run_count(ok), Some(1));
+        assert_eq!(g.node_run_count(failing), Some(0));
+        assert!(matches!(g.run_all(), Err(GraphError::Node { .. })));
+        assert_eq!(g.node_run_count(ok), Some(1));
+    }
+
+    #[test]
+    fn output_arity_is_checked_against_declared_names() {
+        let mut g = Graph::new(FnExecutor::new());
+        let n = g
+            .add_node(const_node(1), vec![], vec!["a".into(), "b".into()])
+            .unwrap();
+        assert_eq!(g.run_all(), Err(GraphError::BadOutputArity { node: n }));
+        assert_eq!(g.node_run_count(n), Some(0));
+        assert!(g.node_outputs(n).unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplicate_output_names_are_rejected() {
+        let mut g = Graph::new(FnExecutor::new());
+        assert_eq!(
+            g.add_node(const_node(1), vec![], vec!["a".into(), "a".into()])
+                .unwrap_err(),
+            GraphError::DuplicateOutput { name: "a".into() }
+        );
+        assert!(g.node_outputs(NodeId::new(0)).is_none());
+    }
+
+    #[test]
+    fn node_access_reads_make_executor_state_invalidatable() {
+        let rate = Rc::new(Cell::new(10));
+        let op = HostOpId::new(7);
+        const RATE_KEY: u64 = 3;
+
+        let mut g = Graph::new(FnExecutor::new());
+        let captured = rate.clone();
+        let scaled = g
+            .add_node(
+                FnNode::named("scaled", move |inputs, outputs, access| {
+                    access.read_host_state(op, RATE_KEY);
+                    outputs.push(inputs[0] * captured.get());
+                    Ok(())
+                }),
+                vec!["x".into()],
+                vec!["value".into()],
+            )
+            .unwrap();
+        let untouched = g
+            .add_node(const_node(5), vec![], vec!["value".into()])
+            .unwrap();
+        g.set_input_value(scaled, "x", 2).unwrap();
+        g.set_collect_access_log(true);
+
+        g.run_all().unwrap();
+        assert_eq!(g.node_outputs(scaled).unwrap().get("value"), Some(&20));
+        assert_eq!(
+            g.node_last_access(scaled).unwrap().as_slice(),
+            &[
+                Access::Read(ResourceKey::input("x")),
+                Access::Read(ResourceKey::host_state(op, RATE_KEY)),
+                Access::Write(ResourceKey::node_output(scaled, "value")),
+            ]
+        );
+
+        // Mutating executor state without invalidation is invisible to the graph, by design.
+        rate.set(100);
+        assert_eq!(g.run_all().unwrap().executed_nodes, 0);
+
+        g.invalidate(ResourceKey::host_state(op, RATE_KEY));
+        let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
+        assert_eq!(report.executed.len(), 1);
+        assert_eq!(report.executed[0].node, scaled);
+        assert_eq!(
+            report.executed[0].why_path.as_deref(),
+            Some(
+                &[
+                    ResourceKey::host_state(op, RATE_KEY),
+                    ResourceKey::node_output(scaled, "value"),
+                ][..]
+            )
+        );
+        assert_eq!(g.node_outputs(scaled).unwrap().get("value"), Some(&200));
+        assert_eq!(g.node_run_count(untouched), Some(1));
+        assert_eq!(g.node_description(scaled).as_deref(), Some("scaled"));
+    }
+
+    #[test]
+    fn node_access_writes_invalidate_other_readers_but_not_the_writer() {
+        let op = HostOpId::new(1);
+        let mut g = ExecutionGraph::new(FnExecutor::<i64, Infallible>::new());
+        let reader = g
+            .add_node(
+                FnNode::new(move |_inputs, outputs, access| {
+                    access.read_opaque_host(op);
+                    outputs.push(1);
+                    Ok(())
+                }),
+                vec![],
+                vec!["value".into()],
+            )
+            .unwrap();
+        let writer = g
+            .add_node(
+                FnNode::new(move |_inputs, outputs, access| {
+                    access.read_opaque_host(op);
+                    access.write_opaque_host(op);
+                    outputs.push(2);
+                    Ok(())
+                }),
+                vec![],
+                vec!["value".into()],
+            )
+            .unwrap();
+
+        g.run_all().unwrap();
+        assert_eq!(g.node_run_count(reader), Some(1));
+        assert_eq!(g.node_run_count(writer), Some(1));
+
+        // The writer dirtied the opaque key during the first run: the reader re-runs, the
+        // read-modify-write node has reached its fixpoint.
+        g.run_all().unwrap();
+        assert_eq!(g.node_run_count(reader), Some(2));
+        assert_eq!(g.node_run_count(writer), Some(1));
+        assert_eq!(g.run_all().unwrap().executed_nodes, 0);
+    }
+
+    #[test]
+    fn node_access_input_reads_join_the_named_input_key_space() {
+        let mut g = ExecutionGraph::new(FnExecutor::<i64, Infallible>::new());
+        let n = g
+            .add_node(
+                FnNode::new(|_inputs, outputs, access| {
+                    access.read_input("ambient");
+                    outputs.push(0);
+                    Ok(())
+                }),
+                vec![],
+                vec!["value".into()],
+            )
+            .unwrap();
+
+        g.run_all().unwrap();
+        g.invalidate_input("unrelated");
+        assert_eq!(g.run_all().unwrap().executed_nodes, 0);
+        g.invalidate_input("ambient");
+        assert_eq!(g.run_all().unwrap().executed_nodes, 1);
+        assert_eq!(g.node_run_count(n), Some(2));
+    }
+}
+
+/// Mixed-executor test: one graph whose nodes are either native closures or tape programs.
+#[cfg(all(test, feature = "tape"))]
+mod mixed_tests {
+    extern crate std;
+
+    use alloc::string::String;
+    use alloc::sync::Arc;
+    use alloc::vec;
+
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
+    use execution_tape::program::ValueType;
+    use execution_tape::value::Value;
+    use execution_tape::vm::Limits;
+
+    use super::*;
+    use crate::executor::Executor;
+    use crate::native::{FnExecutor, FnNode};
+    use crate::node_access::NodeAccess;
+    use crate::tape::{TapeError, TapeExecutor, TapeNode};
+
+    #[derive(Debug)]
+    struct HostNoop;
+
+    impl Host for HostNoop {
+        fn call(
+            &mut self,
+            _symbol: &str,
+            _sig_hash: SigHash,
+            _args: &[ValueRef<'_>],
+            _rets: &mut [Value],
+            _ctx: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            Err(HostError::UnknownSymbol)
+        }
+    }
+
+    #[derive(Debug)]
+    enum MixedNode {
+        Native(FnNode<Value, TapeError>),
+        Tape(TapeNode),
+    }
+
+    #[derive(Debug)]
+    struct MixedExecutor {
+        native: FnExecutor<Value, TapeError>,
+        tape: TapeExecutor<HostNoop>,
+    }
+
+    impl Executor for MixedExecutor {
+        type Value = Value;
+        type Node = MixedNode;
+        type Error = TapeError;
+
+        fn execute(
+            &mut self,
+            node: &mut Self::Node,
+            inputs: &[Self::Value],
+            outputs: &mut Vec<Self::Value>,
+            access: &mut NodeAccess<'_>,
+        ) -> Result<(), Self::Error> {
+            match node {
+                MixedNode::Native(body) => self.native.execute(body, inputs, outputs, access),
+                MixedNode::Tape(body) => self.tape.execute(body, inputs, outputs, access),
+            }
+        }
+
+        fn describe(&self, node: &Self::Node) -> Option<String> {
+            match node {
+                MixedNode::Native(body) => self.native.describe(body),
+                MixedNode::Tape(body) => self.tape.describe(body),
+            }
+        }
+    }
+
+    #[test]
+    fn native_and_tape_nodes_share_one_graph() {
+        // Tape: fn double(x: i64) -> i64 { x + x }
+        let mut pb = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.i64_add(2, 1, 1);
+        a.ret(0, &[2]);
+        let entry = pb
+            .push_function_checked(
+                a,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        pb.set_function_output_name(entry, 0, "doubled").unwrap();
+        let program = Arc::new(pb.build_verified().unwrap());
+        let tape_node = TapeNode::new(program, entry).unwrap();
+
+        let mut g = ExecutionGraph::new(MixedExecutor {
+            native: FnExecutor::new(),
+            tape: TapeExecutor::new(HostNoop, Limits::default()),
+        });
+        let output_names = tape_node.output_names();
+        let double = g
+            .add_node(MixedNode::Tape(tape_node), vec!["x".into()], output_names)
+            .unwrap();
+        let increment = g
+            .add_node(
+                MixedNode::Native(FnNode::named("increment", |inputs, outputs, _access| {
+                    let Value::I64(v) = inputs[0] else {
+                        unreachable!("tape output is typed i64");
+                    };
+                    outputs.push(Value::I64(v + 1));
+                    Ok(())
+                })),
+                vec!["value".into()],
+                vec!["result".into()],
+            )
+            .unwrap();
+        g.set_input_value(double, "x", Value::I64(20)).unwrap();
+        g.connect(double, "doubled", increment, "value").unwrap();
+
+        assert_eq!(g.run_all().unwrap().executed_nodes, 2);
+        assert_eq!(
+            g.node_outputs(increment).unwrap().get("result"),
+            Some(&Value::I64(41))
+        );
+        assert_eq!(g.node_description(increment).as_deref(), Some("increment"));
+        assert_eq!(g.node_description(double).as_deref(), Some("entry=f0"));
+
+        g.set_input_value(double, "x", Value::I64(21)).unwrap();
+        g.invalidate_input("x");
+        assert_eq!(g.run_all().unwrap().executed_nodes, 2);
+        assert_eq!(
+            g.node_outputs(increment).unwrap().get("result"),
+            Some(&Value::I64(43))
+        );
+    }
+}

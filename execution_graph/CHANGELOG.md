@@ -30,6 +30,9 @@ You can find its changes [documented below](#001-2026-05-31).
   `ExecutionGraph::node_description`; `Executor::describe` text is rendered in Graphviz DOT.
 - Added `GraphError::DuplicateOutput`; `add_node` rejects repeated output names instead of
   silently aliasing them.
+- Added `FnExecutor` and `FnNode`, a closure-backed executor for native Rust node bodies, so a
+  graph of ordinary Rust operations needs no tape programs. A single graph can mix closure and
+  tape nodes through an executor whose node type is an enum over both.
 - Added advisory graph node labels via `ExecutionGraph::set_node_label`,
   `ExecutionGraph::clear_node_label`, and `ExecutionGraph::node_label`; labels can be included in
   execution reports with `ReportDetailMask::NODE_LABEL` and are rendered in Graphviz DOT output.
