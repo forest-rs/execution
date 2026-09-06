@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use execution_graph::{ExecutionGraph, HostOpId, ResourceKey};
+use execution_graph::{ExecutionGraph, HostOpId, ResourceKey, TapeExecutor};
+
+/// Graph whose nodes are tape programs calling into host `H`.
+type TapeGraph<H> = ExecutionGraph<TapeExecutor<H>>;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
@@ -68,16 +71,20 @@ fn build_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
     (Arc::new(pb.build_verified().unwrap()), f)
 }
 
-fn build_chain_graph(len: usize) -> (ExecutionGraph<NopHost>, execution_graph::NodeId) {
+fn build_chain_graph(len: usize) -> (TapeGraph<NopHost>, execution_graph::NodeId) {
     let (prog, entry) = build_identity_program("value");
-    let mut g = ExecutionGraph::new(NopHost, Limits::default());
+    let mut g = ExecutionGraph::new(TapeExecutor::new(NopHost, Limits::default()));
 
-    let n0 = g.add_node(prog.clone(), entry, vec!["in".into()]).unwrap();
+    let n0 = g
+        .add_tape_node(prog.clone(), entry, vec!["in".into()])
+        .unwrap();
     g.set_input_value(n0, "in", Value::I64(1)).unwrap();
 
     let mut prev = n0;
     for _ in 1..len {
-        let n = g.add_node(prog.clone(), entry, vec!["x".into()]).unwrap();
+        let n = g
+            .add_tape_node(prog.clone(), entry, vec!["x".into()])
+            .unwrap();
         g.connect(prev, "value", n, "x").unwrap();
         prev = n;
     }
@@ -108,14 +115,14 @@ fn build_wide_input_program(
     (Arc::new(pb.build_verified().unwrap()), f)
 }
 
-fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
+fn build_stable_deps_graph(input_count: usize) -> TapeGraph<NopHost> {
     let (prog, entry) = build_wide_input_program(input_count, "value");
-    let mut g = ExecutionGraph::new(NopHost, Limits::default());
+    let mut g = ExecutionGraph::new(TapeExecutor::new(NopHost, Limits::default()));
 
     let input_names: Vec<Box<str>> = (0..input_count)
         .map(|i| format!("in{i}").into_boxed_str())
         .collect();
-    let node = g.add_node(prog, entry, input_names.clone()).unwrap();
+    let node = g.add_tape_node(prog, entry, input_names.clone()).unwrap();
 
     for (i, name) in input_names.iter().enumerate() {
         let value = i64::try_from(i).unwrap_or(i64::MAX);
@@ -140,8 +147,8 @@ fn build_stable_deps_graph(input_count: usize) -> ExecutionGraph<NopHost> {
 /// 1 `run_node_internal`.
 fn bench_single_node_rerun(c: &mut Criterion) {
     let (prog, entry) = build_identity_program("value");
-    let mut g = ExecutionGraph::new(NopHost, Limits::default());
-    let n0 = g.add_node(prog, entry, vec!["in".into()]).unwrap();
+    let mut g = ExecutionGraph::new(TapeExecutor::new(NopHost, Limits::default()));
+    let n0 = g.add_tape_node(prog, entry, vec!["in".into()]).unwrap();
     g.set_input_value(n0, "in", Value::I64(0)).unwrap();
     g.run_all().unwrap();
 
@@ -312,14 +319,14 @@ fn build_flap_reads_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
 
 fn build_stable_deps_flapping_order_graph(
     read_count: usize,
-) -> (ExecutionGraph<FlappingOrderHost>, HostOpId) {
+) -> (TapeGraph<FlappingOrderHost>, HostOpId) {
     let (prog, entry, op) = build_flap_reads_program();
     let host = FlappingOrderHost {
         read_count,
         flip: Rc::new(RefCell::new(false)),
     };
-    let mut g = ExecutionGraph::new(host, Limits::default());
-    g.add_node(prog, entry, vec![]).unwrap();
+    let mut g = ExecutionGraph::new(TapeExecutor::new(host, Limits::default()));
+    g.add_tape_node(prog, entry, vec![]).unwrap();
     g.run_all().unwrap();
     (g, op)
 }
@@ -346,15 +353,19 @@ fn bench_stable_deps_host_order_flap(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_fanout_graph(fanout: usize) -> (ExecutionGraph<NopHost>, execution_graph::NodeId) {
+fn build_fanout_graph(fanout: usize) -> (TapeGraph<NopHost>, execution_graph::NodeId) {
     let (prog, entry) = build_identity_program("value");
-    let mut g = ExecutionGraph::new(NopHost, Limits::default());
+    let mut g = ExecutionGraph::new(TapeExecutor::new(NopHost, Limits::default()));
 
-    let root = g.add_node(prog.clone(), entry, vec!["in".into()]).unwrap();
+    let root = g
+        .add_tape_node(prog.clone(), entry, vec!["in".into()])
+        .unwrap();
     g.set_input_value(root, "in", Value::I64(1)).unwrap();
 
     for _ in 0..fanout {
-        let leaf = g.add_node(prog.clone(), entry, vec!["x".into()]).unwrap();
+        let leaf = g
+            .add_tape_node(prog.clone(), entry, vec!["x".into()])
+            .unwrap();
         g.connect(root, "value", leaf, "x").unwrap();
     }
 
@@ -461,19 +472,19 @@ fn build_param_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
 fn build_disjoint_chains(
     chains: usize,
     chain_len: usize,
-) -> (ExecutionGraph<ParamHost>, Rc<RefCell<Vec<i64>>>, HostOpId) {
+) -> (TapeGraph<ParamHost>, Rc<RefCell<Vec<i64>>>, HostOpId) {
     let params = Rc::new(RefCell::new(vec![0_i64; chains]));
     let host = ParamHost {
         params: params.clone(),
     };
-    let mut g = ExecutionGraph::new(host, Limits::default());
+    let mut g = ExecutionGraph::new(TapeExecutor::new(host, Limits::default()));
 
     let (param_prog, param_entry, op) = build_param_program();
     let (id_prog, id_entry) = build_identity_program("value");
 
     for i in 0..chains {
         let root = g
-            .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+            .add_tape_node(param_prog.clone(), param_entry, vec!["key".into()])
             .unwrap();
         g.set_input_value(
             root,
@@ -485,7 +496,7 @@ fn build_disjoint_chains(
         let mut prev = root;
         for _ in 1..chain_len {
             let n = g
-                .add_node(id_prog.clone(), id_entry, vec!["x".into()])
+                .add_tape_node(id_prog.clone(), id_entry, vec!["x".into()])
                 .unwrap();
             g.connect(prev, "value", n, "x").unwrap();
             prev = n;
@@ -497,7 +508,7 @@ fn build_disjoint_chains(
 }
 
 #[inline]
-fn invalidate_host_state<H: Host>(g: &mut ExecutionGraph<H>, op: HostOpId, key: u64) {
+fn invalidate_host_state<H: Host>(g: &mut TapeGraph<H>, op: HostOpId, key: u64) {
     g.invalidate(ResourceKey::host_state(op, key));
 }
 
@@ -563,27 +574,27 @@ fn build_add2_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
 fn build_shared_upstream(
     tenants: usize,
     chain_len: usize,
-) -> (ExecutionGraph<ParamHost>, Rc<RefCell<Vec<i64>>>, HostOpId) {
+) -> (TapeGraph<ParamHost>, Rc<RefCell<Vec<i64>>>, HostOpId) {
     // One shared "global config" value at key=0, plus per-tenant value at key=(i+1).
     // Each tenant computes: base = add2(global, tenant), then a pass-through chain.
     let params = Rc::new(RefCell::new(vec![0_i64; tenants + 1]));
     let host = ParamHost {
         params: params.clone(),
     };
-    let mut g = ExecutionGraph::new(host, Limits::default());
+    let mut g = ExecutionGraph::new(TapeExecutor::new(host, Limits::default()));
 
     let (param_prog, param_entry, op) = build_param_program();
     let (add_prog, add_entry) = build_add2_program("value");
     let (id_prog, id_entry) = build_identity_program("value");
 
     let global = g
-        .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+        .add_tape_node(param_prog.clone(), param_entry, vec!["key".into()])
         .unwrap();
     g.set_input_value(global, "key", Value::U64(0)).unwrap();
 
     for i in 0..tenants {
         let per = g
-            .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+            .add_tape_node(param_prog.clone(), param_entry, vec!["key".into()])
             .unwrap();
         g.set_input_value(
             per,
@@ -593,7 +604,7 @@ fn build_shared_upstream(
         .unwrap();
 
         let base = g
-            .add_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()])
+            .add_tape_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()])
             .unwrap();
         g.connect(global, "value", base, "a").unwrap();
         g.connect(per, "value", base, "b").unwrap();
@@ -601,7 +612,7 @@ fn build_shared_upstream(
         let mut prev = base;
         for _ in 1..chain_len {
             let n = g
-                .add_node(id_prog.clone(), id_entry, vec!["x".into()])
+                .add_tape_node(id_prog.clone(), id_entry, vec!["x".into()])
                 .unwrap();
             g.connect(prev, "value", n, "x").unwrap();
             prev = n;
@@ -691,14 +702,14 @@ fn bench_shared_upstream_shared_key(c: &mut Criterion) {
 fn build_layered_dag(
     width: usize,
     layers: usize,
-) -> (ExecutionGraph<ParamHost>, Rc<RefCell<Vec<i64>>>, HostOpId) {
+) -> (TapeGraph<ParamHost>, Rc<RefCell<Vec<i64>>>, HostOpId) {
     // Root layer: width nodes each reads param_i64(key=i).
     // Each subsequent layer node i depends on (i) and (i+1 mod width) from previous layer via add2.
     let params = Rc::new(RefCell::new(vec![0_i64; width]));
     let host = ParamHost {
         params: params.clone(),
     };
-    let mut g = ExecutionGraph::new(host, Limits::default());
+    let mut g = ExecutionGraph::new(TapeExecutor::new(host, Limits::default()));
 
     let (param_prog, param_entry, op) = build_param_program();
     let (add_prog, add_entry) = build_add2_program("value");
@@ -706,7 +717,7 @@ fn build_layered_dag(
     let mut prev: Vec<execution_graph::NodeId> = Vec::with_capacity(width);
     for i in 0..width {
         let n = g
-            .add_node(param_prog.clone(), param_entry, vec!["key".into()])
+            .add_tape_node(param_prog.clone(), param_entry, vec!["key".into()])
             .unwrap();
         g.set_input_value(n, "key", Value::U64(u64::try_from(i).unwrap_or(u64::MAX)))
             .unwrap();
@@ -717,7 +728,7 @@ fn build_layered_dag(
         let mut next: Vec<execution_graph::NodeId> = Vec::with_capacity(width);
         for i in 0..width {
             let n = g
-                .add_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()])
+                .add_tape_node(add_prog.clone(), add_entry, vec!["a".into(), "b".into()])
                 .unwrap();
             let a0 = prev[i];
             let b0 = prev[(i + 1) % width];

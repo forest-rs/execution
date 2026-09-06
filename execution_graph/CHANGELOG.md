@@ -15,13 +15,43 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ### Added
 
+- Added the `Executor` trait: the graph no longer knows what a node body is. An executor supplies
+  the value type carried on edges, the node body type, and the code that runs a node; the graph
+  keeps dependency tracking, dirty propagation, scheduling, and reporting.
+- Added `NodeAccess`, the per-run dependency recorder handed to an executor, with typed
+  `read_input`, `read_host_state`, `read_opaque_host`, `write_host_state`, and
+  `write_opaque_host` methods. Graph inputs cannot be written from a node by construction.
+- Added `TapeExecutor`, `TapeNode`, and `TapeError` in the new `tape` module, which runs verified
+  `execution_tape` programs as nodes. `ExecutionGraph<TapeExecutor<H>>::add_tape_node` derives
+  input arity and output names from the program as `add_node` used to.
+- Added the default-on `tape` cargo feature; `execution_tape` is now an optional dependency and
+  the graph builds without it.
+- Added `ExecutionGraph::executor`, `ExecutionGraph::executor_mut`, and
+  `ExecutionGraph::node_description`; `Executor::describe` text is rendered in Graphviz DOT.
+- Added `GraphError::DuplicateOutput`; `add_node` rejects repeated output names instead of
+  silently aliasing them.
 - Added advisory graph node labels via `ExecutionGraph::set_node_label`,
   `ExecutionGraph::clear_node_label`, and `ExecutionGraph::node_label`; labels can be included in
   execution reports with `ReportDetailMask::NODE_LABEL` and are rendered in Graphviz DOT output.
 
 ### Changed
 
+- `ExecutionGraph` is generic over an `Executor` instead of an `execution_tape` host:
+  `ExecutionGraph::new(executor)` replaces `new(host, limits)`, and `add_node(body, input_names,
+  output_names)` takes an executor node body plus explicit output names. Tape nodes use
+  `add_tape_node(program, entry, input_names)`.
+- `GraphError<E>` is parameterized by the executor's error type. Executor failures surface as
+  `GraphError::Node { node, source }` and rejected node definitions as
+  `GraphError::InvalidNode(source)`. `NodeOutputs<V>` is parameterized by the value type.
+- `set_strict_deps` moved from `ExecutionGraph` to `TapeExecutor`; `invalidate_tape_key` is only
+  available on graphs whose executor is a `TapeExecutor`.
 - `ReportDetailMask::FULL` now includes `ReportDetailMask::NODE_LABEL`.
+
+### Removed
+
+- Removed `GraphError::BadEntryFunc`, `GraphError::BadInputArity`,
+  `GraphError::StrictDepsViolation`, and `GraphError::Trap`; they are now `TapeError` variants
+  wrapped in `GraphError::InvalidNode` or `GraphError::Node`.
 
 ## [0.0.1][] (2026-05-31)
 

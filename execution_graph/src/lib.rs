@@ -4,19 +4,52 @@
 // After you edit the crate's doc comment, regenerate README.md by running:
 // cargo rdme --workspace-project=execution_graph --heading-base-level=0
 
-//! Incremental execution graph built on `execution_tape`.
+//! Incremental execution graph with pluggable node executors.
 //!
-//! This crate provides a small `no_std` graph that executes verified `execution_tape` programs as
-//! nodes and re-executes only the nodes that are affected by changes.
+//! This crate provides a small `no_std` graph that runs nodes in dependency order and re-runs
+//! only the nodes affected by a change. The graph owns node identity, input bindings, dependency
+//! tracking, dirty propagation, scheduling, and reporting. What a node *is* and how it runs is
+//! supplied by an [`Executor`]: the value type carried on edges, the node body type, and the
+//! code that turns bound inputs into outputs.
+//!
+//! [`TapeExecutor`] runs verified `execution_tape` programs ([`TapeNode`]) as nodes; it is
+//! behind the default-on `tape` feature. Embedders with their own node kinds implement
+//! [`Executor`] directly.
+//!
+//! ## Model
+//!
+//! - **Nodes** are executor-defined bodies with named positional inputs and named outputs.
+//! - **Edges** represent data dependencies; they are recorded dynamically from each node run:
+//!   - reading an external input records `ResourceKey::Input(name)`
+//!   - reading another node's output records `ResourceKey::NodeOutput { node, output }`
+//!   - executors record additional dependencies through the [`NodeAccess`] they receive
+//! - **Invalidation** is done by name: calling `invalidate_input("foo")` marks the input key
+//!   `ResourceKey::Input("foo")` dirty, which may trigger re-execution of transitive dependents.
+//!
+//! Input names are part of the dependency key space: the string you pass to `set_input_value(node,
+//! "foo", ..)` must match the string you pass to `invalidate_input("foo")` for incremental
+//! scheduling to work.
+//!
+//! Executor-managed state uses the same key space: if a node records a
+//! [`ResourceKey::HostState { op, key }`](ResourceKey::HostState) read during execution, you can
+//! invalidate that state later via [`ExecutionGraph::invalidate`].
+//!
+//! Graph construction is checked at the public API boundary: `add_node`, `set_input_value`, and
+//! `connect` return [`GraphError`] values for duplicate output names, input arity mismatches,
+//! unknown input names, and unknown output names.
 //!
 //! ## Quick Start
 //!
-//! Use `execution_tape` to build verified programs, then wire them as graph nodes:
+//! With the `tape` feature, [`TapeExecutor`] runs verified `execution_tape` programs as nodes.
+//! Host calls record dependency keys through `execution_tape::host::AccessSink`, and those keys
+//! are translated into graph [`ResourceKey`]s.
 //!
 //! ```rust
+//! # #[cfg(feature = "tape")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
 //!
-//! use execution_graph::ExecutionGraph;
+//! use execution_graph::{ExecutionGraph, TapeExecutor};
 //! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
@@ -38,56 +71,38 @@
 //!     }
 //! }
 //!
-//! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut asm = Asm::new();
-//!     asm.const_i64(2, 1);
-//!     asm.i64_add(3, 1, 2);
-//!     asm.ret(0, &[3]);
+//! let mut asm = Asm::new();
+//! asm.const_i64(2, 1);
+//! asm.i64_add(3, 1, 2);
+//! asm.ret(0, &[3]);
 //!
-//!     let mut builder = ProgramBuilder::new();
-//!     let entry = builder.push_function_checked(
-//!         asm,
-//!         FunctionSig {
-//!             arg_types: vec![ValueType::I64],
-//!             ret_types: vec![ValueType::I64],
-//!         },
-//!     )?;
-//!     builder.set_function_output_name(entry, 0, "y")?;
-//!     let program = Arc::new(builder.build_verified()?);
+//! let mut builder = ProgramBuilder::new();
+//! let entry = builder.push_function_checked(
+//!     asm,
+//!     FunctionSig {
+//!         arg_types: vec![ValueType::I64],
+//!         ret_types: vec![ValueType::I64],
+//!     },
+//! )?;
+//! builder.set_function_output_name(entry, 0, "y")?;
+//! let program = Arc::new(builder.build_verified()?);
 //!
-//!     let mut graph = ExecutionGraph::new(NoHost, Limits::default());
-//!     let node = graph.add_node(program, entry, vec!["x".into()])?;
-//!     graph.set_input_value(node, "x", Value::I64(41))?;
+//! let mut graph = ExecutionGraph::new(TapeExecutor::new(NoHost, Limits::default()));
+//! let node = graph.add_tape_node(program, entry, vec!["x".into()])?;
+//! graph.set_input_value(node, "x", Value::I64(41))?;
 //!
-//!     let summary = graph.run_all()?;
-//!     assert_eq!(summary.executed_nodes, 1);
-//!     assert_eq!(graph.node_outputs(node).unwrap().get("y"), Some(&Value::I64(42)));
-//!     Ok(())
-//! }
+//! let summary = graph.run_all()?;
+//! assert_eq!(summary.executed_nodes, 1);
+//! assert_eq!(graph.node_outputs(node).unwrap().get("y"), Some(&Value::I64(42)));
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "tape"))]
+//! # fn main() {}
 //! ```
 //!
-//! ## Model
-//!
-//! - **Nodes** are `(VerifiedProgram, entry FuncId)` pairs.
-//! - **Edges** represent data dependencies; they are recorded dynamically from each node run:
-//!   - reading an external input records `ResourceKey::Input(name)`
-//!   - reading another node's output records `ResourceKey::NodeOutput { node, output }`
-//!   - host ops can record additional dependencies via `execution_tape::host::AccessSink`
-//! - **Invalidation** is done by name: calling `invalidate_input("foo")` marks the input key
-//!   `ResourceKey::Input("foo")` dirty, which may trigger re-execution of transitive dependents.
-//!
-//! Input names are part of the dependency key space: the string you pass to `set_input_value(node,
-//! "foo", ..)` must match the string you pass to `invalidate_input("foo")` for incremental
-//! scheduling to work.
-//!
-//! Host state invalidation uses the same key space: if a host op records a
-//! `ResourceKeyRef::HostState { op, key }` read during execution, you can invalidate that state
-//! later via `ExecutionGraph::invalidate_tape_key(...)` (or by constructing the corresponding owned
-//! `execution_graph::ResourceKey` and calling `ExecutionGraph::invalidate(...)`).
-//!
-//! Graph construction is checked at the public API boundary: `add_node`, `set_input_value`, and
-//! `connect` return `GraphError` values for unknown entry functions, input arity mismatches,
-//! unknown input names, and unknown output names.
+//! [`TapeExecutor::set_strict_deps`] enables a debugging mode that rejects host calls which
+//! record no access keys, so missing dependency reporting fails loudly instead of silently
+//! reusing stale results.
 //!
 //! ## Execution behavior
 //!
@@ -120,12 +135,10 @@
 //!
 //! ## Current limitations
 //!
-//! - `execution_graph` intentionally stays close to the VM: traps expose
-//!   `execution_tape::vm::TrapInfo` rather than source-language diagnostics.
-//! - VM traps are still collapsed to `GraphError::Trap` at the graph boundary. Missing inputs,
-//!   missing upstream outputs, bad output arity, and strict-deps failures are reported with context.
-//! - Graph nodes are currently `execution_tape` entrypoints only; custom dispatch can be layered
-//!   later without changing the resource-key model.
+//! - Planning drains all affected dirty work before execution starts, so a node whose re-run
+//!   produces an unchanged output still re-runs its dependents (no early cutoff).
+//! - The tape executor collapses VM traps to [`TapeError::Trap`] at the graph boundary rather
+//!   than source-language diagnostics.
 
 #![no_std]
 
@@ -134,12 +147,19 @@ extern crate alloc;
 mod access;
 mod dirty;
 mod dispatch;
+mod executor;
 mod graph;
+mod node_access;
 mod plan;
 mod pretty;
 mod report;
-mod tape_access;
+#[cfg(feature = "tape")]
+pub mod tape;
 
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
+pub use executor::Executor;
 pub use graph::{ExecutionGraph, GraphError, NodeOutputs};
+pub use node_access::NodeAccess;
 pub use report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
+#[cfg(feature = "tape")]
+pub use tape::{TapeError, TapeExecutor, TapeNode};

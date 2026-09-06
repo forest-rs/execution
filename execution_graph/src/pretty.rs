@@ -8,9 +8,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-use execution_tape::host::Host;
-
-use crate::graph::{Binding, ExecutionGraph, Node, NodeKind};
+use crate::executor::Executor;
+use crate::graph::{Binding, ExecutionGraph, Node};
 
 fn escape_record(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 8);
@@ -31,7 +30,7 @@ fn escape_record(value: &str) -> String {
     out
 }
 
-fn record_inputs(node: &Node) -> String {
+fn record_inputs<X: Executor>(node: &Node<X>) -> String {
     if node.input_names.is_empty() {
         return String::new();
     }
@@ -51,7 +50,7 @@ fn record_inputs(node: &Node) -> String {
     format!("{{ {} }}", parts.join(" | "))
 }
 
-fn record_outputs(node: &Node) -> String {
+fn record_outputs<X: Executor>(node: &Node<X>) -> String {
     if node.output_names.is_empty() {
         return String::new();
     }
@@ -63,17 +62,18 @@ fn record_outputs(node: &Node) -> String {
     format!("{{ {} }}", parts.join(" | "))
 }
 
-fn output_slot(node: &Node, output_name: &str) -> Option<usize> {
+fn output_slot<X: Executor>(node: &Node<X>, output_name: &str) -> Option<usize> {
     node.output_names
         .iter()
         .position(|candidate| candidate.as_ref() == output_name)
 }
 
-impl<H: Host> ExecutionGraph<H> {
+impl<X: Executor> ExecutionGraph<X> {
     /// Renders the graph as Graphviz DOT.
     ///
     /// Nodes are rendered as record-shaped boxes with one input and output port per declared
-    /// argument/return.
+    /// input/output. The executor's [`describe`](Executor::describe) text, if any, is shown under
+    /// the node id.
     #[must_use]
     pub fn to_dot(&self) -> String {
         let mut dot = String::from(
@@ -88,25 +88,14 @@ impl<H: Host> ExecutionGraph<H> {
         for (node_id, node) in self.nodes.iter().enumerate() {
             let input_block = record_inputs(node);
             let output_block = record_outputs(node);
-            let (node_line, entry_line) = match &node.kind {
-                NodeKind::Tape { program, entry } => {
-                    let p = program.program();
-                    let node_line = match p.name() {
-                        Some(name) => format!("node#{node_id} ({name})"),
-                        None => format!("node#{node_id}"),
-                    };
-                    let nl = match node.label.as_deref() {
-                        Some(label) => format!("{label}\n{node_line}"),
-                        None => node_line,
-                    };
-                    let el = match p.function_name(entry.0) {
-                        Some(name) => format!("entry=f{} ({name})", entry.0),
-                        None => format!("entry=f{}", entry.0),
-                    };
-                    (nl, el)
-                }
+            let node_line = match node.label.as_deref() {
+                Some(label) => format!("{label}\nnode#{node_id}"),
+                None => format!("node#{node_id}"),
             };
-            let center = escape_record(&format!("{node_line}\n{entry_line}"));
+            let center = match self.executor.describe(&node.body) {
+                Some(description) => escape_record(&format!("{node_line}\n{description}")),
+                None => escape_record(&node_line),
+            };
 
             let label = match (input_block.is_empty(), output_block.is_empty()) {
                 (true, true) => center,
@@ -156,11 +145,12 @@ impl<H: Host> ExecutionGraph<H> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tape"))]
 mod tests {
     extern crate std;
 
     use super::*;
+    use crate::tape::TapeExecutor;
     use alloc::sync::Arc;
     use alloc::vec;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
@@ -205,13 +195,15 @@ mod tests {
 
     #[test]
     fn to_dot_renders_ports_and_wired_edges() {
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
         let (a_prog, a_entry) = make_identity_program("subtotal");
         let (b_prog, b_entry) = make_identity_program("total");
 
-        let na = g.add_node(a_prog, a_entry, vec!["qty".into()]).unwrap();
+        let na = g
+            .add_tape_node(a_prog, a_entry, vec!["qty".into()])
+            .unwrap();
         let nb = g
-            .add_node(b_prog, b_entry, vec!["subtotal".into()])
+            .add_tape_node(b_prog, b_entry, vec!["subtotal".into()])
             .unwrap();
         g.set_input_value(na, "qty", Value::I64(2)).unwrap();
         g.connect(na, "subtotal", nb, "subtotal").unwrap();
@@ -244,14 +236,14 @@ mod tests {
         pb.set_function_output_name(f, 0, "value").unwrap();
         let prog = Arc::new(pb.build_verified().unwrap());
 
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n = g.add_node(prog, f, vec!["x".into()]).unwrap();
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
+        let n = g.add_tape_node(prog, f, vec!["x".into()]).unwrap();
         g.set_node_label(n, "friendly node").unwrap();
         g.set_input_value(n, "x", Value::I64(1)).unwrap();
 
         let dot = g.to_dot();
         assert!(dot.contains("friendly node"));
-        assert!(dot.contains("node#0 (named_program)"));
+        assert!(dot.contains("program=named_program"));
         assert!(dot.contains("entry=f0 (named_entry)"));
     }
 }

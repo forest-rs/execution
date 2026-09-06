@@ -9,9 +9,9 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use execution_tape::host::Host;
 
 use crate::access::NodeId;
+use crate::executor::Executor;
 use crate::graph::{ExecutionGraph, GraphError};
 use crate::plan::{PlanScope, RunPlan};
 use crate::report::{NodeRunDetail, RunDetailReport};
@@ -20,21 +20,25 @@ use crate::report::{NodeRunDetail, RunDetailReport};
 ///
 /// Dispatchers execute nodes in a precomputed [`RunPlan`] and may optionally assemble traced
 /// reporting if the plan carries trace payload.
-pub(crate) trait Dispatcher<H: Host> {
+pub(crate) trait Dispatcher<X: Executor> {
     /// Executes `plan` without producing traced reporting.
     ///
     /// The drained scheduling buffer is returned to the graph's scratch workspace (for capacity
     /// reuse on the next planning pass) on every exit path, success or error.
-    fn dispatch(&mut self, graph: &mut ExecutionGraph<H>, plan: RunPlan) -> Result<(), GraphError>;
+    fn dispatch(
+        &mut self,
+        graph: &mut ExecutionGraph<X>,
+        plan: RunPlan,
+    ) -> Result<(), GraphError<X::Error>>;
 
     /// Executes `plan` and returns traced reporting if available.
     ///
     /// Like [`Dispatcher::dispatch`], the scheduling buffer is reclaimed on every exit path.
     fn dispatch_with_report(
         &mut self,
-        graph: &mut ExecutionGraph<H>,
+        graph: &mut ExecutionGraph<X>,
         plan: RunPlan,
-    ) -> Result<RunDetailReport, GraphError>;
+    ) -> Result<RunDetailReport, GraphError<X::Error>>;
 }
 
 /// Serial in-thread dispatcher used by default.
@@ -44,13 +48,13 @@ pub(crate) trait Dispatcher<H: Host> {
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct InlineDispatcher;
 
-impl<H: Host> Dispatcher<H> for InlineDispatcher {
+impl<X: Executor> Dispatcher<X> for InlineDispatcher {
     #[inline]
     fn dispatch(
         &mut self,
-        graph: &mut ExecutionGraph<H>,
+        graph: &mut ExecutionGraph<X>,
         mut plan: RunPlan,
-    ) -> Result<(), GraphError> {
+    ) -> Result<(), GraphError<X::Error>> {
         // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
         match plan.scope() {
             PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
@@ -74,9 +78,9 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
     #[inline]
     fn dispatch_with_report(
         &mut self,
-        graph: &mut ExecutionGraph<H>,
+        graph: &mut ExecutionGraph<X>,
         mut plan: RunPlan,
-    ) -> Result<RunDetailReport, GraphError> {
+    ) -> Result<RunDetailReport, GraphError<X::Error>> {
         // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
         match plan.scope() {
             PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
@@ -118,7 +122,7 @@ impl<H: Host> Dispatcher<H> for InlineDispatcher {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tape"))]
 mod tests {
     extern crate std;
 
@@ -130,6 +134,7 @@ mod tests {
     use crate::graph::{ExecutionGraph, GraphError};
     use crate::plan::{RunPlan, RunPlanTrace};
     use crate::report::NodeRunDetail;
+    use crate::tape::TapeExecutor;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
     use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
     use execution_tape::program::ValueType;
@@ -201,11 +206,11 @@ mod tests {
         let (needs_input_prog, needs_input_entry) = make_identity_program("value");
         let (const_prog, const_entry) = make_const_program("value", 7);
 
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
         let n_err = g
-            .add_node(needs_input_prog, needs_input_entry, vec!["in".into()])
+            .add_tape_node(needs_input_prog, needs_input_entry, vec!["in".into()])
             .unwrap();
-        let n_ok = g.add_node(const_prog, const_entry, vec![]).unwrap();
+        let n_ok = g.add_tape_node(const_prog, const_entry, vec![]).unwrap();
         let plan = RunPlan::all(vec![n_err, n_ok]);
         let mut dispatcher = InlineDispatcher;
 
@@ -225,9 +230,9 @@ mod tests {
     fn inline_dispatcher_with_report_keeps_execution_order() {
         let (prog, entry) = make_const_program("value", 11);
 
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n0 = g.add_node(prog.clone(), entry, vec![]).unwrap();
-        let n1 = g.add_node(prog, entry, vec![]).unwrap();
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
+        let n0 = g.add_tape_node(prog.clone(), entry, vec![]).unwrap();
+        let n1 = g.add_tape_node(prog, entry, vec![]).unwrap();
 
         let r0 = NodeRunDetail {
             node: n0,
@@ -265,10 +270,10 @@ mod tests {
         let (const_prog, const_entry) = make_const_program("value", 11);
         let (needs_input_prog, needs_input_entry) = make_identity_program("value");
 
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n_ok = g.add_node(const_prog, const_entry, vec![]).unwrap();
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
+        let n_ok = g.add_tape_node(const_prog, const_entry, vec![]).unwrap();
         let n_err = g
-            .add_node(needs_input_prog, needs_input_entry, vec!["in".into()])
+            .add_tape_node(needs_input_prog, needs_input_entry, vec!["in".into()])
             .unwrap();
 
         let r_ok = NodeRunDetail {
@@ -320,9 +325,9 @@ mod tests {
     #[test]
     fn inline_dispatcher_with_report_synthesizes_minimal_rows_without_trace() {
         let (prog, entry) = make_const_program("value", 5);
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let n0 = g.add_node(prog.clone(), entry, vec![]).unwrap();
-        let n1 = g.add_node(prog, entry, vec![]).unwrap();
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
+        let n0 = g.add_tape_node(prog.clone(), entry, vec![]).unwrap();
+        let n1 = g.add_tape_node(prog, entry, vec![]).unwrap();
 
         let mut dispatcher = InlineDispatcher;
         let out = dispatcher
@@ -353,8 +358,8 @@ mod tests {
     #[test]
     fn inline_dispatcher_with_report_handles_short_trace_vectors() {
         let (prog, entry) = make_const_program("value", 5);
-        let mut g = ExecutionGraph::new(HostNoop, Limits::default());
-        let node = g.add_node(prog, entry, vec![]).unwrap();
+        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
+        let node = g.add_tape_node(prog, entry, vec![]).unwrap();
 
         // Empty trace payload: execution should still succeed and simply produce no traced rows.
         let trace = RunPlanTrace::from_node_reports(vec![]);
