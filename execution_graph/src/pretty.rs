@@ -145,67 +145,40 @@ impl<X: Executor> ExecutionGraph<X> {
     }
 }
 
-#[cfg(all(test, feature = "tape"))]
+#[cfg(test)]
 mod tests {
     extern crate std;
 
-    use super::*;
-    use crate::tape::TapeExecutor;
-    use alloc::sync::Arc;
     use alloc::vec;
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-    use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-    use execution_tape::program::ValueType;
-    use execution_tape::value::{FuncId, Value};
-    use execution_tape::verifier::VerifiedProgram;
-    use execution_tape::vm::Limits;
 
-    #[derive(Debug, Default)]
-    struct HostNoop;
+    use super::*;
+    use crate::native::{FnExecutor, FnNode};
 
-    impl Host for HostNoop {
-        fn call(
-            &mut self,
-            _symbol: &str,
-            _sig_hash: SigHash,
-            _args: &[ValueRef<'_>],
-            _rets: &mut [Value],
-            _ctx: HostContext<'_, '_>,
-        ) -> Result<u64, HostError> {
-            Err(HostError::UnknownSymbol)
-        }
-    }
-
-    fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
-        let mut pb = ProgramBuilder::new();
-        let mut a = Asm::new();
-        a.ret(0, &[1]);
-        let f = pb
-            .push_function_checked(
-                a,
-                FunctionSig {
-                    arg_types: vec![ValueType::I64],
-                    ret_types: vec![ValueType::I64],
-                },
-            )
-            .unwrap();
-        pb.set_function_output_name(f, 0, output_name).unwrap();
-        (Arc::new(pb.build_verified().unwrap()), f)
+    fn identity_node(name: &str) -> FnNode<i64, ()> {
+        FnNode::named(name, |inputs, outputs, _access| {
+            outputs.push(inputs[0]);
+            Ok(())
+        })
     }
 
     #[test]
     fn to_dot_renders_ports_and_wired_edges() {
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        let (a_prog, a_entry) = make_identity_program("subtotal");
-        let (b_prog, b_entry) = make_identity_program("total");
-
+        let mut g = ExecutionGraph::new(FnExecutor::<i64, ()>::new());
         let na = g
-            .add_tape_node(a_prog, a_entry, vec!["qty".into()])
+            .add_node(
+                identity_node("price"),
+                vec!["qty".into()],
+                vec!["subtotal".into()],
+            )
             .unwrap();
         let nb = g
-            .add_tape_node(b_prog, b_entry, vec!["subtotal".into()])
+            .add_node(
+                identity_node("sum"),
+                vec!["subtotal".into()],
+                vec!["total".into()],
+            )
             .unwrap();
-        g.set_input_value(na, "qty", Value::I64(2)).unwrap();
+        g.set_input_value(na, "qty", 2).unwrap();
         g.connect(na, "subtotal", nb, "subtotal").unwrap();
 
         let dot = g.to_dot();
@@ -218,32 +191,19 @@ mod tests {
     }
 
     #[test]
-    fn to_dot_includes_program_and_function_names_when_available() {
-        let mut pb = ProgramBuilder::new();
-        pb.set_program_name("named_program");
-        let mut a = Asm::new();
-        a.ret(0, &[1]);
-        let f = pb
-            .push_function_checked(
-                a,
-                FunctionSig {
-                    arg_types: vec![ValueType::I64],
-                    ret_types: vec![ValueType::I64],
-                },
+    fn to_dot_includes_labels_and_executor_descriptions() {
+        let mut g = ExecutionGraph::new(FnExecutor::<i64, ()>::new());
+        let n = g
+            .add_node(
+                identity_node("described"),
+                vec!["x".into()],
+                vec!["value".into()],
             )
             .unwrap();
-        pb.set_function_name(f, "named_entry").unwrap();
-        pb.set_function_output_name(f, 0, "value").unwrap();
-        let prog = Arc::new(pb.build_verified().unwrap());
-
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        let n = g.add_tape_node(prog, f, vec!["x".into()]).unwrap();
         g.set_node_label(n, "friendly node").unwrap();
-        g.set_input_value(n, "x", Value::I64(1)).unwrap();
+        g.set_input_value(n, "x", 1).unwrap();
 
         let dot = g.to_dot();
-        assert!(dot.contains("friendly node"));
-        assert!(dot.contains("program=named_program"));
-        assert!(dot.contains("entry=f0 (named_entry)"));
+        assert!(dot.contains("friendly node\\nnode#0\\ndescribed"));
     }
 }

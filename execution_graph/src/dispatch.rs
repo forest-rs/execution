@@ -122,95 +122,44 @@ impl<X: Executor> Dispatcher<X> for InlineDispatcher {
     }
 }
 
-#[cfg(all(test, feature = "tape"))]
+#[cfg(test)]
 mod tests {
     extern crate std;
 
-    use alloc::sync::Arc;
     use alloc::vec;
 
     use super::{Dispatcher, InlineDispatcher};
     use crate::access::ResourceKey;
     use crate::graph::{ExecutionGraph, GraphError};
+    use crate::native::{FnExecutor, FnNode};
     use crate::plan::{RunPlan, RunPlanTrace};
     use crate::report::NodeRunDetail;
-    use crate::tape::TapeExecutor;
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-    use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-    use execution_tape::program::ValueType;
-    use execution_tape::value::{FuncId, Value};
-    use execution_tape::verifier::VerifiedProgram;
-    use execution_tape::vm::Limits;
 
-    #[derive(Debug, Default)]
-    struct HostNoop;
+    type Graph = ExecutionGraph<FnExecutor<i64, ()>>;
 
-    impl Host for HostNoop {
-        fn call(
-            &mut self,
-            _symbol: &str,
-            _sig_hash: SigHash,
-            _args: &[ValueRef<'_>],
-            _rets: &mut [Value],
-            _ctx: HostContext<'_, '_>,
-        ) -> Result<u64, HostError> {
-            Err(HostError::UnknownSymbol)
-        }
+    fn identity_node() -> FnNode<i64, ()> {
+        FnNode::new(|inputs, outputs, _access| {
+            outputs.push(inputs[0]);
+            Ok(())
+        })
     }
 
-    fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
-        let mut pb = ProgramBuilder::new();
-        let mut a = Asm::new();
-        a.ret(0, &[1]);
-        let f = pb
-            .push_function_checked(
-                a,
-                FunctionSig {
-                    arg_types: vec![ValueType::I64],
-                    ret_types: vec![ValueType::I64],
-                },
-            )
-            .expect("identity function should be valid");
-        pb.set_function_output_name(f, 0, output_name)
-            .expect("name assignment should succeed");
-        (
-            Arc::new(pb.build_verified().expect("program should verify")),
-            f,
-        )
-    }
-
-    fn make_const_program(output_name: &str, value: i64) -> (Arc<VerifiedProgram>, FuncId) {
-        let mut pb = ProgramBuilder::new();
-        let mut a = Asm::new();
-        a.const_i64(1, value);
-        a.ret(0, &[1]);
-        let f = pb
-            .push_function_checked(
-                a,
-                FunctionSig {
-                    arg_types: vec![],
-                    ret_types: vec![ValueType::I64],
-                },
-            )
-            .expect("const function should be valid");
-        pb.set_function_output_name(f, 0, output_name)
-            .expect("name assignment should succeed");
-        (
-            Arc::new(pb.build_verified().expect("program should verify")),
-            f,
-        )
+    fn const_node(value: i64) -> FnNode<i64, ()> {
+        FnNode::new(move |_inputs, outputs, _access| {
+            outputs.push(value);
+            Ok(())
+        })
     }
 
     #[test]
     fn inline_dispatcher_fail_fast_matches_graph_error_semantics() {
-        let (needs_input_prog, needs_input_entry) = make_identity_program("value");
-        let (const_prog, const_entry) = make_const_program("value", 7);
-
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
+        let mut g = Graph::new(FnExecutor::new());
         let n_err = g
-            .add_tape_node(needs_input_prog, needs_input_entry, vec!["in".into()])
+            .add_node(identity_node(), vec!["in".into()], vec!["value".into()])
             .unwrap();
-        let n_ok = g.add_tape_node(const_prog, const_entry, vec![]).unwrap();
+        let n_ok = g
+            .add_node(const_node(7), vec![], vec!["value".into()])
+            .unwrap();
         let plan = RunPlan::all(vec![n_err, n_ok]);
         let mut dispatcher = InlineDispatcher;
 
@@ -228,11 +177,13 @@ mod tests {
 
     #[test]
     fn inline_dispatcher_with_report_keeps_execution_order() {
-        let (prog, entry) = make_const_program("value", 11);
-
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        let n0 = g.add_tape_node(prog.clone(), entry, vec![]).unwrap();
-        let n1 = g.add_tape_node(prog, entry, vec![]).unwrap();
+        let mut g = Graph::new(FnExecutor::new());
+        let n0 = g
+            .add_node(const_node(11), vec![], vec!["value".into()])
+            .unwrap();
+        let n1 = g
+            .add_node(const_node(11), vec![], vec!["value".into()])
+            .unwrap();
 
         let r0 = NodeRunDetail {
             node: n0,
@@ -267,13 +218,12 @@ mod tests {
 
     #[test]
     fn inline_dispatcher_with_report_returns_partial_report_on_error() {
-        let (const_prog, const_entry) = make_const_program("value", 11);
-        let (needs_input_prog, needs_input_entry) = make_identity_program("value");
-
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        let n_ok = g.add_tape_node(const_prog, const_entry, vec![]).unwrap();
+        let mut g = Graph::new(FnExecutor::new());
+        let n_ok = g
+            .add_node(const_node(11), vec![], vec!["value".into()])
+            .unwrap();
         let n_err = g
-            .add_tape_node(needs_input_prog, needs_input_entry, vec!["in".into()])
+            .add_node(identity_node(), vec!["in".into()], vec!["value".into()])
             .unwrap();
 
         let r_ok = NodeRunDetail {
@@ -324,10 +274,13 @@ mod tests {
 
     #[test]
     fn inline_dispatcher_with_report_synthesizes_minimal_rows_without_trace() {
-        let (prog, entry) = make_const_program("value", 5);
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        let n0 = g.add_tape_node(prog.clone(), entry, vec![]).unwrap();
-        let n1 = g.add_tape_node(prog, entry, vec![]).unwrap();
+        let mut g = Graph::new(FnExecutor::new());
+        let n0 = g
+            .add_node(const_node(5), vec![], vec!["value".into()])
+            .unwrap();
+        let n1 = g
+            .add_node(const_node(5), vec![], vec!["value".into()])
+            .unwrap();
 
         let mut dispatcher = InlineDispatcher;
         let out = dispatcher
@@ -357,9 +310,10 @@ mod tests {
 
     #[test]
     fn inline_dispatcher_with_report_handles_short_trace_vectors() {
-        let (prog, entry) = make_const_program("value", 5);
-        let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        let node = g.add_tape_node(prog, entry, vec![]).unwrap();
+        let mut g = Graph::new(FnExecutor::new());
+        let node = g
+            .add_node(const_node(5), vec![], vec!["value".into()])
+            .unwrap();
 
         // Empty trace payload: execution should still succeed and simply produce no traced rows.
         let trace = RunPlanTrace::from_node_reports(vec![]);
