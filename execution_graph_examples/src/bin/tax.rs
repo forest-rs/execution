@@ -14,7 +14,10 @@ use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::cell::RefCell;
 
-use execution_graph::{ExecutionGraph, GraphError, ReportDetailMask, ResourceKey, RunDetailReport};
+use execution_graph::{
+    ExecutionGraph, GraphError, ReportDetailMask, ResourceKey, RunDetailReport, TapeError,
+    TapeExecutor,
+};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef, sig_hash,
@@ -23,6 +26,8 @@ use execution_tape::program::ValueType;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::Limits;
+
+type TaxGraph = ExecutionGraph<TapeExecutor<TaxHost>>;
 
 #[derive(Debug)]
 struct TaxHost {
@@ -131,7 +136,7 @@ fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
     (Arc::new(pb.build_verified().unwrap()), f)
 }
 
-fn fmt_key(g: &ExecutionGraph<TaxHost>, key: &ResourceKey) -> String {
+fn fmt_key(g: &TaxGraph, key: &ResourceKey) -> String {
     match key {
         ResourceKey::Input(name) => format!("Input({name})"),
         ResourceKey::NodeOutput { node, output } => {
@@ -143,7 +148,7 @@ fn fmt_key(g: &ExecutionGraph<TaxHost>, key: &ResourceKey) -> String {
     }
 }
 
-fn print_report(g: &ExecutionGraph<TaxHost>, report: RunDetailReport) {
+fn print_report(g: &TaxGraph, report: RunDetailReport) {
     for r in report.executed {
         let label = r
             .node_label
@@ -170,25 +175,26 @@ fn print_report(g: &ExecutionGraph<TaxHost>, report: RunDetailReport) {
     }
 }
 
-fn main() -> Result<(), GraphError> {
+fn main() -> Result<(), GraphError<TapeError>> {
     let emit_dot = std::env::args().skip(1).any(|arg| arg == "--dot");
 
     let rate_bp: Rc<RefCell<i64>> = Rc::new(RefCell::new(825));
-    let mut g = ExecutionGraph::new(
+    let mut executor = TapeExecutor::new(
         TaxHost {
             rate_bp: rate_bp.clone(),
         },
         Limits::default(),
     );
-    g.set_strict_deps(true);
+    executor.set_strict_deps(true);
+    let mut g = ExecutionGraph::new(executor);
 
     let (p_prog, p_entry) = program_price_subtotal();
     let (t_prog, t_entry) = program_tax_amount();
     let (sum_prog, sum_entry) = program_total();
 
-    let n_price = g.add_node(p_prog, p_entry, vec!["qty".into(), "unit_price".into()])?;
-    let n_tax = g.add_node(t_prog, t_entry, vec!["subtotal".into()])?;
-    let n_total = g.add_node(sum_prog, sum_entry, vec!["subtotal".into(), "tax".into()])?;
+    let n_price = g.add_tape_node(p_prog, p_entry, vec!["qty".into(), "unit_price".into()])?;
+    let n_tax = g.add_tape_node(t_prog, t_entry, vec!["subtotal".into()])?;
+    let n_total = g.add_tape_node(sum_prog, sum_entry, vec!["subtotal".into(), "tax".into()])?;
     g.set_node_label(n_price, "price_subtotal")?;
     g.set_node_label(n_tax, "tax_amount")?;
     g.set_node_label(n_total, "total")?;
