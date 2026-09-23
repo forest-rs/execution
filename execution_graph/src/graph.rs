@@ -144,8 +144,9 @@ impl<E: fmt::Display> fmt::Display for GraphError<E> {
                 partial_report,
             } => write!(
                 f,
-                "graph run failed after collecting {} report rows: {source}",
-                partial_report.executed.len()
+                "graph run failed after collecting {} executed and {} cut-off report rows: {source}",
+                partial_report.executed.len(),
+                partial_report.cut_off.len()
             ),
         }
     }
@@ -216,7 +217,8 @@ pub(crate) struct Node<X: Executor> {
 ///   output it owns, not an input. The [`connect`](ExecutionGraph::connect) method adds
 ///   conservative edges to enforce initial topological ordering before the first run.
 /// - [`ExecutionGraph::run_all`] / [`ExecutionGraph::run_node`] execute dirty work and return a
-///   cheap executed-node summary.
+///   cheap executed-node summary. With early cutoff (see [`Executor::values_equal`]), scheduled
+///   nodes whose reads all turn out unchanged during the run are skipped and counted separately.
 /// - If you need “why re-ran” data, use [`ExecutionGraph::run_all_with_report`] /
 ///   [`ExecutionGraph::run_node_with_report`] with an appropriate [`ReportDetailMask`].
 ///   Use [`ReportDetailMask::FULL`] for the full path-rich report.
@@ -247,6 +249,20 @@ struct Scratch<V> {
     args: Vec<V>,
     outputs: Vec<V>,
     stamp: u32,
+    /// Keys that changed during the current plan, stamped with `changed_epoch` and indexed by
+    /// the key id. Seeded with the plan's dirty roots other than node outputs; executed nodes
+    /// add the outputs they changed and the keys they wrote.
+    changed: Vec<u32>,
+    /// Node outputs marked dirty directly for the current plan, stamped like `changed`. Their
+    /// nodes always run; whether the output then changed is decided by comparing values.
+    forced: Vec<u32>,
+    changed_epoch: u32,
+    /// Whether any executed output compared equal to its previous value in the current plan.
+    /// Until one does, every scheduled node has a forced or changed key on its dependency path,
+    /// so the cutoff check can be skipped.
+    saw_unchanged: bool,
+    root_outputs: Vec<DirtyKey>,
+    root_others: Vec<DirtyKey>,
 }
 
 impl<V> Default for Scratch<V> {
@@ -259,6 +275,12 @@ impl<V> Default for Scratch<V> {
             args: Vec::new(),
             outputs: Vec::new(),
             stamp: 0,
+            changed: Vec::new(),
+            forced: Vec::new(),
+            changed_epoch: 0,
+            saw_unchanged: false,
+            root_outputs: Vec::new(),
+            root_others: Vec::new(),
         }
     }
 }
@@ -298,6 +320,43 @@ impl<V> Scratch<V> {
         true
     }
 
+    /// Starts a new plan's change tracking: forgets earlier changes, forces the node outputs in
+    /// `root_outputs`, and marks the other roots in `root_others` as changed.
+    #[inline]
+    fn start_changes(&mut self) {
+        self.changed_epoch = self.changed_epoch.wrapping_add(1);
+        if self.changed_epoch == 0 {
+            self.changed.fill(0);
+            self.forced.fill(0);
+            self.changed_epoch = 1;
+        }
+        self.saw_unchanged = false;
+        let epoch = self.changed_epoch;
+        for &key in &self.root_outputs {
+            stamp(&mut self.forced, key, epoch);
+        }
+        for &key in &self.root_others {
+            stamp(&mut self.changed, key, epoch);
+        }
+        self.root_outputs.clear();
+        self.root_others.clear();
+    }
+
+    #[inline]
+    fn mark_changed(&mut self, key: DirtyKey) {
+        stamp(&mut self.changed, key, self.changed_epoch);
+    }
+
+    #[inline]
+    fn is_changed(&self, key: DirtyKey) -> bool {
+        is_stamped(&self.changed, key, self.changed_epoch)
+    }
+
+    #[inline]
+    fn is_forced(&self, key: DirtyKey) -> bool {
+        is_stamped(&self.forced, key, self.changed_epoch)
+    }
+
     /// Canonicalizes `read_ids` in place into the set of dependencies the caller will install for
     /// this node's outputs (via [`DirtyEngine::set_dependencies`]); this method does not touch the
     /// dirty engine itself.
@@ -319,6 +378,20 @@ impl<V> Scratch<V> {
                 .retain(|id| write_ids.binary_search(id).is_err());
         }
     }
+}
+
+#[inline]
+fn stamp(stamps: &mut Vec<u32>, key: DirtyKey, epoch: u32) {
+    let index = key.as_usize();
+    if stamps.len() <= index {
+        stamps.resize(index + 1, 0);
+    }
+    stamps[index] = epoch;
+}
+
+#[inline]
+fn is_stamped(stamps: &[u32], key: DirtyKey, epoch: u32) -> bool {
+    stamps.get(key.as_usize()).is_some_and(|&s| s == epoch)
 }
 
 impl<X: Executor> ExecutionGraph<X> {
@@ -487,6 +560,12 @@ impl<X: Executor> ExecutionGraph<X> {
     /// If a node declares duplicate input names (for example `["x", "x"]`), those slots are
     /// treated as aliases: setting `"x"` binds all matching slots.
     ///
+    /// Rebinding a slot to a different key (for example from a `connect`ed output to an external
+    /// value) rewires the node as [`ExecutionGraph::connect`] does: its outputs are marked dirty,
+    /// so the next run executes it with the new binding and never cuts it off, and
+    /// `invalidate_input(name)` reaches it even before it has read `name`. Setting a new value
+    /// under the same key does not by itself schedule the node; invalidate the input to do that.
+    ///
     /// Returns [`GraphError::BadNodeId`] for an unknown node or [`GraphError::UnknownInput`] for
     /// an input name that was not declared when the node was added.
     pub fn set_input_value(
@@ -509,12 +588,29 @@ impl<X: Executor> ExecutionGraph<X> {
         };
         let read_id = self.intern_input_id(name.as_ref());
         let n = &mut self.nodes[index];
+        let mut rebound = false;
         for slot in slots {
             if let Some(binding) = n.inputs.get_mut(slot) {
+                rebound |= !matches!(
+                    binding,
+                    Some(Binding::External { read_id: old, .. }) if *old == read_id
+                );
                 *binding = Some(Binding::External {
                     value: value.clone(),
                     read_id,
                 });
+            }
+        }
+        if rebound {
+            // As in `connect`: the new key is not among the reads recorded by the node's last run,
+            // so treat the node as unrun (early cutoff must not trust the stale read set), add a
+            // conservative edge so `invalidate_input(name)` reaches the node before it has read
+            // the key, and schedule it so its outputs reflect the new binding.
+            n.deps_initialized = false;
+            for output_ix in 0..n.output_ids.len() {
+                let dst = self.nodes[index].output_ids[output_ix];
+                self.dirty.add_dependency(dst, read_id);
+                self.dirty.mark_dirty(dst);
             }
         }
         Ok(())
@@ -585,6 +681,10 @@ impl<X: Executor> ExecutionGraph<X> {
         };
         let output_count = to_node.output_ids.len();
         let src = read_id;
+        // The new edge is not among the reads recorded by the node's last run, so treat the node as
+        // unrun: its next run then replaces its dependencies wholesale, and early cutoff does not
+        // skip it on the strength of a stale read set.
+        self.nodes[to_index].deps_initialized = false;
         for output_ix in 0..output_count {
             let dst = self.nodes[to_index].output_ids[output_ix];
             self.dirty.add_dependency(dst, src);
@@ -655,6 +755,11 @@ impl<X: Executor> ExecutionGraph<X> {
     #[inline]
     fn plan_all(&mut self) -> RunPlan {
         self.scratch.start_drain(self.nodes.len());
+        self.dirty.roots_into(
+            &mut self.scratch.root_outputs,
+            &mut self.scratch.root_others,
+        );
+        self.scratch.start_changes();
 
         for (_key_id, key) in self.dirty.drain() {
             Self::schedule_node_output_key(&mut self.scratch, key);
@@ -675,6 +780,11 @@ impl<X: Executor> ExecutionGraph<X> {
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
         self.scratch.start_drain(self.nodes.len());
+        self.dirty.roots_into(
+            &mut self.scratch.root_outputs,
+            &mut self.scratch.root_others,
+        );
+        self.scratch.start_changes();
         let mut node_report: Vec<Option<NodeRunDetail>> = alloc::vec![None; self.nodes.len()];
 
         if collect_why {
@@ -775,6 +885,11 @@ impl<X: Executor> ExecutionGraph<X> {
         let output_count = n.output_ids.len();
 
         self.scratch.start_drain(self.nodes.len());
+        self.dirty.roots_into(
+            &mut self.scratch.root_outputs,
+            &mut self.scratch.root_others,
+        );
+        self.scratch.start_changes();
         for output_ix in 0..output_count {
             let out_id = self.nodes[index].output_ids[output_ix];
             for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
@@ -811,6 +926,11 @@ impl<X: Executor> ExecutionGraph<X> {
         let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
 
         self.scratch.start_drain(self.nodes.len());
+        self.dirty.roots_into(
+            &mut self.scratch.root_outputs,
+            &mut self.scratch.root_others,
+        );
+        self.scratch.start_changes();
         let mut node_report: Vec<Option<NodeRunDetail>> = alloc::vec![None; self.nodes.len()];
 
         if collect_why {
@@ -952,10 +1072,8 @@ impl<X: Executor> ExecutionGraph<X> {
     /// Executes a pre-built run plan without traced reporting.
     #[inline]
     fn run_plan(&mut self, plan: RunPlan) -> Result<RunSummary, GraphError<X::Error>> {
-        let executed_nodes = plan.node_count();
         let mut dispatcher = InlineDispatcher;
-        dispatcher.dispatch(self, plan)?;
-        Ok(RunSummary { executed_nodes })
+        dispatcher.dispatch(self, plan)
     }
 
     /// Executes a pre-built run plan and returns traced reporting data if attached.
@@ -1021,13 +1139,39 @@ impl<X: Executor> ExecutionGraph<X> {
         self.run_plan_with_report(plan)
     }
 
-    /// Internal dispatch hook: executes one already-scheduled node.
+    /// Internal dispatch hook: executes one already-scheduled node, unless it is cut off.
+    ///
+    /// Returns `Ok(true)` when the node ran and `Ok(false)` when early cutoff skipped it: it has
+    /// run since it was last wired, none of its outputs was marked dirty directly, and nothing
+    /// it read changed during this plan.
     #[inline]
     pub(crate) fn execute_scheduled_node(
         &mut self,
         node: NodeId,
-    ) -> Result<(), GraphError<X::Error>> {
-        self.run_node_internal(node)
+    ) -> Result<bool, GraphError<X::Error>> {
+        if self.is_cut_off(node) {
+            return Ok(false);
+        }
+        self.run_node_internal(node)?;
+        Ok(true)
+    }
+
+    /// Returns whether scheduled `node` can be skipped because none of its causes changed.
+    #[inline]
+    fn is_cut_off(&self, node: NodeId) -> bool {
+        let Some(n) = usize::try_from(node.as_u64())
+            .ok()
+            .and_then(|index| self.nodes.get(index))
+        else {
+            return false;
+        };
+        self.scratch.saw_unchanged
+            && n.deps_initialized
+            && !n.output_ids.iter().any(|&id| self.scratch.is_forced(id))
+            && !n
+                .last_read_ids
+                .iter()
+                .any(|&id| self.scratch.is_changed(id))
     }
 
     /// Internal dispatch hook: re-marks the output keys of `nodes` dirty.
@@ -1156,7 +1300,8 @@ impl<X: Executor> ExecutionGraph<X> {
             return Err(GraphError::BadOutputArity { node });
         }
 
-        // Update outputs in-place when the BTreeMap is already populated (subsequent runs).
+        // Update outputs in-place when the BTreeMap is already populated (subsequent runs), and
+        // record which outputs changed for early cutoff of this plan's later nodes.
         {
             let n = &mut self.nodes[node_index];
             let first_run = n.outputs.is_empty();
@@ -1165,20 +1310,38 @@ impl<X: Executor> ExecutionGraph<X> {
                 if let Some(log) = log.as_mut() {
                     log.push(Access::Write(ResourceKey::node_output(node, name.clone())));
                 }
-                if first_run {
+                let changed = if first_run {
                     n.outputs.insert(name, v);
+                    true
                 } else {
                     let slot = n.outputs.get_mut(name.as_ref());
                     debug_assert!(
                         slot.is_some(),
                         "output key invariant broken: output_names[{i}] not found in outputs map"
                     );
-                    if let Some(slot) = slot {
-                        *slot = v;
+                    match slot {
+                        Some(slot) => {
+                            let changed = !self.executor.values_equal(slot, &v);
+                            *slot = v;
+                            if !changed {
+                                self.scratch.saw_unchanged = true;
+                            }
+                            changed
+                        }
+                        None => true,
                     }
+                };
+                if changed {
+                    self.scratch.mark_changed(n.output_ids[i]);
                 }
             }
         }
+        // Keys this node wrote changed too: a later node in this plan that reads one must run.
+        let write_ids = core::mem::take(&mut self.scratch.write_ids);
+        for &id in &write_ids {
+            self.scratch.mark_changed(id);
+        }
+        self.scratch.write_ids = write_ids;
         self.scratch.outputs = outputs;
 
         // Refine this node's dependency set from the reads observed during the run (dedup to set
@@ -1206,6 +1369,10 @@ impl<X: Executor> ExecutionGraph<X> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "cutoff_tests.rs"]
+mod cutoff_tests;
 
 #[cfg(all(test, feature = "tape"))]
 mod tape_tests {
@@ -1383,6 +1550,7 @@ mod tape_tests {
                 why_path: None,
                 why_path_traced: None,
             }],
+            cut_off: Vec::new(),
         };
         let wrapped = GraphError::<TapeError>::RunReportFailed {
             source: Box::new(GraphError::MissingInput {
@@ -1392,7 +1560,7 @@ mod tape_tests {
             partial_report,
         };
         let wrapped_display = wrapped.to_string();
-        assert!(wrapped_display.contains("1 report rows"));
+        assert!(wrapped_display.contains("1 executed and 0 cut-off report rows"));
         assert!(wrapped_display.contains("missing input binding"));
         assert_eq!(wrapped.partial_report().unwrap().executed.len(), 1);
     }

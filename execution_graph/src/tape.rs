@@ -144,11 +144,28 @@ impl TapeNode {
     }
 }
 
+/// Compares values whose equality means readers see the same thing; handles never compare.
+fn plain_values_equal(previous: &Value, next: &Value) -> bool {
+    match (previous, next) {
+        (Value::Unit, Value::Unit) => true,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::I64(a), Value::I64(b)) => a == b,
+        (Value::U64(a), Value::U64(b)) => a == b,
+        (Value::F64(a), Value::F64(b)) => a.to_bits() == b.to_bits(),
+        (Value::Decimal(a), Value::Decimal(b)) => a == b,
+        (Value::Bytes(a), Value::Bytes(b)) => a == b,
+        (Value::Str(a), Value::Str(b)) => a == b,
+        (Value::Func(a), Value::Func(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Executor that runs [`TapeNode`]s on one `execution_tape` VM.
 pub struct TapeExecutor<H: Host> {
     vm: Vm<H>,
     ctx: ExecutionContext,
     strict_deps: bool,
+    early_cutoff: bool,
 }
 
 impl<H: Host> fmt::Debug for TapeExecutor<H> {
@@ -156,6 +173,7 @@ impl<H: Host> fmt::Debug for TapeExecutor<H> {
         f.debug_struct("TapeExecutor")
             .field("vm", &self.vm)
             .field("strict_deps", &self.strict_deps)
+            .field("early_cutoff", &self.early_cutoff)
             .finish_non_exhaustive()
     }
 }
@@ -168,7 +186,27 @@ impl<H: Host> TapeExecutor<H> {
             vm: Vm::new(host, limits),
             ctx: ExecutionContext::new(),
             strict_deps: false,
+            early_cutoff: false,
         }
+    }
+
+    /// Enables or disables early cutoff (off by default).
+    ///
+    /// When enabled, a re-run output equal to its previous value counts as unchanged, so
+    /// dependents scheduled only because of it are skipped. Only plain values compare: unit,
+    /// booleans, integers, decimals, byte strings, strings, and function references by value,
+    /// and floats by bit pattern (so `-0.0` differs from `0.0` and a NaN equals only itself).
+    /// Host objects, aggregates, and closures are handles whose contents can change behind an
+    /// equal handle, so they always count as changed.
+    pub fn set_early_cutoff(&mut self, enabled: bool) {
+        self.early_cutoff = enabled;
+    }
+
+    /// Returns whether early cutoff is enabled.
+    #[must_use]
+    #[inline]
+    pub const fn early_cutoff(&self) -> bool {
+        self.early_cutoff
     }
 
     /// Enables or disables strict dependency tracking for host calls.
@@ -235,6 +273,10 @@ impl<H: Host> Executor for TapeExecutor<H> {
 
         outputs.extend(out);
         Ok(())
+    }
+
+    fn values_equal(&self, previous: &Self::Value, next: &Self::Value) -> bool {
+        self.early_cutoff && plain_values_equal(previous, next)
     }
 
     fn describe(&self, node: &Self::Node) -> Option<String> {

@@ -14,14 +14,14 @@ use crate::access::NodeId;
 use crate::executor::Executor;
 use crate::graph::{ExecutionGraph, GraphError};
 use crate::plan::{PlanScope, RunPlan};
-use crate::report::{NodeRunDetail, RunDetailReport};
+use crate::report::{NodeRunDetail, RunDetailReport, RunSummary};
 
 /// Internal dispatcher contract.
 ///
 /// Dispatchers execute nodes in a precomputed [`RunPlan`] and may optionally assemble traced
 /// reporting if the plan carries trace payload.
 pub(crate) trait Dispatcher<X: Executor> {
-    /// Executes `plan` without producing traced reporting.
+    /// Executes `plan` without producing traced reporting, returning the summary counts.
     ///
     /// The drained scheduling buffer is returned to the graph's scratch workspace (for capacity
     /// reuse on the next planning pass) on every exit path, success or error.
@@ -29,7 +29,7 @@ pub(crate) trait Dispatcher<X: Executor> {
         &mut self,
         graph: &mut ExecutionGraph<X>,
         plan: RunPlan,
-    ) -> Result<(), GraphError<X::Error>>;
+    ) -> Result<RunSummary, GraphError<X::Error>>;
 
     /// Executes `plan` and returns traced reporting if available.
     ///
@@ -54,25 +54,30 @@ impl<X: Executor> Dispatcher<X> for InlineDispatcher {
         &mut self,
         graph: &mut ExecutionGraph<X>,
         mut plan: RunPlan,
-    ) -> Result<(), GraphError<X::Error>> {
+    ) -> Result<RunSummary, GraphError<X::Error>> {
         // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
         match plan.scope() {
             PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
         }
 
+        let mut summary = RunSummary::default();
         let to_run: Vec<NodeId> = plan.take_nodes();
         for i in 0..to_run.len() {
-            if let Err(e) = graph.execute_scheduled_node(to_run[i]) {
-                // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Their dirty marks
-                // were cleared when the plan was drained, so re-mark them to keep that pending
-                // work recoverable on the next run instead of silently dropping it.
-                graph.remark_scheduled_dirty(&to_run[i..]);
-                graph.reclaim_schedule_buffer(to_run);
-                return Err(e);
+            match graph.execute_scheduled_node(to_run[i]) {
+                Ok(true) => summary.executed_nodes += 1,
+                Ok(false) => summary.cut_off_nodes += 1,
+                Err(e) => {
+                    // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Their dirty marks
+                    // were cleared when the plan was drained, so re-mark them to keep that pending
+                    // work recoverable on the next run instead of silently dropping it.
+                    graph.remark_scheduled_dirty(&to_run[i..]);
+                    graph.reclaim_schedule_buffer(to_run);
+                    return Err(e);
+                }
             }
         }
         graph.reclaim_schedule_buffer(to_run);
-        Ok(())
+        Ok(summary)
     }
 
     #[inline]
@@ -92,22 +97,30 @@ impl<X: Executor> Dispatcher<X> for InlineDispatcher {
 
         for i in 0..to_run.len() {
             let node = to_run[i];
-            if let Err(e) = graph.execute_scheduled_node(node) {
-                // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Re-mark them so
-                // their drained dirty state is not silently lost (see `dispatch`).
-                graph.remark_scheduled_dirty(&to_run[i..]);
-                graph.reclaim_schedule_buffer(to_run);
-                return Err(GraphError::RunReportFailed {
-                    source: Box::new(e),
-                    partial_report: report,
-                });
-            }
+            let ran = match graph.execute_scheduled_node(node) {
+                Ok(ran) => ran,
+                Err(e) => {
+                    // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Re-mark them
+                    // so their drained dirty state is not silently lost (see `dispatch`).
+                    graph.remark_scheduled_dirty(&to_run[i..]);
+                    graph.reclaim_schedule_buffer(to_run);
+                    return Err(GraphError::RunReportFailed {
+                        source: Box::new(e),
+                        partial_report: report,
+                    });
+                }
+            };
+            let records = if ran {
+                &mut report.executed
+            } else {
+                &mut report.cut_off
+            };
             if let Some(t) = trace.as_mut()
                 && let Some(r) = t.take_report_for(node)
             {
-                report.executed.push(r);
+                records.push(r);
             } else if trace.is_none() {
-                report.executed.push(NodeRunDetail {
+                records.push(NodeRunDetail {
                     node,
                     node_label: None,
                     because_of: None,

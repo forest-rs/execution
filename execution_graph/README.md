@@ -87,6 +87,31 @@ Executor-managed state uses the same key space: if a node records a
 [`ResourceKey::HostState { op, key }`](ResourceKey::HostState) read during execution, you can
 invalidate that state later via [`ExecutionGraph::invalidate`].
 
+## Early cutoff
+
+A node re-runs when something it read changed, but its new output may equal the old one (a
+parameter nudged within a clamp, say). With early cutoff, such an unchanged output stops
+propagation: a scheduled node whose reads all turn out unchanged is skipped instead of re-run.
+[`RunSummary::cut_off_nodes`] counts these nodes and [`RunDetailReport::cut_off`] lists them
+with the same cause detail as executed nodes.
+
+Whether an output changed is the executor's call, through [`Executor::values_equal`]. The
+default says "changed" for every output, so cutoff is opt-in: enable it with
+[`FnExecutor::with_value_eq`] or [`TapeExecutor::set_early_cutoff`]. Cutoff decisions are
+per output and per plan:
+
+- graph inputs and executor state that were invalidated count as changed;
+- a node output marked dirty directly (for example with [`ExecutionGraph::invalidate`], or
+  work a scoped [`ExecutionGraph::run_node`] leaves pending outside its closure) forces that
+  node to run, and its dependents follow only if the new value differs. Cutoff is therefore
+  conservative for deferred work: its nodes run even when the value they would have read
+  compared equal in the scoped run;
+- keys a node writes count as changed for later nodes in the same plan;
+- a node that has never run, or was rewired by `connect` or by `set_input_value` binding a
+  different key since its last run, always runs; both rewirings also schedule the node.
+
+A cut-off node keeps the outputs, run count, and last access log of its last real run.
+
 Graph construction is checked at the public API boundary: `add_node`, `set_input_value`, and
 `connect` return [`GraphError`] values for duplicate output names, input arity mismatches,
 unknown input names, and unknown output names.
@@ -182,8 +207,6 @@ cargo run -p execution_graph_examples --bin tax -- --dot
 
 ## Current limitations
 
-- Planning drains all affected dirty work before execution starts, so a node whose re-run
-  produces an unchanged output still re-runs its dependents (no early cutoff).
 - The tape executor collapses VM traps to [`TapeError::Trap`] at the graph boundary rather
   than source-language diagnostics.
 

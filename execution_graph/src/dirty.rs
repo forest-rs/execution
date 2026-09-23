@@ -92,6 +92,24 @@ impl DirtyEngine {
             .mark_with(key, EXECUTION_GRAPH_CHANNEL, &LazyPolicy);
     }
 
+    /// Appends every explicitly marked key (the roots of pending dirty work): node outputs to
+    /// `outputs`, every other key to `others`.
+    ///
+    /// Marks are lazy, so the invalidated set holds exactly the keys that were marked directly;
+    /// keys that are only affected through dependencies are not included.
+    ///
+    /// The invalidated set is a hash set, so the append order is unspecified; callers only stamp
+    /// these keys, so the order does not affect results.
+    #[inline]
+    pub(crate) fn roots_into(&self, outputs: &mut Vec<DirtyKey>, others: &mut Vec<DirtyKey>) {
+        for id in self.tracker.invalidated().iter(EXECUTION_GRAPH_CHANNEL) {
+            match self.keys.get(id) {
+                Some(ResourceKey::NodeOutput { .. }) => outputs.push(id),
+                _ => others.push(id),
+            }
+        }
+    }
+
     /// Drains dirty work in a deterministic order.
     ///
     /// The returned iterator yields key ids that are either explicitly marked dirty, or are
