@@ -330,10 +330,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_VER }}
 
+      # Newer cargo-rdme releases need a pinned nightly toolchain to resolve
+      # intra-doc links; 1.4 renders them without one.
       - name: install cargo-rdme
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-rdme
+          tool: cargo-rdme@1.4.9
 
       - name: check execution_tape README
         run: cargo rdme --workspace-project=execution_tape --heading-base-level=0 --check
