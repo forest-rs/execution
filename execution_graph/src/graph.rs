@@ -821,7 +821,7 @@ impl<X: Executor> ExecutionGraph<X> {
                 let (why_path, why_path_traced) =
                     self.dirty.explain_path(&trace, key_id).map_or_else(
                         || (alloc::vec![because_of.clone()], Some(false)),
-                        |path| (path, Some(true)),
+                        |(path, traced)| (path, Some(traced)),
                     );
 
                 let because_of = if collect_because {
@@ -896,6 +896,7 @@ impl<X: Executor> ExecutionGraph<X> {
                 Self::schedule_node_output_key(&mut self.scratch, key);
             }
         }
+        self.forward_scheduled_outputs();
 
         Ok(RunPlan::within_dependencies_of(
             node,
@@ -972,7 +973,7 @@ impl<X: Executor> ExecutionGraph<X> {
                     let (why_path, why_path_traced) =
                         self.dirty.explain_path(&trace, key_id).map_or_else(
                             || (alloc::vec![because_of.clone()], Some(false)),
-                            |path| (path, Some(true)),
+                            |(path, traced)| (path, Some(traced)),
                         );
 
                     let because_of = if collect_because {
@@ -1029,9 +1030,25 @@ impl<X: Executor> ExecutionGraph<X> {
             }
         }
 
+        self.forward_scheduled_outputs();
         let nodes = core::mem::take(&mut self.scratch.to_run);
         Ok(RunPlan::within_dependencies_of(node, nodes)
             .with_trace(RunPlanTrace::from_node_reports(node_report)))
+    }
+
+    /// Forwards pending marks on outputs of nodes this scoped plan schedules to those outputs'
+    /// readers; see `DirtyEngine::forward_scheduled_outputs`.
+    fn forward_scheduled_outputs(&mut self) {
+        let scratch = &self.scratch;
+        self.dirty.forward_scheduled_outputs(|key| {
+            let ResourceKey::NodeOutput { node, .. } = key else {
+                return false;
+            };
+            usize::try_from(node.as_u64())
+                .ok()
+                .and_then(|index| scratch.seen_stamp.get(index))
+                .is_some_and(|&stamp| stamp == scratch.stamp)
+        });
     }
 
     #[inline]
@@ -1114,7 +1131,19 @@ impl<X: Executor> ExecutionGraph<X> {
     /// Runs the subgraph needed to (re)compute `node`, executing only what is currently dirty.
     ///
     /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
-    /// Unrelated dirty work remains dirty and is not drained.
+    /// Work outside the closure stays pending for a later run, including nodes that depend on
+    /// keys this run drains (a sibling reading the same invalidated input, or another reader of
+    /// an output this run recomputes). A later report explains that deferred work from its
+    /// original root when this run was traced; after an untraced run its path starts at the
+    /// drained key it depends on and is reported as not traced.
+    ///
+    /// Any node this run schedules recomputes all of its outputs. An output that is still
+    /// marked dirty outside the closure (a multi-output node straddling the boundary, a mark
+    /// kept by an earlier scoped run, or a direct invalidation) is therefore handed to its
+    /// readers, which stay pending for the next run; the node is not run again for it.
+    ///
+    /// Deferred work stays dirty even when the drained key it depends on turns out unchanged,
+    /// so early cutoff is conservative for it: those readers run on the next run.
     ///
     /// Execution is fail-fast: if a node errors, the run stops and returns that error, but the
     /// dirty state of not-yet-executed work in the closure is preserved for a subsequent run.
@@ -3494,6 +3523,253 @@ mod native_tests {
         g.invalidate_input("ambient");
         assert_eq!(g.run_all().unwrap().executed_nodes, 1);
         assert_eq!(g.node_run_count(n), Some(2));
+    }
+
+    /// `a` and `b` both read input `x`; `c` reads `a.value`, and `e` reads `a.value` too.
+    fn shared_input_graph(g: &mut Graph) -> [NodeId; 4] {
+        let a = g
+            .add_node(sum_node(), vec!["x".into()], vec!["value".into()])
+            .unwrap();
+        let b = g
+            .add_node(sum_node(), vec!["x".into()], vec!["value".into()])
+            .unwrap();
+        let c = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        let e = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        g.set_input_value(a, "x", 1).unwrap();
+        g.set_input_value(b, "x", 1).unwrap();
+        g.connect(a, "value", c, "v").unwrap();
+        g.connect(a, "value", e, "v").unwrap();
+        [a, b, c, e]
+    }
+
+    fn output(g: &Graph, node: NodeId) -> i64 {
+        *g.node_outputs(node).unwrap().get("value").unwrap()
+    }
+
+    #[test]
+    fn run_node_keeps_work_for_dependents_outside_the_closure() {
+        let mut g = Graph::new(FnExecutor::new());
+        let [a, b, c, e] = shared_input_graph(&mut g);
+        g.run_all().unwrap();
+
+        g.set_input_value(a, "x", 2).unwrap();
+        g.set_input_value(b, "x", 2).unwrap();
+        g.invalidate_input("x");
+        // Runs `a` and `c`. `b` shares the invalidated input and `e` reads the recomputed
+        // `a.value`; both lie outside `c`'s closure and must stay pending.
+        assert_eq!(g.run_node(c).unwrap().executed_nodes, 2);
+        assert_eq!(g.run_all().unwrap().executed_nodes, 2);
+        for node in [a, b, c, e] {
+            assert_eq!(output(&g, node), 2);
+        }
+        for (node, runs) in [(a, 2), (b, 2), (c, 2), (e, 2)] {
+            assert_eq!(g.node_run_count(node), Some(runs));
+        }
+    }
+
+    #[test]
+    fn traced_run_node_keeps_work_for_dependents_outside_the_closure() {
+        let mut g = Graph::new(FnExecutor::new());
+        let [a, b, c, e] = shared_input_graph(&mut g);
+        g.run_all().unwrap();
+
+        g.set_input_value(a, "x", 2).unwrap();
+        g.set_input_value(b, "x", 2).unwrap();
+        g.invalidate_input("x");
+        g.run_node_with_report(c, ReportDetailMask::FULL).unwrap();
+        assert_eq!(g.run_all().unwrap().executed_nodes, 2);
+        assert_eq!(output(&g, b), 2);
+        assert_eq!(output(&g, e), 2);
+    }
+
+    fn why_path(report: &RunDetailReport, node: NodeId) -> (Vec<ResourceKey>, Option<bool>) {
+        let row = report
+            .executed
+            .iter()
+            .find(|row| row.node == node)
+            .expect("node ran");
+        (
+            row.why_path.clone().expect("full report has why_path"),
+            row.why_path_traced,
+        )
+    }
+
+    #[test]
+    fn retained_work_is_explained_from_its_real_root() {
+        let mut g = Graph::new(FnExecutor::new());
+        let [a, b, c, e] = shared_input_graph(&mut g);
+        g.run_all().unwrap();
+
+        g.set_input_value(a, "x", 2).unwrap();
+        g.set_input_value(b, "x", 2).unwrap();
+        g.invalidate_input("x");
+        g.run_node_with_report(c, ReportDetailMask::FULL).unwrap();
+        let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
+        assert_eq!(report.executed.len(), 2);
+        let x = ResourceKey::input("x");
+        let a_value = ResourceKey::node_output(a, "value");
+        assert_eq!(
+            why_path(&report, b),
+            (
+                vec![x.clone(), ResourceKey::node_output(b, "value")],
+                Some(true)
+            )
+        );
+        assert_eq!(
+            why_path(&report, e),
+            (
+                vec![x, a_value, ResourceKey::node_output(e, "value")],
+                Some(true)
+            )
+        );
+    }
+
+    #[test]
+    fn retained_work_after_an_untraced_scoped_run_is_not_claimed_traced() {
+        let mut g = Graph::new(FnExecutor::new());
+        let [a, b, c, e] = shared_input_graph(&mut g);
+        g.run_all().unwrap();
+
+        g.set_input_value(a, "x", 2).unwrap();
+        g.set_input_value(b, "x", 2).unwrap();
+        g.invalidate_input("x");
+        g.run_node(c).unwrap();
+        let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
+        // Only the drained key each mark depends on is known.
+        assert_eq!(
+            why_path(&report, e),
+            (
+                vec![
+                    ResourceKey::node_output(a, "value"),
+                    ResourceKey::node_output(e, "value")
+                ],
+                Some(false)
+            )
+        );
+        assert_eq!(why_path(&report, b).1, Some(false));
+    }
+
+    #[test]
+    fn chained_scoped_runs_keep_the_original_root() {
+        // x -> a -> t1; a -> b -> t2; b -> q. The first scoped run retains `b`; the second
+        // consumes that mark and retains `q`, which must still be explained from `x`.
+        let mut g = Graph::new(FnExecutor::new());
+        let a = g
+            .add_node(sum_node(), vec!["x".into()], vec!["value".into()])
+            .unwrap();
+        let reader = |g: &mut Graph, from: NodeId| {
+            let node = g
+                .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+                .unwrap();
+            g.connect(from, "value", node, "v").unwrap();
+            node
+        };
+        g.set_input_value(a, "x", 1).unwrap();
+        let t1 = reader(&mut g, a);
+        let b = reader(&mut g, a);
+        let t2 = reader(&mut g, b);
+        let q = reader(&mut g, b);
+        g.run_all().unwrap();
+
+        g.set_input_value(a, "x", 2).unwrap();
+        g.invalidate_input("x");
+        g.run_node_with_report(t1, ReportDetailMask::FULL).unwrap();
+        g.run_node_with_report(t2, ReportDetailMask::FULL).unwrap();
+        let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
+        assert_eq!(report.executed.len(), 1);
+        assert_eq!(
+            why_path(&report, q),
+            (
+                vec![
+                    ResourceKey::input("x"),
+                    ResourceKey::node_output(a, "value"),
+                    ResourceKey::node_output(b, "value"),
+                    ResourceKey::node_output(q, "value"),
+                ],
+                Some(true)
+            )
+        );
+        assert_eq!(output(&g, q), 2);
+    }
+
+    #[test]
+    fn run_node_keeps_readers_of_the_target_and_transitive_chains_pending() {
+        // x -> a -> t (target); t.value -> r (reader of the target's own output);
+        // a.value -> p -> q (a chain behind the closure boundary).
+        let mut g = Graph::new(FnExecutor::new());
+        let a = g
+            .add_node(sum_node(), vec!["x".into()], vec!["value".into()])
+            .unwrap();
+        let t = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        let r = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        let p = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        let q = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        g.set_input_value(a, "x", 1).unwrap();
+        g.connect(a, "value", t, "v").unwrap();
+        g.connect(t, "value", r, "v").unwrap();
+        g.connect(a, "value", p, "v").unwrap();
+        g.connect(p, "value", q, "v").unwrap();
+        g.run_all().unwrap();
+
+        g.set_input_value(a, "x", 5).unwrap();
+        g.invalidate_input("x");
+        assert_eq!(g.run_node(t).unwrap().executed_nodes, 2);
+        assert_eq!(g.run_all().unwrap().executed_nodes, 3);
+        for node in [a, t, r, p, q] {
+            assert_eq!(output(&g, node), 5);
+            assert_eq!(g.node_run_count(node), Some(2));
+        }
+    }
+
+    #[test]
+    fn multi_output_nodes_straddling_the_closure_run_once() {
+        // `m` has outputs `in` (read by the target) and `out` (read by `o`); both depend on
+        // `x`, so `m.out` is a dependent of the drained `x` outside the closure. The scoped run
+        // recomputes `m.out` already, so the retained mark moves to its reader `o`, and the
+        // next run runs only `o`.
+        let mut g = Graph::new(FnExecutor::new());
+        let m = g
+            .add_node(
+                FnNode::new(|inputs, outputs, _access| {
+                    let x: i64 = inputs.iter().sum();
+                    outputs.push(x);
+                    outputs.push(x * 10);
+                    Ok(())
+                }),
+                vec!["x".into()],
+                vec!["in".into(), "out".into()],
+            )
+            .unwrap();
+        let t = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        let o = g
+            .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+            .unwrap();
+        g.set_input_value(m, "x", 1).unwrap();
+        g.connect(m, "in", t, "v").unwrap();
+        g.connect(m, "out", o, "v").unwrap();
+        g.run_all().unwrap();
+
+        g.set_input_value(m, "x", 2).unwrap();
+        g.invalidate_input("x");
+        assert_eq!(g.run_node(t).unwrap().executed_nodes, 2);
+        assert_eq!(g.run_all().unwrap().executed_nodes, 1);
+        assert_eq!(output(&g, t), 2);
+        assert_eq!(output(&g, o), 20);
+        assert_eq!(g.node_run_count(m), Some(2));
     }
 }
 

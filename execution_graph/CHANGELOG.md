@@ -70,6 +70,24 @@ You can find its changes [documented below](#001-2026-05-31).
   `GraphError::StrictDepsViolation`, and `GraphError::Trap`; they are now `TapeError` variants
   wrapped in `GraphError::InvalidNode` or `GraphError::Node`.
 
+### Fixed
+
+- `run_node` and `run_node_with_report` no longer drop pending work outside the target's closure
+  when the scoped drain takes a shared dirty root: nodes that read the same invalidated input, or
+  another reader of an output the run recomputes, now run on the next `run_all`. Reports explain
+  that deferred work from its original root after a traced scoped run; after an untraced one the
+  path starts at the drained key and `why_path_traced` is `Some(false)`. Chained scoped runs keep
+  the original root. A node the scoped run schedules is not run again for an output that is
+  still dirty outside the closure, whether a scoped run kept that mark, an earlier scoped run
+  kept it, or it was invalidated directly: the output's readers are marked instead, so they see
+  the new value even under early cutoff. This also fixes a stale reader when two outputs of one
+  node were invalidated directly and `run_node` targeted a reader of only one of them. Deferred
+  work stays dirty when the drained key it depends on turns out
+  unchanged, so early cutoff is conservative for it.
+  The retention lives in one internal function that mirrors `invalidation`'s proposed
+  `DrainBuilder::retain_out_of_scope` (forest-rs/invalidation#5); it switches to that option
+  once an `invalidation` release with it publishes.
+
 ## [0.0.1][] (2026-05-31)
 
 This release has an [MSRV][] of 1.88.

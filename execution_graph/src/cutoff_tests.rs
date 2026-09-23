@@ -159,9 +159,6 @@ fn cutoff_is_per_output() {
     assert_eq!(value(&g, tens), 4);
 }
 
-// A follow-up `run_all` is not asserted here: on the base branch a scoped drain drops the
-// pending work of dependents outside the target's closure (fixed separately in
-// forest-rs/execution#99), so `c` and `d` would not be revisited either way.
 #[test]
 fn targeted_runs_cut_off_within_the_closure() {
     let mut g = cutoff_graph();
@@ -176,6 +173,115 @@ fn targeted_runs_cut_off_within_the_closure() {
     assert_eq!(g.node_run_count(b), Some(1));
     assert_eq!(g.node_run_count(c), Some(1));
     assert_eq!(g.node_run_count(d), Some(1));
+
+    // `c` reads the drained `a.value` and `d` the drained `b.value`, both from outside the
+    // closure, so their work was kept. Both run even though those outputs turned out
+    // unchanged: retained work is conservative under early cutoff.
+    let summary = g.run_all().unwrap();
+    assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (2, 0));
+    assert_eq!(g.node_run_count(c), Some(2));
+    assert_eq!(g.node_run_count(d), Some(2));
+    assert_eq!(value(&g, d), 23);
+}
+
+#[test]
+fn outputs_recomputed_by_a_scoped_run_still_reach_their_readers() {
+    // `m` has outputs `in` (read by the target `t`) and `out` (read by `o`), both from `x`.
+    // The scoped run recomputes both; `o` must still see the new `m.out` on the next run,
+    // even though rerunning `m` would compare equal to what the scoped run already wrote.
+    let mut g = cutoff_graph();
+    let m = g
+        .add_node(
+            FnNode::new(|inputs: &[i64], outputs, _access| {
+                outputs.push(inputs[0]);
+                outputs.push(inputs[0] * 10);
+                Ok(())
+            }),
+            vec!["x".into()],
+            vec!["in".into(), "out".into()],
+        )
+        .unwrap();
+    let t = g
+        .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+        .unwrap();
+    let o = g
+        .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+        .unwrap();
+    g.set_input_value(m, "x", 1).unwrap();
+    g.connect(m, "in", t, "v").unwrap();
+    g.connect(m, "out", o, "v").unwrap();
+    g.run_all().unwrap();
+
+    g.set_input_value(m, "x", 2).unwrap();
+    g.invalidate_input("x");
+    g.run_node(t).unwrap();
+    g.run_all().unwrap();
+    assert_eq!(value(&g, t), 2);
+    assert_eq!(value(&g, o), 20);
+    assert_eq!(g.node_run_count(m), Some(2));
+}
+
+/// `m` reads `y` and outputs `p` and `q`; `t1` reads `y`, `t2` reads `m.p`, `r` reads `m.q`.
+fn two_output_graph(g: &mut Graph) -> [NodeId; 4] {
+    let m = g
+        .add_node(
+            FnNode::new(|inputs: &[i64], outputs, _access| {
+                outputs.push(inputs[0]);
+                outputs.push(inputs[0] * 10);
+                Ok(())
+            }),
+            vec!["y".into()],
+            vec!["p".into(), "q".into()],
+        )
+        .unwrap();
+    let t1 = g
+        .add_node(sum_node(), vec!["y".into()], vec!["value".into()])
+        .unwrap();
+    let t2 = g
+        .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+        .unwrap();
+    let r = g
+        .add_node(sum_node(), vec!["v".into()], vec!["value".into()])
+        .unwrap();
+    g.set_input_value(m, "y", 1).unwrap();
+    g.set_input_value(t1, "y", 1).unwrap();
+    g.connect(m, "p", t2, "v").unwrap();
+    g.connect(m, "q", r, "v").unwrap();
+    g.run_all().unwrap();
+    [m, t1, t2, r]
+}
+
+#[test]
+fn outputs_retained_by_an_earlier_scoped_run_still_reach_their_readers() {
+    // `run_node(t1)` retains both of `m`'s outputs; `run_node(t2)` then runs `m` for `m.p`.
+    // `m.q` was retained by the earlier plan, and `r` must still see its new value.
+    let mut g = cutoff_graph();
+    let [m, t1, t2, r] = two_output_graph(&mut g);
+    g.set_input_value(m, "y", 2).unwrap();
+    g.set_input_value(t1, "y", 2).unwrap();
+    g.invalidate_input("y");
+    g.run_node(t1).unwrap();
+    g.run_node(t2).unwrap();
+    g.run_all().unwrap();
+    assert_eq!(value(&g, t2), 2);
+    assert_eq!(value(&g, r), 20);
+    assert_eq!(g.node_run_count(m), Some(2));
+}
+
+#[test]
+fn directly_invalidated_outputs_of_a_scheduled_node_reach_their_readers() {
+    // Both outputs of `m` are invalidated directly; running `t2` runs `m`, which recomputes
+    // `m.q` too, so `r` must be scheduled rather than `m` being run again.
+    let mut g = cutoff_graph();
+    let [m, _t1, t2, r] = two_output_graph(&mut g);
+    g.set_input_value(m, "y", 2).unwrap();
+    g.invalidate(ResourceKey::node_output(m, "p"));
+    g.invalidate(ResourceKey::node_output(m, "q"));
+    g.run_node(t2).unwrap();
+    g.run_all().unwrap();
+    assert_eq!(value(&g, t2), 2);
+    assert_eq!(value(&g, r), 20);
+    assert_eq!(g.node_run_count(m), Some(2));
 }
 
 #[test]
