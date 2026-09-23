@@ -56,6 +56,20 @@ pub trait Executor {
         access: &mut NodeAccess<'_>,
     ) -> Result<(), Self::Error>;
 
+    /// Returns whether a reader could tell `previous` and `next` apart.
+    ///
+    /// This drives *early cutoff*: when a re-run node produces an output for which this returns
+    /// `true`, the output counts as unchanged, and dependents scheduled only because of it are
+    /// cut off instead of re-run. Return `true` only when every reader would observe the same
+    /// behaviour from either value, including through handles into executor-managed state.
+    ///
+    /// The default returns `false`, so every re-run output counts as changed and no dependent is
+    /// ever cut off. Returning `false` is always correct; it only costs re-runs.
+    fn values_equal(&self, previous: &Self::Value, next: &Self::Value) -> bool {
+        let _ = (previous, next);
+        false
+    }
+
     /// Returns an advisory description of `node` for reports and Graphviz DOT output.
     ///
     /// The default returns `None`. Multi-line descriptions are rendered as separate lines.

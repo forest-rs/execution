@@ -33,12 +33,23 @@ You can find its changes [documented below](#001-2026-05-31).
 - Added `FnExecutor` and `FnNode`, a closure-backed executor for native Rust node bodies, so a
   graph of ordinary Rust operations needs no tape programs. A single graph can mix closure and
   tape nodes through an executor whose node type is an enum over both.
+- Added early cutoff: a re-run output that the executor reports as unchanged through the new
+  `Executor::values_equal` hook stops propagation, so scheduled dependents whose reads all turn
+  out unchanged are skipped. It is opt-in: `values_equal` defaults to "changed",
+  `FnExecutor::with_value_eq` enables it with a comparison, and `TapeExecutor::set_early_cutoff`
+  enables it for plain tape values (floats by bit pattern; handles always count as changed).
+  `RunSummary::cut_off_nodes` counts skipped nodes and `RunDetailReport::cut_off` lists them.
+  Outputs marked dirty directly always run; if `run_node` retains pending work outside its
+  closure as direct marks, cutoff is conservative for that deferred work.
 - Added advisory graph node labels via `ExecutionGraph::set_node_label`,
   `ExecutionGraph::clear_node_label`, and `ExecutionGraph::node_label`; labels can be included in
   execution reports with `ReportDetailMask::NODE_LABEL` and are rendered in Graphviz DOT output.
 
 ### Changed
 
+- `set_input_value` that binds a slot to a different key (for example replacing a `connect`ed
+  output with an external value) now rewires like `connect`: it schedules the node and resets its
+  recorded reads.
 - `ExecutionGraph` is generic over an `Executor` instead of an `execution_tape` host:
   `ExecutionGraph::new(executor)` replaces `new(host, limits)`, and `add_node(body, input_names,
   output_names)` takes an executor node body plus explicit output names. Tape nodes use
@@ -49,6 +60,9 @@ You can find its changes [documented below](#001-2026-05-31).
 - `set_strict_deps` moved from `ExecutionGraph` to `TapeExecutor`; `invalidate_tape_key` is only
   available on graphs whose executor is a `TapeExecutor`.
 - `ReportDetailMask::FULL` now includes `ReportDetailMask::NODE_LABEL`.
+- `set_input_value` that rebinds a slot to a different key resets the node's recorded reads and
+  adds a dependency edge to the new input, as `connect` does, so `invalidate_input` with the new
+  name reaches a node that has not read it yet.
 
 ### Removed
 

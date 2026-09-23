@@ -16,8 +16,12 @@ use crate::{NodeId, ResourceKey};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RunSummary {
-    /// Number of nodes executed during the run.
+    /// Number of nodes executed during the run. Nodes skipped by early cutoff are not included;
+    /// see [`Self::cut_off_nodes`].
     pub executed_nodes: usize,
+    /// Number of scheduled nodes skipped by early cutoff: nothing they read changed during the
+    /// run (see [`Executor::values_equal`](crate::Executor::values_equal)).
+    pub cut_off_nodes: usize,
 }
 
 /// Bitmask that controls which optional fields are populated in [`NodeRunDetail`].
@@ -140,6 +144,11 @@ pub struct NodeRunDetail {
 pub struct RunDetailReport {
     /// Per-node detail records in execution order.
     pub executed: Vec<NodeRunDetail>,
+    /// Scheduled nodes skipped by early cutoff, in schedule order.
+    ///
+    /// Each record carries the same optional detail as an executed one; its cause path shows
+    /// how the node was scheduled, and early cutoff then found that nothing it read changed.
+    pub cut_off: Vec<NodeRunDetail>,
 }
 
 #[cfg(test)]
