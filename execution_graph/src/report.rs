@@ -133,8 +133,9 @@ pub struct NodeRunDetail {
     /// Whether [`NodeRunDetail::why_path`] came from the dirty-engine trace.
     ///
     /// This is `Some(true)` when a traced path was available, `Some(false)` when `why_path` is the
-    /// one-key fallback, and `None` when the report mask did not request
-    /// [`ReportDetailMask::WHY_PATH`].
+    /// one-key fallback or starts at work deferred by an untraced
+    /// [`ExecutionGraph::run_node`](crate::ExecutionGraph::run_node) (its original root is
+    /// unknown), and `None` when the report mask did not request [`ReportDetailMask::WHY_PATH`].
     pub why_path_traced: Option<bool>,
 }
 
