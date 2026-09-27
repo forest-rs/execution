@@ -399,12 +399,42 @@ impl DirtyEngine {
     #[inline]
     pub(crate) fn set_dependencies(
         &mut self,
-        from: DirtyKey,
-        to: impl IntoIterator<Item = DirtyKey>,
-    ) {
-        let _ = self
-            .tracker
-            .replace_dependencies(from, EXECUTION_GRAPH_CHANNEL, to);
+        from: &[DirtyKey],
+        to: &[DirtyKey],
+    ) -> Result<(), (ResourceKey, ResourceKey)> {
+        let previous: Vec<Vec<DirtyKey>> = from
+            .iter()
+            .map(|&key| {
+                self.tracker
+                    .graph()
+                    .dependencies(key, EXECUTION_GRAPH_CHANNEL)
+                    .collect()
+            })
+            .collect();
+        for (index, &key) in from.iter().enumerate() {
+            if let Err(error) =
+                self.tracker
+                    .replace_dependencies(key, EXECUTION_GRAPH_CHANNEL, to.iter().copied())
+            {
+                // The failed replacement rolls itself back. Restore the earlier outputs too;
+                // the old graph was acyclic, so restoration cannot introduce a lasting cycle.
+                for (&key, old) in from[..index].iter().zip(&previous) {
+                    self.tracker
+                        .replace_dependencies_with(
+                            key,
+                            EXECUTION_GRAPH_CHANNEL,
+                            old.iter().copied(),
+                            CycleHandling::Allow,
+                        )
+                        .expect("restoring a previously valid dependency set");
+                }
+                return Err((
+                    self.keys.get(error.from).unwrap().clone(),
+                    self.keys.get(error.to).unwrap().clone(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Adds a single dependency edge `from -> to`.
@@ -412,10 +442,32 @@ impl DirtyEngine {
     /// This is a small helper used for conservative wiring before dynamic accesses refine the
     /// dependency set.
     #[inline]
-    pub(crate) fn add_dependency(&mut self, from: DirtyKey, to: DirtyKey) {
-        let _ = self
-            .tracker
-            .add_dependency(from, to, EXECUTION_GRAPH_CHANNEL);
+    pub(crate) fn add_dependencies(
+        &mut self,
+        from: &[DirtyKey],
+        to: DirtyKey,
+    ) -> Result<(), (ResourceKey, ResourceKey)> {
+        let mut added = Vec::new();
+        for &key in from {
+            match self
+                .tracker
+                .add_dependency(key, to, EXECUTION_GRAPH_CHANNEL)
+            {
+                Ok(true) => added.push(key),
+                Ok(false) => {}
+                Err(error) => {
+                    for key in added {
+                        self.tracker
+                            .remove_dependency(key, to, EXECUTION_GRAPH_CHANNEL);
+                    }
+                    return Err((
+                        self.keys.get(error.from).unwrap().clone(),
+                        self.keys.get(error.to).unwrap().clone(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Translates a traced cause path into owned [`ResourceKey`] values.
@@ -489,11 +541,32 @@ mod tests {
         let in_key = e.intern(ResourceKey::input("in"));
         let out_key = e.intern(ResourceKey::node_output(NodeId::new(1), "out"));
 
-        e.set_dependencies(out_key, [in_key]);
+        e.set_dependencies(&[out_key], &[in_key]).unwrap();
 
         e.mark_dirty(in_key);
 
         let order: Vec<_> = e.drain().map(|(id, _)| id).collect();
         assert_eq!(order, vec![in_key, out_key]);
+    }
+
+    #[test]
+    fn failed_multi_output_replacement_restores_every_output() {
+        let mut e = DirtyEngine::new();
+        let old = e.intern(ResourceKey::input("old"));
+        let a = e.intern(ResourceKey::node_output(NodeId::new(0), "a"));
+        let b = e.intern(ResourceKey::node_output(NodeId::new(0), "b"));
+        let c = e.intern(ResourceKey::node_output(NodeId::new(1), "c"));
+        e.set_dependencies(&[a, b], &[old]).unwrap();
+        e.set_dependencies(&[c], &[b]).unwrap();
+        assert!(e.set_dependencies(&[a, b], &[c]).is_err());
+        for key in [a, b] {
+            assert_eq!(
+                e.tracker
+                    .graph()
+                    .dependencies(key, EXECUTION_GRAPH_CHANNEL)
+                    .collect::<Vec<_>>(),
+                vec![old]
+            );
+        }
     }
 }

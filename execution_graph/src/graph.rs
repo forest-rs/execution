@@ -29,6 +29,13 @@ use invalidation::trace::OneParentRecorder;
 pub enum GraphError<E> {
     /// A node id was invalid.
     BadNodeId,
+    /// A requested dependency would create a cycle. The rejected dependencies are not installed.
+    DependencyCycle {
+        /// Output that would gain the dependency.
+        from: ResourceKey,
+        /// Resource that already depends on that output.
+        to: ResourceKey,
+    },
     /// A node declared the same output name more than once.
     DuplicateOutput {
         /// The repeated output name.
@@ -100,6 +107,10 @@ impl<E: fmt::Display> fmt::Display for GraphError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadNodeId => write!(f, "bad node id"),
+            Self::DependencyCycle { from, to } => write!(
+                f,
+                "dependency cycle: {from:?} cannot depend on {to:?}; remove the cyclic connection"
+            ),
             Self::DuplicateOutput { name } => write!(
                 f,
                 "duplicate node output name: {name}; output names must be unique within a node"
@@ -585,6 +596,9 @@ impl<X: Executor> ExecutionGraph<X> {
             return Err(GraphError::UnknownInput { node, name });
         };
         let read_id = self.intern_input_id(name.as_ref());
+        self.dirty
+            .add_dependencies(&self.nodes[index].output_ids, read_id)
+            .map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
         let n = &mut self.nodes[index];
         let mut rebound = false;
         for slot in slots {
@@ -607,7 +621,6 @@ impl<X: Executor> ExecutionGraph<X> {
             n.deps_initialized = false;
             for output_ix in 0..n.output_ids.len() {
                 let dst = self.nodes[index].output_ids[output_ix];
-                self.dirty.add_dependency(dst, read_id);
                 self.dirty.mark_dirty(dst);
             }
         }
@@ -621,6 +634,8 @@ impl<X: Executor> ExecutionGraph<X> {
     /// Returns [`GraphError::BadNodeId`] for an unknown source or target node,
     /// [`GraphError::UnknownOutput`] for an output name not produced by the source node, or
     /// [`GraphError::UnknownInput`] for an input name not declared by the target node.
+    /// A cyclic connection returns [`GraphError::DependencyCycle`] without changing bindings,
+    /// dependencies, or dirty state.
     pub fn connect(
         &mut self,
         from: NodeId,
@@ -657,6 +672,9 @@ impl<X: Executor> ExecutionGraph<X> {
         let read_id = self
             .dirty
             .intern(ResourceKey::node_output(from, output.clone()));
+        self.dirty
+            .add_dependencies(&self.nodes[to_index].output_ids, read_id)
+            .map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
         if let Some(n) = self.nodes.get_mut(to_index) {
             for slot in slots {
                 if let Some(binding) = n.inputs.get_mut(slot) {
@@ -678,14 +696,12 @@ impl<X: Executor> ExecutionGraph<X> {
             return Err(GraphError::BadNodeId);
         };
         let output_count = to_node.output_ids.len();
-        let src = read_id;
         // The new edge is not among the reads recorded by the node's last run, so treat the node as
         // unrun: its next run then replaces its dependencies wholesale, and early cutoff does not
         // skip it on the strength of a stale read set.
         self.nodes[to_index].deps_initialized = false;
         for output_ix in 0..output_count {
             let dst = self.nodes[to_index].output_ids[output_ix];
-            self.dirty.add_dependency(dst, src);
             self.dirty.mark_dirty(dst);
         }
         Ok(())
@@ -1327,6 +1343,28 @@ impl<X: Executor> ExecutionGraph<X> {
             return Err(GraphError::BadOutputArity { node });
         }
 
+        // Refine this node's dependency set from the reads observed during the run (dedup to set
+        // semantics, then drop any key the node also wrote — see `Scratch::finalize_node_deps`).
+        self.scratch.finalize_node_deps();
+
+        let deps_changed = !self.nodes[node_index].deps_initialized
+            || self.nodes[node_index].last_read_ids != self.scratch.read_ids;
+        if deps_changed {
+            if let Err((from, to)) = self
+                .dirty
+                .set_dependencies(&self.nodes[node_index].output_ids, &self.scratch.read_ids)
+            {
+                outputs.clear();
+                self.scratch.outputs = outputs;
+                return Err(GraphError::DependencyCycle { from, to });
+            }
+            self.nodes[node_index].last_read_ids.clear();
+            self.nodes[node_index]
+                .last_read_ids
+                .extend(self.scratch.read_ids.iter().copied());
+            self.nodes[node_index].deps_initialized = true;
+        }
+
         // Update outputs in-place when the BTreeMap is already populated (subsequent runs), and
         // record which outputs changed for early cutoff of this plan's later nodes.
         {
@@ -1371,24 +1409,6 @@ impl<X: Executor> ExecutionGraph<X> {
         self.scratch.write_ids = write_ids;
         self.scratch.outputs = outputs;
 
-        // Refine this node's dependency set from the reads observed during the run (dedup to set
-        // semantics, then drop any key the node also wrote — see `Scratch::finalize_node_deps`).
-        self.scratch.finalize_node_deps();
-
-        let deps_changed = !self.nodes[node_index].deps_initialized
-            || self.nodes[node_index].last_read_ids != self.scratch.read_ids;
-        if deps_changed {
-            for &out_id in self.nodes[node_index].output_ids.iter() {
-                self.dirty
-                    .set_dependencies(out_id, self.scratch.read_ids.iter().copied());
-            }
-            self.nodes[node_index].last_read_ids.clear();
-            self.nodes[node_index]
-                .last_read_ids
-                .extend(self.scratch.read_ids.iter().copied());
-            self.nodes[node_index].deps_initialized = true;
-        }
-
         // Commit log.
         self.nodes[node_index].last_access = log;
         self.nodes[node_index].run_count = self.nodes[node_index].run_count.saturating_add(1);
@@ -1400,6 +1420,10 @@ impl<X: Executor> ExecutionGraph<X> {
 #[cfg(test)]
 #[path = "cutoff_tests.rs"]
 mod cutoff_tests;
+
+#[cfg(test)]
+#[path = "publication_tests.rs"]
+mod publication_tests;
 
 #[cfg(all(test, feature = "tape"))]
 mod tape_tests {
@@ -3106,7 +3130,7 @@ mod tape_tests {
         let nb_index = usize::try_from(nb.as_u64()).unwrap();
         let src = g.nodes[na_index].output_ids[0];
         let dst = g.nodes[nb_index].output_ids[0];
-        g.dirty.add_dependency(dst, src);
+        g.dirty.add_dependencies(&[dst], src).unwrap();
         g.dirty.mark_dirty(dst);
         g.set_input_value(na, "in", Value::I64(1)).unwrap();
 

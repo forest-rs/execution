@@ -15,6 +15,10 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ### Added
 
+- `GraphError::DependencyCycle` reports rejected cyclic connections. Rejected wiring leaves
+  bindings and dirty state unchanged. Outputs and dependencies publish together per successful
+  node; earlier publications survive a later failure. Host mutations are outside graph rollback.
+
 - Added the `Executor` trait: the graph no longer knows what a node body is. An executor supplies
   the value type carried on edges, the node body type, and the code that runs a node; the graph
   keeps dependency tracking, dirty propagation, scheduling, and reporting.
