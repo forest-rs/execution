@@ -3,6 +3,8 @@
 
 //! Dependency keys and access logging for incremental execution.
 
+use crate::OutputId;
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -70,10 +72,12 @@ pub enum ResourceKey {
     /// VM/host boundary (configuration, environment, request parameters, etc.). The string is an
     /// embedder-chosen stable name.
     Input(Box<str>),
+    /// An external input identified by an embedder-assigned integer, distinct from node slots.
+    InputId(u64),
     /// A dependency on another node's output.
     ///
     /// This identifies a node output within a single [`ExecutionGraph`](crate::ExecutionGraph)
-    /// instance. It is namespaced by the producing [`NodeId`] plus an output name. This key is
+    /// instance. It is namespaced by the producing [`NodeId`] plus an output ID. This key is
     /// intended for wiring graph edges (downstream nodes reading upstream outputs).
     ///
     /// Note: [`NodeId`] values are graph-local identities; they are not intended to be stable
@@ -81,8 +85,8 @@ pub enum ResourceKey {
     NodeOutput {
         /// The node that produced the output.
         node: NodeId,
-        /// The output name within the node.
-        output: Box<str>,
+        /// The positional output within the node.
+        output: OutputId,
     },
     /// Host state consulted by an operation, with a key namespace local to the host op.
     ///
@@ -123,11 +127,8 @@ impl ResourceKey {
 
     /// Constructs an [`ResourceKey::NodeOutput`] key.
     #[inline]
-    pub fn node_output(node: NodeId, output: impl Into<Box<str>>) -> Self {
-        Self::NodeOutput {
-            node,
-            output: output.into(),
-        }
+    pub const fn node_output(node: NodeId, output: OutputId) -> Self {
+        Self::NodeOutput { node, output }
     }
 
     /// Constructs an [`ResourceKey::HostState`] key.
@@ -281,9 +282,9 @@ mod tests {
             hasher.finish()
         }
 
-        let a = ResourceKey::node_output(NodeId::new(1), "out");
-        let b = ResourceKey::node_output(NodeId::new(1), "out");
-        let c = ResourceKey::node_output(NodeId::new(2), "out");
+        let a = ResourceKey::node_output(NodeId::new(1), OutputId::new(0));
+        let b = ResourceKey::node_output(NodeId::new(1), OutputId::new(0));
+        let c = ResourceKey::node_output(NodeId::new(2), OutputId::new(0));
 
         assert_eq!(a, b);
         assert_ne!(a, c);

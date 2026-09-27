@@ -152,7 +152,7 @@ fn cutoff_is_per_output() {
     assert_eq!(cut_off, vec![tens]);
     assert_eq!(
         report.cut_off[0].because_of,
-        Some(ResourceKey::node_output(tens, "value"))
+        Some(ResourceKey::node_output(tens, OutputId::new(0)))
     );
     assert!(report.cut_off[0].why_path.is_some());
     assert_eq!(value(&g, ones), 7);
@@ -274,8 +274,8 @@ fn directly_invalidated_outputs_of_a_scheduled_node_reach_their_readers() {
     let mut g = cutoff_graph();
     let [m, _t1, t2, r] = two_output_graph(&mut g);
     g.set_input_value(m, "y", 2).unwrap();
-    g.invalidate(ResourceKey::node_output(m, "p"));
-    g.invalidate(ResourceKey::node_output(m, "q"));
+    g.invalidate(ResourceKey::node_output(m, OutputId::new(0)));
+    g.invalidate(ResourceKey::node_output(m, OutputId::new(1)));
     g.run_node(t2).unwrap();
     g.run_all().unwrap();
     assert_eq!(value(&g, t2), 2);
@@ -366,7 +366,7 @@ fn explicitly_invalidated_outputs_always_run() {
     let [_, b, _, d] = diamond(&mut g);
     g.run_all().unwrap();
 
-    g.invalidate(ResourceKey::node_output(b, "value"));
+    g.invalidate(ResourceKey::node_output(b, OutputId::new(0)));
     let summary = g.run_all().unwrap();
     // `b` re-runs because it was marked directly; its unchanged output cuts `d` off.
     assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (1, 1));

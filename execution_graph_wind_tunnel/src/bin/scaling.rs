@@ -55,6 +55,7 @@ fn main() {
         .parse()
         .unwrap();
     let scoped = args.next().is_some_and(|s| s == "scoped");
+    let hold = args.any(|arg| arg == "--hold");
     assert!(count > 0);
     let mut graph = ExecutionGraph::new(Native { writes: scoped });
     let start = Instant::now();
@@ -103,5 +104,10 @@ fn main() {
             assert_eq!(graph.run_all().unwrap().executed_nodes, 0);
         })
     );
+    if hold {
+        println!("hold_pid={}", std::process::id());
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+    }
     black_box(graph);
 }

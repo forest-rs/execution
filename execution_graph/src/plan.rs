@@ -129,7 +129,7 @@ mod tests {
         let report = NodeRunDetail {
             node,
             node_label: Some("report-node".into()),
-            because_of: Some(ResourceKey::node_output(node, "value")),
+            because_of: Some(ResourceKey::node_output(node, crate::OutputId::new(0))),
             why_path: Some(alloc::vec![ResourceKey::input("in")]),
             why_path_traced: Some(true),
         };

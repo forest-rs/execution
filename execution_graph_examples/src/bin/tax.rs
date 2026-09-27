@@ -138,9 +138,11 @@ fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
 
 fn fmt_key(g: &TaxGraph, key: &ResourceKey) -> String {
     match key {
+        ResourceKey::InputId(id) => format!("InputId({id})"),
         ResourceKey::Input(name) => format!("Input({name})"),
         ResourceKey::NodeOutput { node, output } => {
             let label = g.node_label(*node).unwrap_or("<unknown>");
+            let output = g.output_name(*node, *output).unwrap_or("<removed>");
             format!("NodeOutput({label}:{output})")
         }
         ResourceKey::HostState { op, key } => format!("HostState(op={}, key={key})", op.as_u64()),

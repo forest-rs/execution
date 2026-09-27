@@ -22,6 +22,7 @@ struct Entry {
     dependencies: Vec<DirtyKey>,
     consumers: Vec<DirtyKey>,
     changed_at: u64,
+    active: bool,
 }
 
 #[derive(Debug)]
@@ -55,6 +56,8 @@ pub(crate) struct DirtyEngine {
     entries: Vec<Entry>,
     pending: BTreeMap<DirtyKey, Pending>,
     revision: u64,
+    free: Vec<DirtyKey>,
+    unused: Vec<DirtyKey>,
 }
 
 impl DirtyEngine {
@@ -66,15 +69,73 @@ impl DirtyEngine {
         if let Some(&id) = self.ids.get(&key) {
             return id;
         }
-        let id = DirtyKey(self.entries.len());
+        let id = self.free.pop().unwrap_or(DirtyKey(self.entries.len()));
         self.ids.insert(key.clone(), id);
-        self.entries.push(Entry {
+        let entry = Entry {
             key,
             dependencies: Vec::new(),
             consumers: Vec::new(),
             changed_at: 0,
-        });
+            active: true,
+        };
+        if id.0 == self.entries.len() {
+            self.entries.push(entry);
+        } else {
+            self.entries[id.0] = entry;
+        }
+        self.unused.push(id);
         id
+    }
+
+    pub(crate) fn stats(&self) -> (usize, usize, usize, usize) {
+        (
+            self.ids.len(),
+            self.entries.iter().map(|e| e.dependencies.len()).sum(),
+            self.pending.len(),
+            self.entries.capacity(),
+        )
+    }
+
+    pub(crate) fn lookup(&self, key: &ResourceKey) -> Option<DirtyKey> {
+        self.ids.get(key).copied()
+    }
+
+    pub(crate) fn remove(&mut self, id: DirtyKey) -> Vec<DirtyKey> {
+        let entry = &mut self.entries[id.0];
+        if !entry.active {
+            return Vec::new();
+        }
+        entry.active = false;
+        self.ids.remove(&entry.key);
+        entry.key = ResourceKey::InputId(0);
+        self.pending.remove(&id);
+        let dependencies = core::mem::take(&mut entry.dependencies);
+        let consumers = core::mem::take(&mut entry.consumers);
+        for dependency in dependencies {
+            self.entries[dependency.0]
+                .consumers
+                .retain(|&key| key != id);
+            self.unused.push(dependency);
+        }
+        for &consumer in &consumers {
+            self.entries[consumer.0]
+                .dependencies
+                .retain(|&key| key != id);
+        }
+        self.free.push(id);
+        consumers
+    }
+
+    pub(crate) fn collect_unused(&mut self) {
+        while let Some(id) = self.unused.pop() {
+            let entry = &self.entries[id.0];
+            if entry.active
+                && entry.consumers.is_empty()
+                && !matches!(entry.key, ResourceKey::NodeOutput { .. })
+            {
+                self.remove(id);
+            }
+        }
     }
 
     pub(crate) fn key(&self, id: DirtyKey) -> &ResourceKey {
@@ -220,6 +281,7 @@ impl DirtyEngine {
                 self.entries[dependency.0]
                     .consumers
                     .retain(|&consumer| consumer != key);
+                self.unused.push(dependency);
             }
             for &dependency in to {
                 if !self.entries[key.0].dependencies.contains(&dependency) {
@@ -278,9 +340,18 @@ mod tests {
     fn failed_multi_output_replacement_restores_every_output() {
         let mut e = DirtyEngine::new();
         let old = e.intern(ResourceKey::input("old"));
-        let a = e.intern(ResourceKey::node_output(NodeId::new(0), "a"));
-        let b = e.intern(ResourceKey::node_output(NodeId::new(0), "b"));
-        let c = e.intern(ResourceKey::node_output(NodeId::new(1), "c"));
+        let a = e.intern(ResourceKey::node_output(
+            NodeId::new(0),
+            crate::OutputId::new(0),
+        ));
+        let b = e.intern(ResourceKey::node_output(
+            NodeId::new(0),
+            crate::OutputId::new(1),
+        ));
+        let c = e.intern(ResourceKey::node_output(
+            NodeId::new(1),
+            crate::OutputId::new(0),
+        ));
         e.set_dependencies(&[a, b], &[old]).unwrap();
         e.set_dependencies(&[c], &[b]).unwrap();
         assert!(e.set_dependencies(&[a, b], &[c]).is_err());

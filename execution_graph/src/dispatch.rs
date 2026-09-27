@@ -198,14 +198,14 @@ mod tests {
         let r0 = NodeRunDetail {
             node: n0,
             node_label: Some("first".into()),
-            because_of: Some(ResourceKey::node_output(n0, "value")),
+            because_of: Some(ResourceKey::node_output(n0, crate::OutputId::new(0))),
             why_path: Some(vec![ResourceKey::input("seed")]),
             why_path_traced: Some(true),
         };
         let r1 = NodeRunDetail {
             node: n1,
             node_label: Some("second".into()),
-            because_of: Some(ResourceKey::node_output(n1, "value")),
+            because_of: Some(ResourceKey::node_output(n1, crate::OutputId::new(0))),
             why_path: Some(vec![ResourceKey::input("seed")]),
             why_path_traced: Some(true),
         };
@@ -239,14 +239,14 @@ mod tests {
         let r_ok = NodeRunDetail {
             node: n_ok,
             node_label: Some("ok".into()),
-            because_of: Some(ResourceKey::node_output(n_ok, "value")),
+            because_of: Some(ResourceKey::node_output(n_ok, crate::OutputId::new(0))),
             why_path: Some(vec![ResourceKey::input("seed")]),
             why_path_traced: Some(true),
         };
         let r_err = NodeRunDetail {
             node: n_err,
             node_label: Some("err".into()),
-            because_of: Some(ResourceKey::node_output(n_err, "value")),
+            because_of: Some(ResourceKey::node_output(n_err, crate::OutputId::new(0))),
             why_path: Some(vec![ResourceKey::input("seed")]),
             why_path_traced: Some(true),
         };

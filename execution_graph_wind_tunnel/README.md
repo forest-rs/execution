@@ -40,3 +40,31 @@ regress: dirty consumers now carry shared cause links and an ordered pending set
 Compact ports and reclaimable storage are the next measured change. Invalidation
 also performs propagation eagerly; compare full edit-plus-query workloads, not
 query time alone, when evaluating fanout-heavy consumers.
+
+The compact-storage follow-up uses indexed outputs, fixed-size port/read arrays,
+and reusable node/resource slots. On the same machine and Rust 1.95 release build,
+10,000 scoped cold queries took 4.05 ms; unchanged query-all took 0.433 ms.
+At 100,000 nodes, scoped cold queries took 41.1 ms and unchanged query-all took
+4.84 ms. Single-key edit plus `run_all` was 0.42–1.71 µs across these runs;
+clean `run_all` was 0.042 µs. These small timings are noisy.
+
+To measure live allocated heap after the workload, hold the graph in memory:
+
+```sh
+target/release/scaling 100000 all --hold
+# In another terminal, use the printed process ID:
+/usr/bin/heap -q PID
+# Press Enter in the probe terminal to exit.
+```
+
+With 100,000 independent nodes, the publication-contract baseline (`3ee2f86`
+plus the same probe) retained 115,768,064 allocated bytes in 1,100,219 allocations.
+Compact storage retained 75,565,888 bytes in 700,210 allocations, about 35% fewer
+bytes. These are process-wide live heap totals, including probe/runtime state;
+they are neither peak RSS nor isolated graph payload sizes. Construction took
+22.0 ms and cold `run_all` took 35.9 ms in the compact-storage heap run.
+
+The node-removal regression separately checks 1,000 create/run/remove cycles:
+live nodes, resources, dependencies, and pending outputs return to zero after
+each removal, while allocated slot capacities remain bounded. Public node IDs
+are never reused even when physical storage is reused.

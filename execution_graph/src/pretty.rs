@@ -10,6 +10,7 @@ use core::fmt::Write;
 
 use crate::executor::Executor;
 use crate::graph::{Binding, ExecutionGraph, Node};
+use crate::nodes::Nodes;
 
 fn escape_record(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 8);
@@ -30,7 +31,7 @@ fn escape_record(value: &str) -> String {
     out
 }
 
-fn record_inputs<X: Executor>(node: &Node<X>) -> String {
+fn record_inputs<X: Executor>(node: &Node<X>, nodes: &Nodes<X>) -> String {
     if node.input_names.is_empty() {
         return String::new();
     }
@@ -40,7 +41,18 @@ fn record_inputs<X: Executor>(node: &Node<X>) -> String {
         let rendered_raw = match node.inputs.get(i).and_then(Option::as_ref) {
             Some(Binding::External { .. }) => format!("{input_name} (external)"),
             Some(Binding::FromNode { node, output, .. }) => {
-                format!("{input_name} <- {}.{output}", node.as_u64())
+                let name = usize::try_from(node.as_u64())
+                    .ok()
+                    .and_then(|id| nodes.get(id))
+                    .and_then(|n| n.outputs.names.get(output.index() as usize));
+                match name {
+                    Some(name) => format!("{input_name} <- {}.{name}", node.as_u64()),
+                    None => format!(
+                        "{input_name} <- {}.#{} (removed)",
+                        node.as_u64(),
+                        output.index()
+                    ),
+                }
             }
             None => format!("{input_name} (unbound)"),
         };
@@ -51,21 +63,15 @@ fn record_inputs<X: Executor>(node: &Node<X>) -> String {
 }
 
 fn record_outputs<X: Executor>(node: &Node<X>) -> String {
-    if node.output_names.is_empty() {
+    if node.outputs.names.is_empty() {
         return String::new();
     }
 
-    let mut parts: Vec<String> = Vec::with_capacity(node.output_names.len());
-    for (i, output_name) in node.output_names.iter().enumerate() {
+    let mut parts: Vec<String> = Vec::with_capacity(node.outputs.names.len());
+    for (i, output_name) in node.outputs.names.iter().enumerate() {
         parts.push(format!("<out{i}> {}", escape_record(output_name)));
     }
     format!("{{ {} }}", parts.join(" | "))
-}
-
-fn output_slot<X: Executor>(node: &Node<X>, output_name: &str) -> Option<usize> {
-    node.output_names
-        .iter()
-        .position(|candidate| candidate.as_ref() == output_name)
 }
 
 impl<X: Executor> ExecutionGraph<X> {
@@ -85,8 +91,9 @@ impl<X: Executor> ExecutionGraph<X> {
              \tedge [fontname=\"monospace\", fontsize=9, arrowsize=0.7];\n",
         );
 
-        for (node_id, node) in self.nodes.iter().enumerate() {
-            let input_block = record_inputs(node);
+        for node in self.nodes.iter() {
+            let node_id = node.id.as_u64();
+            let input_block = record_inputs(node, &self.nodes);
             let output_block = record_outputs(node);
             let node_line = match node.label.as_deref() {
                 Some(label) => format!("{label}\nnode#{node_id}"),
@@ -107,7 +114,8 @@ impl<X: Executor> ExecutionGraph<X> {
             let _ = writeln!(dot, "  n{node_id} [label=\"{label}\"];");
         }
 
-        for (dst_id, node) in self.nodes.iter().enumerate() {
+        for node in self.nodes.iter() {
+            let dst_id = node.id.as_u64();
             for (dst_slot, _input_name) in node.input_names.iter().enumerate() {
                 let Some(Binding::FromNode {
                     node: src_node,
@@ -122,7 +130,12 @@ impl<X: Executor> ExecutionGraph<X> {
                 let src_slot = usize::try_from(src_id)
                     .ok()
                     .and_then(|src_index| self.nodes.get(src_index))
-                    .and_then(|src| output_slot(src, output.as_ref()));
+                    .and_then(|src| {
+                        src.outputs
+                            .names
+                            .get(output.index() as usize)
+                            .map(|_| output.index())
+                    });
 
                 match src_slot {
                     Some(src_slot) => {
@@ -130,7 +143,7 @@ impl<X: Executor> ExecutionGraph<X> {
                             writeln!(dot, "  n{src_id}:out{src_slot} -> n{dst_id}:in{dst_slot};");
                     }
                     None => {
-                        let label = escape_record(output);
+                        let label = format!("output #{} (removed)", output.index());
                         let _ = writeln!(
                             dot,
                             "  n{src_id} -> n{dst_id}:in{dst_slot} [label=\"{label}\", style=dashed, color=\"firebrick\"];"

@@ -187,3 +187,20 @@ mod tests {
         assert_eq!(mask, ReportDetailMask::WHY_PATH);
     }
 }
+
+/// Live graph counts and reusable storage capacities. No executor payload bytes are inferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GraphStorageStats {
+    /// Live computation nodes.
+    pub nodes: usize,
+    /// Live interned resource keys, including outputs.
+    pub resources: usize,
+    /// Directed output-to-resource dependency edges.
+    pub dependencies: usize,
+    /// Output keys awaiting execution or verification.
+    pub pending_outputs: usize,
+    /// Allocated node slots, including reusable spare capacity.
+    pub node_capacity: usize,
+    /// Allocated resource slots, including reusable spare capacity.
+    pub resource_capacity: usize,
+}
