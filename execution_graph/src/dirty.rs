@@ -229,6 +229,13 @@ impl DirtyEngine {
 
     /// Deterministic topological order over pending keys, without storage indexed by key-space size.
     pub(crate) fn schedule(&self, roots: Option<&[DirtyKey]>) -> Vec<DirtyKey> {
+        // A clean scoped query needs no traversal workspace, even while other roots remain
+        // pending. Check the requested outputs before cloning roots or allocating the DFS stack.
+        if self.pending.is_empty()
+            || roots.is_some_and(|roots| roots.iter().all(|key| !self.pending.contains_key(key)))
+        {
+            return Vec::new();
+        }
         let mut starts = match roots {
             Some(roots) => roots.to_vec(),
             None => self.pending.keys().copied().collect(),

@@ -55,7 +55,11 @@ fn main() {
         .parse()
         .unwrap();
     let scoped = args.next().is_some_and(|s| s == "scoped");
-    let hold = args.any(|arg| arg == "--hold");
+    let options: Vec<_> = args.collect();
+    let hold = options.iter().any(|arg| arg == "--hold");
+    let profile = options
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--profile="));
     assert!(count > 0);
     let mut graph = ExecutionGraph::new(Native { writes: scoped });
     let start = Instant::now();
@@ -104,6 +108,45 @@ fn main() {
             assert_eq!(graph.run_all().unwrap().executed_nodes, 0);
         })
     );
+    if let Some(workload) = profile {
+        println!("profile_pid={} workload={workload}", std::process::id());
+        let start = Instant::now();
+        let mut iterations = 0u64;
+        while start.elapsed().as_secs() < 20 {
+            match workload {
+                "clean" => {
+                    for &node in &nodes {
+                        assert_eq!(graph.run_node(node).unwrap().executed_nodes, 0);
+                    }
+                }
+                "edit" => {
+                    graph.invalidate(ResourceKey::host_state(
+                        HostOpId::new(0),
+                        u64::from(count - 1),
+                    ));
+                    assert_eq!(graph.run_all().unwrap().executed_nodes, 1);
+                    black_box(graph.node_outputs(last));
+                }
+                "create" => {
+                    let mut fresh = ExecutionGraph::new(Native { writes: scoped });
+                    for id in 0..count {
+                        fresh
+                            .add_node(u64::from(id), vec![], vec!["out".into()])
+                            .unwrap();
+                    }
+                    black_box(fresh);
+                }
+                _ => {
+                    panic!("unknown profile workload: {workload}; expected clean, edit, or create")
+                }
+            }
+            iterations += 1;
+        }
+        println!(
+            "profile_iterations={iterations} elapsed_ns={}",
+            start.elapsed().as_nanos()
+        );
+    }
     if hold {
         println!("hold_pid={}", std::process::id());
         let mut line = String::new();

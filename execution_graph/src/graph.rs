@@ -312,7 +312,10 @@ impl<V> Scratch<V> {
     #[inline]
     fn start_drain(&mut self) {
         self.to_run.clear();
-        self.seen.clear();
+        debug_assert!(
+            self.seen.is_empty(),
+            "previous plan must release visited nodes"
+        );
     }
 
     fn take_node(&mut self, node: NodeId) -> bool {
@@ -890,6 +893,11 @@ impl<X: Executor> ExecutionGraph<X> {
                     trace.then_some(true),
                 ));
             }
+        }
+        // Remove only the nodes visited by this plan. HashSet::clear would reset its entire
+        // retained control table after every tiny edit following a large cold traversal.
+        for node in &self.scratch.to_run {
+            self.scratch.seen.remove(node);
         }
         let nodes = core::mem::take(&mut self.scratch.to_run);
         let plan = match scope {

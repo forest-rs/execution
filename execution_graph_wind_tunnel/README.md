@@ -68,3 +68,41 @@ The node-removal regression separately checks 1,000 create/run/remove cycles:
 live nodes, resources, dependencies, and pending outputs return to zero after
 each removal, while allocated slot capacities remain bounded. Public node IDs
 are never reused even when physical storage is reused.
+
+The allocation/CPU follow-up uses symbolized release builds and explicit profile
+loops (20 seconds, with assertions retained):
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo +1.95 build --release -p execution_graph_wind_tunnel --bin scaling
+target/release/scaling 10000 scoped --profile=clean
+target/release/scaling 100000 all --profile=edit
+sample PID 5 1 -file profile.txt
+MallocStackLogging=lite target/release/scaling 100000 all --hold
+malloc_history PID -callTree -ignoreThreads -collapseRecursion -noContent -q
+heap --showSizes -q PID
+```
+
+Use separate processes for CPU timing and stack logging: stack logging changes
+allocator size classes and substantially slows the workload. For live byte totals,
+repeat `--hold` without `MallocStackLogging`. On 2026-09-28, the uninstrumented
+compact graph retained 75,565,648 bytes. Allocation stacks and matching heap size
+classes attribute approximately 23.07 MB each to the node and resource arrays,
+8.67 MB to resource lookup, 2.24 MB to node lookup, 14.4 MB to 700,000 small
+per-node allocations, and 3.29 MB to retained scheduling/collection scratch.
+The probe's node-ID list adds 0.80 MB. Spare vector capacity is included.
+
+Each trivial node still has seven small allocations: an output name, the names
+array, output-key array, output-values array, committed reads, and forward/reverse
+dependency lists. The old output `BTreeMap` allocation alone accounted for about
+30 MiB in the stack-logged publication baseline. Small arrays therefore explain
+only part of retained memory; large metadata arrays and spare capacity matter too.
+
+The first compact edit profile exposed a scaling regression hidden by sparse
+single-operation timings: 3,147 of 3,712 samples (85%) cleared the retained node
+visited-set control table after every edit. Remove only the visited entries.
+Clean scoped queries also allocated/freed traversal vectors; return immediately
+when none of the requested roots is pending. The repeated 100,000-node edit loop
+improved from 14.7 million to 99.1 million iterations in 20 seconds (1.36 to
+0.202 microseconds per iteration, including timer/assertion overhead). A repeated
+sample no longer shows the large table clear. This is a tiny native workload,
+not a prediction for layerstack's transform cost.
