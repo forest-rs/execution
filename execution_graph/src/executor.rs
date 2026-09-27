@@ -23,7 +23,7 @@ use crate::node_access::NodeAccess;
 
 /// Runs node bodies on behalf of an [`ExecutionGraph`](crate::ExecutionGraph).
 ///
-/// The graph calls [`Executor::execute`] once per scheduled node, in dependency order, with the
+/// The graph calls [`Executor::execute`] in dependency order with the
 /// node's bound input values. The executor must push exactly one value per declared output; the
 /// graph reports [`GraphError::BadOutputArity`](crate::GraphError::BadOutputArity) otherwise.
 ///
@@ -52,6 +52,12 @@ pub trait Executor {
     /// and dependency validation succeed. On error, this node keeps its last committed values
     /// and dependencies. Nodes that already succeeded in the same graph run remain committed.
     ///
+    /// Returning [`NodeOutcome::Pending`] explicitly permits restarting this attempt after
+    /// requested producers become current. Its tentative outputs and reads are discarded.
+    /// Pending attempts must be safe to repeat and must not record host writes. Arbitrary
+    /// external effects cannot be detected or rolled back. Ordinary successful execution
+    /// returns [`NodeOutcome::Complete`]; unresolved reads then produce a graph error.
+    ///
     /// Mutations to `self`, `node`, or external host state are not rolled back. Report host writes
     /// even if a later operation fails, so other readers can be invalidated. Use owned values or
     /// shared ownership for output handles; do not retire a successfully published value because
@@ -61,10 +67,10 @@ pub trait Executor {
         node: &mut Self::Node,
         inputs: &[Self::Value],
         outputs: &mut Vec<Self::Value>,
-        access: &mut NodeAccess<'_>,
-    ) -> Result<(), Self::Error>;
+        access: &mut NodeAccess<'_, Self::Value>,
+    ) -> Result<NodeOutcome, Self::Error>;
 
-    /// Returns whether a reader could tell `previous` and `next` apart.
+    /// Returns whether `previous` and `next` are observably equivalent to every reader.
     ///
     /// This drives *early cutoff*: when a re-run node produces an output for which this returns
     /// `true`, the output counts as unchanged, and dependents scheduled only because of it are
@@ -85,4 +91,16 @@ pub trait Executor {
         let _ = node;
         None
     }
+}
+
+/// Whether an executor attempt is ready to publish or explicitly requests a restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeOutcome {
+    /// Publish the output buffer after arity and dependency validation.
+    Complete,
+    /// Discard this attempt and restart after the pending output reads are resolved.
+    ///
+    /// At least one `read_node_output` must have returned `Ok(None)`. No recorded host
+    /// writes are allowed. The executor promises that repeating this attempt is safe.
+    Pending,
 }

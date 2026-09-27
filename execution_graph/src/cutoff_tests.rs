@@ -535,8 +535,8 @@ mod tape {
             node: &mut Mixed,
             inputs: &[Value],
             outputs: &mut Vec<Value>,
-            access: &mut NodeAccess<'_>,
-        ) -> Result<(), TapeError> {
+            access: &mut NodeAccess<'_, Self::Value>,
+        ) -> Result<NodeOutcome, TapeError> {
             match node {
                 Mixed::Tape(n) => self.tape.execute(n, inputs, outputs, access),
                 Mixed::Native(n) => self.native.execute(n, inputs, outputs, access),

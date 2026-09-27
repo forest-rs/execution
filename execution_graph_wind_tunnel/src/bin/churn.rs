@@ -18,13 +18,13 @@ impl Executor for Native {
         node: &mut u64,
         _: &[u64],
         outputs: &mut Vec<u64>,
-        access: &mut NodeAccess<'_>,
-    ) -> Result<(), Infallible> {
+        access: &mut NodeAccess<'_, u64>,
+    ) -> Result<execution_graph::NodeOutcome, Infallible> {
         for key in 0..=self.width {
             access.read_host_state(HostOpId::new(0), *node * 64 + key);
         }
         outputs.push(self.width);
-        Ok(())
+        Ok(execution_graph::NodeOutcome::Complete)
     }
 }
 fn main() {

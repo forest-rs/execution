@@ -132,6 +132,56 @@
 //! Invalidating an unknown resource has no effect: future readers execute before they can cache
 //! a value, and there is no existing consumer to invalidate.
 //!
+//! ## Dynamic output reads
+//!
+//! [`FnNode::restartable`] and custom [`Executor`] implementations can discover graph-output
+//! dependencies while running. [`NodeAccess::read_node_output`] returns a cloned current value,
+//! or `Ok(None)` when the producer needs execution or verification. Return [`NodeOutcome::Pending`]
+//! to discard the tentative outputs/reads, update those producers, and restart the computation.
+//! Missing or retired identities produce [`OutputReadError`], rather than a cached substitute.
+//!
+//! ```rust
+//! use execution_graph::{ExecutionGraph, FnExecutor, FnNode, NodeOutcome, OutputId, OutputReadError};
+//!
+//! let mut graph = ExecutionGraph::new(FnExecutor::<i64, OutputReadError>::new());
+//! let parent = graph.add_node(FnNode::new(|_, outputs, _| {
+//!     outputs.push(10); Ok(())
+//! }), vec![], vec!["out".into()])?;
+//! let child = graph.add_node(FnNode::restartable(move |_, outputs, access| {
+//!     let Some(value) = access.read_node_output(parent, OutputId::new(0))? else {
+//!         return Ok(NodeOutcome::Pending);
+//!     };
+//!     outputs.push(value + 1);
+//!     Ok(NodeOutcome::Complete)
+//! }), vec![], vec!["out".into()])?;
+//! let summary = graph.run_node(child)?;
+//! assert_eq!(summary.executed_nodes, 2);
+//! assert_eq!(summary.execution_attempts, 3); // child yields, parent publishes, child publishes
+//! assert_eq!(graph.node_outputs(child).unwrap().get("out"), Some(&11));
+//! # Ok::<(), execution_graph::GraphError<OutputReadError>>(())
+//! ```
+//!
+//! Restarting is explicit: ordinary [`FnNode::new`] and [`FnNode::named`] closures never request
+//! it. A completed attempt with unresolved reads is rejected. A pending attempt must be safe to
+//! repeat and must not record host writes; arbitrary executor or external effects cannot be
+//! detected or rolled back. A producer may perform effects when it completes, just as in a
+//! statically wired graph. Execution errors remain failures, even after a pending read.
+//!
+//! Successful execution replaces the committed read set, so a conditional branch can remove a
+//! dependency and discover it again later. Scheduling conservatively visits previously committed
+//! dependencies before the reader; new runtime requests extend that scope. Native readers can
+//! request tape outputs in a mixed executor, and tape input bindings can consume native outputs.
+//! The tape adapter itself completes whole VM calls and does not suspend host calls.
+//!
+//! [`ExecutionGraph::node_dependencies`] exposes committed reads without enabling access logs.
+//! [`ExecutionGraph::node_status`] distinguishes a current cache from pending or never-published
+//! results; [`ExecutionGraph::node_outputs`] alone is a cached-value accessor. Status reflects
+//! changes reported to the graph, not unreported host mutation. Run summaries and partial reports
+//! count executor attempts and suspensions separately from successful publications.
+//!
+//! Run `cargo run -p execution_graph_examples --bin transforms` for conditional parent-world
+//! reads, reset toggles, dependency inspection, and bitwise checks against a fresh evaluator.
+//!
 //! ## Tape programs
 //!
 //! With the `tape` feature, [`TapeExecutor`] runs verified `execution_tape` programs as nodes.
@@ -265,11 +315,16 @@ mod report;
 pub mod tape;
 
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
-pub use executor::Executor;
+pub use executor::{Executor, NodeOutcome};
 pub use graph::{ExecutionGraph, GraphError, RemovedNode};
 pub use native::{FnExecutor, FnNode, NodeFn, ValueEq};
-pub use node_access::NodeAccess;
+pub use node_access::{NodeAccess, OutputReadError};
 pub use ports::{InputId, NodeOutputs, OutputId};
-pub use report::{GraphStorageStats, NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
+pub use report::{
+    GraphStorageStats, NodeRunDetail, NodeStatus, ReportDetailMask, RunDetailReport, RunSummary,
+};
 #[cfg(feature = "tape")]
 pub use tape::{TapeError, TapeExecutor, TapeNode};
+
+#[cfg(test)]
+mod dynamic_tests;

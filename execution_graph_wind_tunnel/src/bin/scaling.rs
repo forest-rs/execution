@@ -25,14 +25,14 @@ impl Executor for Native {
         node: &mut u64,
         _: &[u64],
         outputs: &mut Vec<u64>,
-        access: &mut NodeAccess<'_>,
-    ) -> Result<(), Infallible> {
+        access: &mut NodeAccess<'_, u64>,
+    ) -> Result<execution_graph::NodeOutcome, Infallible> {
         access.read_host_state(HostOpId::new(0), *node);
         if self.writes {
             access.write_host_state(HostOpId::new(1), *node);
         }
         outputs.push(*node);
-        Ok(())
+        Ok(execution_graph::NodeOutcome::Complete)
     }
 }
 

@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 
-use crate::executor::Executor;
+use crate::executor::{Executor, NodeOutcome};
 use crate::node_access::NodeAccess;
 
 /// Body signature for an [`FnNode`].
@@ -17,7 +17,8 @@ use crate::node_access::NodeAccess;
 /// The closure receives the bound input values, an empty output buffer to fill with exactly one
 /// value per declared output, and the [`NodeAccess`] for reporting any reads or writes of state
 /// outside the graph.
-pub type NodeFn<V, E> = dyn FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_>) -> Result<(), E>;
+pub type NodeFn<V, E> =
+    dyn FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<NodeOutcome, E>;
 
 /// A node body implemented by a Rust closure.
 pub struct FnNode<V, E> {
@@ -28,21 +29,40 @@ pub struct FnNode<V, E> {
 impl<V, E> FnNode<V, E> {
     /// Wraps `run` as an anonymous node body.
     pub fn new(
-        run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_>) -> Result<(), E> + 'static,
+        mut run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<(), E> + 'static,
     ) -> Self {
         Self {
             name: None,
-            run: Box::new(run),
+            run: Box::new(move |inputs, outputs, access| {
+                run(inputs, outputs, access).map(|()| NodeOutcome::Complete)
+            }),
         }
     }
 
     /// Wraps `run` as a node body described by `name` in reports and DOT output.
     pub fn named(
         name: impl Into<Box<str>>,
-        run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_>) -> Result<(), E> + 'static,
+        mut run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<(), E> + 'static,
     ) -> Self {
         Self {
             name: Some(name.into()),
+            run: Box::new(move |inputs, outputs, access| {
+                run(inputs, outputs, access).map(|()| NodeOutcome::Complete)
+            }),
+        }
+    }
+
+    /// Wraps a computation that may explicitly suspend on pending graph-output reads.
+    ///
+    /// Return `NodeOutcome::Pending` after a read returns `Ok(None)`. The graph discards
+    /// tentative outputs/reads, updates requested producers, then invokes the closure again.
+    /// Before completion, the closure must be safe to repeat; recorded host writes on a
+    /// suspended attempt are rejected. Ordinary `new`/`named` closures are never replayed.
+    pub fn restartable(
+        run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<NodeOutcome, E> + 'static,
+    ) -> Self {
+        Self {
+            name: None,
             run: Box::new(run),
         }
     }
@@ -135,8 +155,8 @@ impl<V: Clone + fmt::Debug, E: fmt::Debug> Executor for FnExecutor<V, E> {
         node: &mut Self::Node,
         inputs: &[Self::Value],
         outputs: &mut Vec<Self::Value>,
-        access: &mut NodeAccess<'_>,
-    ) -> Result<(), Self::Error> {
+        access: &mut NodeAccess<'_, V>,
+    ) -> Result<NodeOutcome, Self::Error> {
         (node.run)(inputs, outputs, access)
     }
 

@@ -45,6 +45,12 @@ impl RunPlanTrace {
         Self::from_reports(reports.into_iter().flatten().collect())
     }
 
+    pub(crate) fn extend(&mut self, other: Self) {
+        for (node, report) in other.node_reports {
+            self.node_reports.entry(node).or_insert(report);
+        }
+    }
+
     /// Removes and returns the report for `node`, if present.
     #[inline]
     pub(crate) fn take_report_for(&mut self, node: NodeId) -> Option<NodeRunDetail> {
@@ -60,6 +66,7 @@ pub(crate) struct RunPlan {
     scope: PlanScope,
     nodes: Vec<NodeId>,
     trace: Option<RunPlanTrace>,
+    detail: crate::ReportDetailMask,
 }
 
 impl RunPlan {
@@ -71,6 +78,7 @@ impl RunPlan {
             scope: PlanScope::All,
             nodes,
             trace: None,
+            detail: crate::ReportDetailMask::NONE,
         }
     }
 
@@ -82,6 +90,7 @@ impl RunPlan {
             scope: PlanScope::WithinDependenciesOf(node),
             nodes,
             trace: None,
+            detail: crate::ReportDetailMask::NONE,
         }
     }
 
@@ -90,7 +99,16 @@ impl RunPlan {
     #[inline]
     pub(crate) fn with_trace(mut self, trace: RunPlanTrace) -> Self {
         self.trace = Some(trace);
+        self.detail = crate::ReportDetailMask::FULL;
         self
+    }
+
+    pub(crate) fn with_detail(mut self, detail: crate::ReportDetailMask) -> Self {
+        self.detail = detail;
+        self
+    }
+    pub(crate) fn detail(&self) -> crate::ReportDetailMask {
+        self.detail
     }
 
     /// Returns the planning scope.
