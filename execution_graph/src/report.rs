@@ -203,4 +203,7 @@ pub struct GraphStorageStats {
     pub node_capacity: usize,
     /// Allocated resource slots, including reusable spare capacity.
     pub resource_capacity: usize,
+    /// Allocated dependency-key slots, including reusable ranges. Each edge is stored in
+    /// forward and reverse lists. Slots are reused after replacement or removal.
+    pub dependency_capacity: usize,
 }

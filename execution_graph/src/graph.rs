@@ -616,7 +616,8 @@ impl<X: Executor> ExecutionGraph<X> {
     /// Counts are computed on request, not collected on the execution path. Capacities describe
     /// reusable slots rather than bytes; they let callers verify bounded storage during churn.
     pub fn storage_stats(&self) -> crate::GraphStorageStats {
-        let (resources, dependencies, pending_outputs, resource_capacity) = self.dirty.stats();
+        let (resources, dependencies, pending_outputs, resource_capacity, dependency_capacity) =
+            self.dirty.stats();
         crate::GraphStorageStats {
             nodes: self.nodes.len(),
             resources,
@@ -624,6 +625,7 @@ impl<X: Executor> ExecutionGraph<X> {
             pending_outputs,
             node_capacity: self.nodes.capacity(),
             resource_capacity,
+            dependency_capacity,
         }
     }
 

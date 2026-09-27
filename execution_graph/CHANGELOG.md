@@ -59,6 +59,8 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ### Changed
 
+- Store dependency adjacency in reusable ranges of a shared arena, eliminating per-list allocations.
+
 - Invalidation marks existing consumers directly. Scoped queries visit pending dependencies,
   without scanning unrelated dirty roots or allocating by the largest key ID. The internal
   single-channel store replaces the `invalidation` dependency.

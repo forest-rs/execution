@@ -106,3 +106,43 @@ improved from 14.7 million to 99.1 million iterations in 20 seconds (1.36 to
 0.202 microseconds per iteration, including timer/assertion overhead). A repeated
 sample no longer shows the large table clear. This is a tiny native workload,
 not a prediction for layerstack's transform cost.
+
+The dependency-range arena replaces each resource's two adjacency `Vec`s with
+8-byte `(offset, length)` descriptors. One shared buffer stores the keys in
+power-of-two ranges; freed ranges are reused by size class. Lists relocate when
+they cross a size boundary. Public identities and dependency ordering do not
+change. There is no unsafe code or added dependency. Internal offsets address up
+to `u32::MAX` key slots; exhaustion panics like other graph storage exhaustion.
+
+At 100,000 nodes, uninstrumented live heap falls from 75,565,648 to 62,874,192 bytes
+(16.8% less), and allocation count falls from 700,211 to 500,212. The resource
+array drops from 23,068,672 to 14,680,064 bytes. The shared dependency buffer is
+2,097,152 bytes, replacing 200,000 32-byte adjacency allocations. Five small
+allocations per trivial node remain: names, port keys, values, and committed reads.
+
+Compare against `72ad26f` (the compact vectors with scheduling fixes) using the
+same Rust 1.95 symbolized release build. Two runs of the existing Criterion probe,
+30 samples, 1-second warmup and measurement per case, gave these point estimates:
+
+| Workload | Vectors, two runs | Arena, two runs |
+|---|---:|---:|
+| 32 stable reads | 0.699–0.749 µs | 0.680–0.707 µs |
+| 1,024 stable reads | 9.23–9.31 µs | 9.44–9.47 µs |
+| 100-leaf fanout | 21.8–22.2 µs | 21.5–23.1 µs |
+| 1,000-leaf fanout | 244–256 µs | 250–254 µs |
+
+Treat this as a memory improvement: CPU results are mixed, including a small
+wide-read regression. Reproduce the comparison with:
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo +1.95 bench -p execution_graph_wind_tunnel --bench graph -- 'fanout_rerun/(100|1000)$|stable_deps_many_reads_rerun/(32|1024)$' --sample-size 30 --warm-up-time 1 --measurement-time 1 --noplot
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo +1.95 run --release -p execution_graph_wind_tunnel --bin churn -- 1000
+```
+
+The churn probe creates 1,000 nodes, replaces their read sets five times, removes
+all nodes, and repeats. It checks values, zero live counts after removal, and
+stable retained capacities after warmup. Across alternating runs, median cycle
+time was 9.06–9.12 ms with vectors and 8.20–9.00 ms with the arena. The latter
+retains 262,144 dependency slots after this workload. Released ranges are reusable
+but not coalesced, and the shared buffer retains its high-water capacity; this
+is not a promise to return memory to the OS after shrinking the graph.
