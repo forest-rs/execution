@@ -48,6 +48,14 @@ pub trait Executor {
     /// Runs `node` with its bound `inputs`, pushing one value per declared output into `outputs`.
     ///
     /// `outputs` is empty on entry and its capacity is retained by the graph between runs.
+    /// Outputs and recorded dependencies are published together after execution, output arity,
+    /// and dependency validation succeed. On error, this node keeps its last committed values
+    /// and dependencies. Nodes that already succeeded in the same graph run remain committed.
+    ///
+    /// Mutations to `self`, `node`, or external host state are not rolled back. Report host writes
+    /// even if a later operation fails, so other readers can be invalidated. Use owned values or
+    /// shared ownership for output handles; do not retire a successfully published value because
+    /// a different node fails later in the run.
     fn execute(
         &mut self,
         node: &mut Self::Node,

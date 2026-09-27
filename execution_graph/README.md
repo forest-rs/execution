@@ -178,6 +178,14 @@ reusing stale results.
 
 ## Execution behavior
 
+Each successful node publishes its outputs and recorded dependencies together, after output
+arity and dependency validation. A failed node keeps its previous outputs, dependencies, and
+access log and remains dirty. Earlier successful nodes remain committed if a later node fails:
+a graph run is not a transaction. Executor and host mutations are never rolled back by the
+graph; output handles must remain valid for as long as the graph owns them.
+
+Cyclic connections return [`GraphError::DependencyCycle`] without changing the graph's wiring.
+
 `run_node` drains and executes only the dirty work within the dependency closure of the target
 node's outputs, leaving unrelated dirty work dirty to be handled by a later `run_all`.
 
