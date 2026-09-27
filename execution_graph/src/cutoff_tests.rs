@@ -174,13 +174,12 @@ fn targeted_runs_cut_off_within_the_closure() {
     assert_eq!(g.node_run_count(c), Some(1));
     assert_eq!(g.node_run_count(d), Some(1));
 
-    // `c` reads the drained `a.value` and `d` the drained `b.value`, both from outside the
-    // closure, so their work was kept. Both run even though those outputs turned out
-    // unchanged: retained work is conservative under early cutoff.
+    // Pending readers outside the closure also compare revisions. Neither output changed,
+    // so both can cut off even across separate scoped runs.
     let summary = g.run_all().unwrap();
-    assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (2, 0));
-    assert_eq!(g.node_run_count(c), Some(2));
-    assert_eq!(g.node_run_count(d), Some(2));
+    assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (0, 2));
+    assert_eq!(g.node_run_count(c), Some(1));
+    assert_eq!(g.node_run_count(d), Some(1));
     assert_eq!(value(&g, d), 23);
 }
 
@@ -314,14 +313,14 @@ fn writes_count_as_changes_within_a_run() {
     g.set_input_value(writer, "x", 1).unwrap();
     g.connect(writer, "value", reader, "v").unwrap();
     g.run_all().unwrap();
-    // The first run's write is still pending for the reader; drain it.
-    g.run_all().unwrap();
-    assert_eq!(g.node_run_count(reader), Some(2));
+    // The reader already observed the first write. There is no historical mark to drain.
+    assert_eq!(g.run_all().unwrap(), RunSummary::default());
+    assert_eq!(g.node_run_count(reader), Some(1));
 
     g.invalidate_input("x");
     let summary = g.run_all().unwrap();
     assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (2, 0));
-    assert_eq!(g.node_run_count(reader), Some(3));
+    assert_eq!(g.node_run_count(reader), Some(2));
 }
 
 #[test]
@@ -353,12 +352,11 @@ fn read_modify_write_nodes_still_reach_a_fixpoint() {
         .unwrap();
 
     g.run_all().unwrap();
-    // The write dirtied the opaque key: the reader re-runs, the writer does not re-trigger
-    // itself, and then the graph is quiet.
+    // The reader ran after the write and is already current. Neither node re-triggers.
     let summary = g.run_all().unwrap();
-    assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (1, 0));
+    assert_eq!((summary.executed_nodes, summary.cut_off_nodes), (0, 0));
     assert_eq!(g.node_run_count(rmw), Some(1));
-    assert_eq!(g.node_run_count(reader), Some(2));
+    assert_eq!(g.node_run_count(reader), Some(1));
     assert_eq!(g.run_all().unwrap(), RunSummary::default());
 }
 

@@ -67,9 +67,7 @@ impl<X: Executor> Dispatcher<X> for InlineDispatcher {
                 Ok(true) => summary.executed_nodes += 1,
                 Ok(false) => summary.cut_off_nodes += 1,
                 Err(e) => {
-                    // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Their dirty marks
-                    // were cleared when the plan was drained, so re-mark them to keep that pending
-                    // work recoverable on the next run instead of silently dropping it.
+                    // Fail-fast: force a retry of the failed node. Unexecuted work remains pending.
                     graph.remark_scheduled_dirty(&to_run[i..]);
                     graph.reclaim_schedule_buffer(to_run);
                     return Err(e);
@@ -100,8 +98,7 @@ impl<X: Executor> Dispatcher<X> for InlineDispatcher {
             let ran = match graph.execute_scheduled_node(node) {
                 Ok(ran) => ran,
                 Err(e) => {
-                    // Fail-fast: this node errored and `to_run[i + 1..]` never ran. Re-mark them
-                    // so their drained dirty state is not silently lost (see `dispatch`).
+                    // Force a retry of the failed node; earlier publications and later pending work survive.
                     graph.remark_scheduled_dirty(&to_run[i..]);
                     graph.reclaim_schedule_buffer(to_run);
                     return Err(GraphError::RunReportFailed {
