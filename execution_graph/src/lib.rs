@@ -251,6 +251,7 @@ mod executor;
 #[cfg(test)]
 mod freshness_tests;
 mod graph;
+mod key_arena;
 #[cfg(test)]
 mod lifecycle_tests;
 mod native;

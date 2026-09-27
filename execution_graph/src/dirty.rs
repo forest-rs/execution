@@ -8,19 +8,20 @@
 //! cutoff independent of drain boundaries. Cause links share prefixes across fanout.
 
 use crate::ResourceKey;
+use crate::key_arena::{KeyArena, KeyRange};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use hashbrown::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(crate) struct DirtyKey(usize);
+pub(crate) struct DirtyKey(pub(crate) usize);
 
 #[derive(Debug)]
 struct Entry {
     key: ResourceKey,
-    dependencies: Vec<DirtyKey>,
-    consumers: Vec<DirtyKey>,
+    dependencies: KeyRange,
+    consumers: KeyRange,
     changed_at: u64,
     active: bool,
 }
@@ -54,6 +55,7 @@ struct Pending {
 pub(crate) struct DirtyEngine {
     ids: HashMap<ResourceKey, DirtyKey>,
     entries: Vec<Entry>,
+    edges: KeyArena,
     pending: BTreeMap<DirtyKey, Pending>,
     revision: u64,
     free: Vec<DirtyKey>,
@@ -73,8 +75,8 @@ impl DirtyEngine {
         self.ids.insert(key.clone(), id);
         let entry = Entry {
             key,
-            dependencies: Vec::new(),
-            consumers: Vec::new(),
+            dependencies: KeyRange::default(),
+            consumers: KeyRange::default(),
             changed_at: 0,
             active: true,
         };
@@ -87,12 +89,13 @@ impl DirtyEngine {
         id
     }
 
-    pub(crate) fn stats(&self) -> (usize, usize, usize, usize) {
+    pub(crate) fn stats(&self) -> (usize, usize, usize, usize, usize) {
         (
             self.ids.len(),
             self.entries.iter().map(|e| e.dependencies.len()).sum(),
             self.pending.len(),
             self.entries.capacity(),
+            self.edges.capacity(),
         )
     }
 
@@ -111,19 +114,21 @@ impl DirtyEngine {
         self.pending.remove(&id);
         let dependencies = core::mem::take(&mut entry.dependencies);
         let consumers = core::mem::take(&mut entry.consumers);
-        for dependency in dependencies {
-            self.entries[dependency.0]
-                .consumers
-                .retain(|&key| key != id);
+        for slot in 0..dependencies.len() {
+            let dependency = self.edges.get(dependencies)[slot];
+            self.edges
+                .remove(&mut self.entries[dependency.0].consumers, id);
             self.unused.push(dependency);
         }
-        for &consumer in &consumers {
-            self.entries[consumer.0]
-                .dependencies
-                .retain(|&key| key != id);
+        let readers = self.edges.get(consumers).to_vec();
+        for &consumer in &readers {
+            self.edges
+                .remove(&mut self.entries[consumer.0].dependencies, id);
         }
+        self.edges.release(dependencies);
+        self.edges.release(consumers);
         self.free.push(id);
-        consumers
+        readers
     }
 
     pub(crate) fn collect_unused(&mut self) {
@@ -182,7 +187,7 @@ impl DirtyEngine {
     fn propagate(&mut self, id: DirtyKey, cause: Rc<Cause>) {
         let mut queue = alloc::vec![(id, cause)];
         while let Some((key, parent)) = queue.pop() {
-            for &consumer in &self.entries[key.0].consumers {
+            for &consumer in self.edges.get(self.entries[key.0].consumers) {
                 if self.pending.contains_key(&consumer) {
                     continue;
                 }
@@ -255,7 +260,12 @@ impl DirtyEngine {
                     continue;
                 }
                 stack.push((key, true));
-                for &dependency in self.entries[key.0].dependencies.iter().rev() {
+                for &dependency in self
+                    .edges
+                    .get(self.entries[key.0].dependencies)
+                    .iter()
+                    .rev()
+                {
                     stack.push((dependency, false));
                 }
             }
@@ -284,19 +294,26 @@ impl DirtyEngine {
         self.validate(from, to)?;
         for &key in from {
             let old = core::mem::take(&mut self.entries[key.0].dependencies);
-            for dependency in old {
-                self.entries[dependency.0]
-                    .consumers
-                    .retain(|&consumer| consumer != key);
+            for slot in 0..old.len() {
+                let dependency = self.edges.get(old)[slot];
+                self.edges
+                    .remove(&mut self.entries[dependency.0].consumers, key);
                 self.unused.push(dependency);
             }
+            self.edges.release(old);
             for &dependency in to {
-                if !self.entries[key.0].dependencies.contains(&dependency) {
-                    self.entries[key.0].dependencies.push(dependency);
-                    self.entries[dependency.0].consumers.push(key);
+                if !self
+                    .edges
+                    .get(self.entries[key.0].dependencies)
+                    .contains(&dependency)
+                {
+                    self.edges
+                        .push(&mut self.entries[key.0].dependencies, dependency);
+                    self.edges
+                        .push(&mut self.entries[dependency.0].consumers, key);
                 }
             }
-            self.entries[key.0].dependencies.sort_unstable();
+            self.edges.sort(self.entries[key.0].dependencies);
         }
         Ok(())
     }
@@ -308,10 +325,14 @@ impl DirtyEngine {
     ) -> Result<(), (ResourceKey, ResourceKey)> {
         self.validate(from, &[to])?;
         for &key in from {
-            if !self.entries[key.0].dependencies.contains(&to) {
-                self.entries[key.0].dependencies.push(to);
-                self.entries[key.0].dependencies.sort_unstable();
-                self.entries[to.0].consumers.push(key);
+            if !self
+                .edges
+                .get(self.entries[key.0].dependencies)
+                .contains(&to)
+            {
+                self.edges.push(&mut self.entries[key.0].dependencies, to);
+                self.edges.sort(self.entries[key.0].dependencies);
+                self.edges.push(&mut self.entries[to.0].consumers, key);
             }
         }
         Ok(())
@@ -331,7 +352,12 @@ impl DirtyEngine {
                     return Err((self.key(key).clone(), self.key(dependency).clone()));
                 }
                 if visited.insert(key) {
-                    stack.extend(self.entries[key.0].dependencies.iter().copied());
+                    stack.extend(
+                        self.edges
+                            .get(self.entries[key.0].dependencies)
+                            .iter()
+                            .copied(),
+                    );
                 }
             }
         }
@@ -362,8 +388,8 @@ mod tests {
         e.set_dependencies(&[a, b], &[old]).unwrap();
         e.set_dependencies(&[c], &[b]).unwrap();
         assert!(e.set_dependencies(&[a, b], &[c]).is_err());
-        assert_eq!(e.entries[a.0].dependencies, [old]);
-        assert_eq!(e.entries[b.0].dependencies, [old]);
+        assert_eq!(e.edges.get(e.entries[a.0].dependencies), [old]);
+        assert_eq!(e.edges.get(e.entries[b.0].dependencies), [old]);
     }
     #[test]
     fn unread_writes_have_no_pending_work() {

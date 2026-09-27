@@ -102,7 +102,9 @@ fn churn_reuses_storage_without_reusing_public_node_ids() {
             (0, 0, 0, 0)
         );
         assert!(
-            stats.node_capacity <= 4 && stats.resource_capacity <= 4,
+            stats.node_capacity <= 4
+                && stats.resource_capacity <= 4
+                && stats.dependency_capacity <= 4,
             "{stats:?}"
         );
         previous = Some(node);
