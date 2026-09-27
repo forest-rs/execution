@@ -20,7 +20,7 @@ pub struct RunSummary {
     /// see [`Self::cut_off_nodes`].
     pub executed_nodes: usize,
     /// Number of scheduled nodes skipped by early cutoff: nothing they read changed during the
-    /// run (see [`Executor::values_equal`](crate::Executor::values_equal)).
+    /// period since their last verification (see [`Executor::values_equal`](crate::Executor::values_equal)).
     pub cut_off_nodes: usize,
 }
 
@@ -132,10 +132,9 @@ pub struct NodeRunDetail {
     pub why_path: Option<Vec<ResourceKey>>,
     /// Whether [`NodeRunDetail::why_path`] came from the dirty-engine trace.
     ///
-    /// This is `Some(true)` when a traced path was available, `Some(false)` when `why_path` is the
-    /// one-key fallback or starts at work deferred by an untraced
-    /// [`ExecutionGraph::run_node`](crate::ExecutionGraph::run_node) (its original root is
-    /// unknown), and `None` when the report mask did not request [`ReportDetailMask::WHY_PATH`].
+    /// This is `Some(true)` for a recorded cause path and `None` when paths were not requested.
+    /// Lightweight cause links survive scoped calls even when an earlier call did not request
+    /// a report. Consumers should still handle `Some(false)` for reports without an exact path.
     pub why_path_traced: Option<bool>,
 }
 

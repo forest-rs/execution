@@ -8,6 +8,7 @@
 //! without changing public APIs.
 
 use alloc::vec::Vec;
+use hashbrown::HashMap;
 
 use crate::access::NodeId;
 use crate::report::NodeRunDetail;
@@ -23,31 +24,31 @@ pub(crate) enum PlanScope {
 
 /// Optional traced payload attached to a [`RunPlan`].
 ///
-/// The payload is indexed by node id (`NodeId::as_u64() as usize`) and stores one plausible
-/// rerun cause report for nodes that were scheduled.
-///
-/// TODO(dispatcher): Revisit this dense representation. It currently scales with total graph node
-/// count for O(1) `take_report_for` lookups. A sparse map keyed by `NodeId` would scale with
-/// scheduled nodes instead, but lookup/remove would become O(log n) and per-entry overhead would
-/// increase.
+/// Reports occupy storage proportional to scheduled nodes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RunPlanTrace {
-    node_reports: Vec<Option<NodeRunDetail>>,
+    node_reports: HashMap<NodeId, NodeRunDetail>,
 }
 
 impl RunPlanTrace {
-    /// Creates traced payload from per-node optional reports.
-    #[must_use]
-    #[inline]
-    pub(crate) fn from_node_reports(node_reports: Vec<Option<NodeRunDetail>>) -> Self {
-        Self { node_reports }
+    pub(crate) fn from_reports(reports: Vec<NodeRunDetail>) -> Self {
+        Self {
+            node_reports: reports
+                .into_iter()
+                .map(|report| (report.node, report))
+                .collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_node_reports(reports: Vec<Option<NodeRunDetail>>) -> Self {
+        Self::from_reports(reports.into_iter().flatten().collect())
     }
 
     /// Removes and returns the report for `node`, if present.
     #[inline]
     pub(crate) fn take_report_for(&mut self, node: NodeId) -> Option<NodeRunDetail> {
-        let index = usize::try_from(node.as_u64()).ok()?;
-        self.node_reports.get_mut(index)?.take()
+        self.node_reports.remove(&node)
     }
 }
 

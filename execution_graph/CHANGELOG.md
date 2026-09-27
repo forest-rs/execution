@@ -43,13 +43,20 @@ You can find its changes [documented below](#001-2026-05-31).
   `FnExecutor::with_value_eq` enables it with a comparison, and `TapeExecutor::set_early_cutoff`
   enables it for plain tape values (floats by bit pattern; handles always count as changed).
   `RunSummary::cut_off_nodes` counts skipped nodes and `RunDetailReport::cut_off` lists them.
-  Outputs marked dirty directly always run; if `run_node` retains pending work outside its
-  closure as direct marks, cutoff is conservative for that deferred work.
+  Outputs marked dirty directly always run; deferred readers compare output revisions when queried.
 - Added advisory graph node labels via `ExecutionGraph::set_node_label`,
   `ExecutionGraph::clear_node_label`, and `ExecutionGraph::node_label`; labels can be included in
   execution reports with `ReportDetailMask::NODE_LABEL` and are rendered in Graphviz DOT output.
 
 ### Changed
+
+- Invalidation marks existing consumers directly. Scoped queries visit pending dependencies,
+  without scanning unrelated dirty roots or allocating by the largest key ID. The internal
+  single-channel store replaces the `invalidation` dependency.
+- Readers compare resource revisions against their last verification. Already-observed writes
+  do not cause reruns, and early cutoff works across scoped calls. Cause paths survive untraced
+  calls and partial failures. Invalidation now includes propagation through affected consumers;
+  the wind-tunnel README records timing and memory tradeoffs.
 
 - `set_input_value` that binds a slot to a different key (for example replacing a `connect`ed
   output with an external value) now rewires like `connect`: it schedules the node and resets its

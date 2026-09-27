@@ -98,15 +98,14 @@ with the same cause detail as executed nodes.
 Whether an output changed is the executor's call, through [`Executor::values_equal`]. The
 default says "changed" for every output, so cutoff is opt-in: enable it with
 [`FnExecutor::with_value_eq`] or [`TapeExecutor::set_early_cutoff`]. Cutoff decisions are
-per output and per plan:
+per output and across runs:
 
 - graph inputs and executor state that were invalidated count as changed;
-- a node output marked dirty directly (for example with [`ExecutionGraph::invalidate`], or
-  work a scoped [`ExecutionGraph::run_node`] leaves pending outside its closure) forces that
-  node to run, and its dependents follow only if the new value differs. Cutoff is therefore
-  conservative for deferred work: its nodes run even when the value they would have read
-  compared equal in the scoped run;
-- keys a node writes count as changed for later nodes in the same plan;
+- a node output marked dirty directly forces its producer to run; its readers execute only
+  when an output revision changes or another read changed;
+- host writes advance resource revisions immediately, including writes from a failed attempt;
+- pending readers outside a scoped run retain their causes and compare revisions when queried,
+  so an unchanged output can cut off work across separate scoped runs;
 - a node that has never run, or was rewired by `connect` or by `set_input_value` binding a
   different key since its last run, always runs; both rewirings also schedule the node.
 

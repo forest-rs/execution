@@ -21,9 +21,6 @@ use crate::node_access::{
 use crate::plan::{RunPlan, RunPlanTrace};
 use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
 
-use invalidation::TraversalScratch;
-use invalidation::trace::OneParentRecorder;
-
 /// Graph errors, parameterized by the executor's node error type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphError<E> {
@@ -203,6 +200,7 @@ pub(crate) struct Node<X: Executor> {
     pub(crate) last_read_ids: Vec<DirtyKey>,
     pub(crate) deps_initialized: bool,
     pub(crate) run_count: u64,
+    verified_at: u64,
 }
 
 /// Incremental execution graph over the nodes of an [`Executor`].
@@ -260,20 +258,6 @@ struct Scratch<V> {
     args: Vec<V>,
     outputs: Vec<V>,
     stamp: u32,
-    /// Keys that changed during the current plan, stamped with `changed_epoch` and indexed by
-    /// the key id. Seeded with the plan's dirty roots other than node outputs; executed nodes
-    /// add the outputs they changed and the keys they wrote.
-    changed: Vec<u32>,
-    /// Node outputs marked dirty directly for the current plan, stamped like `changed`. Their
-    /// nodes always run; whether the output then changed is decided by comparing values.
-    forced: Vec<u32>,
-    changed_epoch: u32,
-    /// Whether any executed output compared equal to its previous value in the current plan.
-    /// Until one does, every scheduled node has a forced or changed key on its dependency path,
-    /// so the cutoff check can be skipped.
-    saw_unchanged: bool,
-    root_outputs: Vec<DirtyKey>,
-    root_others: Vec<DirtyKey>,
 }
 
 impl<V> Default for Scratch<V> {
@@ -286,12 +270,6 @@ impl<V> Default for Scratch<V> {
             args: Vec::new(),
             outputs: Vec::new(),
             stamp: 0,
-            changed: Vec::new(),
-            forced: Vec::new(),
-            changed_epoch: 0,
-            saw_unchanged: false,
-            root_outputs: Vec::new(),
-            root_others: Vec::new(),
         }
     }
 }
@@ -329,43 +307,6 @@ impl<V> Scratch<V> {
         true
     }
 
-    /// Starts a new plan's change tracking: forgets earlier changes, forces the node outputs in
-    /// `root_outputs`, and marks the other roots in `root_others` as changed.
-    #[inline]
-    fn start_changes(&mut self) {
-        self.changed_epoch = self.changed_epoch.wrapping_add(1);
-        if self.changed_epoch == 0 {
-            self.changed.fill(0);
-            self.forced.fill(0);
-            self.changed_epoch = 1;
-        }
-        self.saw_unchanged = false;
-        let epoch = self.changed_epoch;
-        for &key in &self.root_outputs {
-            stamp(&mut self.forced, key, epoch);
-        }
-        for &key in &self.root_others {
-            stamp(&mut self.changed, key, epoch);
-        }
-        self.root_outputs.clear();
-        self.root_others.clear();
-    }
-
-    #[inline]
-    fn mark_changed(&mut self, key: DirtyKey) {
-        stamp(&mut self.changed, key, self.changed_epoch);
-    }
-
-    #[inline]
-    fn is_changed(&self, key: DirtyKey) -> bool {
-        is_stamped(&self.changed, key, self.changed_epoch)
-    }
-
-    #[inline]
-    fn is_forced(&self, key: DirtyKey) -> bool {
-        is_stamped(&self.forced, key, self.changed_epoch)
-    }
-
     /// Canonicalizes `read_ids` in place into the set of dependencies the caller will install for
     /// this node's outputs (via [`DirtyEngine::set_dependencies`]); this method does not touch the
     /// dirty engine itself.
@@ -387,20 +328,6 @@ impl<V> Scratch<V> {
                 .retain(|id| write_ids.binary_search(id).is_err());
         }
     }
-}
-
-#[inline]
-fn stamp(stamps: &mut Vec<u32>, key: DirtyKey, epoch: u32) {
-    let index = key.as_usize();
-    if stamps.len() <= index {
-        stamps.resize(index + 1, 0);
-    }
-    stamps[index] = epoch;
-}
-
-#[inline]
-fn is_stamped(stamps: &[u32], key: DirtyKey, epoch: u32) -> bool {
-    stamps.get(key.as_usize()).is_some_and(|&s| s == epoch)
 }
 
 impl<X: Executor> ExecutionGraph<X> {
@@ -554,6 +481,7 @@ impl<X: Executor> ExecutionGraph<X> {
             last_read_ids: Vec::new(),
             deps_initialized: false,
             run_count: 0,
+            verified_at: 0,
         };
 
         self.nodes.push(n);
@@ -765,304 +693,72 @@ impl<X: Executor> ExecutionGraph<X> {
         Some(self.nodes.get(index)?.run_count)
     }
 
-    /// Builds a plan from all currently affected dirty work.
-    #[inline]
     fn plan_all(&mut self) -> RunPlan {
-        self.scratch.start_drain(self.nodes.len());
-        self.dirty.roots_into(
-            &mut self.scratch.root_outputs,
-            &mut self.scratch.root_others,
-        );
-        self.scratch.start_changes();
-
-        for (_key_id, key) in self.dirty.drain() {
-            Self::schedule_node_output_key(&mut self.scratch, key);
-        }
-
-        RunPlan::all(core::mem::take(&mut self.scratch.to_run))
+        self.build_plan(None, ReportDetailMask::NONE)
     }
 
-    /// Builds a report-capable plan from all currently affected dirty work.
-    #[inline]
     fn plan_all_report(&mut self, detail_mask: ReportDetailMask) -> RunPlan {
-        if detail_mask.is_empty() {
-            return self.plan_all();
-        }
-
-        let collect_label = detail_mask.contains(ReportDetailMask::NODE_LABEL);
-        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
-        let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
-
-        self.scratch.start_drain(self.nodes.len());
-        self.dirty.roots_into(
-            &mut self.scratch.root_outputs,
-            &mut self.scratch.root_others,
-        );
-        self.scratch.start_changes();
-        let mut node_report: Vec<Option<NodeRunDetail>> = alloc::vec![None; self.nodes.len()];
-
-        if collect_why {
-            let mut trace_scratch = TraversalScratch::<DirtyKey>::new();
-            let mut trace = OneParentRecorder::<DirtyKey>::new();
-            trace.clear();
-
-            let mut scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
-            for (key_id, key) in self.dirty.drain_traced(&mut trace_scratch, &mut trace) {
-                let ResourceKey::NodeOutput { node, .. } = key else {
-                    continue;
-                };
-                if !self.scratch.take_node(*node) || node_report.is_empty() {
-                    continue;
-                }
-
-                let Ok(index) = usize::try_from(node.as_u64()) else {
-                    continue;
-                };
-                if index >= node_report.len() || node_report[index].is_some() {
-                    continue;
-                }
-                scheduled.push((*node, key_id, key.clone()));
-            }
-
-            for (node, key_id, because_of) in scheduled {
-                let Ok(index) = usize::try_from(node.as_u64()) else {
-                    continue;
-                };
-                if index >= node_report.len() || node_report[index].is_some() {
-                    continue;
-                }
-
-                let (why_path, why_path_traced) =
-                    self.dirty.explain_path(&trace, key_id).map_or_else(
-                        || (alloc::vec![because_of.clone()], Some(false)),
-                        |(path, traced)| (path, Some(traced)),
-                    );
-
-                let because_of = if collect_because {
-                    Some(because_of)
-                } else {
-                    None
-                };
-                node_report[index] = Some(Self::report_node_detail(
-                    &self.nodes,
-                    node,
-                    collect_label,
-                    because_of,
-                    Some(why_path),
-                    why_path_traced,
-                ));
-            }
-        } else {
-            for (_key_id, key) in self.dirty.drain() {
-                let ResourceKey::NodeOutput { node, .. } = key else {
-                    continue;
-                };
-                if !self.scratch.take_node(*node) || node_report.is_empty() {
-                    continue;
-                }
-
-                let Ok(index) = usize::try_from(node.as_u64()) else {
-                    continue;
-                };
-                if index >= node_report.len() || node_report[index].is_some() {
-                    continue;
-                }
-
-                let because_of = if collect_because {
-                    Some(key.clone())
-                } else {
-                    None
-                };
-                node_report[index] = Some(Self::report_node_detail(
-                    &self.nodes,
-                    *node,
-                    collect_label,
-                    because_of,
-                    None,
-                    None,
-                ));
-            }
-        }
-
-        let nodes = core::mem::take(&mut self.scratch.to_run);
-        RunPlan::all(nodes).with_trace(RunPlanTrace::from_node_reports(node_report))
+        self.build_plan(None, detail_mask)
     }
 
-    /// Builds a plan restricted to keys within the dependency closure of `node`'s outputs.
-    #[inline]
     fn plan_within_dependencies_of(
         &mut self,
         node: NodeId,
     ) -> Result<RunPlan, GraphError<X::Error>> {
-        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
-        let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
-        let output_count = n.output_ids.len();
-
-        self.scratch.start_drain(self.nodes.len());
-        self.dirty.roots_into(
-            &mut self.scratch.root_outputs,
-            &mut self.scratch.root_others,
-        );
-        self.scratch.start_changes();
-        for output_ix in 0..output_count {
-            let out_id = self.nodes[index].output_ids[output_ix];
-            for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
-                Self::schedule_node_output_key(&mut self.scratch, key);
-            }
-        }
-        self.forward_scheduled_outputs();
-
-        Ok(RunPlan::within_dependencies_of(
-            node,
-            core::mem::take(&mut self.scratch.to_run),
-        ))
+        self.plan_within_dependencies_of_report(node, ReportDetailMask::NONE)
     }
 
-    /// Builds a report-capable plan restricted to keys within `node`'s dependency closure.
-    #[inline]
     fn plan_within_dependencies_of_report(
         &mut self,
         node: NodeId,
-        detail_mask: ReportDetailMask,
+        detail: ReportDetailMask,
     ) -> Result<RunPlan, GraphError<X::Error>> {
-        if detail_mask.is_empty() {
-            return self.plan_within_dependencies_of(node);
-        }
-
-        let Ok(index) = usize::try_from(node.as_u64()) else {
-            return Err(GraphError::BadNodeId);
-        };
-        let Some(n) = self.nodes.get(index) else {
-            return Err(GraphError::BadNodeId);
-        };
-        let output_count = n.output_ids.len();
-        let collect_label = detail_mask.contains(ReportDetailMask::NODE_LABEL);
-        let collect_because = detail_mask.contains(ReportDetailMask::BECAUSE_OF);
-        let collect_why = detail_mask.contains(ReportDetailMask::WHY_PATH);
-
-        self.scratch.start_drain(self.nodes.len());
-        self.dirty.roots_into(
-            &mut self.scratch.root_outputs,
-            &mut self.scratch.root_others,
-        );
-        self.scratch.start_changes();
-        let mut node_report: Vec<Option<NodeRunDetail>> = alloc::vec![None; self.nodes.len()];
-
-        if collect_why {
-            let mut trace_scratch = TraversalScratch::<DirtyKey>::new();
-            let mut trace = OneParentRecorder::<DirtyKey>::new();
-
-            // Drain dirty keys within the dependency closure of each output, and execute nodes
-            // whose output keys are affected.
-            for output_ix in 0..output_count {
-                let out_id = self.nodes[index].output_ids[output_ix];
-
-                trace.clear();
-                let mut newly_scheduled: Vec<(NodeId, DirtyKey, ResourceKey)> = Vec::new();
-
-                for (key_id, key) in self.dirty.drain_within_dependencies_of_traced(
-                    out_id,
-                    &mut trace_scratch,
-                    &mut trace,
-                ) {
-                    let ResourceKey::NodeOutput { node, .. } = key else {
-                        continue;
-                    };
-                    if !self.scratch.take_node(*node) {
-                        continue;
-                    }
-                    newly_scheduled.push((*node, key_id, key.clone()));
-                }
-
-                for (scheduled_node, key_id, because_of) in newly_scheduled {
-                    let Ok(scheduled_index) = usize::try_from(scheduled_node.as_u64()) else {
-                        continue;
-                    };
-                    if scheduled_index >= node_report.len()
-                        || node_report[scheduled_index].is_some()
-                    {
-                        continue;
-                    }
-
-                    let (why_path, why_path_traced) =
-                        self.dirty.explain_path(&trace, key_id).map_or_else(
-                            || (alloc::vec![because_of.clone()], Some(false)),
-                            |(path, traced)| (path, Some(traced)),
-                        );
-
-                    let because_of = if collect_because {
-                        Some(because_of)
-                    } else {
-                        None
-                    };
-                    node_report[scheduled_index] = Some(Self::report_node_detail(
-                        &self.nodes,
-                        scheduled_node,
-                        collect_label,
-                        because_of,
-                        Some(why_path),
-                        why_path_traced,
-                    ));
-                }
-            }
-        } else {
-            // Drain dirty keys within the dependency closure of each output, and execute nodes
-            // whose output keys are affected.
-            for output_ix in 0..output_count {
-                let out_id = self.nodes[index].output_ids[output_ix];
-                for (_key_id, key) in self.dirty.drain_within_dependencies_of(out_id) {
-                    let ResourceKey::NodeOutput { node, .. } = key else {
-                        continue;
-                    };
-                    if !self.scratch.take_node(*node) {
-                        continue;
-                    }
-
-                    let Ok(scheduled_index) = usize::try_from(node.as_u64()) else {
-                        continue;
-                    };
-                    if scheduled_index >= node_report.len()
-                        || node_report[scheduled_index].is_some()
-                    {
-                        continue;
-                    }
-
-                    let because_of = if collect_because {
-                        Some(key.clone())
-                    } else {
-                        None
-                    };
-                    node_report[scheduled_index] = Some(Self::report_node_detail(
-                        &self.nodes,
-                        *node,
-                        collect_label,
-                        because_of,
-                        None,
-                        None,
-                    ));
-                }
-            }
-        }
-
-        self.forward_scheduled_outputs();
-        let nodes = core::mem::take(&mut self.scratch.to_run);
-        Ok(RunPlan::within_dependencies_of(node, nodes)
-            .with_trace(RunPlanTrace::from_node_reports(node_report)))
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+        Ok(self.build_plan(Some(node), detail))
     }
 
-    /// Forwards pending marks on outputs of nodes this scoped plan schedules to those outputs'
-    /// readers; see `DirtyEngine::forward_scheduled_outputs`.
-    fn forward_scheduled_outputs(&mut self) {
-        let scratch = &self.scratch;
-        self.dirty.forward_scheduled_outputs(|key| {
-            let ResourceKey::NodeOutput { node, .. } = key else {
-                return false;
-            };
-            usize::try_from(node.as_u64())
-                .ok()
-                .and_then(|index| scratch.seen_stamp.get(index))
-                .is_some_and(|&stamp| stamp == scratch.stamp)
+    fn build_plan(&mut self, scope: Option<NodeId>, detail: ReportDetailMask) -> RunPlan {
+        self.scratch.start_drain(self.nodes.len());
+        let roots = scope.map(|node| {
+            self.nodes[usize::try_from(node.as_u64()).expect("validated node id")]
+                .output_ids
+                .as_slice()
         });
+        let keys = self.dirty.schedule(roots);
+        let mut reports = Vec::new();
+        for key in keys {
+            let ResourceKey::NodeOutput { node, .. } = self.dirty.key(key) else {
+                continue;
+            };
+            let node = *node;
+            if !self.scratch.take_node(node) {
+                continue;
+            }
+            if !detail.is_empty() {
+                let trace = detail.contains(ReportDetailMask::WHY_PATH);
+                reports.push(Self::report_node_detail(
+                    &self.nodes,
+                    node,
+                    detail.contains(ReportDetailMask::NODE_LABEL),
+                    detail
+                        .contains(ReportDetailMask::BECAUSE_OF)
+                        .then(|| self.dirty.key(key).clone()),
+                    trace.then(|| self.dirty.explain_path(key).unwrap_or_default()),
+                    trace.then_some(true),
+                ));
+            }
+        }
+        let nodes = core::mem::take(&mut self.scratch.to_run);
+        let plan = match scope {
+            Some(node) => RunPlan::within_dependencies_of(node, nodes),
+            None => RunPlan::all(nodes),
+        };
+        if detail.is_empty() {
+            plan
+        } else {
+            plan.with_trace(RunPlanTrace::from_reports(reports))
+        }
     }
 
     #[inline]
@@ -1092,15 +788,6 @@ impl<X: Executor> ExecutionGraph<X> {
         nodes.get(index)?.label.clone()
     }
 
-    #[inline]
-    fn schedule_node_output_key(scratch: &mut Scratch<X::Value>, key: &ResourceKey) {
-        let ResourceKey::NodeOutput { node, .. } = key else {
-            return;
-        };
-        let _ = scratch.take_node(*node);
-    }
-
-    /// Executes a pre-built run plan without traced reporting.
     #[inline]
     fn run_plan(&mut self, plan: RunPlan) -> Result<RunSummary, GraphError<X::Error>> {
         let mut dispatcher = InlineDispatcher;
@@ -1144,20 +831,14 @@ impl<X: Executor> ExecutionGraph<X> {
 
     /// Runs the subgraph needed to (re)compute `node`, executing only what is currently dirty.
     ///
-    /// This drains only dirty keys that are within the dependency closure of `node`'s outputs.
-    /// Work outside the closure stays pending for a later run, including nodes that depend on
-    /// keys this run drains (a sibling reading the same invalidated input, or another reader of
-    /// an output this run recomputes). A later report explains that deferred work from its
-    /// original root when this run was traced; after an untraced run its path starts at the
-    /// drained key it depends on and is reported as not traced.
+    /// Scheduling visits pending dependencies of the requested outputs, without scanning unrelated
+    /// dirty work. Pending consumers outside this scope retain their original cause paths.
+    /// Every output of an executed node is published together; readers of its other outputs
+    /// remain pending and compare their observed revisions on a later query.
     ///
-    /// Any node this run schedules recomputes all of its outputs. An output that is still
-    /// marked dirty outside the closure (a multi-output node straddling the boundary, a mark
-    /// kept by an earlier scoped run, or a direct invalidation) is therefore handed to its
-    /// readers, which stay pending for the next run; the node is not run again for it.
-    ///
-    /// Deferred work stays dirty even when the drained key it depends on turns out unchanged,
-    /// so early cutoff is conservative for it: those readers run on the next run.
+    /// Early cutoff works across scoped calls: pending readers whose inputs did not change can
+    /// verify their cached result without executing. Host writes observed by a successful reader
+    /// do not trigger that reader again on a subsequent query.
     ///
     /// Execution is fail-fast: if a node errors, the run stops and returns that error, but the
     /// dirty state of not-yet-executed work in the closure is preserved for a subsequent run.
@@ -1193,6 +874,9 @@ impl<X: Executor> ExecutionGraph<X> {
         node: NodeId,
     ) -> Result<bool, GraphError<X::Error>> {
         if self.is_cut_off(node) {
+            let n = &mut self.nodes[usize::try_from(node.as_u64()).expect("validated node id")];
+            self.dirty.complete(&n.output_ids);
+            n.verified_at = self.dirty.revision();
             return Ok(false);
         }
         self.run_node_internal(node)?;
@@ -1202,47 +886,27 @@ impl<X: Executor> ExecutionGraph<X> {
     /// Returns whether scheduled `node` can be skipped because none of its causes changed.
     #[inline]
     fn is_cut_off(&self, node: NodeId) -> bool {
-        let Some(n) = usize::try_from(node.as_u64())
-            .ok()
-            .and_then(|index| self.nodes.get(index))
-        else {
-            return false;
-        };
-        self.scratch.saw_unchanged
-            && n.deps_initialized
-            && !n.output_ids.iter().any(|&id| self.scratch.is_forced(id))
+        let n = &self.nodes[usize::try_from(node.as_u64()).expect("validated node id")];
+        n.deps_initialized
+            && n.run_count > 0
+            && !n.output_ids.iter().any(|&key| self.dirty.is_forced(key))
             && !n
                 .last_read_ids
                 .iter()
-                .any(|&id| self.scratch.is_changed(id))
+                .any(|&key| self.dirty.changed_since(key, n.verified_at))
     }
 
-    /// Internal dispatch hook: re-marks the output keys of `nodes` dirty.
-    ///
-    /// Planning drains (and clears) the scheduled dirty set up front, so when dispatch stops
-    /// fail-fast on an error the un-run nodes would otherwise be left permanently clean and their
-    /// pending work silently dropped. Re-marking their outputs keeps that work recoverable on the
-    /// next run.
-    #[inline]
+    /// A failed attempt is explicitly retryable. Unexecuted work already remains pending.
     pub(crate) fn remark_scheduled_dirty(&mut self, nodes: &[NodeId]) {
-        for &node in nodes {
-            let Ok(index) = usize::try_from(node.as_u64()) else {
-                continue;
-            };
-            if index >= self.nodes.len() {
-                continue;
-            }
-            for &out_id in self.nodes[index].output_ids.iter() {
-                self.dirty.mark_dirty(out_id);
+        if let Some(&node) = nodes.first() {
+            for &key in
+                &self.nodes[usize::try_from(node.as_u64()).expect("validated node id")].output_ids
+            {
+                self.dirty.mark_dirty(key);
             }
         }
     }
 
-    /// Internal dispatch hook: returns a spent scheduling buffer to the scratch workspace.
-    ///
-    /// Dispatch takes the schedule out of the plan to execute it; handing the (cleared) buffer
-    /// back here on every exit path lets the next planning pass reuse its capacity.
-    #[inline]
     pub(crate) fn reclaim_schedule_buffer(&mut self, mut buf: Vec<NodeId>) {
         buf.clear();
         self.scratch.to_run = buf;
@@ -1388,26 +1052,17 @@ impl<X: Executor> ExecutionGraph<X> {
                         Some(slot) => {
                             let changed = !self.executor.values_equal(slot, &v);
                             *slot = v;
-                            if !changed {
-                                self.scratch.saw_unchanged = true;
-                            }
                             changed
                         }
                         None => true,
                     }
                 };
-                if changed {
-                    self.scratch.mark_changed(n.output_ids[i]);
-                }
+                self.dirty.publish(n.output_ids[i], changed);
             }
         }
-        // Keys this node wrote changed too: a later node in this plan that reads one must run.
-        let write_ids = core::mem::take(&mut self.scratch.write_ids);
-        for &id in &write_ids {
-            self.scratch.mark_changed(id);
-        }
-        self.scratch.write_ids = write_ids;
         self.scratch.outputs = outputs;
+
+        self.nodes[node_index].verified_at = self.dirty.revision();
 
         // Commit log.
         self.nodes[node_index].last_access = log;
@@ -3651,7 +3306,7 @@ mod native_tests {
     }
 
     #[test]
-    fn retained_work_after_an_untraced_scoped_run_is_not_claimed_traced() {
+    fn retained_work_after_an_untraced_scoped_run_keeps_its_cause() {
         let mut g = Graph::new(FnExecutor::new());
         let [a, b, c, e] = shared_input_graph(&mut g);
         g.run_all().unwrap();
@@ -3661,18 +3316,19 @@ mod native_tests {
         g.invalidate_input("x");
         g.run_node(c).unwrap();
         let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
-        // Only the drained key each mark depends on is known.
+        // Lightweight cause links survive even when the earlier run did not request a report.
         assert_eq!(
             why_path(&report, e),
             (
                 vec![
+                    ResourceKey::input("x"),
                     ResourceKey::node_output(a, "value"),
                     ResourceKey::node_output(e, "value")
                 ],
-                Some(false)
+                Some(true)
             )
         );
-        assert_eq!(why_path(&report, b).1, Some(false));
+        assert_eq!(why_path(&report, b).1, Some(true));
     }
 
     #[test]
