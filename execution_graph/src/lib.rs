@@ -112,6 +112,26 @@
 //! `connect` return [`GraphError`] values for duplicate output names, input arity mismatches,
 //! unknown input names, and unknown output names.
 //!
+//! ## Ports and node lifetime
+//!
+//! [`InputId`] and [`OutputId`] identify positional ports within a node. Resolve names once with
+//! [`ExecutionGraph::input_id`] and [`ExecutionGraph::output_id`], then use
+//! [`ExecutionGraph::connect_by_id`] and [`NodeOutputs::get_by_id`] for indexed access.
+//! [`ExecutionGraph::input_name`] and [`ExecutionGraph::output_name`] resolve IDs for diagnostics.
+//! External input keys are separate from input slots: [`ResourceKey::InputId`] identifies a
+//! resource shared by any readers, while `InputId(0)` means the first slot of a particular node.
+//! [`ExecutionGraph::set_input_value_by_id`] binds these explicitly.
+//!
+//! [`ExecutionGraph::remove_node`] retires a node identity permanently and returns ownership of
+//! its body and cached outputs. Its consumers become dirty; stale connections report the reader,
+//! removed producer, and requested output until reconnected. Physical node and resource slots
+//! are reused without reusing public identities. [`ExecutionGraph::storage_stats`] reports live
+//! counts and reusable capacities for checking create/remove workloads.
+//!
+//! [`ExecutionGraph::invalidate_many`] accepts and deduplicates a batch of resource keys.
+//! Invalidating an unknown resource has no effect: future readers execute before they can cache
+//! a value, and there is no existing consumer to invalidate.
+//!
 //! ## Tape programs
 //!
 //! With the `tape` feature, [`TapeExecutor`] runs verified `execution_tape` programs as nodes.
@@ -231,9 +251,13 @@ mod executor;
 #[cfg(test)]
 mod freshness_tests;
 mod graph;
+#[cfg(test)]
+mod lifecycle_tests;
 mod native;
 mod node_access;
+mod nodes;
 mod plan;
+mod ports;
 mod pretty;
 mod report;
 #[cfg(feature = "tape")]
@@ -241,9 +265,10 @@ pub mod tape;
 
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 pub use executor::Executor;
-pub use graph::{ExecutionGraph, GraphError, NodeOutputs};
+pub use graph::{ExecutionGraph, GraphError, RemovedNode};
 pub use native::{FnExecutor, FnNode, NodeFn, ValueEq};
 pub use node_access::NodeAccess;
-pub use report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
+pub use ports::{InputId, NodeOutputs, OutputId};
+pub use report::{GraphStorageStats, NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
 #[cfg(feature = "tape")]
 pub use tape::{TapeError, TapeExecutor, TapeNode};

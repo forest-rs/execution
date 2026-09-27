@@ -115,6 +115,26 @@ Graph construction is checked at the public API boundary: `add_node`, `set_input
 `connect` return [`GraphError`] values for duplicate output names, input arity mismatches,
 unknown input names, and unknown output names.
 
+## Ports and node lifetime
+
+[`InputId`] and [`OutputId`] identify positional ports within a node. Resolve names once with
+[`ExecutionGraph::input_id`] and [`ExecutionGraph::output_id`], then use
+[`ExecutionGraph::connect_by_id`] and [`NodeOutputs::get_by_id`] for indexed access.
+[`ExecutionGraph::input_name`] and [`ExecutionGraph::output_name`] resolve IDs for diagnostics.
+External input keys are separate from input slots: [`ResourceKey::InputId`] identifies a
+resource shared by any readers, while `InputId(0)` means the first slot of a particular node.
+[`ExecutionGraph::set_input_value_by_id`] binds these explicitly.
+
+[`ExecutionGraph::remove_node`] retires a node identity permanently and returns ownership of
+its body and cached outputs. Its consumers become dirty; stale connections report the reader,
+removed producer, and requested output until reconnected. Physical node and resource slots
+are reused without reusing public identities. [`ExecutionGraph::storage_stats`] reports live
+counts and reusable capacities for checking create/remove workloads.
+
+[`ExecutionGraph::invalidate_many`] accepts and deduplicates a batch of resource keys.
+Invalidating an unknown resource has no effect: future readers execute before they can cache
+a value, and there is no existing consumer to invalidate.
+
 ## Tape programs
 
 With the `tape` feature, [`TapeExecutor`] runs verified `execution_tape` programs as nodes.

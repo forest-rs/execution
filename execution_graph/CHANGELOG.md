@@ -15,6 +15,15 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ### Added
 
+- Positional `InputId` and `OutputId`, indexed connections and output lookup, numeric external
+  input keys, and name/ID lookup for construction and diagnostics. `NodeOutputs` stores values
+  in declaration order rather than a string-keyed map.
+- `remove_node` returns the retired body and outputs, dirties consumers, and reclaims node and
+  resource storage. Public node identities are never reused. Missing upstream errors include
+  the reader, producer, and output ID.
+- `invalidate_many` deduplicates batch roots. `storage_stats` exposes live counts and reusable
+  capacities; unused host keys are reclaimed after dependency replacement and node removal.
+
 - `GraphError::DependencyCycle` reports rejected cyclic connections. Rejected wiring leaves
   bindings and dirty state unchanged. Outputs and dependencies publish together per successful
   node; earlier publications survive a later failure. Host mutations are outside graph rollback.

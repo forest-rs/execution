@@ -6,18 +6,20 @@
 use core::fmt;
 
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
+use crate::nodes::Nodes;
+use crate::{InputId, NodeOutputs, OutputId};
+use hashbrown::HashSet;
 
-use crate::access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
+#[cfg(test)]
+use crate::HostOpId;
+use crate::access::{Access, AccessLog, NodeId, ResourceKey};
 use crate::dirty::{DirtyEngine, DirtyKey};
 use crate::dispatch::{Dispatcher, InlineDispatcher};
 use crate::executor::Executor;
-use crate::node_access::{
-    NodeAccess, intern_host_state_key_id, intern_input_key_id, intern_opaque_host_key_id,
-};
+use crate::node_access::NodeAccess;
 use crate::plan::{RunPlan, RunPlanTrace};
 use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary};
 
@@ -52,6 +54,20 @@ pub enum GraphError<E> {
         /// Output name.
         name: Box<str>,
     },
+    /// A positional input is outside the node's declared slots.
+    UnknownInputId {
+        /// Target node.
+        node: NodeId,
+        /// Requested input.
+        input: InputId,
+    },
+    /// A positional output is outside the producer's declared slots.
+    UnknownOutputId {
+        /// Producer node.
+        node: NodeId,
+        /// Requested output.
+        output: OutputId,
+    },
     /// A required input binding was missing.
     MissingInput {
         /// Node that is missing the binding.
@@ -61,10 +77,12 @@ pub enum GraphError<E> {
     },
     /// A required upstream output was missing.
     MissingUpstreamOutput {
-        /// Upstream node.
+        /// Reader whose input could not be supplied.
+        reader: NodeId,
+        /// Upstream node, possibly removed.
         node: NodeId,
-        /// Output name.
-        name: Box<str>,
+        /// Requested positional output.
+        output: OutputId,
     },
     /// The node produced an unexpected number of outputs.
     BadOutputArity {
@@ -104,6 +122,18 @@ impl<E: fmt::Display> fmt::Display for GraphError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadNodeId => write!(f, "bad node id"),
+            Self::UnknownInputId { node, input } => write!(
+                f,
+                "unknown input slot: node={} input={}",
+                node.as_u64(),
+                input.index()
+            ),
+            Self::UnknownOutputId { node, output } => write!(
+                f,
+                "unknown output slot: node={} output={}",
+                node.as_u64(),
+                output.index()
+            ),
             Self::DependencyCycle { from, to } => write!(
                 f,
                 "dependency cycle: {from:?} cannot depend on {to:?}; remove the cyclic connection"
@@ -129,13 +159,17 @@ impl<E: fmt::Display> fmt::Display for GraphError<E> {
                     node.as_u64()
                 )
             }
-            Self::MissingUpstreamOutput { node, name } => {
-                write!(
-                    f,
-                    "missing upstream output: upstream_node={} output={name}; check the connect(...) output name and the producer's output names",
-                    node.as_u64()
-                )
-            }
+            Self::MissingUpstreamOutput {
+                reader,
+                node,
+                output,
+            } => write!(
+                f,
+                "missing upstream output: reader={} upstream_node={} output={}; reconnect the input to a live producer",
+                reader.as_u64(),
+                node.as_u64(),
+                output.index()
+            ),
             Self::BadOutputArity { node } => {
                 write!(
                     f,
@@ -170,8 +204,14 @@ impl<E: core::error::Error + 'static> core::error::Error for GraphError<E> {
     }
 }
 
-/// Stable output map for a node run.
-pub type NodeOutputs<V> = BTreeMap<Box<str>, V>;
+/// Ownership returned by removing a node. Its identity is permanently retired.
+#[derive(Debug)]
+pub struct RemovedNode<X: Executor> {
+    /// Removed executor body.
+    pub body: X::Node,
+    /// Last committed outputs, retained until the caller drops or retires them.
+    pub outputs: NodeOutputs<X::Value>,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum Binding<V> {
@@ -181,23 +221,22 @@ pub(crate) enum Binding<V> {
     },
     FromNode {
         node: NodeId,
-        output: Box<str>,
+        output: OutputId,
         read_id: DirtyKey,
     },
 }
 
 #[derive(Debug)]
 pub(crate) struct Node<X: Executor> {
+    pub(crate) id: NodeId,
     pub(crate) body: X::Node,
     pub(crate) label: Option<Box<str>>,
-    pub(crate) input_names: Vec<Box<str>>,
-    pub(crate) input_slots: BTreeMap<Box<str>, Vec<usize>>,
-    pub(crate) inputs: Vec<Option<Binding<X::Value>>>,
-    pub(crate) output_names: Vec<Box<str>>,
-    pub(crate) output_ids: Vec<DirtyKey>,
+    pub(crate) input_names: Box<[Box<str>]>,
+    pub(crate) inputs: Box<[Option<Binding<X::Value>>]>,
+    pub(crate) output_ids: Box<[DirtyKey]>,
     pub(crate) outputs: NodeOutputs<X::Value>,
     pub(crate) last_access: Option<AccessLog>,
-    pub(crate) last_read_ids: Vec<DirtyKey>,
+    pub(crate) last_read_ids: Box<[DirtyKey]>,
     pub(crate) deps_initialized: bool,
     pub(crate) run_count: u64,
     verified_at: u64,
@@ -241,10 +280,7 @@ pub(crate) struct Node<X: Executor> {
 pub struct ExecutionGraph<X: Executor> {
     pub(crate) executor: X,
     dirty: DirtyEngine,
-    input_ids: BTreeMap<Box<str>, DirtyKey>,
-    host_state_ids: HashMap<(HostOpId, u64), DirtyKey>,
-    opaque_host_ids: HashMap<HostOpId, DirtyKey>,
-    pub(crate) nodes: Vec<Node<X>>,
+    pub(crate) nodes: Nodes<X>,
     scratch: Scratch<X::Value>,
     collect_access: bool,
 }
@@ -252,57 +288,37 @@ pub struct ExecutionGraph<X: Executor> {
 #[derive(Debug)]
 struct Scratch<V> {
     to_run: Vec<NodeId>,
-    seen_stamp: Vec<u32>,
+    seen: HashSet<NodeId>,
     read_ids: Vec<DirtyKey>,
     write_ids: Vec<DirtyKey>,
     args: Vec<V>,
     outputs: Vec<V>,
-    stamp: u32,
 }
 
 impl<V> Default for Scratch<V> {
     fn default() -> Self {
         Self {
             to_run: Vec::new(),
-            seen_stamp: Vec::new(),
+            seen: HashSet::new(),
             read_ids: Vec::new(),
             write_ids: Vec::new(),
             args: Vec::new(),
             outputs: Vec::new(),
-            stamp: 0,
         }
     }
 }
 
 impl<V> Scratch<V> {
     #[inline]
-    fn start_drain(&mut self, node_count: usize) {
+    fn start_drain(&mut self) {
         self.to_run.clear();
-
-        if self.seen_stamp.len() < node_count {
-            self.seen_stamp.resize(node_count, 0);
-        }
-
-        // Bump the epoch; if we wrap, clear stamps to preserve correctness.
-        self.stamp = self.stamp.wrapping_add(1);
-        if self.stamp == 0 {
-            self.seen_stamp.fill(0);
-            self.stamp = 1;
-        }
+        self.seen.clear();
     }
 
-    #[inline]
     fn take_node(&mut self, node: NodeId) -> bool {
-        let Ok(index) = usize::try_from(node.as_u64()) else {
-            return false;
-        };
-        let Some(slot) = self.seen_stamp.get_mut(index) else {
-            return false;
-        };
-        if *slot == self.stamp {
+        if !self.seen.insert(node) {
             return false;
         }
-        *slot = self.stamp;
         self.to_run.push(node);
         true
     }
@@ -337,10 +353,7 @@ impl<X: Executor> ExecutionGraph<X> {
         Self {
             executor,
             dirty: DirtyEngine::new(),
-            input_ids: BTreeMap::new(),
-            host_state_ids: HashMap::new(),
-            opaque_host_ids: HashMap::new(),
-            nodes: Vec::new(),
+            nodes: Nodes::new(),
             scratch: Scratch::default(),
             collect_access: false,
         }
@@ -445,7 +458,7 @@ impl<X: Executor> ExecutionGraph<X> {
         input_names: Vec<Box<str>>,
         output_names: Vec<Box<str>>,
     ) -> Result<NodeId, GraphError<X::Error>> {
-        let node = NodeId::new(u64::try_from(self.nodes.len()).unwrap_or(u64::MAX));
+        let node = self.nodes.next_id();
 
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for name in &output_names {
@@ -456,29 +469,30 @@ impl<X: Executor> ExecutionGraph<X> {
 
         // Intern output keys once at node creation time.
         let mut output_ids: Vec<DirtyKey> = Vec::with_capacity(output_names.len());
-        for out_name in output_names.iter().cloned() {
-            let id = self.dirty.intern(ResourceKey::node_output(node, out_name));
+        for slot in 0..output_names.len() {
+            let id = self.dirty.intern(ResourceKey::node_output(
+                node,
+                OutputId::new(u32::try_from(slot).expect("too many outputs")),
+            ));
             self.dirty.mark_dirty(id);
             output_ids.push(id);
         }
 
-        let mut input_slots: BTreeMap<Box<str>, Vec<usize>> = BTreeMap::new();
-        for (slot, name) in input_names.iter().enumerate() {
-            input_slots.entry(name.clone()).or_default().push(slot);
-        }
         let input_count = input_names.len();
 
         let n = Node {
+            id: node,
             body,
             label: None,
-            input_names,
-            input_slots,
-            inputs: alloc::vec![None; input_count],
-            output_names,
-            output_ids,
-            outputs: BTreeMap::new(),
+            input_names: input_names.into_boxed_slice(),
+            inputs: alloc::vec![None; input_count].into_boxed_slice(),
+            output_ids: output_ids.into_boxed_slice(),
+            outputs: NodeOutputs {
+                names: output_names.into_boxed_slice(),
+                values: Box::default(),
+            },
             last_access: None,
-            last_read_ids: Vec::new(),
+            last_read_ids: Box::default(),
             deps_initialized: false,
             run_count: 0,
             verified_at: 0,
@@ -511,59 +525,129 @@ impl<X: Executor> ExecutionGraph<X> {
         name: impl Into<Box<str>>,
         value: X::Value,
     ) -> Result<(), GraphError<X::Error>> {
-        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
         let name: Box<str> = name.into();
-        // Validate node and slot exist before interning to avoid memory churn on bad inputs.
-        let Some(slots) = self
-            .nodes
-            .get(index)
-            .and_then(|n| n.input_slots.get(name.as_ref()))
-            .cloned()
-        else {
-            let _ = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let n = self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+        let slots: Vec<_> = n
+            .input_names
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.as_ref() == name.as_ref())
+            .map(|(slot, _)| slot)
+            .collect();
+        if slots.is_empty() {
             return Err(GraphError::UnknownInput { node, name });
-        };
-        let read_id = self.intern_input_id(name.as_ref());
-        self.dirty
-            .add_dependencies(&self.nodes[index].output_ids, read_id)
-            .map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
-        let n = &mut self.nodes[index];
-        let mut rebound = false;
+        }
+        let read_id = self.intern_input_id(&name);
         for slot in slots {
-            if let Some(binding) = n.inputs.get_mut(slot) {
-                rebound |= !matches!(
-                    binding,
-                    Some(Binding::External { read_id: old, .. }) if *old == read_id
-                );
-                *binding = Some(Binding::External {
+            self.bind(
+                node,
+                slot,
+                Binding::External {
                     value: value.clone(),
                     read_id,
-                });
-            }
-        }
-        if rebound {
-            // As in `connect`: the new key is not among the reads recorded by the node's last run,
-            // so treat the node as unrun (early cutoff must not trust the stale read set), add a
-            // conservative edge so `invalidate_input(name)` reaches the node before it has read
-            // the key, and schedule it so its outputs reflect the new binding.
-            n.deps_initialized = false;
-            for output_ix in 0..n.output_ids.len() {
-                let dst = self.nodes[index].output_ids[output_ix];
-                self.dirty.mark_dirty(dst);
-            }
+                },
+            )?;
         }
         Ok(())
     }
 
-    /// Connects `from.output` into `to.input`.
+    /// Resolves a declared input name to its first positional slot.
+    pub fn input_id(&self, node: NodeId, name: &str) -> Result<InputId, GraphError<X::Error>> {
+        let n = self
+            .nodes
+            .get(usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?)
+            .ok_or(GraphError::BadNodeId)?;
+        let slot = n
+            .input_names
+            .iter()
+            .position(|candidate| candidate.as_ref() == name)
+            .ok_or_else(|| GraphError::UnknownInput {
+                node,
+                name: name.into(),
+            })?;
+        Ok(InputId::new(u32::try_from(slot).expect("too many inputs")))
+    }
+
+    /// Resolves a declared output name to its positional ID.
+    pub fn output_id(&self, node: NodeId, name: &str) -> Result<OutputId, GraphError<X::Error>> {
+        let n = self
+            .nodes
+            .get(usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?)
+            .ok_or(GraphError::BadNodeId)?;
+        let slot = n
+            .outputs
+            .names
+            .iter()
+            .position(|candidate| candidate.as_ref() == name)
+            .ok_or_else(|| GraphError::UnknownOutput {
+                node,
+                name: name.into(),
+            })?;
+        Ok(OutputId::new(
+            u32::try_from(slot).expect("too many outputs"),
+        ))
+    }
+
+    /// Returns the declared name of a positional input, if the node and slot exist.
+    pub fn input_name(&self, node: NodeId, input: InputId) -> Option<&str> {
+        self.nodes
+            .get(usize::try_from(node.as_u64()).ok()?)?
+            .input_names
+            .get(input.index() as usize)
+            .map(Box::as_ref)
+    }
+
+    /// Returns the declared name of a positional output, if the node and slot exist.
+    pub fn output_name(&self, node: NodeId, output: OutputId) -> Option<&str> {
+        self.nodes
+            .get(usize::try_from(node.as_u64()).ok()?)?
+            .outputs
+            .names
+            .get(output.index() as usize)
+            .map(Box::as_ref)
+    }
+
+    /// Reports live graph counts and reusable slot capacities, excluding executor-owned storage.
     ///
-    /// If `to` declares duplicate input names, all slots matching `to.input` are connected.
+    /// Counts are computed on request, not collected on the execution path. Capacities describe
+    /// reusable slots rather than bytes; they let callers verify bounded storage during churn.
+    pub fn storage_stats(&self) -> crate::GraphStorageStats {
+        let (resources, dependencies, pending_outputs, resource_capacity) = self.dirty.stats();
+        crate::GraphStorageStats {
+            nodes: self.nodes.len(),
+            resources,
+            dependencies,
+            pending_outputs,
+            node_capacity: self.nodes.capacity(),
+            resource_capacity,
+        }
+    }
+
+    /// Binds one positional input to an integer-identified external resource.
     ///
-    /// Returns [`GraphError::BadNodeId`] for an unknown source or target node,
-    /// [`GraphError::UnknownOutput`] for an output name not produced by the source node, or
-    /// [`GraphError::UnknownInput`] for an input name not declared by the target node.
-    /// A cyclic connection returns [`GraphError::DependencyCycle`] without changing bindings,
-    /// dependencies, or dirty state.
+    /// `key` belongs to the global `ResourceKey::InputId` namespace; `input` is only a node-local
+    /// slot. Rebinding schedules the node. Updating a value under the same key requires a
+    /// subsequent `invalidate(ResourceKey::InputId(key))`, just like named external inputs.
+    pub fn set_input_value_by_id(
+        &mut self,
+        node: NodeId,
+        input: InputId,
+        key: u64,
+        value: X::Value,
+    ) -> Result<(), GraphError<X::Error>> {
+        self.validate_input(node, input)?;
+        let read_id = self.dirty.intern(ResourceKey::InputId(key));
+        self.bind(
+            node,
+            input.index() as usize,
+            Binding::External { value, read_id },
+        )
+    }
+
+    /// Connects named ports. Duplicate target input names bind all matching slots.
+    ///
+    /// Rejects invalid nodes, unknown names, and dependency cycles without changing wiring.
     pub fn connect(
         &mut self,
         from: NodeId,
@@ -571,67 +655,91 @@ impl<X: Executor> ExecutionGraph<X> {
         to: NodeId,
         input: impl Into<Box<str>>,
     ) -> Result<(), GraphError<X::Error>> {
-        let output: Box<str> = output.into();
+        let output = self.output_id(from, &output.into())?;
         let input: Box<str> = input.into();
-        let from_index = usize::try_from(from.as_u64()).map_err(|_| GraphError::BadNodeId)?;
-        let from_node = self.nodes.get(from_index).ok_or(GraphError::BadNodeId)?;
-        if !from_node
-            .output_names
-            .iter()
-            .any(|candidate| candidate.as_ref() == output.as_ref())
-        {
-            return Err(GraphError::UnknownOutput {
-                node: from,
-                name: output,
-            });
-        }
-        let to_index = usize::try_from(to.as_u64()).map_err(|_| GraphError::BadNodeId)?;
-        let slots = self
+        let n = self
             .nodes
-            .get(to_index)
-            .ok_or(GraphError::BadNodeId)?
-            .input_slots
-            .get(input.as_ref())
-            .cloned()
-            .ok_or(GraphError::UnknownInput {
+            .get(usize::try_from(to.as_u64()).map_err(|_| GraphError::BadNodeId)?)
+            .ok_or(GraphError::BadNodeId)?;
+        let slots: Vec<_> = n
+            .input_names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.as_ref() == input.as_ref())
+            .map(|(slot, _)| InputId::new(u32::try_from(slot).unwrap()))
+            .collect();
+        if slots.is_empty() {
+            return Err(GraphError::UnknownInput {
                 node: to,
                 name: input,
-            })?;
-        let read_id = self
-            .dirty
-            .intern(ResourceKey::node_output(from, output.clone()));
-        self.dirty
-            .add_dependencies(&self.nodes[to_index].output_ids, read_id)
-            .map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
-        if let Some(n) = self.nodes.get_mut(to_index) {
-            for slot in slots {
-                if let Some(binding) = n.inputs.get_mut(slot) {
-                    *binding = Some(Binding::FromNode {
-                        node: from,
-                        output: output.clone(),
-                        read_id,
-                    });
-                }
+            });
+        }
+        for slot in slots {
+            self.connect_by_id(from, output, to, slot)?;
+        }
+        Ok(())
+    }
+
+    /// Connects positional ports without string lookup. Names remain available for diagnostics.
+    pub fn connect_by_id(
+        &mut self,
+        from: NodeId,
+        output: OutputId,
+        to: NodeId,
+        input: InputId,
+    ) -> Result<(), GraphError<X::Error>> {
+        self.validate_input(to, input)?;
+        let n = self
+            .nodes
+            .get(usize::try_from(from.as_u64()).map_err(|_| GraphError::BadNodeId)?)
+            .ok_or(GraphError::BadNodeId)?;
+        let read_id = *n
+            .output_ids
+            .get(output.index() as usize)
+            .ok_or(GraphError::UnknownOutputId { node: from, output })?;
+        self.bind(
+            to,
+            input.index() as usize,
+            Binding::FromNode {
+                node: from,
+                output,
+                read_id,
+            },
+        )
+    }
+
+    fn validate_input(&self, node: NodeId, input: InputId) -> Result<(), GraphError<X::Error>> {
+        let n = self
+            .nodes
+            .get(usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?)
+            .ok_or(GraphError::BadNodeId)?;
+        if input.index() as usize >= n.inputs.len() {
+            return Err(GraphError::UnknownInputId { node, input });
+        }
+        Ok(())
+    }
+
+    fn bind(
+        &mut self,
+        node: NodeId,
+        slot: usize,
+        binding: Binding<X::Value>,
+    ) -> Result<(), GraphError<X::Error>> {
+        let n = &mut self.nodes[usize::try_from(node.as_u64()).unwrap()];
+        let read_id = match &binding {
+            Binding::External { read_id, .. } | Binding::FromNode { read_id, .. } => *read_id,
+        };
+        let rebound = !matches!((&n.inputs[slot], &binding), (Some(Binding::External { read_id: old, .. }), Binding::External { .. }) if *old == read_id);
+        if rebound {
+            self.dirty
+                .add_dependencies(&n.output_ids, read_id)
+                .map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
+            n.deps_initialized = false;
+            for &key in &n.output_ids {
+                self.dirty.mark_dirty(key);
             }
         }
-
-        // Conservative scheduling: treat wiring as a dependency edge until the next execution run
-        // refines dependencies via the observed reads.
-        //
-        // This ensures initial runs are topologically ordered even before dependencies have been
-        // observed dynamically.
-        let Some(to_node) = self.nodes.get(to_index) else {
-            return Err(GraphError::BadNodeId);
-        };
-        let output_count = to_node.output_ids.len();
-        // The new edge is not among the reads recorded by the node's last run, so treat the node as
-        // unrun: its next run then replaces its dependencies wholesale, and early cutoff does not
-        // skip it on the strength of a stale read set.
-        self.nodes[to_index].deps_initialized = false;
-        for output_ix in 0..output_count {
-            let dst = self.nodes[to_index].output_ids[output_ix];
-            self.dirty.mark_dirty(dst);
-        }
+        n.inputs[slot] = Some(binding);
         Ok(())
     }
 
@@ -642,8 +750,7 @@ impl<X: Executor> ExecutionGraph<X> {
     /// node's `input_names` list).
     #[inline]
     pub fn invalidate_input(&mut self, name: impl AsRef<str>) {
-        let id = self.intern_input_id(name.as_ref());
-        self.dirty.mark_dirty(id);
+        self.invalidate(ResourceKey::input(name.as_ref()));
     }
 
     /// Marks `key` dirty.
@@ -653,28 +760,63 @@ impl<X: Executor> ExecutionGraph<X> {
     /// conservative opaque state ([`ResourceKey::OpaqueHost`]).
     #[inline]
     pub fn invalidate(&mut self, key: ResourceKey) {
-        let id = match key {
-            ResourceKey::Input(name) => self.intern_input_id(name.as_ref()),
-            ResourceKey::HostState { op, key } => self.intern_host_state_id(op, key),
-            ResourceKey::OpaqueHost(op) => self.intern_opaque_host_id(op),
-            ResourceKey::NodeOutput { .. } => self.dirty.intern(key),
-        };
-        self.dirty.mark_dirty(id);
+        if let Some(id) = self.dirty.lookup(&key) {
+            self.dirty.mark_dirty(id);
+        }
     }
 
-    #[inline]
+    /// Invalidates a batch of resource keys. Duplicate roots are processed once.
+    ///
+    /// Unknown or unread resources require no work. Numeric input keys and named input keys
+    /// occupy distinct namespaces; positional input IDs never act as external resource keys.
+    pub fn invalidate_many(&mut self, keys: impl IntoIterator<Item = ResourceKey>) {
+        let mut ids: Vec<_> = keys
+            .into_iter()
+            .filter_map(|key| self.dirty.lookup(&key))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            self.dirty.mark_dirty(id);
+        }
+    }
+
     fn intern_input_id(&mut self, name: &str) -> DirtyKey {
-        intern_input_key_id(&mut self.dirty, &mut self.input_ids, name)
+        self.dirty.intern(ResourceKey::input(name))
     }
 
-    #[inline]
-    fn intern_host_state_id(&mut self, op: HostOpId, key: u64) -> DirtyKey {
-        intern_host_state_key_id(&mut self.dirty, &mut self.host_state_ids, op, key)
-    }
-
-    #[inline]
-    fn intern_opaque_host_id(&mut self, op: HostOpId) -> DirtyKey {
-        intern_opaque_host_key_id(&mut self.dirty, &mut self.opaque_host_ids, op)
+    /// Removes a node, retiring its identity and reclaiming its body and graph storage.
+    ///
+    /// Readers of its outputs become dirty; their bound references remain explicit and fail with
+    /// `MissingUpstreamOutput` until repaired. A replacement node receives a new identity.
+    /// Returned outputs stay owned by the caller, allowing host-owned values to be retired safely.
+    pub fn remove_node(&mut self, node: NodeId) -> Result<RemovedNode<X>, GraphError<X::Error>> {
+        let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
+        let n = self.nodes.remove(index).ok_or(GraphError::BadNodeId)?;
+        for &id in &n.output_ids {
+            self.dirty.mark_dirty(id);
+            let readers = self.dirty.remove(id);
+            for key in readers {
+                if let ResourceKey::NodeOutput { node: reader, .. } = self.dirty.key(key) {
+                    let reader = usize::try_from(reader.as_u64()).unwrap();
+                    if let Some(reader) = self.nodes.get_mut(reader) {
+                        reader.last_read_ids = reader
+                            .last_read_ids
+                            .iter()
+                            .copied()
+                            .filter(|&key| key != id)
+                            .collect();
+                        reader.deps_initialized = false;
+                    }
+                }
+                self.dirty.mark_dirty(key);
+            }
+        }
+        self.dirty.collect_unused();
+        Ok(RemovedNode {
+            body: n.body,
+            outputs: n.outputs,
+        })
     }
 
     /// Returns the most recent outputs for `node`, if present.
@@ -719,11 +861,11 @@ impl<X: Executor> ExecutionGraph<X> {
     }
 
     fn build_plan(&mut self, scope: Option<NodeId>, detail: ReportDetailMask) -> RunPlan {
-        self.scratch.start_drain(self.nodes.len());
+        self.scratch.start_drain();
         let roots = scope.map(|node| {
             self.nodes[usize::try_from(node.as_u64()).expect("validated node id")]
                 .output_ids
-                .as_slice()
+                .as_ref()
         });
         let keys = self.dirty.schedule(roots);
         let mut reports = Vec::new();
@@ -763,7 +905,7 @@ impl<X: Executor> ExecutionGraph<X> {
 
     #[inline]
     fn report_node_detail(
-        nodes: &[Node<X>],
+        nodes: &Nodes<X>,
         node: NodeId,
         collect_label: bool,
         because_of: Option<ResourceKey>,
@@ -780,7 +922,7 @@ impl<X: Executor> ExecutionGraph<X> {
     }
 
     #[inline]
-    fn report_node_label(nodes: &[Node<X>], node: NodeId, collect_label: bool) -> Option<Box<str>> {
+    fn report_node_label(nodes: &Nodes<X>, node: NodeId, collect_label: bool) -> Option<Box<str>> {
         if !collect_label {
             return None;
         }
@@ -943,7 +1085,7 @@ impl<X: Executor> ExecutionGraph<X> {
                 Binding::External { value: v, read_id } => {
                     self.scratch.read_ids.push(*read_id);
                     if let Some(log) = log.as_mut() {
-                        log.push(Access::Read(ResourceKey::input(name.clone())));
+                        log.push(Access::Read(self.dirty.key(*read_id).clone()));
                     }
                     args.push(v.clone());
                 }
@@ -955,17 +1097,22 @@ impl<X: Executor> ExecutionGraph<X> {
                     let up_index =
                         usize::try_from(up.as_u64()).map_err(|_| GraphError::BadNodeId)?;
                     let Some(up_node) = self.nodes.get(up_index) else {
-                        return Err(GraphError::BadNodeId);
-                    };
-                    let v = up_node.outputs.get(output).ok_or_else(|| {
-                        GraphError::MissingUpstreamOutput {
+                        return Err(GraphError::MissingUpstreamOutput {
+                            reader: node,
                             node: *up,
-                            name: output.clone(),
+                            output: *output,
+                        });
+                    };
+                    let v = up_node.outputs.get_by_id(*output).ok_or_else(|| {
+                        GraphError::MissingUpstreamOutput {
+                            reader: node,
+                            node: *up,
+                            output: *output,
                         }
                     })?;
                     self.scratch.read_ids.push(*read_id);
                     if let Some(log) = log.as_mut() {
-                        log.push(Access::Read(ResourceKey::node_output(*up, output.clone())));
+                        log.push(Access::Read(ResourceKey::node_output(*up, *output)));
                     }
                     args.push(v.clone());
                 }
@@ -976,9 +1123,6 @@ impl<X: Executor> ExecutionGraph<X> {
         let result = {
             let mut access = NodeAccess::new(
                 &mut self.dirty,
-                &mut self.input_ids,
-                &mut self.host_state_ids,
-                &mut self.opaque_host_ids,
                 &mut self.scratch.read_ids,
                 &mut self.scratch.write_ids,
                 log.as_mut(),
@@ -997,13 +1141,15 @@ impl<X: Executor> ExecutionGraph<X> {
         if let Err(source) = result {
             outputs.clear();
             self.scratch.outputs = outputs;
+            self.dirty.collect_unused();
             return Err(GraphError::Node { node, source });
         }
 
         // Map outputs.
-        if outputs.len() != self.nodes[node_index].output_names.len() {
+        if outputs.len() != self.nodes[node_index].outputs.names.len() {
             outputs.clear();
             self.scratch.outputs = outputs;
+            self.dirty.collect_unused();
             return Err(GraphError::BadOutputArity { node });
         }
 
@@ -1012,7 +1158,7 @@ impl<X: Executor> ExecutionGraph<X> {
         self.scratch.finalize_node_deps();
 
         let deps_changed = !self.nodes[node_index].deps_initialized
-            || self.nodes[node_index].last_read_ids != self.scratch.read_ids;
+            || self.nodes[node_index].last_read_ids.as_ref() != self.scratch.read_ids;
         if deps_changed {
             if let Err((from, to)) = self
                 .dirty
@@ -1020,49 +1166,41 @@ impl<X: Executor> ExecutionGraph<X> {
             {
                 outputs.clear();
                 self.scratch.outputs = outputs;
+                self.dirty.collect_unused();
                 return Err(GraphError::DependencyCycle { from, to });
             }
-            self.nodes[node_index].last_read_ids.clear();
-            self.nodes[node_index]
-                .last_read_ids
-                .extend(self.scratch.read_ids.iter().copied());
+            self.nodes[node_index].last_read_ids = self.scratch.read_ids.clone().into_boxed_slice();
             self.nodes[node_index].deps_initialized = true;
         }
 
-        // Update outputs in-place when the BTreeMap is already populated (subsequent runs), and
-        // record which outputs changed for early cutoff of this plan's later nodes.
+        // Compare and publish indexed values. The old buffer becomes scratch for the next run.
         {
             let n = &mut self.nodes[node_index];
-            let first_run = n.outputs.is_empty();
-            for (i, v) in outputs.drain(..).enumerate() {
-                let name = n.output_names[i].clone();
+            for (slot, value) in outputs.iter().enumerate() {
                 if let Some(log) = log.as_mut() {
-                    log.push(Access::Write(ResourceKey::node_output(node, name.clone())));
+                    log.push(Access::Write(self.dirty.key(n.output_ids[slot]).clone()));
                 }
-                let changed = if first_run {
-                    n.outputs.insert(name, v);
-                    true
-                } else {
-                    let slot = n.outputs.get_mut(name.as_ref());
-                    debug_assert!(
-                        slot.is_some(),
-                        "output key invariant broken: output_names[{i}] not found in outputs map"
-                    );
-                    match slot {
-                        Some(slot) => {
-                            let changed = !self.executor.values_equal(slot, &v);
-                            *slot = v;
-                            changed
-                        }
-                        None => true,
-                    }
-                };
-                self.dirty.publish(n.output_ids[i], changed);
+                let changed = n
+                    .outputs
+                    .values
+                    .get(slot)
+                    .is_none_or(|old| !self.executor.values_equal(old, value));
+                self.dirty.publish(n.output_ids[slot], changed);
             }
+            if n.outputs.values.len() == outputs.len() {
+                for (old, new) in n.outputs.values.iter_mut().zip(&mut outputs) {
+                    core::mem::swap(old, new);
+                }
+            } else {
+                n.outputs.values = outputs.drain(..).collect();
+            }
+            outputs.clear();
         }
         self.scratch.outputs = outputs;
 
         self.nodes[node_index].verified_at = self.dirty.revision();
+
+        self.dirty.collect_unused();
 
         // Commit log.
         self.nodes[node_index].last_access = log;
@@ -1227,13 +1365,14 @@ mod tape_tests {
         assert!(missing_input.contains("connect"));
 
         let missing_output = GraphError::<TapeError>::MissingUpstreamOutput {
+            reader: NodeId::new(4),
             node: NodeId::new(3),
-            name: "total".into(),
+            output: OutputId::new(0),
         }
         .to_string();
         assert!(missing_output.contains("upstream_node=3"));
-        assert!(missing_output.contains("output=total"));
-        assert!(missing_output.contains("output names"));
+        assert!(missing_output.contains("output=0"));
+        assert!(missing_output.contains("reconnect"));
 
         let strict = GraphError::Node {
             node: NodeId::new(11),
@@ -1252,7 +1391,7 @@ mod tape_tests {
             executed: vec![NodeRunDetail {
                 node: NodeId::new(1),
                 node_label: Some("subtotal".into()),
-                because_of: Some(ResourceKey::node_output(NodeId::new(1), "value")),
+                because_of: Some(ResourceKey::node_output(NodeId::new(1), OutputId::new(0))),
                 why_path: None,
                 why_path_traced: None,
             }],
@@ -1431,7 +1570,7 @@ mod tape_tests {
                 .as_ref()
                 .expect("full report should include why_path")
                 .last(),
-            Some(&ResourceKey::node_output(na, "value"))
+            Some(&ResourceKey::node_output(na, OutputId::new(0)))
         );
         assert_eq!(r.executed[0].why_path_traced, Some(true));
 
@@ -1449,7 +1588,7 @@ mod tape_tests {
                 .as_ref()
                 .expect("full report should include why_path")
                 .last(),
-            Some(&ResourceKey::node_output(nb, "value"))
+            Some(&ResourceKey::node_output(nb, OutputId::new(0)))
         );
         assert_eq!(r.executed[1].why_path_traced, Some(true));
     }
@@ -3021,7 +3160,7 @@ mod native_tests {
         assert_eq!(report.executed[0].node, b);
         assert_eq!(
             report.executed[0].because_of,
-            Some(ResourceKey::node_output(b, "sum"))
+            Some(ResourceKey::node_output(b, OutputId::new(0)))
         );
         assert_eq!(g.node_outputs(b).unwrap().get("sum"), Some(&43));
         assert_eq!(g.node_run_count(a), Some(1));
@@ -3113,7 +3252,7 @@ mod native_tests {
             &[
                 Access::Read(ResourceKey::input("x")),
                 Access::Read(ResourceKey::host_state(op, RATE_KEY)),
-                Access::Write(ResourceKey::node_output(scaled, "value")),
+                Access::Write(ResourceKey::node_output(scaled, OutputId::new(0))),
             ]
         );
 
@@ -3130,7 +3269,7 @@ mod native_tests {
             Some(
                 &[
                     ResourceKey::host_state(op, RATE_KEY),
-                    ResourceKey::node_output(scaled, "value"),
+                    ResourceKey::node_output(scaled, OutputId::new(0)),
                 ][..]
             )
         );
@@ -3288,18 +3427,18 @@ mod native_tests {
         let report = g.run_all_with_report(ReportDetailMask::FULL).unwrap();
         assert_eq!(report.executed.len(), 2);
         let x = ResourceKey::input("x");
-        let a_value = ResourceKey::node_output(a, "value");
+        let a_value = ResourceKey::node_output(a, OutputId::new(0));
         assert_eq!(
             why_path(&report, b),
             (
-                vec![x.clone(), ResourceKey::node_output(b, "value")],
+                vec![x.clone(), ResourceKey::node_output(b, OutputId::new(0))],
                 Some(true)
             )
         );
         assert_eq!(
             why_path(&report, e),
             (
-                vec![x, a_value, ResourceKey::node_output(e, "value")],
+                vec![x, a_value, ResourceKey::node_output(e, OutputId::new(0))],
                 Some(true)
             )
         );
@@ -3322,8 +3461,8 @@ mod native_tests {
             (
                 vec![
                     ResourceKey::input("x"),
-                    ResourceKey::node_output(a, "value"),
-                    ResourceKey::node_output(e, "value")
+                    ResourceKey::node_output(a, OutputId::new(0)),
+                    ResourceKey::node_output(e, OutputId::new(0))
                 ],
                 Some(true)
             )
@@ -3364,9 +3503,9 @@ mod native_tests {
             (
                 vec![
                     ResourceKey::input("x"),
-                    ResourceKey::node_output(a, "value"),
-                    ResourceKey::node_output(b, "value"),
-                    ResourceKey::node_output(q, "value"),
+                    ResourceKey::node_output(a, OutputId::new(0)),
+                    ResourceKey::node_output(b, OutputId::new(0)),
+                    ResourceKey::node_output(q, OutputId::new(0)),
                 ],
                 Some(true)
             )
