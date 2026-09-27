@@ -297,9 +297,7 @@ impl<V> Scratch<V> {
         // Bump the epoch; if we wrap, clear stamps to preserve correctness.
         self.stamp = self.stamp.wrapping_add(1);
         if self.stamp == 0 {
-            for s in &mut self.seen_stamp {
-                *s = 0;
-            }
+            self.seen_stamp.fill(0);
             self.stamp = 1;
         }
     }

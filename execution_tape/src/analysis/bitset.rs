@@ -27,9 +27,7 @@ impl BitSet {
     #[must_use]
     pub(crate) fn new_full(len: usize) -> Self {
         let mut s = Self::new_empty(len);
-        for w in &mut s.bits {
-            *w = !0;
-        }
+        s.bits.fill(!0);
         // Clear unused bits in last word.
         let rem = len % 64;
         if rem != 0 {
