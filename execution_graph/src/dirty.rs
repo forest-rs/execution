@@ -152,6 +152,9 @@ impl DirtyEngine {
     pub(crate) fn changed_since(&self, id: DirtyKey, revision: u64) -> bool {
         self.entries[id.0].changed_at > revision
     }
+    pub(crate) fn is_pending(&self, id: DirtyKey) -> bool {
+        self.pending.contains_key(&id)
+    }
     pub(crate) fn is_forced(&self, id: DirtyKey) -> bool {
         self.pending.get(&id).is_some_and(|p| p.forced)
     }

@@ -16,9 +16,13 @@ use crate::{NodeId, ResourceKey};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RunSummary {
-    /// Number of nodes executed during the run. Nodes skipped by early cutoff are not included;
+    /// Number of successful node publications during the run. Suspended attempts and cutoff are not included;
     /// see [`Self::cut_off_nodes`].
     pub executed_nodes: usize,
+    /// Executor invocations, including attempts suspended for dynamic reads.
+    pub execution_attempts: usize,
+    /// Attempts that yielded to pending producers and published nothing.
+    pub suspended_attempts: usize,
     /// Number of scheduled nodes skipped by early cutoff: nothing they read changed during the
     /// period since their last verification (see [`Executor::values_equal`](crate::Executor::values_equal)).
     pub cut_off_nodes: usize,
@@ -115,7 +119,7 @@ impl BitAndAssign for ReportDetailMask {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct NodeRunDetail {
-    /// The node that executed.
+    /// Node whose publication or cutoff this row describes.
     pub node: NodeId,
     /// Advisory debug label for [`NodeRunDetail::node`].
     ///
@@ -144,6 +148,10 @@ pub struct NodeRunDetail {
 pub struct RunDetailReport {
     /// Per-node detail records in execution order.
     pub executed: Vec<NodeRunDetail>,
+    /// Executor invocations, including suspended attempts and the failing attempt, if any.
+    pub execution_attempts: usize,
+    /// Attempts that yielded to pending producers and published nothing.
+    pub suspended_attempts: usize,
     /// Scheduled nodes skipped by early cutoff, in schedule order.
     ///
     /// Each record carries the same optional detail as an executed one; its cause path shows
@@ -206,4 +214,15 @@ pub struct GraphStorageStats {
     /// Allocated dependency-key slots, including reusable ranges. Each edge is stored in
     /// forward and reverse lists. Slots are reused after replacement or removal.
     pub dependency_capacity: usize,
+}
+
+/// Freshness of a node's graph-owned output cache relative to reported mutations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeStatus {
+    /// No successful publication yet; the node is awaiting its first execution.
+    NeverRun,
+    /// A cache exists, but execution or verification is required before using it as current.
+    Pending,
+    /// The last committed outputs have been verified against reported changes.
+    Current,
 }

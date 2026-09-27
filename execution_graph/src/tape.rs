@@ -236,8 +236,8 @@ impl<H: Host> Executor for TapeExecutor<H> {
         node: &mut Self::Node,
         inputs: &[Self::Value],
         outputs: &mut Vec<Self::Value>,
-        access: &mut NodeAccess<'_>,
-    ) -> Result<(), Self::Error> {
+        access: &mut NodeAccess<'_, Self::Value>,
+    ) -> Result<crate::NodeOutcome, Self::Error> {
         let access_count: Cell<usize> = Cell::new(0);
         let mut strict = StrictDepsTrace::new(&access_count);
         let (trace_mask, trace): (TraceMask, Option<&mut dyn TraceSink>) = if self.strict_deps {
@@ -272,7 +272,7 @@ impl<H: Host> Executor for TapeExecutor<H> {
         }
 
         outputs.extend(out);
-        Ok(())
+        Ok(crate::NodeOutcome::Complete)
     }
 
     fn values_equal(&self, previous: &Self::Value, next: &Self::Value) -> bool {
@@ -343,7 +343,7 @@ impl From<ResourceKeyRef<'_>> for ResourceKey {
 
 /// Translates tape host access events into graph dependency recording.
 struct TapeAccessSink<'a, 'b> {
-    access: &'a mut NodeAccess<'b>,
+    access: &'a mut NodeAccess<'b, Value>,
     /// Shared with [`StrictDepsTrace`] so strict-deps validation can verify that each host call
     /// reported at least one usable key.
     counter: &'a Cell<usize>,

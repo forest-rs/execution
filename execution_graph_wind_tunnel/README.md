@@ -146,3 +146,13 @@ time was 9.06–9.12 ms with vectors and 8.20–9.00 ms with the arena. The latt
 retains 262,144 dependency slots after this workload. Released ranges are reusable
 but not coalesced, and the shared buffer retains its high-water capacity; this
 is not a promise to return memory to the OS after shrinking the graph.
+
+The dynamic-read follow-up adds an attempt counter and an optional body slot per
+node, allowing safe temporary removal of a body while inspecting other outputs.
+The same ordinary 100,000-node probe then retains 64,971,600 bytes in 500,212
+allocations: about 2.1 MB more than the arena-only revision. This is the cost of
+the final contract metadata, rather than another per-node allocation. Smaller
+spot checks still verify cold/unchanged queries at 1,000 and 10,000 nodes; the
+latter measured 4.83 ms cold and 0.209 ms for unchanged query-all. These trivial
+native probes isolate graph overhead and do not establish layerstack's ideal
+node granularity or its end-to-end transform performance.

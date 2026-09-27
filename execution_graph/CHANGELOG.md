@@ -15,6 +15,12 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ### Added
 
+- Dynamic output reads through typed `NodeAccess`, with explicit `NodeOutcome::Pending` restarts
+  and `FnNode::restartable`. Pending attempts publish nothing; unresolved reads, recorded writes
+  before suspension, and runtime dependency cycles are reported explicitly.
+- Committed dependency and cache-status queries, plus executor-attempt and suspension counts in
+  summaries and partial reports. Add a conditional-transform example with a fresh-value oracle.
+
 - Positional `InputId` and `OutputId`, indexed connections and output lookup, numeric external
   input keys, and name/ID lookup for construction and diagnostics. `NodeOutputs` stores values
   in declaration order rather than a string-keyed map.
@@ -93,6 +99,9 @@ You can find its changes [documented below](#001-2026-05-31).
   wrapped in `GraphError::InvalidNode` or `GraphError::Node`.
 
 ### Fixed
+
+- Invalidate every output of a directly forced producer so readers of sibling outputs cannot
+  return stale caches before the producer runs. Equality-based cutoff remains per output.
 
 - `run_node` and `run_node_with_report` no longer drop pending work outside the target's closure
   when the scoped drain takes a shared dirty root: nodes that read the same invalidated input, or

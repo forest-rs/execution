@@ -70,3 +70,26 @@ impl<X: Executor> IndexMut<usize> for Nodes<X> {
         self.get_mut(id).expect("validated node id")
     }
 }
+
+impl<X: Executor> crate::node_access::OutputReader<X::Value> for Nodes<X> {
+    fn output(
+        &self,
+        node: NodeId,
+        output: crate::OutputId,
+    ) -> Result<crate::node_access::OutputView<'_, X::Value>, crate::OutputReadError> {
+        use crate::OutputReadError;
+        let n = usize::try_from(node.as_u64())
+            .ok()
+            .and_then(|id| self.get(id))
+            .ok_or(OutputReadError::MissingNode { node })?;
+        let key = *n
+            .output_ids
+            .get(output.index() as usize)
+            .ok_or(OutputReadError::MissingOutput { node, output })?;
+        Ok(crate::node_access::OutputView {
+            key,
+            outputs: &n.output_ids,
+            value: n.outputs.get_by_id(output),
+        })
+    }
+}

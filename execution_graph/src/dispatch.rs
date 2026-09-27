@@ -12,9 +12,10 @@ use alloc::vec::Vec;
 
 use crate::access::NodeId;
 use crate::executor::Executor;
-use crate::graph::{ExecutionGraph, GraphError};
+use crate::graph::{ExecutionGraph, GraphError, NodeStep};
 use crate::plan::{PlanScope, RunPlan};
 use crate::report::{NodeRunDetail, RunDetailReport, RunSummary};
+use hashbrown::HashSet;
 
 /// Internal dispatcher contract.
 ///
@@ -49,86 +50,164 @@ pub(crate) trait Dispatcher<X: Executor> {
 pub(crate) struct InlineDispatcher;
 
 impl<X: Executor> Dispatcher<X> for InlineDispatcher {
-    #[inline]
     fn dispatch(
         &mut self,
         graph: &mut ExecutionGraph<X>,
-        mut plan: RunPlan,
+        plan: RunPlan,
     ) -> Result<RunSummary, GraphError<X::Error>> {
-        // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
-        match plan.scope() {
-            PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
-        }
-
-        let mut summary = RunSummary::default();
-        let to_run: Vec<NodeId> = plan.take_nodes();
-        for i in 0..to_run.len() {
-            match graph.execute_scheduled_node(to_run[i]) {
-                Ok(true) => summary.executed_nodes += 1,
-                Ok(false) => summary.cut_off_nodes += 1,
-                Err(e) => {
-                    // Fail-fast: force a retry of the failed node. Unexecuted work remains pending.
-                    graph.remark_scheduled_dirty(&to_run[i..]);
-                    graph.reclaim_schedule_buffer(to_run);
-                    return Err(e);
-                }
-            }
-        }
-        graph.reclaim_schedule_buffer(to_run);
-        Ok(summary)
+        run(graph, plan, false).map(|(summary, _)| summary)
     }
-
-    #[inline]
     fn dispatch_with_report(
         &mut self,
         graph: &mut ExecutionGraph<X>,
-        mut plan: RunPlan,
+        plan: RunPlan,
     ) -> Result<RunDetailReport, GraphError<X::Error>> {
-        // Keep scope as part of the dispatch contract even before scope-specific strategies exist.
-        match plan.scope() {
-            PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
-        }
+        run(graph, plan, true).map(|(_, report)| report)
+    }
+}
 
-        let mut trace = plan.take_trace();
-        let mut report = RunDetailReport::default();
-        let to_run: Vec<NodeId> = plan.take_nodes();
+#[derive(Clone, Copy)]
+enum Work {
+    Run(NodeId),
+    Resume(NodeId),
+}
 
-        for i in 0..to_run.len() {
-            let node = to_run[i];
-            let ran = match graph.execute_scheduled_node(node) {
-                Ok(ran) => ran,
-                Err(e) => {
-                    // Force a retry of the failed node; earlier publications and later pending work survive.
-                    graph.remark_scheduled_dirty(&to_run[i..]);
-                    graph.reclaim_schedule_buffer(to_run);
-                    return Err(GraphError::RunReportFailed {
-                        source: Box::new(e),
-                        partial_report: report,
-                    });
+fn run<X: Executor>(
+    graph: &mut ExecutionGraph<X>,
+    mut plan: RunPlan,
+    reporting: bool,
+) -> Result<(RunSummary, RunDetailReport), GraphError<X::Error>> {
+    match plan.scope() {
+        PlanScope::All | PlanScope::WithinDependenciesOf(_) => {}
+    }
+    let detail = plan.detail();
+    let mut trace = plan.take_trace();
+    let mut summary = RunSummary::default();
+    let mut report = RunDetailReport::default();
+    let to_run = plan.take_nodes();
+    if to_run.is_empty() {
+        graph.reclaim_schedule_buffer(to_run);
+        return Ok((summary, report));
+    }
+    let mut expanded = false;
+    // Keep the ordinary schedule in its reusable buffer. Extra stack space is needed only
+    // after a dynamic read asks for producers not already current.
+    let mut next = 0;
+    let mut work = Vec::new();
+    let mut active = Vec::new();
+    let mut active_set = HashSet::new();
+    let result = (|| {
+        loop {
+            let frame = if let Some(frame) = work.pop() {
+                frame
+            } else if let Some(&node) = to_run.get(next) {
+                next += 1;
+                Work::Run(node)
+            } else {
+                break;
+            };
+            let node = match frame {
+                Work::Run(node) => {
+                    if active_set.contains(&node) {
+                        let mut path = active.clone();
+                        path.push(node);
+                        return Err(GraphError::DynamicDependencyCycle { path });
+                    }
+                    // A runtime request may already have completed a node in the original plan.
+                    if expanded && graph.node_status(node) == Some(crate::NodeStatus::Current) {
+                        continue;
+                    }
+                    node
+                }
+                Work::Resume(node) => {
+                    let completed = active.pop();
+                    debug_assert_eq!(
+                        completed,
+                        Some(node),
+                        "nested requests finish before their readers"
+                    );
+                    active_set.remove(&node);
+                    node
                 }
             };
-            let records = if ran {
-                &mut report.executed
-            } else {
-                &mut report.cut_off
-            };
-            if let Some(t) = trace.as_mut()
-                && let Some(r) = t.take_report_for(node)
-            {
-                records.push(r);
-            } else if trace.is_none() {
-                records.push(NodeRunDetail {
-                    node,
-                    node_label: None,
-                    because_of: None,
-                    why_path: None,
-                    why_path_traced: None,
-                });
+            let before = graph.execution_attempts();
+            let step = graph.execute_scheduled_node(node);
+            summary.execution_attempts +=
+                usize::try_from(graph.execution_attempts() - before).unwrap();
+            match step {
+                Err(error) => {
+                    graph.remark_scheduled_dirty(&[node]);
+                    return Err(error);
+                }
+                Ok(NodeStep::Pending(producers)) => {
+                    expanded = true;
+                    summary.suspended_attempts += 1;
+                    active.push(node);
+                    active_set.insert(node);
+                    work.push(Work::Resume(node));
+                    // Append in reverse so requests and their dependency plans run in order.
+                    for producer in producers.into_iter().rev() {
+                        let mut required =
+                            graph.plan_within_dependencies_of_report(producer, detail)?;
+                        if let Some(extra) = required.take_trace() {
+                            trace.get_or_insert_with(Default::default).extend(extra);
+                        }
+                        let required_nodes = required.take_nodes();
+                        if let Some(&repeated) = required_nodes
+                            .iter()
+                            .find(|node| active_set.contains(*node))
+                        {
+                            let mut path = active.clone();
+                            path.push(producer);
+                            if repeated != producer {
+                                path.push(repeated);
+                            }
+                            graph.reclaim_schedule_buffer(required_nodes);
+                            return Err(GraphError::DynamicDependencyCycle { path });
+                        }
+                        for &required_node in required_nodes.iter().rev() {
+                            work.push(Work::Run(required_node));
+                        }
+                        graph.reclaim_schedule_buffer(required_nodes);
+                    }
+                    continue;
+                }
+                Ok(NodeStep::Executed) => summary.executed_nodes += 1,
+                Ok(NodeStep::CutOff) => summary.cut_off_nodes += 1,
+            }
+            if reporting {
+                let records = if matches!(step, Ok(NodeStep::Executed)) {
+                    &mut report.executed
+                } else {
+                    &mut report.cut_off
+                };
+                if let Some(trace) = trace.as_mut() {
+                    if let Some(row) = trace.take_report_for(node) {
+                        records.push(row);
+                    }
+                } else {
+                    records.push(NodeRunDetail {
+                        node,
+                        node_label: None,
+                        because_of: None,
+                        why_path: None,
+                        why_path_traced: None,
+                    });
+                }
             }
         }
-
-        graph.reclaim_schedule_buffer(to_run);
-        Ok(report)
+        Ok(())
+    })();
+    graph.reclaim_schedule_buffer(to_run);
+    report.execution_attempts = summary.execution_attempts;
+    report.suspended_attempts = summary.suspended_attempts;
+    match result {
+        Ok(()) => Ok((summary, report)),
+        Err(source) if reporting => Err(GraphError::RunReportFailed {
+            source: Box::new(source),
+            partial_report: report,
+        }),
+        Err(source) => Err(source),
     }
 }
 

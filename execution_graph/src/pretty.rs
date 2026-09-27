@@ -99,7 +99,10 @@ impl<X: Executor> ExecutionGraph<X> {
                 Some(label) => format!("{label}\nnode#{node_id}"),
                 None => format!("node#{node_id}"),
             };
-            let center = match self.executor.describe(&node.body) {
+            let center = match self
+                .executor
+                .describe(node.body.as_ref().expect("idle node body"))
+            {
                 Some(description) => escape_record(&format!("{node_line}\n{description}")),
                 None => escape_record(&node_line),
             };
