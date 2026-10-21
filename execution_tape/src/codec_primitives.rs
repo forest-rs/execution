@@ -48,6 +48,9 @@ pub(crate) fn read_u64_le(r: &mut Reader<'_>) -> Result<u64, DecodeError> {
 
 pub(crate) fn read_reg_list(r: &mut Reader<'_>) -> Result<Vec<u32>, DecodeError> {
     let n = read_u32_uleb(r)? as usize;
+    if n > r.remaining() {
+        return Err(DecodeError::UnexpectedEof);
+    }
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(read_reg(r)?);

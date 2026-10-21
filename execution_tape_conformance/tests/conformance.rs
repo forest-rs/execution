@@ -71,6 +71,92 @@ fn verify_owned(program: Program) -> execution_tape::verifier::VerifiedProgram {
 }
 
 #[test]
+fn decoder_rejects_impossible_section_counts() {
+    use execution_tape::format::{DecodeError, Writer};
+
+    let encoded = ProgramBuilder::new().build().encode();
+    for tag in 1..=11 {
+        let mut payload = Writer::new();
+        if tag == 9 {
+            payload.write_u8(0); // no program name
+        }
+        payload.write_uleb128_u64(u64::MAX);
+        let mut malformed = Writer::new();
+        malformed.write_bytes(&encoded[..12]); // magic and version
+        malformed.write_u8(tag);
+        malformed.write_uleb128_u64(payload.as_slice().len() as u64);
+        malformed.write_bytes(payload.as_slice());
+        assert!(matches!(
+            Program::decode(malformed.as_slice()),
+            Err(DecodeError::UnexpectedEof | DecodeError::OutOfBounds)
+        ));
+    }
+}
+
+#[test]
+fn decoder_rejects_impossible_nested_counts() {
+    use execution_tape::format::{DecodeError, Writer};
+
+    let encoded = ProgramBuilder::new().build().encode();
+    // Valid prefixes followed by an impossible field, argument, label, span, or tuple count.
+    for (tag, prefix) in [
+        (3, &[0, 1][..]),
+        (6, &[1][..]),
+        (7, &[1][..]),
+        (8, &[1, 1, 0, 0, 0, 0, 0, 0, 0, 0][..]),
+        (9, &[0, 0][..]),
+        (10, &[1][..]),
+        (11, &[1, 0, 0, 1][..]),
+    ] {
+        let mut payload = Writer::new();
+        payload.write_bytes(prefix);
+        payload.write_uleb128_u64(u64::MAX);
+        let mut malformed = Writer::new();
+        malformed.write_bytes(&encoded[..12]);
+        malformed.write_u8(tag);
+        malformed.write_uleb128_u64(payload.as_slice().len() as u64);
+        malformed.write_bytes(payload.as_slice());
+        assert!(matches!(
+            Program::decode(malformed.as_slice()),
+            Err(DecodeError::UnexpectedEof | DecodeError::OutOfBounds)
+        ));
+    }
+}
+
+#[test]
+fn both_instruction_decoders_reject_impossible_register_lists() {
+    use execution_tape::format::{DecodeError, Writer};
+
+    let mut bytes = Writer::new();
+    bytes.write_u8(Opcode::TupleNew as u8);
+    bytes.write_uleb128_u32(1);
+    bytes.write_uleb128_u32(u32::MAX);
+    assert!(matches!(
+        execution_tape::codec::decode_instruction(bytes.as_slice()),
+        Err(execution_tape::codec::DecodeError::Format(
+            DecodeError::UnexpectedEof
+        ))
+    ));
+    let program = Program::new(
+        vec![],
+        vec![],
+        vec![],
+        TypeTableDef::default(),
+        vec![FunctionDef {
+            arg_types: vec![],
+            ret_types: vec![],
+            reg_count: 2,
+            bytecode: bytes.into_vec(),
+            spans: vec![],
+        }],
+    );
+    assert!(matches!(
+        verify_program(&program, &VerifyConfig::default()),
+        Err(VerifyError::BytecodeDecode { func: 0 })
+    ));
+}
+
+#[test]
 fn golden_program_bytes_v0_0_1() {
     let mut p = Program::new(
         vec![],

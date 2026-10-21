@@ -85,6 +85,11 @@ impl<'a> Reader<'a> {
         self.offset
     }
 
+    /// Returns the number of unread bytes.
+    pub(crate) fn remaining(&self) -> usize {
+        self.bytes.len() - self.offset
+    }
+
     fn take(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
         let end = self
             .offset
