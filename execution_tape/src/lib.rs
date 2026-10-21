@@ -47,6 +47,7 @@
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut asm = Asm::new();
+//!     asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64, ValueType::I64]);
 //!     asm.const_i64(2, 1);
 //!     asm.i64_add(3, 1, 2);
 //!     asm.ret(0, &[3]);

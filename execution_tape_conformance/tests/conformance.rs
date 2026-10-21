@@ -75,6 +75,7 @@ fn entry_arity_errors_allow_context_reuse() {
     use execution_tape::vm::ExecutionContext;
 
     let mut asm = Asm::new();
+    asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     asm.ret(0, &[1]);
     let mut builder = ProgramBuilder::new();
     let entry = builder
@@ -202,7 +203,7 @@ fn both_instruction_decoders_reject_impossible_register_lists() {
         vec![FunctionDef {
             arg_types: vec![],
             ret_types: vec![],
-            reg_count: 2,
+            register_types: vec![ValueType::Unit, ValueType::Unit],
             bytecode: bytes.into_vec(),
             spans: vec![],
         }],
@@ -216,6 +217,7 @@ fn both_instruction_decoders_reject_impossible_register_lists() {
 #[test]
 fn zero_call_depth_rejects_the_entry_frame() {
     let mut asm = Asm::new();
+    asm.set_register_types(vec![ValueType::Unit]);
     asm.ret(0, &[]);
     let mut builder = ProgramBuilder::new();
     builder
@@ -253,6 +255,15 @@ fn float_to_integer_rejects_rounded_upper_bounds() {
         };
         for (input, out_of_range) in [(upper, true), (f64::from_bits(upper.to_bits() - 1), false)] {
             let mut asm = Asm::new();
+            asm.set_register_types(vec![
+                ValueType::Unit,
+                ValueType::F64,
+                if signed {
+                    ValueType::I64
+                } else {
+                    ValueType::U64
+                },
+            ]);
             asm.const_f64(1, input);
             if signed {
                 asm.f64_to_i64(2, 1);
@@ -294,6 +305,12 @@ fn float_to_integer_rejects_rounded_upper_bounds() {
 #[test]
 fn verifier_preserves_tuple_shape_across_a_jump() {
     let mut asm = Asm::new();
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::I64,
+    ]);
     let next = asm.label();
     asm.const_i64(1, 7);
     asm.tuple_new(2, &[1]);
@@ -324,6 +341,13 @@ fn verifier_preserves_tuple_shape_across_a_jump() {
 fn verifier_meets_tuple_shapes_at_branch_joins() {
     for compatible in [true, false] {
         let mut asm = Asm::new();
+        asm.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Bool,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::I64,
+        ]);
         let left = asm.label();
         let right = asm.label();
         let join = asm.label();
@@ -366,7 +390,10 @@ fn verifier_meets_tuple_shapes_at_branch_joins() {
                 );
             }
         } else {
-            assert!(matches!(result, Err(VerifyError::UnknownTypeAtUse { .. })));
+            assert!(matches!(
+                result,
+                Err(VerifyError::UnknownAggregateShape { .. })
+            ));
         }
     }
 }
@@ -374,6 +401,16 @@ fn verifier_meets_tuple_shapes_at_branch_joins() {
 #[test]
 fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
     let mut asm = Asm::new();
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::Bool,
+        ValueType::I64,
+    ]);
     let head = asm.label();
     let body = asm.label();
     let done = asm.label();
@@ -413,7 +450,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
 }
 
 #[test]
-fn golden_program_bytes_v0_0_1() {
+fn golden_program_bytes_v0_2() {
     let mut p = Program::new(
         vec![],
         vec![],
@@ -422,7 +459,7 @@ fn golden_program_bytes_v0_0_1() {
         vec![FunctionDef {
             arg_types: vec![],
             ret_types: vec![],
-            reg_count: 1,
+            register_types: vec![ValueType::Unit],
             bytecode: vec![Opcode::Ret as u8, 0x00, 0x00], // ret r0
             spans: vec![],
         }],
@@ -457,10 +494,10 @@ fn golden_program_bytes_v0_0_1() {
         0x45,
         0x00,
         0x00,
-        // version_major=0, version_minor=1
+        // version_major=0, version_minor=2
         0x00,
         0x00,
-        0x01,
+        0x02,
         0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
         0x02,
@@ -487,15 +524,16 @@ fn golden_program_bytes_v0_0_1() {
         0x02,
         0x01,
         0x00,
-        // function_table: tag=4, len=6, payload=[n=1, argc=0, retc=0, regc=1, bc=0, sp=0]
+        // function_table: tag=4, len=7, payload=[n=1, argc=0, retc=0, regc=1, Unit, bc=0, sp=0]
         0x04,
-        0x06,
+        0x07,
         0x01,
         0x00,
         0x00,
         0x01,
         0x00,
         0x00,
+        0x00, // additional Unit declaration
         // function_sigs: tag=7, len=5, payload=[n=1, argc=0, has_arg_names=0, retc=0, has_ret_names=0]
         0x07,
         0x05,
@@ -528,6 +566,12 @@ fn golden_program_bytes_v0_0_1() {
 #[test]
 fn roundtrip_verify_run_pure_ops() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a.const_i64(1, 7);
     a.const_i64(2, 9);
     a.i64_add(3, 1, 2);
@@ -558,6 +602,18 @@ fn roundtrip_verify_run_pure_ops() {
 fn roundtrip_verify_run_cmp_cast_select() {
     // out = select((7 < 9), u64_to_i64(3_u64), 0_i64) + 5_i64
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::U64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a.const_i64(1, 7);
     a.const_i64(2, 9);
     a.i64_lt(3, 1, 2);
@@ -595,6 +651,14 @@ fn roundtrip_verify_run_cmp_cast_select() {
 fn roundtrip_verify_run_u64_ops() {
     // (((5 + 7) - 5) * 7) = 49
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_u64(1, 5);
     a.const_u64(2, 7);
     a.u64_add(3, 1, 2);
@@ -626,6 +690,27 @@ fn roundtrip_verify_run_u64_ops() {
 #[test]
 fn roundtrip_verify_run_f64_ext_ops() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::F64,
+    ]);
     a.const_f64(1, 1.25);
     a.f64_neg(2, 1);
     a.f64_abs(3, 2);
@@ -696,6 +781,12 @@ fn roundtrip_verify_run_f64_ext_ops() {
 fn roundtrip_verify_run_u64_ops_wrap() {
     // u64 wraps on overflow.
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_u64(1, u64::MAX);
     a.const_u64(2, 1);
     a.u64_add(3, 1, 2);
@@ -726,6 +817,20 @@ fn roundtrip_verify_run_u64_ops_wrap() {
 fn roundtrip_verify_run_u64_bitwise_and_shifts() {
     // ((0b1010 & 0b1100) | 0b0001) ^ (1 << 3) = 0b0001
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_u64(1, 0b1010);
     a.const_u64(2, 0b1100);
     a.u64_and(3, 1, 2);
@@ -764,6 +869,14 @@ fn roundtrip_verify_run_u64_bitwise_and_shifts() {
 fn roundtrip_verify_run_u64_ordering() {
     // Verify gt/le/ge all agree with expected ordering.
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+    ]);
     a.const_u64(1, 5);
     a.const_u64(2, 7);
     a.u64_gt(3, 2, 1);
@@ -798,6 +911,14 @@ fn roundtrip_verify_run_u64_ordering() {
 #[test]
 fn roundtrip_verify_run_bool_bitwise() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+    ]);
     a.const_bool(1, true);
     a.const_bool(2, false);
     a.bool_and(3, 1, 2);
@@ -834,6 +955,20 @@ fn roundtrip_verify_run_i64_bitwise_and_shifts() {
     // (0b0110 & 0b1010) | 0b0001 = 0b0011
     // 0b0011 ^ (1 << 3) = 0b1011
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a.const_i64(1, 0b0110);
     a.const_i64(2, 0b1010);
     a.i64_and(3, 1, 2);
@@ -872,6 +1007,14 @@ fn roundtrip_verify_run_i64_bitwise_and_shifts() {
 fn roundtrip_verify_run_i64_ordering() {
     // Verify gt/le/ge all agree with expected ordering.
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+    ]);
     a.const_i64(1, -5);
     a.const_i64(2, 7);
     a.i64_gt(3, 2, 1);
@@ -907,6 +1050,16 @@ fn roundtrip_verify_run_i64_ordering() {
 fn roundtrip_verify_run_decimal_ops() {
     // (1.25 + 2.00 - 0.50) * 2 = 5.50
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+    ]);
     a.const_decimal(1, 125, 2);
     a.const_decimal(2, 200, 2);
     a.dec_add(3, 1, 2);
@@ -946,6 +1099,12 @@ fn roundtrip_verify_run_decimal_ops() {
 #[test]
 fn vm_traps_decimal_scale_mismatch() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+    ]);
     a.const_decimal(1, 1, 0);
     a.const_decimal(2, 1, 1);
     a.dec_add(3, 1, 2);
@@ -972,6 +1131,12 @@ fn vm_traps_decimal_scale_mismatch() {
 #[test]
 fn vm_traps_decimal_overflow_on_scale_add() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Decimal,
+    ]);
     a.const_decimal(1, 1, 250);
     a.const_decimal(2, 1, 10);
     a.dec_mul(3, 1, 2);
@@ -999,6 +1164,16 @@ fn vm_traps_decimal_overflow_on_scale_add() {
 fn roundtrip_verify_run_f64_ops() {
     // (1.5 + 2.25 - 0.5) * 2.0 = 6.5
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+    ]);
     a.const_f64(1, 1.5);
     a.const_f64(2, 2.25);
     a.f64_add(3, 1, 2);
@@ -1032,6 +1207,7 @@ fn roundtrip_verify_run_f64_ops() {
 #[test]
 fn vm_traps_on_cast_overflow() {
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
     a.const_u64(1, u64::MAX);
     a.u64_to_i64(2, 1);
     a.ret(0, &[2]);
@@ -1065,6 +1241,7 @@ fn roundtrip_verify_run_host_call() {
     let host_sig = pb.host_sig_for("id", sig);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     a.const_i64(1, 9);
     a.host_call(0, host_sig, 0, &[1], &[2]);
     a.ret(0, &[2]);
@@ -1100,6 +1277,13 @@ fn roundtrip_verify_run_host_call_with_aggregate_arg() {
     let host_sig = pb.host_sig_for("sum_tuple2", sig);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::I64,
+    ]);
     a.const_i64(1, 20);
     a.const_i64(2, 22);
     a.tuple_new(3, &[1, 2]);
@@ -1140,10 +1324,17 @@ fn roundtrip_verify_run_call_indirect_via_func_value() {
     let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
     let mut callee_asm = Asm::new();
+    callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     callee_asm.ret(0, &[1]);
     pb.define_function(callee, callee_asm).unwrap();
 
     let mut caller_asm = Asm::new();
+    caller_asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Func,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     caller_asm.const_func(1, callee);
     caller_asm.const_i64(2, 9);
     caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
@@ -1174,12 +1365,28 @@ fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
     let call_sig = pb.call_sig(&[ValueType::U64], &[ValueType::U64]);
 
     let mut callee_asm = Asm::new();
+    callee_asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Agg,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     callee_asm.tuple_len(3, 1);
     callee_asm.u64_add(4, 3, 2);
     callee_asm.ret(0, &[4]);
     pb.define_function(callee, callee_asm).unwrap();
 
     let mut caller_asm = Asm::new();
+    caller_asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::Func,
+        ValueType::Closure,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     caller_asm.const_i64(1, 40);
     caller_asm.tuple_new(2, &[1]);
     caller_asm.const_func(3, callee);
@@ -1209,11 +1416,18 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
     let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
     let mut callee_asm = Asm::new();
+    callee_asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
     callee_asm.const_i64(2, 99);
     callee_asm.ret(0, &[2]);
     pb.define_function(callee, callee_asm).unwrap();
 
     let mut caller_asm = Asm::new();
+    caller_asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Func,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     caller_asm.const_func(1, callee);
     caller_asm.const_i64(2, 7);
     caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
@@ -1242,7 +1456,7 @@ fn verifier_rejects_unknown_opcode() {
         vec![FunctionDef {
             arg_types: vec![],
             ret_types: vec![],
-            reg_count: 1,
+            register_types: vec![ValueType::Unit],
             bytecode: vec![0xFF],
             spans: vec![],
         }],
@@ -1261,6 +1475,7 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
     });
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit]);
     a.call(0, f, 0, &[], &[]);
     a.ret(0, &[]);
     pb.define_function(f, a).unwrap();
@@ -1302,6 +1517,16 @@ fn vm_loop_sum_0_to_n_minus_1() {
     // sum: i64, i: u64
     // while (i < n) { sum += u64_to_i64(i); i = i64_to_u64(u64_to_i64(i) + 1); }
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     let l_loop = a.label();
     let l_body = a.label();
     let l_done = a.label();
@@ -1345,6 +1570,7 @@ fn vm_loop_sum_0_to_n_minus_1() {
 #[test]
 fn vm_traps_fuel_in_tight_loop() {
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit]);
     let l0 = a.label();
     a.place(l0).unwrap();
     a.jmp(l0);
@@ -1400,6 +1626,7 @@ fn vm_traps_host_call_limit_in_loop() {
     let host_sig = pb.host_sig_for("noop", sig);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit]);
     let l0 = a.label();
     a.place(l0).unwrap();
     a.host_call(0, host_sig, 0, &[], &[]);
@@ -1430,6 +1657,13 @@ fn vm_traps_host_call_limit_in_loop() {
 fn verifier_rejects_select_type_mismatch() {
     // cond is bool, but a/b are different concrete types (i64 vs u64).
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::U64,
+        ValueType::I64,
+    ]);
     a.const_bool(1, true);
     a.const_i64(2, 1);
     a.const_u64(3, 1);
@@ -1448,12 +1682,13 @@ fn verifier_rejects_select_type_mismatch() {
     let p = pb.build();
 
     let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
-    assert!(matches!(err, VerifyError::TypeMismatch { .. }));
+    assert!(matches!(err, VerifyError::RegisterTypeMismatch { .. }));
 }
 
 #[test]
 fn vm_traps_on_negative_i64_to_u64() {
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::U64]);
     a.const_i64(1, -1);
     a.i64_to_u64(2, 1);
     a.ret(0, &[2]);
@@ -1479,6 +1714,14 @@ fn vm_traps_on_negative_i64_to_u64() {
 #[test]
 fn roundtrip_verify_run_tuple_len() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::U64,
+        ValueType::I64,
+    ]);
     a.const_i64(1, 10);
     a.const_i64(2, 20);
     a.tuple_new(3, &[1, 2]);
@@ -1511,6 +1754,15 @@ fn roundtrip_verify_run_struct_field_count() {
     });
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::U64,
+        ValueType::Bool,
+        ValueType::Agg,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_i64(1, 1);
     a.const_u64(2, 2);
     a.const_bool(3, true);
@@ -1540,6 +1792,14 @@ fn roundtrip_verify_run_array_get_imm() {
     let elem = pb.array_elem(ValueType::I64);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::I64,
+    ]);
     a.const_i64(1, 7);
     a.const_i64(2, 8);
     a.const_i64(3, 9);
@@ -1568,6 +1828,12 @@ fn vm_traps_array_get_imm_oob() {
     let elem = pb.array_elem(ValueType::U64);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::Agg,
+        ValueType::U64,
+    ]);
     a.const_u64(1, 1);
     a.array_new(2, elem, &[1]);
     a.array_get_imm(3, 2, 9);
@@ -1597,6 +1863,13 @@ fn roundtrip_verify_run_bytes_len_and_str_len() {
     let s = pb.constant(Const::Str("aé".into())); // 3 bytes in UTF-8
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bytes,
+        ValueType::Str,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_pool(1, bytes);
     a.const_pool(2, s);
     a.bytes_len(3, 1);
@@ -1622,6 +1895,17 @@ fn roundtrip_verify_run_bytes_len_and_str_len() {
 fn roundtrip_verify_run_div_rem() {
     // (25 / 4, 25 % 4, 25_u64 / 4_u64, 25_u64 % 4_u64) = (6, 1, 6, 1)
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_i64(1, 25);
     a.const_i64(2, 4);
     a.i64_div(3, 1, 2);
@@ -1659,6 +1943,12 @@ fn roundtrip_verify_run_div_rem() {
 #[test]
 fn vm_traps_div_by_zero() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+    ]);
     a.const_u64(1, 1);
     a.const_u64(2, 0);
     a.u64_div(3, 1, 2);
@@ -1685,6 +1975,12 @@ fn vm_traps_div_by_zero() {
 #[test]
 fn vm_traps_i64_div_overflow_min_over_minus_one() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a.const_i64(1, i64::MIN);
     a.const_i64(2, -1);
     a.i64_div(3, 1, 2);
@@ -1711,6 +2007,17 @@ fn vm_traps_i64_div_overflow_min_over_minus_one() {
 #[test]
 fn roundtrip_verify_run_int_float_conversions() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::F64,
+        ValueType::U64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::I64,
+        ValueType::F64,
+        ValueType::U64,
+    ]);
     a.const_i64(1, -3);
     a.i64_to_f64(2, 1);
     a.const_u64(3, 7);
@@ -1754,6 +2061,17 @@ fn roundtrip_verify_run_int_float_conversions() {
 #[test]
 fn roundtrip_verify_run_f64_div_and_comparisons() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+    ]);
     a.const_f64(1, 9.0);
     a.const_f64(2, 2.0);
     a.f64_div(3, 1, 2); // 4.5
@@ -1795,6 +2113,16 @@ fn roundtrip_verify_run_f64_div_and_comparisons() {
 #[test]
 fn roundtrip_verify_run_f64_comparisons_nan_are_false() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::Bool,
+    ]);
     a.const_f64(1, f64::NAN);
     a.const_f64(2, 1.0);
     a.f64_eq(3, 1, 1);
@@ -1838,6 +2166,7 @@ fn roundtrip_verify_run_f64_comparisons_nan_are_false() {
 #[test]
 fn vm_traps_f64_to_int_on_nan() {
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::F64, ValueType::I64]);
     a.const_f64(1, f64::NAN);
     a.f64_to_i64(2, 1);
     a.ret(0, &[2]);
@@ -1863,6 +2192,7 @@ fn vm_traps_f64_to_int_on_nan() {
 #[test]
 fn vm_traps_f64_to_u64_on_negative() {
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::F64, ValueType::U64]);
     a.const_f64(1, -1.0);
     a.f64_to_u64(2, 1);
     a.ret(0, &[2]);
@@ -1888,6 +2218,12 @@ fn vm_traps_f64_to_u64_on_negative() {
 #[test]
 fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Decimal,
+        ValueType::I64,
+        ValueType::Decimal,
+    ]);
     a.const_decimal(1, 42, 0);
     a.dec_to_i64(2, 1);
     a.i64_to_dec(3, 2, 2); // 42 -> 42.00 (mantissa=4200, scale=2)
@@ -1919,6 +2255,7 @@ fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
 #[test]
 fn vm_traps_dec_to_i64_on_nonzero_scale() {
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::Decimal, ValueType::I64]);
     a.const_decimal(1, 1, 2);
     a.dec_to_i64(2, 1);
     a.ret(0, &[2]);
@@ -1950,6 +2287,24 @@ fn roundtrip_verify_run_bytes_and_string_ops() {
     let b_str = pb.constant(Const::Str("é".into()));
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bytes,
+        ValueType::Bytes,
+        ValueType::Bytes,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::Bytes,
+        ValueType::Bool,
+        ValueType::Str,
+        ValueType::Str,
+        ValueType::Str,
+        ValueType::U64,
+        ValueType::Bool,
+        ValueType::Bytes,
+        ValueType::Str,
+    ]);
     a.const_pool(1, a_bytes);
     a.const_pool(2, b_bytes);
     a.bytes_concat(3, 1, 2); // [1,2,3,4,5]
@@ -2002,6 +2357,13 @@ fn vm_traps_str_slice_on_non_boundary() {
     let s = pb.constant(Const::Str("é".into())); // 2 bytes
 
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Str,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::Str,
+    ]);
     a.const_pool(1, s);
     a.const_u64(2, 1);
     a.const_u64(3, 2);
@@ -2031,6 +2393,7 @@ fn vm_traps_bytes_to_str_on_invalid_utf8() {
     let b = pb.constant(Const::Bytes(vec![0xFF]));
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::Str]);
     a.const_pool(1, b);
     a.bytes_to_str(2, 1);
     a.ret(0, &[2]);

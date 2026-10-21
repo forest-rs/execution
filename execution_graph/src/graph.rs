@@ -1417,6 +1417,12 @@ mod tape_tests {
     fn trap_program() -> (Arc<VerifiedProgram>, FuncId) {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         a.const_i64(1, 1);
         a.const_i64(2, 0);
         a.i64_div(3, 1, 2);
@@ -1438,6 +1444,7 @@ mod tape_tests {
     fn const_program(v: i64) -> (Arc<VerifiedProgram>, FuncId) {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, v);
         a.ret(0, &[1]);
         let f = pb
@@ -1572,6 +1579,7 @@ mod tape_tests {
         // Node A: returns constant 7 (named output "value").
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, 7);
         a.ret(0, &[1]);
         let a_node = pb
@@ -1602,6 +1610,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -1680,6 +1689,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -1755,6 +1765,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -1790,6 +1801,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -1873,6 +1885,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -1967,6 +1980,7 @@ mod tape_tests {
         );
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(1, 42);
         a.host_call(0, host_sig, 0, &[1], &[2]);
         a.ret(0, &[2]);
@@ -2047,6 +2061,7 @@ mod tape_tests {
         );
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(1, 42);
         a.host_call(0, host_sig, 0, &[1], &[2]);
         a.ret(0, &[2]);
@@ -2094,6 +2109,7 @@ mod tape_tests {
     fn run_all_errors_on_missing_input_binding() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.ret(0, &[1]);
         let f = pb
             .push_function_checked(
@@ -2203,6 +2219,12 @@ mod tape_tests {
         fn passthrough2_program() -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![
+                ValueType::Unit,
+                ValueType::I64,
+                ValueType::I64,
+                ValueType::I64,
+            ]);
             a.i64_add(3, 1, 2);
             a.ret(0, &[3]);
             let f = pb
@@ -2252,6 +2274,7 @@ mod tape_tests {
     fn graph_builder_errors_on_bad_entry_func() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit]);
         a.ret(0, &[]);
         pb.push_function_checked(
             a,
@@ -2276,6 +2299,7 @@ mod tape_tests {
     fn graph_builder_errors_on_input_arity_mismatch() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.ret(0, &[1]);
         let f = pb
             .push_function_checked(
@@ -2298,6 +2322,7 @@ mod tape_tests {
     fn set_input_value_errors_on_unknown_input() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.ret(0, &[1]);
         let f = pb
             .push_function_checked(
@@ -2323,6 +2348,7 @@ mod tape_tests {
         fn make_const_program(output_name: &str, v: i64) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.const_i64(1, v);
             a.ret(0, &[1]);
             let f = pb
@@ -2341,6 +2367,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -2418,6 +2445,7 @@ mod tape_tests {
         let get_host = pb.host_sig_for("kv.get", get_sig);
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         a.const_u64(1, 1);
         a.host_call(0, get_host, 0, &[1], &[2]);
         a.ret(0, &[2]);
@@ -2536,6 +2564,7 @@ mod tape_tests {
         let mut get_builder = ProgramBuilder::new();
         let get_host = get_builder.host_sig_for("kv.get", get_sig);
         let mut get_asm = Asm::new();
+        get_asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         get_asm.const_u64(1, 1);
         get_asm.host_call(0, get_host, 0, &[1], &[2]);
         get_asm.ret(0, &[2]);
@@ -2556,6 +2585,12 @@ mod tape_tests {
         let mut set_builder = ProgramBuilder::new();
         let set_host = set_builder.host_sig_for("kv.set", set_sig);
         let mut set_asm = Asm::new();
+        set_asm.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::U64,
+            ValueType::I64,
+            ValueType::Unit,
+        ]);
         set_asm.const_u64(1, 1);
         set_asm.const_i64(2, 8);
         set_asm.host_call(0, set_host, 0, &[1, 2], &[3]);
@@ -2661,6 +2696,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let bump_host = pb.host_sig_for("kv.bump", bump_sig);
         let mut asm = Asm::new();
+        asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         asm.const_u64(1, 1);
         asm.host_call(0, bump_host, 0, &[1], &[2]);
         asm.ret(0, &[2]);
@@ -2742,6 +2778,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let publish = pb.host_sig_for("publish", publish_sig);
         let mut asm = Asm::new();
+        asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         asm.host_call(0, publish, 0, &[1], &[2]);
         asm.ret(0, &[2]);
         let entry = pb
@@ -2837,6 +2874,7 @@ mod tape_tests {
         let mut pb = ProgramBuilder::new();
         let op = pb.host_sig_for("flip.reads", host_sig);
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.host_call(0, op, 0, &[], &[1]);
         a.ret(0, &[1]);
         let f = pb
@@ -2918,6 +2956,7 @@ mod tape_tests {
         let get_host = pb.host_sig_for("kv.get", get_sig);
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
         a.const_u64(1, 1);
         a.host_call(0, get_host, 0, &[1], &[2]);
         a.ret(0, &[2]);
@@ -2968,6 +3007,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -3029,6 +3069,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -3046,6 +3087,7 @@ mod tape_tests {
         fn make_const_program(output_name: &str, v: i64) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.const_i64(1, v);
             a.ret(0, &[1]);
             let f = pb
@@ -3104,6 +3146,7 @@ mod tape_tests {
     fn duplicate_input_names_alias_same_binding() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         // Return arg1 where both args are named "x". If aliasing is broken, run fails with
         // MissingInput for the second slot.
         a.ret(0, &[1]);
@@ -3139,6 +3182,7 @@ mod tape_tests {
         // and are never scheduled by plan_all.
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, 42);
         a.ret(0, &[1]);
         let f = pb
@@ -3170,6 +3214,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -3210,6 +3255,7 @@ mod tape_tests {
         fn make_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
             let mut pb = ProgramBuilder::new();
             let mut a = Asm::new();
+            a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             a.ret(0, &[1]);
             let f = pb
                 .push_function_checked(
@@ -3822,6 +3868,7 @@ mod mixed_tests {
     fn dynamic_reads_compose_with_bound_native_and_tape_inputs() {
         let mut pb = ProgramBuilder::new();
         let mut asm = Asm::new();
+        asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         asm.i64_add(2, 1, 1);
         asm.ret(0, &[2]);
         let entry = pb
@@ -3905,6 +3952,7 @@ mod mixed_tests {
         // Tape: fn double(x: i64) -> i64 { x + x }
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.i64_add(2, 1, 1);
         a.ret(0, &[2]);
         let entry = pb

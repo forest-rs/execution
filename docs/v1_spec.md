@@ -68,7 +68,7 @@ The VM defines a closed set of value kinds. v1 requires these kinds:
 
 Implementation note: the VM may store registers in per-kind register files (`RegClass`) rather than as a tagged
 union `Value` in order to avoid runtime tag checks in the hot interpreter loop. This is safe because execution
-requires verification, and the verifier assigns each register a stable kind and enforces type correctness.
+requires verification, and the producer declares each register's kind and the verifier enforces type correctness.
 
 ### `Decimal`
 - Per-value scale (`u8`) and mantissa (`i64`).
@@ -128,7 +128,8 @@ Programs contain a function table; each function entry includes:
 - `FuncId`
 - `arg_count` (value args; effect is threaded separately)
 - `ret_count` (value returns)
-- `reg_count` (total registers used by the function)
+- `reg_count` (number of declared registers, including r0 and unused registers)
+- `register_types[reg_count]` (required kind of each register; r0 is `Unit`, followed by argument kinds)
 - `bytecode_index` (index into the bytecode blob list)
 - `span_table_index` (index into the span table list)
 
@@ -355,8 +356,15 @@ Stores per-function metadata and references into blob sections:
   - `arg_count: ULEB128` (value args; effect is not counted)
   - `ret_count: ULEB128`
   - `reg_count: ULEB128`
+  - `register_types[reg_count]: ValueType...` (same kind encoding as signatures)
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
+
+The current draft wire version is 0.2. Older versions are rejected; rebuild serialized programs
+from their producer. Each declaration is authoritative for the register's entire function lifetime.
+Every instruction definition and operand must match, including inactive instructions and unused
+results. A declaration does not initialize a register or supply a projection's aggregate shape proof.
+Scalar kinds need no dataflow inference; must-initialization and aggregate proofs remain separate.
 
 ## Function signatures (typed)
 Typed signatures are mandatory in v1 and stored separately from `function_table`:
@@ -435,7 +443,7 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `nop`
 - `mov r_dst, r_src`
 - `trap trap_code`
-- `block params..., types...` (declaration, no runtime step)
+- `block params...` (declaration, no runtime step; kinds come from function register declarations)
 
 ### Constants
 - `const_unit r_dst`
@@ -528,8 +536,7 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x00 nop`
 - `0x01 mov dst, src`
 - `0x02 trap code`
-- `0x03 block params, types` (counted ULEB32 registers, then a ULEB32 count followed by the
-  signature `ValueType` encoding for each type; parameter/type counts must match)
+- `0x03 block params` (counted ULEB32 register IDs; kinds come from the function register ledger)
 
 - `0x10 const_unit dst`
 - `0x11 const_bool dst, imm_u8` (`0` or `1`)

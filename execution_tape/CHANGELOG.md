@@ -48,6 +48,20 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Declare every function register by transferring its kind `Vec` to `Asm::set_register_types`,
+  including r0 (`Unit`), arguments and temporaries. Raw `FunctionDef` inputs now own `register_types` in place of `reg_count`.
+  Preserve the complete `AsmParts` when assembling raw definitions. `Asm::block` now takes only
+  register IDs; parameter kinds come from the function ledger. Programs use wire version 0.2;
+  regenerate serialized programs with the updated producer. Declarations do not initialize values
+  or establish aggregate shapes.
+
+- Replace `VerifyError::{TypeMismatch, UnknownTypeAtUse, UnknownTypeAtSelect, UnstableRegType,
+  UnstableRegTypeAt}` with `MissingRegisterTypes`, `RegisterTypeMismatch` and
+  `UnknownAggregateShape`. A register mismatch's `pc: None` identifies the r0/argument prefix;
+  instruction failures carry their source PC. Static kind and call/return contracts are checked
+  even in unreachable code. `Program::encode` now panics on manually malformed register
+  declarations; verify manually edited containers before encoding them.
+
 - Run the disassembler example with `cargo run -p execution_tape_wind_tunnel --bin disasm`.
   Examples now live in the separate tool crate, keeping the core crate focused on the library. ([#138][] by [@waywardmonkeys][])
 

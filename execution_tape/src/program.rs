@@ -22,7 +22,7 @@ use crate::verifier;
 /// The `execution_tape` binary format version supported by this crate (draft).
 pub const VERSION_MAJOR: u16 = 0;
 /// The `execution_tape` binary format version supported by this crate (draft).
-pub const VERSION_MINOR: u16 = 1;
+pub const VERSION_MINOR: u16 = 2;
 
 const MAGIC: &[u8; 8] = b"EXTAPE\0\0";
 
@@ -156,6 +156,9 @@ pub struct Function {
     pub ret_count: u32,
     /// Total virtual registers used by the function.
     pub reg_count: u32,
+    /// Register kind IDs range (into [`Program::register_type_ids`]).
+    /// Its length must equal `reg_count`.
+    pub register_types: ByteRange,
     /// Raw bytecode stream range (into [`Program::bytecode_data`]).
     pub bytecode: ByteRange,
     /// Span mapping table range (into [`Program::spans`]).
@@ -179,6 +182,66 @@ pub struct Function {
 }
 
 impl Function {
+    /// Returns one declared register kind without expanding or scanning the ledger.
+    pub fn register_type(&self, program: &Program, reg: u32) -> Result<ValueType, DecodeError> {
+        if reg >= self.reg_count || self.register_types.len != self.reg_count {
+            return Err(DecodeError::OutOfBounds);
+        }
+        let index = self
+            .register_types
+            .offset
+            .checked_add(reg)
+            .ok_or(DecodeError::OutOfBounds)?;
+        let id = *program
+            .register_type_ids
+            .get(index as usize)
+            .ok_or(DecodeError::OutOfBounds)?;
+        program
+            .value_types
+            .get(id as usize)
+            .copied()
+            .ok_or(DecodeError::OutOfBounds)
+    }
+
+    pub(crate) fn register_type_ids<'a>(
+        &self,
+        program: &'a Program,
+    ) -> Result<&'a [u32], DecodeError> {
+        let ids = slice_range(&program.register_type_ids, self.register_types)?;
+        if ids.len() != self.reg_count as usize {
+            return Err(DecodeError::OutOfBounds);
+        }
+        Ok(ids)
+    }
+
+    // Only for a Program whose metadata has already been validated and is still borrowed.
+    pub(crate) fn verified_register_types<'a>(&self, program: &'a Program) -> RegisterTypes<'a> {
+        RegisterTypes {
+            ids: self
+                .register_type_ids(program)
+                .expect("verified register kind range"),
+            types: &program.value_types,
+        }
+    }
+
+    /// Borrows this function's declared register kinds, including the effect token at r0.
+    pub fn register_types<'a>(
+        &self,
+        program: &'a Program,
+    ) -> Result<RegisterTypes<'a>, DecodeError> {
+        let ids = self.register_type_ids(program)?;
+        if ids
+            .iter()
+            .any(|&id| id as usize >= program.value_types.len())
+        {
+            return Err(DecodeError::OutOfBounds);
+        }
+        Ok(RegisterTypes {
+            ids,
+            types: &program.value_types,
+        })
+    }
+
     /// Returns this function's argument types slice from `program`.
     #[inline]
     pub fn arg_types<'a>(&self, program: &'a Program) -> Result<&'a [ValueType], DecodeError> {
@@ -204,6 +267,69 @@ impl Function {
     }
 }
 
+/// Borrowed declared register kinds in virtual-register order.
+///
+/// The view reads the shared type pool without expanding it. Equality, hashing and debug output
+/// describe these registers only, independent of unrelated entries in the backing program.
+#[derive(Clone, Copy)]
+pub struct RegisterTypes<'a> {
+    ids: &'a [u32],
+    types: &'a [ValueType],
+}
+
+impl<'a> RegisterTypes<'a> {
+    /// Number of declared registers, including r0.
+    #[must_use]
+    pub fn len(self) -> usize {
+        self.ids.len()
+    }
+
+    /// Whether there are no declarations.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Returns the declared kind of a register, or `None` when it is out of range.
+    #[must_use]
+    pub fn get(self, reg: u32) -> Option<ValueType> {
+        self.ids
+            .get(reg as usize)
+            .map(|&id| self.types[id as usize])
+    }
+
+    /// Iterates kinds in virtual-register order.
+    pub fn iter(self) -> impl DoubleEndedIterator<Item = ValueType> + ExactSizeIterator + 'a {
+        self.ids.iter().map(move |&id| self.types[id as usize])
+    }
+}
+
+impl core::fmt::Debug for RegisterTypes<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+impl PartialEq for RegisterTypes<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+impl Eq for RegisterTypes<'_> {}
+impl core::hash::Hash for RegisterTypes<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&self.len(), state);
+        for ty in self.iter() {
+            core::hash::Hash::hash(&ty, state);
+        }
+    }
+}
+
+fn slice_range<T>(data: &[T], range: ByteRange) -> Result<&[T], DecodeError> {
+    let end = range.end()? as usize;
+    data.get(range.offset as usize..end)
+        .ok_or(DecodeError::OutOfBounds)
+}
+
 /// An input function definition used to construct a [`Program`] with packed arenas.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionDef {
@@ -211,8 +337,8 @@ pub struct FunctionDef {
     pub arg_types: Vec<ValueType>,
     /// Return types.
     pub ret_types: Vec<ValueType>,
-    /// Total virtual registers used by the function.
-    pub reg_count: u32,
+    /// Declared kind of every register, including r0 (`Unit`) and the argument prefix.
+    pub register_types: Vec<ValueType>,
     /// Raw bytecode stream.
     pub bytecode: Vec<u8>,
     /// Span mapping table entries.
@@ -249,8 +375,11 @@ pub struct Program {
     pub host_sigs: Vec<HostSigEntry>,
     /// Type table (struct layouts and well-known ids).
     pub types: TypeTable,
-    /// Packed value-type arena for function/host/call signatures.
+    /// Packed value-type arena for signatures and shared register kinds.
     pub value_types: Vec<ValueType>,
+    /// Packed register kind IDs, indexing [`Self::value_types`].
+    /// Each function owns a range in register order; equal kinds share a type entry.
+    pub register_type_ids: Vec<u32>,
     /// Packed optional value-name arena for function signatures.
     ///
     /// Entries are symbol table indices (so `0` means “no name”). Function signatures store
@@ -357,8 +486,8 @@ pub struct ElemTypeId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HostTypeId(pub u64);
 
-/// A value type used in signatures and aggregate layouts.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// A value kind used in signatures, register declarations and aggregate layouts.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
     /// `()`.
     Unit,
@@ -594,13 +723,17 @@ impl Program {
     ///
     /// This keeps the in-memory representation compact (no `Vec<Vec<_>>` or per-function allocations)
     /// while preserving a simple per-function interface via [`FunctionDef`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the total register declaration count exceeds the format's u32 address space.
     #[must_use]
     pub fn new(
         symbols: Vec<HostSymbol>,
         const_pool: Vec<Const>,
         host_sigs: Vec<HostSigDef>,
         types: TypeTableDef,
-        functions: Vec<FunctionDef>,
+        mut functions: Vec<FunctionDef>,
     ) -> Self {
         // Reserve symbol index 0 (encoded as an empty symbol) so `SymbolId` can be non-zero.
         let mut symbol_data: String = String::new();
@@ -680,26 +813,33 @@ impl Program {
             });
         }
 
-        for f in functions {
+        for f in &mut functions {
+            // Drop each consumed payload as it is packed. Keep only declarations for interning
+            // after signature ranges have been assigned in deterministic function order.
+            let source_bytecode = core::mem::take(&mut f.bytecode);
+            let source_spans = core::mem::take(&mut f.spans);
+            let source_args = core::mem::take(&mut f.arg_types);
+            let source_rets = core::mem::take(&mut f.ret_types);
             let byte_off = u32::try_from(bytecode_data.len()).unwrap_or(u32::MAX);
-            bytecode_data.extend_from_slice(&f.bytecode);
-            let byte_len = u32::try_from(f.bytecode.len()).unwrap_or(u32::MAX);
+            bytecode_data.extend_from_slice(&source_bytecode);
+            let byte_len = u32::try_from(source_bytecode.len()).unwrap_or(u32::MAX);
 
             let span_off = u32::try_from(spans.len()).unwrap_or(u32::MAX);
-            spans.extend_from_slice(&f.spans);
-            let span_len = u32::try_from(f.spans.len()).unwrap_or(u32::MAX);
+            spans.extend_from_slice(&source_spans);
+            let span_len = u32::try_from(source_spans.len()).unwrap_or(u32::MAX);
 
             let arg_off = u32::try_from(value_types.len()).unwrap_or(u32::MAX);
-            value_types.extend_from_slice(&f.arg_types);
-            let arg_len = u32::try_from(f.arg_types.len()).unwrap_or(u32::MAX);
+            value_types.extend_from_slice(&source_args);
+            let arg_len = u32::try_from(source_args.len()).unwrap_or(u32::MAX);
             let ret_off = u32::try_from(value_types.len()).unwrap_or(u32::MAX);
-            value_types.extend_from_slice(&f.ret_types);
-            let ret_len = u32::try_from(f.ret_types.len()).unwrap_or(u32::MAX);
+            value_types.extend_from_slice(&source_rets);
+            let ret_len = u32::try_from(source_rets.len()).unwrap_or(u32::MAX);
 
             packed_functions.push(Function {
-                arg_count: u32::try_from(f.arg_types.len()).unwrap_or(u32::MAX),
-                ret_count: u32::try_from(f.ret_types.len()).unwrap_or(u32::MAX),
-                reg_count: f.reg_count,
+                arg_count: u32::try_from(source_args.len()).unwrap_or(u32::MAX),
+                ret_count: u32::try_from(source_rets.len()).unwrap_or(u32::MAX),
+                reg_count: u32::try_from(f.register_types.len()).unwrap_or(u32::MAX),
+                register_types: ByteRange { offset: 0, len: 0 },
                 bytecode: ByteRange {
                     offset: byte_off,
                     len: byte_len,
@@ -721,6 +861,25 @@ impl Program {
             });
         }
 
+        let register_count = functions
+            .iter()
+            .try_fold(0_usize, |count, function| {
+                count
+                    .checked_add(function.register_types.len())
+                    .filter(|&total| u32::try_from(total).is_ok())
+            })
+            .expect("register declaration table exceeds u32 addressing");
+        let mut register_type_ids = Vec::with_capacity(register_count);
+        let mut interner = TypeInterner::new(&value_types);
+        for (function, definition) in packed_functions.iter_mut().zip(functions) {
+            function.register_types.offset =
+                u32::try_from(register_type_ids.len()).unwrap_or(u32::MAX);
+            function.register_types.len = function.reg_count;
+            for &ty in &definition.register_types {
+                register_type_ids.push(interner.intern(&mut value_types, ty).unwrap_or(u32::MAX));
+            }
+        }
+
         Self {
             symbols: packed_symbols,
             symbol_data,
@@ -731,6 +890,7 @@ impl Program {
             host_sigs: packed_host_sigs,
             types,
             value_types,
+            register_type_ids,
             value_name_ids: Vec::new(),
             bytecode_data,
             spans,
@@ -955,7 +1115,13 @@ impl Program {
         self.spans.get(start..end).ok_or(DecodeError::OutOfBounds)
     }
 
-    /// Encodes this program into the draft v1 container format.
+    /// Encodes this program into the current draft container format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a function's register declaration range, count or type ID is malformed.
+    /// Verify manually edited programs before encoding them. In particular, required declarations
+    /// are never silently omitted from the output.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         // v1 draft container format:
@@ -1052,6 +1218,12 @@ impl Program {
                 payload.write_uleb128_u32(f.arg_count);
                 payload.write_uleb128_u32(f.ret_count);
                 payload.write_uleb128_u32(f.reg_count);
+                let types = f
+                    .register_types(self)
+                    .expect("cannot encode malformed register declarations");
+                for ty in types.iter() {
+                    encode_value_type(&mut payload, ty);
+                }
                 payload.write_uleb128_u64(i as u64); // bytecode index
                 payload.write_uleb128_u64(i as u64); // span table index
             }
@@ -1337,7 +1509,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut call_sig_defs: Vec<DecodedCallSig> = Vec::new();
     let mut host_sig_defs: Vec<(SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut types: TypeTableDef = TypeTableDef::default();
-    let mut function_table: Vec<FunctionTableEntry> = Vec::new();
+    let mut function_table: Vec<FunctionTableEntry<'_>> = Vec::new();
     let mut function_sig_defs: Vec<DecodedFunctionSig> = Vec::new();
     let mut bytecode_data = Vec::new();
     let mut bytecode_ranges = Vec::new();
@@ -1520,7 +1692,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         return Err(DecodeError::OutOfBounds);
     }
     for (entry, (arg_types, ret_types, arg_names, ret_names)) in
-        function_table.into_iter().zip(function_sig_defs)
+        function_table.iter().zip(function_sig_defs)
     {
         let bc = *bytecode_ranges
             .get(usize::try_from(entry.bytecode_index).map_err(|_| DecodeError::OutOfBounds)?)
@@ -1566,6 +1738,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
             arg_count: entry.arg_count,
             ret_count: entry.ret_count,
             reg_count: entry.reg_count,
+            register_types: ByteRange { offset: 0, len: 0 },
             bytecode: bc,
             spans: sp,
             arg_types: ByteRange {
@@ -1579,6 +1752,28 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
             arg_name_ids: arg_name_range,
             ret_name_ids: ret_name_range,
         });
+    }
+
+    // Counts have already been bounded by their encoded payloads while scanning the table.
+    let register_count = function_table
+        .iter()
+        .try_fold(0_usize, |count, function| {
+            count
+                .checked_add(function.reg_count as usize)
+                .filter(|&total| u32::try_from(total).is_ok())
+        })
+        .ok_or(DecodeError::OutOfBounds)?;
+    let mut register_type_ids = Vec::with_capacity(register_count);
+    let mut interner = TypeInterner::new(&value_types);
+    for (function, entry) in functions.iter_mut().zip(&function_table) {
+        function.register_types.offset =
+            u32::try_from(register_type_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        function.register_types.len = entry.reg_count;
+        let mut reader = Reader::new(entry.register_types);
+        for _ in 0..entry.reg_count {
+            let ty = decode_value_type(&mut reader)?;
+            register_type_ids.push(interner.intern(&mut value_types, ty)?);
+        }
     }
 
     // Call sigs packed last, matching the builder (see the note above).
@@ -1673,6 +1868,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         host_sigs,
         types: TypeTable::pack(types),
         value_types,
+        register_type_ids,
         value_name_ids,
         bytecode_data,
         spans,
@@ -1834,6 +2030,66 @@ impl ValueTypeTag {
             11 => Ok(Self::Closure),
             _ => Err(DecodeError::OutOfBounds),
         }
+    }
+}
+
+// Temporary construction index. Frozen programs retain only IDs and the type pool.
+struct TypeInterner {
+    scalar: [Option<u32>; 12],
+    objects: BTreeMap<u64, u32>,
+}
+impl TypeInterner {
+    fn new(types: &[ValueType]) -> Self {
+        let mut index = Self {
+            scalar: [None; 12],
+            objects: BTreeMap::new(),
+        };
+        for (id, &ty) in types.iter().enumerate() {
+            let id = u32::try_from(id).unwrap_or(u32::MAX);
+            match ty {
+                ValueType::Obj(host) => {
+                    index.objects.entry(host.0).or_insert(id);
+                }
+                _ => {
+                    index.scalar[Self::tag(ty)].get_or_insert(id);
+                }
+            }
+        }
+        index
+    }
+    fn tag(ty: ValueType) -> usize {
+        match ty {
+            ValueType::Unit => 0,
+            ValueType::Bool => 1,
+            ValueType::I64 => 2,
+            ValueType::U64 => 3,
+            ValueType::F64 => 4,
+            ValueType::Decimal => 5,
+            ValueType::Bytes => 6,
+            ValueType::Str => 7,
+            ValueType::Obj(_) => 8,
+            ValueType::Agg => 9,
+            ValueType::Func => 10,
+            ValueType::Closure => 11,
+        }
+    }
+    fn intern(&mut self, types: &mut Vec<ValueType>, ty: ValueType) -> Result<u32, DecodeError> {
+        let slot = match ty {
+            ValueType::Obj(host) => self.objects.get(&host.0).copied(),
+            _ => self.scalar[Self::tag(ty)],
+        };
+        if let Some(id) = slot {
+            return Ok(id);
+        }
+        let id = u32::try_from(types.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        types.push(ty);
+        match ty {
+            ValueType::Obj(host) => {
+                self.objects.insert(host.0, id);
+            }
+            _ => self.scalar[Self::tag(ty)] = Some(id),
+        }
+        Ok(id)
     }
 }
 
@@ -2124,15 +2380,16 @@ fn decode_function_arg_agg_shapes(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FunctionTableEntry {
+struct FunctionTableEntry<'a> {
     arg_count: u32,
     ret_count: u32,
     reg_count: u32,
     bytecode_index: u64,
     span_index: u64,
+    register_types: &'a [u8],
 }
 
-fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, DecodeError> {
+fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry<'_>>, DecodeError> {
     let mut r = Reader::new(payload);
     let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
@@ -2140,6 +2397,15 @@ fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, Deco
         let arg_count = r.read_uleb128_u32()?;
         let ret_count = r.read_uleb128_u32()?;
         let reg_count = r.read_uleb128_u32()?;
+        // Every kind requires at least one byte. Reject hostile counts before iterating.
+        if reg_count as usize > payload.len().saturating_sub(r.offset()) {
+            return Err(DecodeError::OutOfBounds);
+        }
+        let start = r.offset();
+        for _ in 0..reg_count {
+            decode_value_type(&mut r)?;
+        }
+        let register_types = &payload[start..r.offset()];
         let bytecode_index = r.read_uleb128_u64()?;
         let span_index = r.read_uleb128_u64()?;
         out.push(FunctionTableEntry {
@@ -2148,7 +2414,11 @@ fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, Deco
             reg_count,
             bytecode_index,
             span_index,
+            register_types,
         });
+    }
+    if r.offset() != payload.len() {
+        return Err(DecodeError::OutOfBounds);
     }
     Ok(out)
 }
@@ -2259,7 +2529,7 @@ mod tests {
                 .map(|i| FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![],
-                    reg_count: 1,
+                    register_types: vec![ValueType::Unit],
                     bytecode: vec![i; usize::from(i)],
                     spans: if i == 0 {
                         vec![]
@@ -2288,6 +2558,7 @@ mod tests {
             table.write_uleb128_u32(0); // arguments
             table.write_uleb128_u32(0); // returns
             table.write_uleb128_u32(1); // registers
+            encode_value_type(&mut table, ValueType::Unit);
             table.write_uleb128_u64(bytecode);
             table.write_uleb128_u64(spans);
         }
@@ -2347,7 +2618,16 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![ValueType::I64, ValueType::Bool],
                     ret_types: vec![ValueType::U64],
-                    reg_count: 8,
+                    register_types: vec![
+                        ValueType::Unit,
+                        ValueType::I64,
+                        ValueType::Bool,
+                        ValueType::Unit,
+                        ValueType::Unit,
+                        ValueType::Unit,
+                        ValueType::Unit,
+                        ValueType::Unit,
+                    ],
                     bytecode: vec![1, 2, 3],
                     spans: vec![SpanEntry {
                         pc_delta: 0,
@@ -2357,7 +2637,7 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![],
-                    reg_count: 1,
+                    register_types: vec![ValueType::Unit],
                     bytecode: vec![0xff; 32],
                     spans: vec![SpanEntry {
                         pc_delta: 5,
@@ -2388,7 +2668,12 @@ mod tests {
             vec![FunctionDef {
                 arg_types: vec![ValueType::Agg, ValueType::Agg, ValueType::Agg],
                 ret_types: vec![],
-                reg_count: 4,
+                register_types: vec![
+                    ValueType::Unit,
+                    ValueType::Agg,
+                    ValueType::Agg,
+                    ValueType::Agg,
+                ],
                 bytecode: vec![],
                 spans: vec![],
             }],
@@ -2446,7 +2731,7 @@ mod tests {
             vec![FunctionDef {
                 arg_types: vec![ValueType::U64],
                 ret_types: vec![ValueType::U64],
-                reg_count: 2,
+                register_types: vec![ValueType::Unit, ValueType::U64],
                 bytecode: vec![1, 2, 3],
                 spans: vec![SpanEntry {
                     pc_delta: 0,
@@ -2632,7 +2917,7 @@ mod tests {
             vec![FunctionDef {
                 arg_types: vec![],
                 ret_types: vec![],
-                reg_count: 1,
+                register_types: vec![ValueType::Unit],
                 bytecode: vec![0x51, 0x00, 0x00], // ret r0, []
                 spans: vec![],
             }],

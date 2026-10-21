@@ -116,7 +116,6 @@ fn operand_kind_rust(operand: &str) -> Result<&'static str> {
     Ok(match operand {
         "reg" => "OperandKind::Reg",
         "reg_list" => "OperandKind::RegList",
-        "value_type_list" => "OperandKind::ValueTypeList",
         "pc" => "OperandKind::Pc",
 
         "imm_bool" => "OperandKind::ImmBool",
@@ -157,7 +156,6 @@ fn operand_role_rust(role: &str) -> Result<String> {
 fn operand_encoding_rust(enc: &str) -> Result<&'static str> {
     Ok(match enc {
         "reg_u32_uleb" => "OperandEncoding::RegU32Uleb",
-        "value_type_list" => "OperandEncoding::ValueTypeList",
         "reg_list_u32_uleb_count_then_regs" => "OperandEncoding::RegListU32UlebCountThenRegs",
 
         "bool_u8" => "OperandEncoding::BoolU8",
@@ -213,7 +211,6 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    Reg,\n");
     out.push_str("    /// A list of virtual registers.\n");
     out.push_str("    RegList,\n");
-    out.push_str("    /// A list of value type contracts.\n    ValueTypeList,\n");
     out.push_str("    /// A bytecode PC (byte offset).\n");
     out.push_str("    Pc,\n");
     out.push_str("    /// An immediate `bool`.\n");
@@ -282,7 +279,6 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("#[allow(missing_docs, reason = \"generated\")]\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("pub enum OperandEncoding {\n");
-    out.push_str("    /// Count followed by encoded value types.\n    ValueTypeList,\n");
     out.push_str("    RegU32Uleb,\n");
     out.push_str("    RegListU32UlebCountThenRegs,\n");
     out.push_str("    BoolU8,\n");
@@ -710,12 +706,6 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                     ));
                 }
 
-                "value_type_list" => {
-                    if operand.encoding != "value_type_list" {
-                        bail!("unsupported type list encoding");
-                    }
-                    out.push_str(&format!("            let {field} = crate::codec_primitives::read_value_type_list(r)?;\n"));
-                }
                 "reg_list" => {
                     if operand.encoding.as_str() != "reg_list_u32_uleb_count_then_regs" {
                         bail!(
@@ -979,12 +969,6 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                     ));
                 }
 
-                "value_type_list" => {
-                    if operand.encoding != "value_type_list" {
-                        bail!("unsupported type list encoding");
-                    }
-                    out.push_str(&format!("            crate::codec_primitives::write_value_type_list(out, {field}).map_err(|_| EncodeError::OutOfBounds)?;\n"));
-                }
                 "reg_list" => {
                     if operand.encoding.as_str() != "reg_list_u32_uleb_count_then_regs" {
                         bail!(

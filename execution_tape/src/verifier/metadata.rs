@@ -19,6 +19,8 @@ pub enum MetadataTable {
     FieldNames,
     /// Struct definitions and their field ranges/counts.
     Structs,
+    /// Required function register kind ranges and type IDs.
+    RegisterTypes,
     /// Packed optional function value names.
     ValueNames,
     /// Optional program name (entry zero).
@@ -108,6 +110,11 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
             return Err(invalid(T::Structs, index, DecodeError::OutOfBounds));
         }
     }
+    for (index, &id) in program.register_type_ids.iter().enumerate() {
+        if id as usize >= program.value_types.len() {
+            return Err(invalid(T::RegisterTypes, index, DecodeError::OutOfBounds));
+        }
+    }
     let valid_name = |id: u32| id == 0 || (id as usize) < program.symbols.len();
     for (index, &name) in program.value_name_ids.iter().enumerate() {
         if !valid_name(name) {
@@ -135,6 +142,8 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         }
     }
     for (index, func) in program.functions.iter().enumerate() {
+        func.register_type_ids(program)
+            .map_err(|error| invalid(T::RegisterTypes, index, error))?;
         for (range, count, table) in [
             (func.arg_name_ids, func.arg_count, T::ArgumentNames),
             (func.ret_name_ids, func.ret_count, T::ReturnNames),
@@ -279,6 +288,7 @@ mod tests {
     fn function_name_ranges_have_signature_arity() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.ret(0, &[1]);
         pb.push_function_checked(
             a,

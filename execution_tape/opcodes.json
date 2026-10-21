@@ -64,12 +64,6 @@
           "encoding": "reg_list_u32_uleb_count_then_regs",
           "field": "params",
           "access": "write"
-        },
-        {
-          "kind": "value_type_list",
-          "role": "type",
-          "encoding": "value_type_list",
-          "field": "types"
         }
       ]
     },

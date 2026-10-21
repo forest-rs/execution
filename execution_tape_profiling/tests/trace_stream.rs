@@ -97,10 +97,17 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     });
 
     let mut a_callee = Asm::new();
+    a_callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     a_callee.ret(0, &[1]);
     pb.define_function(callee, a_callee).unwrap();
 
     let mut a_main = Asm::new();
+    a_main.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a_main.const_i64(1, 42);
     a_main.call(0, callee, 0, &[1], &[2]);
     a_main.host_call_sig_id(0, host_sig_id, 0, &[2], &[3]);

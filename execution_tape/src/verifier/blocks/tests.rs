@@ -55,11 +55,13 @@ fn parallel_edges_execute_every_three_register_cycle_and_fanout() {
         for b in 1..=3 {
             for c in 1..=3 {
                 let mut asm = Asm::new();
-                let join = asm.block(&[
-                    (1, ValueType::I64),
-                    (2, ValueType::I64),
-                    (3, ValueType::I64),
+                asm.set_register_types(vec![
+                    ValueType::Unit,
+                    ValueType::I64,
+                    ValueType::I64,
+                    ValueType::I64,
                 ]);
+                let join = asm.block(&[1, 2, 3]);
                 asm.jmp(join.with_args(&[a, b, c]));
                 asm.place(join).unwrap();
                 asm.ret(0, &[1, 2, 3]);
@@ -82,7 +84,13 @@ fn parallel_edges_execute_every_three_register_cycle_and_fanout() {
 #[test]
 fn equal_target_arms_keep_distinct_arguments_and_loop_backedges_work() {
     let mut asm = Asm::new();
-    let join = asm.block(&[(2, ValueType::I64), (3, ValueType::I64)]);
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
+    let join = asm.block(&[2, 3]);
     asm.br(1, join.with_args(&[2, 3]), join.with_args(&[3, 2]));
     asm.place(join).unwrap();
     asm.ret(0, &[2, 3]);
@@ -102,9 +110,20 @@ fn equal_target_arms_keep_distinct_arguments_and_loop_backedges_work() {
         );
     }
     let mut asm = Asm::new();
-    let head = asm.block(&[(2, ValueType::I64), (3, ValueType::I64)]);
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
+    let head = asm.block(&[2, 3]);
     let body = asm.label();
-    let done = asm.block(&[(8, ValueType::I64)]);
+    let done = asm.block(&[8]);
     asm.const_i64(4, 0)
         .const_i64(5, 1)
         .jmp(head.with_args(&[1, 4]));
@@ -139,12 +158,35 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
         ValueType::Func,
     ];
     let mut asm = Asm::new();
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Unit,
+        ValueType::Unit,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::Decimal,
+        ValueType::Decimal,
+        ValueType::Bytes,
+        ValueType::Bytes,
+        ValueType::Str,
+        ValueType::Str,
+        ValueType::Obj(HostTypeId(42)),
+        ValueType::Obj(HostTypeId(42)),
+        ValueType::Func,
+        ValueType::Func,
+    ]);
     // One swap cycle in each bank, with mixed classes interleaved in the declaration.
     let args: Vec<_> = types.iter().flat_map(|&ty| [ty, ty]).collect();
     let params: Vec<_> = args
         .iter()
         .enumerate()
-        .map(|(i, &ty)| (u32::try_from(i).unwrap() + 1, ty))
+        .map(|(i, _)| u32::try_from(i).unwrap() + 1)
         .collect();
     let join = asm.block(&params);
     let sources: Vec<_> = (1..=u32::try_from(args.len()).unwrap())
@@ -210,12 +252,16 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
 #[test]
 fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
     let mut asm = Asm::new();
-    let join = asm.block(&[
-        (2, ValueType::Agg),
-        (3, ValueType::Agg),
-        (5, ValueType::Closure),
-        (6, ValueType::Closure),
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::Agg,
+        ValueType::Func,
+        ValueType::Closure,
+        ValueType::Closure,
     ]);
+    let join = asm.block(&[2, 3, 5, 6]);
     asm.const_i64(1, 7)
         .tuple_new(2, &[1])
         .tuple_new(3, &[])
@@ -256,7 +302,17 @@ fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
 fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them() {
     for mode in 0..3 {
         let mut asm = Asm::new();
-        let join = asm.block(&[(5, ValueType::Agg)]);
+        asm.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Bool,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::Agg,
+            ValueType::Agg,
+            ValueType::Agg,
+            ValueType::I64,
+        ]);
+        let join = asm.block(&[5]);
         asm.const_i64(2, 17).tuple_new(3, &[2]);
         if mode == 0 {
             asm.tuple_new(4, &[2]);
@@ -268,8 +324,8 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
         asm.tuple_new(5, &[2]);
         asm.br(1, join.with_args(&[3]), join.with_args(&[4]));
         asm.place(join).unwrap();
-        asm.tuple_get(7, 5, 0);
         let use_pc = asm.pc();
+        asm.tuple_get(7, 5, 0);
         asm.ret(0, &[7]);
         let p = program(
             asm,
@@ -289,18 +345,25 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
         } else {
             assert_eq!(
                 result.unwrap_err(),
-                VerifyError::UnknownTypeAtUse {
+                VerifyError::UnknownAggregateShape {
                     func: 0,
                     pc: use_pc,
-                    reg: 7,
-                    expected: ValueType::I64
+                    reg: 5
                 }
             );
         }
     }
     // Copying a source fact into a parameter must leave the source fact usable too.
     let mut asm = Asm::new();
-    let join = asm.block(&[(3, ValueType::Agg)]);
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::Agg,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
+    let join = asm.block(&[3]);
     asm.const_i64(1, 11)
         .tuple_new(2, &[1])
         .jmp(join.with_args(&[2]));
@@ -316,7 +379,14 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
 fn edge_errors_identify_the_source_arm_target_and_argument() {
     for cond in [false, true] {
         let mut asm = Asm::new();
-        let join = asm.block(&[(4, ValueType::I64)]);
+        asm.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Bool,
+            ValueType::I64,
+            ValueType::Bool,
+            ValueType::I64,
+        ]);
+        let join = asm.block(&[4]);
         asm.const_bool(1, cond).const_i64(2, 7).const_bool(3, true);
         let pc = asm.pc();
         asm.br(1, join.with_args(&[2]), join.with_args(&[3]));
@@ -344,7 +414,8 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
         );
     }
     let mut asm = Asm::new();
-    let join = asm.block(&[(1, ValueType::I64)]);
+    asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
+    let join = asm.block(&[1]);
     asm.jmp(join);
     let target = asm.pc();
     asm.place(join).unwrap();
@@ -370,11 +441,9 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
 
 #[test]
 fn declarations_reject_invalid_parameters_and_bypassed_headers() {
-    for params in [
-        vec![(0, ValueType::Unit)],
-        vec![(1, ValueType::I64), (1, ValueType::I64)],
-    ] {
+    for params in [vec![0], vec![1, 1]] {
         let mut asm = Asm::new();
+        asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         let join = asm.block(&params);
         asm.jmp(join.with_args(&[1, 1][..params.len()]));
         let pc = asm.pc();
@@ -385,7 +454,8 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
         );
     }
     let mut asm = Asm::new();
-    let entry = asm.block(&[(1, ValueType::I64)]);
+    asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
+    let entry = asm.block(&[1]);
     asm.place(entry).unwrap();
     asm.ret(0, &[]);
     assert!(matches!(
@@ -396,7 +466,8 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
         })
     ));
     let mut asm = Asm::new();
-    let join = asm.block(&[(2, ValueType::I64)]);
+    asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
+    let join = asm.block(&[2]);
     let interior = asm.label();
     asm.jmp(interior);
     let header = asm.pc();
@@ -419,7 +490,8 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
         }
     );
     let mut asm = Asm::new();
-    let join = asm.block(&[(2, ValueType::I64)]);
+    asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
+    let join = asm.block(&[2]);
     asm.const_i64(1, 7);
     asm.place(join).unwrap();
     asm.ret(0, &[2]);
@@ -463,8 +535,9 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
         }
     }
     let mut asm = Asm::new();
+    asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     let entry = asm.block(&[]);
-    let join = asm.block(&[(1, ValueType::I64), (2, ValueType::I64)]);
+    let join = asm.block(&[1, 2]);
     asm.place(entry).unwrap();
     let branch = asm.pc();
     asm.span(SpanId(core::num::NonZeroU64::new(11).unwrap()))
@@ -547,7 +620,7 @@ fn wide_reverse_chains_and_many_cycles_prepare_and_execute() {
     const WIDTH: u32 = 4096;
     for cycle in [false, true] {
         let types = vec![ValueType::I64; WIDTH as usize + 1];
-        let mut params: Vec<_> = (1..=WIDTH).map(|reg| (reg, ValueType::I64)).collect();
+        let mut params: Vec<_> = (1..=WIDTH).collect();
         let mut sources: Vec<_> = (1..=WIDTH)
             .map(|reg| {
                 if cycle {
@@ -561,6 +634,9 @@ fn wide_reverse_chains_and_many_cycles_prepare_and_execute() {
         params.reverse();
         sources.reverse();
         let mut asm = Asm::new();
+        let mut register_types = vec![ValueType::I64; 4098];
+        register_types[0] = ValueType::Unit;
+        asm.set_register_types(register_types);
         let join = asm.block(&params);
         asm.jmp(join.with_args(&sources));
         asm.place(join).unwrap();
@@ -588,25 +664,18 @@ fn wide_reverse_chains_and_many_cycles_prepare_and_execute() {
 fn malformed_headers_lists_and_splits_fail_without_panics() {
     use crate::codec::{Operand, decode_instruction, encode_instruction};
     let mut header = Vec::new();
-    encode_instruction(
-        Opcode::Block,
-        &[
-            Operand::RegList(&[1]),
-            Operand::ValueTypeList(&[ValueType::Obj(crate::program::HostTypeId(u64::MAX))]),
-        ],
-        &mut header,
-    )
-    .unwrap();
+    encode_instruction(Opcode::Block, &[Operand::RegList(&[1])], &mut header).unwrap();
     assert!(decode_instruction(&header).is_ok());
     for end in 0..header.len() {
         assert!(decode_instruction(&header[..end]).is_err());
     }
-    assert!(decode_instruction(&[Opcode::Block as u8, 0, 0xff, 0xff, 0xff, 0xff, 0x0f]).is_err());
-    assert!(decode_instruction(&[Opcode::Block as u8, 0, 1, 0xff]).is_err());
+    assert!(decode_instruction(&[Opcode::Block as u8, 0xff, 0xff, 0xff, 0xff, 0x0f]).is_err());
+    assert!(decode_instruction(&[Opcode::Block as u8, 1]).is_err());
     for split in [0, 1] {
         let mut p = program(
             {
                 let mut asm = Asm::new();
+                asm.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
                 asm.ret(0, &[]);
                 asm
             },
@@ -644,35 +713,6 @@ fn malformed_headers_lists_and_splits_fail_without_panics() {
             ));
         }
     }
-    let mut bytes = Vec::new();
-    encode_instruction(
-        Opcode::Block,
-        &[Operand::RegList(&[1]), Operand::ValueTypeList(&[])],
-        &mut bytes,
-    )
-    .unwrap();
-    let mut p = program(
-        {
-            let mut asm = Asm::new();
-            asm.ret(0, &[]);
-            asm
-        },
-        &[ValueType::I64],
-        &[],
-    );
-    p.functions[0].bytecode.offset = 0;
-    p.functions[0].bytecode.len = u32::try_from(bytes.len()).unwrap();
-    p.bytecode_data = bytes;
-    assert!(matches!(
-        verify_program_owned(p, &VerifyConfig::default()),
-        Err(VerifyError::BlockDeclaration {
-            error: BlockDeclarationError::LengthMismatch {
-                registers: 1,
-                types: 0
-            },
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -698,6 +738,7 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
     for indirect in [false, true] {
         let mut builder = ProgramBuilder::new();
         let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         let entry = body.block(&[]);
         body.span(SpanId(core::num::NonZeroU64::new(11).unwrap()))
             .place(entry)
@@ -715,6 +756,12 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
             )
             .unwrap();
         let mut caller = Asm::new();
+        caller.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::Func,
+            ValueType::I64,
+        ]);
         if indirect {
             let sig = builder.call_sig(&[ValueType::I64], &[ValueType::I64]);
             caller
@@ -752,7 +799,16 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
 #[test]
 fn aggregate_shape_cycles_read_the_original_predecessor_facts() {
     let mut asm = Asm::new();
-    let join = asm.block(&[(2, ValueType::Agg), (3, ValueType::Agg)]);
+    asm.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Agg,
+        ValueType::Agg,
+        ValueType::Bool,
+        ValueType::Bool,
+        ValueType::I64,
+    ]);
+    let join = asm.block(&[2, 3]);
     asm.const_i64(1, 17)
         .tuple_new(2, &[1])
         .const_bool(4, true)
@@ -769,7 +825,8 @@ fn aggregate_shape_cycles_read_the_original_predecessor_facts() {
 #[test]
 fn uninitialized_edge_arguments_report_the_offending_arm_and_slot() {
     let mut asm = Asm::new();
-    let join = asm.block(&[(2, ValueType::I64)]);
+    asm.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
+    let join = asm.block(&[2]);
     asm.const_bool(1, true);
     let pc = asm.pc();
     asm.br(1, join.with_args(&[2]), join.with_args(&[2]));
