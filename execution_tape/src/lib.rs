@@ -86,7 +86,8 @@
 //! - `vm`: bounded interpreter for verified programs.
 //! - `host`: host-call trait, borrowed argument views, aggregate readers, and access recording
 //!   hooks.
-//! - `trace`: low-overhead tracing events for profiling and diagnostics.
+//! - `trace`: profiling events and opt-in borrowed invocation, host outcome and return-candidate
+//!   values for recording and diagnostics.
 //! - `disasm`: human-readable disassembly for verified programs.
 //!
 //! ## Design Docs

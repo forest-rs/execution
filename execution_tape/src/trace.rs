@@ -7,15 +7,19 @@
 //! The VM only emits events requested by a [`TraceMask`].
 //!
 //! To enable tracing, pass a [`TraceMask`] and [`TraceSink`] to [`Vm::run`].
+//! [`TraceMask::VALUES`] borrows values at invocation, host-call completion and root return.
+//! Combine it with [`TraceMask::RUN`] to observe the final outcome; a return candidate can
+//! still be rejected. The sink owns retention and recording policy.
 
 #[cfg(doc)]
 use crate::vm::Vm;
 
-use crate::host::SigHash;
+use crate::aggregates::AggHeap;
+use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, SymbolId};
-use crate::value::FuncId;
-use crate::vm::TrapInfo;
+use crate::value::{FuncId, Value};
+use crate::vm::{Limits, TrapInfo};
 
 /// A set of trace events requested by a [`TraceSink`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -62,6 +66,12 @@ impl TraceMask {
     /// - [`TraceSink::scope_enter`]
     /// - [`TraceSink::scope_exit`]
     pub const HOST: Self = Self(1 << 3);
+    /// Borrow values at entry, host-call completion and root return.
+    ///
+    /// Enables [`TraceSink::values`] independently of scope/instruction events. Include
+    /// [`Self::RUN`] to learn whether the run eventually succeeds or traps. Values and aggregate
+    /// handles are borrowed only for the callback; the sink chooses what to retain.
+    pub const VALUES: Self = Self(1 << 4);
 
     /// Returns `true` if this mask includes all bits in `other`.
     #[must_use]
@@ -107,6 +117,119 @@ pub struct TraceLocation {
     pub pc: u32,
 }
 
+/// Raw outcome returned by the host, before the VM validates it.
+///
+/// A returned value can still violate the declared ABI or contain a dangling aggregate handle.
+/// The extra fuel charge is observed before debit. A failed call does not charge extra fuel,
+/// and partial writes to its return buffer are discarded.
+#[derive(Copy, Clone, Debug)]
+pub enum HostCallOutcome<'a> {
+    /// The host returned values and an additional fuel charge.
+    Returned {
+        /// Raw host return slots, including any unwritten `Unit` slots.
+        values: &'a [Value],
+        /// Additional fuel requested by the host.
+        extra_fuel: u64,
+    },
+    /// The host returned an owned operation error, borrowed for this callback.
+    Failed(&'a HostError),
+}
+
+/// Borrowed values at an execution boundary, enabled by [`TraceMask::VALUES`].
+///
+/// Aggregate and closure-environment handles belong to the supplied heap. Use its snapshot
+/// operation to retain a valid graph; it can reject dangling handles exposed by these raw events.
+/// No values are copied by the VM to construct an event. Heap identity is stable within a run
+/// until return compaction or trap rollback. Do not interpret a pre-commit handle as the final
+/// returned identity, or reuse a handle map across runs.
+#[derive(Copy, Clone)]
+pub enum ValueEvent<'a> {
+    /// Invocation inputs, before entry, argument, shape or execution-limit validation.
+    Entry {
+        /// Requested entry function, which may be absent.
+        entry: FuncId,
+        /// Supplied value arguments, excluding the effect token.
+        args: &'a [Value],
+        /// Aggregate storage at entry. Its length distinguishes initial from run-created nodes.
+        aggregates: &'a AggHeap,
+        /// Limits governing this invocation.
+        limits: &'a Limits,
+    },
+    /// Raw host outcome after the call, before fuel debit and return validation.
+    ///
+    /// A VM denial before invoking the host produces no such event. A returned value is not
+    /// evidence of successful VM installation; observe the instruction/run outcome separately.
+    HostCall {
+        /// Calling guest instruction.
+        location: TraceLocation,
+        /// Program-local import identity.
+        host_sig: HostSigId,
+        /// Borrowed arguments supplied to the host.
+        args: &'a [ValueRef<'a>],
+        /// Raw host result.
+        outcome: HostCallOutcome<'a>,
+        /// Storage containing argument and result aggregates.
+        aggregates: &'a AggHeap,
+    },
+    /// Newly materialized top-level outputs, before aggregate validation and compaction.
+    ///
+    /// The slice excludes any pre-existing caller output-buffer prefix. It may contain dangling
+    /// handles and can still be rejected. Only [`TraceSink::run_end`] with [`TraceOutcome::Ok`]
+    /// establishes that the candidate survived commit. Nested function returns do not emit it.
+    ReturnCandidate {
+        /// Root return instruction.
+        location: TraceLocation,
+        /// Candidate values in return-signature order.
+        values: &'a [Value],
+        /// Storage before return compaction changes run-local aggregate handles.
+        aggregates: &'a AggHeap,
+    },
+}
+
+impl core::fmt::Debug for ValueEvent<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Inspect selected values without dumping unrelated backing heap contents.
+        match self {
+            Self::Entry {
+                entry,
+                args,
+                aggregates,
+                limits,
+            } => f
+                .debug_struct("Entry")
+                .field("entry", entry)
+                .field("args", args)
+                .field("aggregate_count", &aggregates.len_u32())
+                .field("limits", limits)
+                .finish(),
+            Self::HostCall {
+                location,
+                host_sig,
+                args,
+                outcome,
+                aggregates,
+            } => f
+                .debug_struct("HostCall")
+                .field("location", location)
+                .field("host_sig", host_sig)
+                .field("args", args)
+                .field("outcome", outcome)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::ReturnCandidate {
+                location,
+                values,
+                aggregates,
+            } => f
+                .debug_struct("ReturnCandidate")
+                .field("location", location)
+                .field("values", values)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+        }
+    }
+}
+
 /// A trace sink that can receive VM events.
 pub trait TraceSink {
     /// Returns the recommended event mask for callers to pass to the VM.
@@ -123,6 +246,18 @@ pub trait TraceSink {
     /// - `entry`: entry function id
     /// - `arg_count`: number of value arguments passed (not including the effect token)
     fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {}
+
+    /// Borrows values at an execution boundary without changing execution or retaining data.
+    ///
+    /// Enabled only by [`TraceMask::VALUES`]. `Entry` follows `run_start` when both are enabled;
+    /// the other variants precede their instruction completion. Include [`TraceMask::RUN`] for
+    /// the authoritative final outcome. Missing final completion, including panic unwinding,
+    /// means an incomplete observation, not success or a guest trap.
+    ///
+    /// These events supply recording primitives, not a replay guarantee. A recorder owns program
+    /// identity, exact values, run-local aggregate sharing, host outcomes and its completeness
+    /// policy. Invalid graphs and opaque host state/errors require explicit handling.
+    fn values(&mut self, _program: &Program, _event: ValueEvent<'_>) {}
 
     /// Called before each attempted instruction, before any of its effects.
     ///
