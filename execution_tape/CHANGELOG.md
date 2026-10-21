@@ -26,6 +26,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Validate aggregate argument contracts before entry and direct, indirect, and closure calls.
+  Exhaustive matches on `Trap` must handle `ArgumentShapeMismatch`; `AggHeap::check_shape`
+  exposes allocation-free validation with structured `AggShapeError` diagnostics.
+
 - Reject direct calls whose known aggregate argument shapes contradict the callee contract.
   Exhaustive matches on `VerifyError` must handle `CallArgShapeMismatch`.
 

@@ -12,7 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::program::{ElemTypeId, TypeId};
+use crate::program::{AggShape, ElemTypeId, Program, TypeId, ValueType};
 use crate::value::{AggHandle, AggType, Value};
 
 /// An aggregate heap error.
@@ -46,6 +46,65 @@ impl fmt::Display for AggError {
 }
 
 impl core::error::Error for AggError {}
+
+/// A concrete aggregate does not satisfy a declared argument shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AggShapeError {
+    /// The aggregate handle could not be resolved.
+    Heap(AggError),
+    /// The aggregate kind, nominal type, or tuple length differs.
+    Shape {
+        /// Required aggregate descriptor.
+        expected: AggType,
+        /// Actual aggregate descriptor.
+        actual: AggType,
+    },
+    /// A struct has the wrong number of fields.
+    Arity {
+        /// Required field count.
+        expected: usize,
+        /// Actual field count.
+        actual: usize,
+    },
+    /// An element or field has an incompatible value type.
+    Element {
+        /// Zero-based element or field index.
+        index: usize,
+        /// Required value type.
+        expected: ValueType,
+        /// Actual value type.
+        actual: ValueType,
+    },
+    /// The declared shape references an absent or malformed program schema.
+    InvalidSchema,
+}
+
+impl fmt::Display for AggShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Heap(e) => e.fmt(f),
+            Self::Shape { expected, actual } => write!(f, "expected {expected:?}, got {actual:?}"),
+            Self::Arity { expected, actual } => {
+                write!(f, "expected {expected} fields, got {actual}")
+            }
+            Self::Element {
+                index,
+                expected,
+                actual,
+            } => write!(f, "element {index}: expected {expected:?}, got {actual:?}"),
+            Self::InvalidSchema => write!(f, "invalid aggregate shape schema"),
+        }
+    }
+}
+
+impl core::error::Error for AggShapeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Heap(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// A heap node storing an aggregate value.
 #[derive(Clone, Debug, PartialEq)]
@@ -465,6 +524,85 @@ impl AggHeap {
         self.nodes.clear();
     }
 
+    /// Checks a concrete aggregate against a program's argument shape.
+    ///
+    /// Validates nominal IDs, lengths, and immediate field/element value types. Tuple `None`
+    /// elements impose no type restriction. Nested aggregates are checked as `ValueType::Agg`;
+    /// this does not recursively impose shapes or validate nested handles.
+    /// No allocation is needed on either success or failure.
+    pub fn check_shape(
+        &self,
+        program: &Program,
+        handle: AggHandle,
+        shape: &AggShape,
+    ) -> Result<(), AggShapeError> {
+        let node = self.node(handle).map_err(AggShapeError::Heap)?;
+        let expected = match shape {
+            AggShape::Tuple { elems } => AggType::Tuple {
+                arity: u32::try_from(elems.len()).map_err(|_| AggShapeError::InvalidSchema)?,
+            },
+            AggShape::Struct(id) => AggType::Struct { type_id: *id },
+            AggShape::Array(id) => AggType::Array { elem_type_id: *id },
+        };
+        let actual = self.agg_type(handle).map_err(AggShapeError::Heap)?;
+        if actual != expected {
+            return Err(AggShapeError::Shape { expected, actual });
+        }
+        let values = node.values();
+        let check = |index: usize, expected: ValueType| {
+            let actual = values[index].value_type();
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(AggShapeError::Element {
+                    index,
+                    expected,
+                    actual,
+                })
+            }
+        };
+        match shape {
+            AggShape::Tuple { elems } => {
+                for (index, expected) in elems.iter().enumerate() {
+                    if let Some(expected) = expected {
+                        check(index, *expected)?;
+                    }
+                }
+            }
+            AggShape::Struct(id) => {
+                let st = program
+                    .types
+                    .structs
+                    .get(id.0 as usize)
+                    .ok_or(AggShapeError::InvalidSchema)?;
+                let types = program
+                    .types
+                    .struct_field_types(st)
+                    .map_err(|_| AggShapeError::InvalidSchema)?;
+                if values.len() != types.len() {
+                    return Err(AggShapeError::Arity {
+                        expected: types.len(),
+                        actual: values.len(),
+                    });
+                }
+                for (index, expected) in types.iter().enumerate() {
+                    check(index, *expected)?;
+                }
+            }
+            AggShape::Array(id) => {
+                let expected = *program
+                    .types
+                    .array_elems
+                    .get(id.0 as usize)
+                    .ok_or(AggShapeError::InvalidSchema)?;
+                for index in 0..values.len() {
+                    check(index, expected)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the aggregate type for `handle`.
     pub fn agg_type(&self, handle: AggHandle) -> Result<AggType, AggError> {
         match self.node(handle)? {
@@ -613,6 +751,62 @@ mod tests {
             build(&mut overlay)
         };
         (delta, result)
+    }
+
+    #[test]
+    fn shape_checks_validate_contents_and_nominal_ids() {
+        use crate::program::{StructTypeDef, TypeTableDef};
+        let p = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef {
+                structs: vec![StructTypeDef {
+                    field_names: vec!["x".into()],
+                    field_types: vec![ValueType::I64],
+                }],
+                array_elems: vec![ValueType::I64],
+            },
+            vec![],
+        );
+        let mut heap = AggHeap::new();
+        let st = heap.struct_new(TypeId(0), vec![Value::Bool(true)]);
+        assert!(matches!(
+            heap.check_shape(&p, st, &AggShape::Struct(TypeId(0))),
+            Err(AggShapeError::Element { index: 0, .. })
+        ));
+        let short = heap.struct_new(TypeId(0), vec![]);
+        assert!(matches!(
+            heap.check_shape(&p, short, &AggShape::Struct(TypeId(0))),
+            Err(AggShapeError::Arity { .. })
+        ));
+        let array = heap.array_new(ElemTypeId(0), vec![Value::I64(1), Value::Bool(false)]);
+        assert!(matches!(
+            heap.check_shape(&p, array, &AggShape::Array(ElemTypeId(0))),
+            Err(AggShapeError::Element { index: 1, .. })
+        ));
+        assert!(matches!(
+            heap.check_shape(&p, array, &AggShape::Struct(TypeId(0))),
+            Err(AggShapeError::Shape { .. })
+        ));
+        let wrong_id = heap.array_new(ElemTypeId(1), vec![]);
+        assert!(matches!(
+            heap.check_shape(&p, wrong_id, &AggShape::Array(ElemTypeId(0))),
+            Err(AggShapeError::Shape { .. })
+        ));
+        assert_eq!(
+            heap.check_shape(&p, wrong_id, &AggShape::Array(ElemTypeId(1))),
+            Err(AggShapeError::InvalidSchema)
+        );
+        let tuple = heap.tuple_new(vec![Value::Bool(false)]);
+        assert_eq!(
+            heap.check_shape(&p, tuple, &AggShape::tuple(vec![None])),
+            Ok(())
+        );
+        assert!(matches!(
+            heap.check_shape(&p, tuple, &AggShape::tuple(vec![])),
+            Err(AggShapeError::Shape { .. })
+        ));
     }
 
     #[test]
