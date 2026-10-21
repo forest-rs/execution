@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, AggShapeError};
-use crate::arena::{BytesHandle, StrHandle, ValueArena};
+use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
@@ -995,6 +995,7 @@ impl<H: Host> Vm<H> {
             ctx.frames[frame_index].pc = next_pc;
             ctx.frames[frame_index].instr_ix = next_instr_ix;
 
+            let sources = ValueSources::new(program_ref, args, &self.agg);
             match instr {
                 ExecInstr::Nop => {}
                 ExecInstr::Trap { code } => {
@@ -1195,45 +1196,12 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolBytes { dst, idx } => {
-                    let ConstEntry::Bytes(r) = program_ref
-                        .const_pool
-                        .get(idx.0 as usize)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
-                    else {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
-                    };
-                    let start = r.offset as usize;
-                    let end = r
-                        .end()
-                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
-                        as usize;
-                    let bytes = program_ref
-                        .const_bytes_data
-                        .get(start..end)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
-                        .to_vec();
-                    let h = ctx.arena.alloc_bytes(bytes);
+                    let h = ctx.arena.borrow_bytes(PayloadSource::Constant(*idx));
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolStr { dst, idx } => {
-                    let ConstEntry::Str(r) = program_ref
-                        .const_pool
-                        .get(idx.0 as usize)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
-                    else {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
-                    };
-                    let start = r.offset as usize;
-                    let end = r
-                        .end()
-                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?
-                        as usize;
-                    let s = program_ref
-                        .const_str_data
-                        .get(start..end)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let h = ctx.arena.alloc_str_from_str(s);
+                    let h = ctx.arena.borrow_str(PayloadSource::Constant(*idx));
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -1758,7 +1726,7 @@ impl<H: Host> Vm<H> {
                         outputs.reserve(rets.len());
                         for &r in rets {
                             outputs.push(
-                                ctx.materialize_vreg(base, r)
+                                ctx.materialize_vreg(base, r, sources)
                                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
                         }
@@ -1857,6 +1825,7 @@ impl<H: Host> Vm<H> {
                     for (slot, &a) in call_args_mut.iter_mut().zip(args.iter()) {
                         *slot = read_value_ref_at(
                             &ctx.arena,
+                            sources,
                             &ctx.units,
                             &ctx.bools,
                             &ctx.i64s,
@@ -1945,7 +1914,7 @@ impl<H: Host> Vm<H> {
                     }
                     for (dst, v) in rets.iter().copied().zip(ret_slots.iter_mut()) {
                         let val = core::mem::replace(v, Value::Unit);
-                        ctx.intern_value_to_vreg(base, dst, &val)
+                        ctx.write_owned_value(base, dst, val)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
                     P::host_scope_exit(
@@ -2131,7 +2100,7 @@ impl<H: Host> Vm<H> {
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            ctx.materialize_vreg(base, r)
+                            ctx.materialize_vreg(base, r, sources)
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -2143,10 +2112,18 @@ impl<H: Host> Vm<H> {
                     let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let out = self
                         .agg
-                        .tuple_get(h, *index as usize)
+                        .tuple_get_ref(h, *index as usize)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    ctx.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_borrowed_value(
+                        base,
+                        *dst,
+                        out,
+                        PayloadSource::Aggregate {
+                            handle: h,
+                            index: *index as usize,
+                        },
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2172,7 +2149,7 @@ impl<H: Host> Vm<H> {
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            ctx.materialize_vreg(base, r)
+                            ctx.materialize_vreg(base, r, sources)
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -2189,10 +2166,18 @@ impl<H: Host> Vm<H> {
                     let h = ctx.read_agg_handle(base, AggReg(st.0));
                     let out = self
                         .agg
-                        .struct_get(h, *field_index as usize)
+                        .struct_get_ref(h, *field_index as usize)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    ctx.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_borrowed_value(
+                        base,
+                        *dst,
+                        out,
+                        PayloadSource::Aggregate {
+                            handle: h,
+                            index: *field_index as usize,
+                        },
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2217,7 +2202,7 @@ impl<H: Host> Vm<H> {
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            ctx.materialize_vreg(base, r)
+                            ctx.materialize_vreg(base, r, sources)
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -2241,10 +2226,18 @@ impl<H: Host> Vm<H> {
                     let ix = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
                     let out = self
                         .agg
-                        .array_get(h, ix)
+                        .array_get_ref(h, ix)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    ctx.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_borrowed_value(
+                        base,
+                        *dst,
+                        out,
+                        PayloadSource::Aggregate {
+                            handle: h,
+                            index: ix,
+                        },
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2253,10 +2246,18 @@ impl<H: Host> Vm<H> {
                     let ix = usize::try_from(*index).unwrap_or(usize::MAX);
                     let out = self
                         .agg
-                        .array_get(h, ix)
+                        .array_get_ref(h, ix)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
-                    ctx.intern_value_to_vreg(base, *dst, &out)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_borrowed_value(
+                        base,
+                        *dst,
+                        out,
+                        PayloadSource::Aggregate {
+                            handle: h,
+                            index: ix,
+                        },
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2282,14 +2283,14 @@ impl<H: Host> Vm<H> {
 
                 ExecInstr::BytesLen { dst, bytes } => {
                     let b = ctx
-                        .read_bytes(bytes, base)
+                        .read_bytes(bytes, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_u64(base, *dst, u64::try_from(b.len()).unwrap_or(u64::MAX));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::StrLen { dst, s } => {
                     let s = ctx
-                        .read_str(s, base)
+                        .read_str(s, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_u64(base, *dst, u64::try_from(s.len()).unwrap_or(u64::MAX));
                     ctx.frames[frame_index].pc = next_pc;
@@ -2446,20 +2447,20 @@ impl<H: Host> Vm<H> {
 
                 ExecInstr::BytesEq { dst, a, b } => {
                     let a = ctx
-                        .read_bytes(a, base)
+                        .read_bytes(a, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let b = ctx
-                        .read_bytes(b, base)
+                        .read_bytes(b, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_bool(base, *dst, a == b);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::StrEq { dst, a, b } => {
                     let a = ctx
-                        .read_str(a, base)
+                        .read_str(a, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let b = ctx
-                        .read_str(b, base)
+                        .read_str(b, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_bool(base, *dst, a == b);
                     ctx.frames[frame_index].pc = next_pc;
@@ -2467,10 +2468,10 @@ impl<H: Host> Vm<H> {
                 ExecInstr::BytesConcat { dst, a, b } => {
                     let out = {
                         let a = ctx
-                            .read_bytes(a, base)
+                            .read_bytes(a, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let b = ctx
-                            .read_bytes(b, base)
+                            .read_bytes(b, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let mut out = Vec::with_capacity(a.len() + b.len());
                         out.extend_from_slice(a);
@@ -2484,10 +2485,10 @@ impl<H: Host> Vm<H> {
                 ExecInstr::StrConcat { dst, a, b } => {
                     let out = {
                         let a = ctx
-                            .read_str(a, base)
+                            .read_str(a, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let b = ctx
-                            .read_str(b, base)
+                            .read_str(b, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let mut out = String::with_capacity(a.len() + b.len());
                         out.push_str(a);
@@ -2500,7 +2501,7 @@ impl<H: Host> Vm<H> {
                 }
                 ExecInstr::BytesGet { dst, bytes, index } => {
                     let bytes = ctx
-                        .read_bytes(bytes, base)
+                        .read_bytes(bytes, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let index = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
                     let b = bytes
@@ -2511,7 +2512,7 @@ impl<H: Host> Vm<H> {
                 }
                 ExecInstr::BytesGetImm { dst, bytes, index } => {
                     let bytes = ctx
-                        .read_bytes(bytes, base)
+                        .read_bytes(bytes, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let index = usize::try_from(*index).unwrap_or(usize::MAX);
                     let b = bytes
@@ -2528,7 +2529,7 @@ impl<H: Host> Vm<H> {
                 } => {
                     let out = {
                         let bytes = ctx
-                            .read_bytes(bytes, base)
+                            .read_bytes(bytes, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let start =
                             usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
@@ -2545,7 +2546,7 @@ impl<H: Host> Vm<H> {
                 ExecInstr::StrSlice { dst, s, start, end } => {
                     let out = {
                         let s = ctx
-                            .read_str(s, base)
+                            .read_str(s, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         let start =
                             usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
@@ -2565,7 +2566,7 @@ impl<H: Host> Vm<H> {
                 ExecInstr::StrToBytes { dst, s } => {
                     let out = {
                         let s = ctx
-                            .read_str(s, base)
+                            .read_str(s, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         s.as_bytes().to_vec()
                     };
@@ -2576,7 +2577,7 @@ impl<H: Host> Vm<H> {
                 ExecInstr::BytesToStr { dst, bytes } => {
                     let out = {
                         let bytes = ctx
-                            .read_bytes(bytes, base)
+                            .read_bytes(bytes, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         String::from_utf8(bytes.to_vec())
                             .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidUtf8))?
@@ -2700,13 +2701,58 @@ impl ExecutionContext {
         if args.len() != vf.reg_layout.arg_regs.len() {
             return Err(Trap::InvalidPc);
         }
-        for (dst, v) in vf.reg_layout.arg_regs.iter().copied().zip(args.iter()) {
-            self.intern_value_to_vreg(base, dst, v)?;
+        for (index, (dst, v)) in vf
+            .reg_layout
+            .arg_regs
+            .iter()
+            .copied()
+            .zip(args.iter())
+            .enumerate()
+        {
+            self.write_borrowed_value(base, dst, v, PayloadSource::Argument(index))?;
         }
         Ok(())
     }
 
-    fn intern_value_to_vreg(&mut self, base: RegBase, dst: VReg, v: &Value) -> Result<(), Trap> {
+    fn write_owned_value(&mut self, base: RegBase, dst: VReg, value: Value) -> Result<(), Trap> {
+        match (dst, value) {
+            (VReg::Bytes(reg), Value::Bytes(bytes)) => {
+                let handle = self.arena.alloc_bytes(bytes);
+                self.write_bytes_handle(base, reg, handle);
+                Ok(())
+            }
+            (VReg::Str(reg), Value::Str(s)) => {
+                let handle = self.arena.alloc_str(s);
+                self.write_str_handle(base, reg, handle);
+                Ok(())
+            }
+            (_, value) => self.write_inline_value(base, dst, &value),
+        }
+    }
+
+    fn write_borrowed_value(
+        &mut self,
+        base: RegBase,
+        dst: VReg,
+        value: &Value,
+        source: PayloadSource,
+    ) -> Result<(), Trap> {
+        match (dst, value) {
+            (VReg::Bytes(reg), Value::Bytes(_)) => {
+                let handle = self.arena.borrow_bytes(source);
+                self.write_bytes_handle(base, reg, handle);
+                Ok(())
+            }
+            (VReg::Str(reg), Value::Str(_)) => {
+                let handle = self.arena.borrow_str(source);
+                self.write_str_handle(base, reg, handle);
+                Ok(())
+            }
+            _ => self.write_inline_value(base, dst, value),
+        }
+    }
+
+    fn write_inline_value(&mut self, base: RegBase, dst: VReg, v: &Value) -> Result<(), Trap> {
         match (dst, v) {
             (VReg::Unit(r), Value::Unit) => {
                 self.write_unit(base, r, 0);
@@ -2732,16 +2778,6 @@ impl ExecutionContext {
                 self.write_decimal(base, r, *d);
                 Ok(())
             }
-            (VReg::Bytes(r), Value::Bytes(b)) => {
-                let h = self.arena.alloc_bytes_from_slice(b);
-                self.write_bytes_handle(base, r, h);
-                Ok(())
-            }
-            (VReg::Str(r), Value::Str(s)) => {
-                let h = self.arena.alloc_str_from_str(s.as_str());
-                self.write_str_handle(base, r, h);
-                Ok(())
-            }
             (VReg::Obj(r), Value::Obj(o)) => {
                 self.write_obj(base, r, *o);
                 Ok(())
@@ -2762,7 +2798,12 @@ impl ExecutionContext {
         }
     }
 
-    fn materialize_vreg(&self, base: RegBase, v: VReg) -> Result<Value, Trap> {
+    fn materialize_vreg(
+        &self,
+        base: RegBase,
+        v: VReg,
+        sources: ValueSources<'_>,
+    ) -> Result<Value, Trap> {
         Ok(match v {
             VReg::Unit(_) => Value::Unit,
             VReg::Bool(r) => Value::Bool(self.read_bool(base, r)),
@@ -2772,13 +2813,13 @@ impl ExecutionContext {
             VReg::Decimal(r) => Value::Decimal(self.read_decimal(base, r)),
             VReg::Bytes(r) => Value::Bytes(
                 self.arena
-                    .bytes(self.read_bytes_handle(base, r))
+                    .bytes(self.read_bytes_handle(base, r), sources)
                     .ok_or(Trap::InvalidPc)?
                     .to_vec(),
             ),
             VReg::Str(r) => Value::Str(String::from(
                 self.arena
-                    .str(self.read_str_handle(base, r))
+                    .str(self.read_str_handle(base, r), sources)
                     .ok_or(Trap::InvalidPc)?,
             )),
             VReg::Obj(r) => Value::Obj(self.read_obj(base, r)),
@@ -2982,16 +3023,26 @@ impl ExecutionContext {
 
     #[inline]
     #[must_use = "reads can trap; handle the Result"]
-    fn read_bytes<'a>(&'a self, reg: &BytesReg, base: RegBase) -> Result<&'a [u8], Trap> {
+    fn read_bytes<'a>(
+        &'a self,
+        reg: &BytesReg,
+        base: RegBase,
+        sources: ValueSources<'a>,
+    ) -> Result<&'a [u8], Trap> {
         let h = self.read_bytes_handle(base, *reg);
-        self.arena.bytes(h).ok_or(Trap::InvalidPc)
+        self.arena.bytes(h, sources).ok_or(Trap::InvalidPc)
     }
 
     #[inline]
     #[must_use = "reads can trap; handle the Result"]
-    fn read_str<'a>(&'a self, reg: &StrReg, base: RegBase) -> Result<&'a str, Trap> {
+    fn read_str<'a>(
+        &'a self,
+        reg: &StrReg,
+        base: RegBase,
+        sources: ValueSources<'a>,
+    ) -> Result<&'a str, Trap> {
         let h = self.read_str_handle(base, *reg);
-        self.arena.str(h).ok_or(Trap::InvalidPc)
+        self.arena.str(h, sources).ok_or(Trap::InvalidPc)
     }
 
     #[inline(always)]
@@ -3173,6 +3224,7 @@ fn validate_signature_types(expected: &[ValueType], actual: &[ValueType]) -> Res
 #[must_use = "host ABI reads can trap; handle the Result"]
 fn read_value_ref_at<'a>(
     arena: &'a ValueArena,
+    sources: ValueSources<'a>,
     units: &'a [u32],
     bools: &'a [bool],
     i64s: &'a [i64],
@@ -3200,11 +3252,11 @@ fn read_value_ref_at<'a>(
         VReg::Decimal(r) => ValueRef::Decimal(decimals[base.decimals + r.0 as usize]),
         VReg::Bytes(r) => {
             let h = bytes[base.bytes + r.0 as usize];
-            ValueRef::Bytes(arena.bytes(h).ok_or(Trap::InvalidPc)?)
+            ValueRef::Bytes(arena.bytes(h, sources).ok_or(Trap::InvalidPc)?)
         }
         VReg::Str(r) => {
             let h = strs[base.strs + r.0 as usize];
-            ValueRef::Str(arena.str(h).ok_or(Trap::InvalidPc)?)
+            ValueRef::Str(arena.str(h, sources).ok_or(Trap::InvalidPc)?)
         }
         VReg::Obj(r) => ValueRef::Obj(objs[base.objs + r.0 as usize]),
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
@@ -3635,6 +3687,172 @@ mod tests {
         assert_eq!(&outputs[1..5], args);
         assert_eq!(&outputs[5..], args);
         assert_eq!(vm.aggregates().tuple_get(aggregate, 0), Ok(Value::I64(99)));
+    }
+
+    #[test]
+    fn borrowed_payloads_survive_calls_projection_and_program_switches() {
+        fn program(bytes: &[u8], text: &str) -> VerifiedProgram {
+            let mut pb = ProgramBuilder::new();
+            let mut callee = Asm::new();
+            callee.ret(0, &[1, 2]);
+            let types = vec![ValueType::Bytes, ValueType::Str];
+            let target = pb
+                .push_function_checked(
+                    callee,
+                    FunctionSig {
+                        arg_types: types.clone(),
+                        ret_types: types.clone(),
+                    },
+                )
+                .unwrap();
+            let bytes_id = pb.const_bytes(bytes);
+            let text_id = pb.const_str(text);
+            let mut caller = Asm::new();
+            caller.const_pool(1, bytes_id);
+            caller.const_pool(2, text_id);
+            caller.call(0, target, 0, &[1, 2], &[3, 4]);
+            caller.tuple_new(5, &[3, 4]);
+            caller.tuple_get(6, 5, 0);
+            caller.tuple_get(7, 5, 1);
+            caller.bytes_concat(8, 6, 1);
+            caller.str_concat(9, 7, 2);
+            caller.ret(0, &[6, 7, 8, 9]);
+            pb.push_function_checked(
+                caller,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: [types.clone(), types].concat(),
+                },
+            )
+            .unwrap();
+            pb.build_verified().unwrap()
+        }
+        let mut ctx = ExecutionContext::new();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let mut outputs = Vec::new();
+        for (bytes, text) in [(&b"first"[..], "\u{00e9}"), (&b"second"[..], "\u{1f980}")] {
+            let p = program(bytes, text);
+            vm.run_with_ctx(
+                &mut ctx,
+                &p,
+                FuncId(1),
+                &[],
+                &mut outputs,
+                TraceMask::NONE,
+                None,
+                None,
+            )
+            .unwrap();
+            // Owned outputs are independent of program, source heap, and subsequent context reuse.
+            drop(p);
+            vm.aggregates_mut().clear();
+        }
+        assert_eq!(
+            outputs,
+            vec![
+                Value::Bytes(b"first".to_vec()),
+                Value::Str("\u{00e9}".into()),
+                Value::Bytes(b"firstfirst".to_vec()),
+                Value::Str("\u{00e9}\u{00e9}".into()),
+                Value::Bytes(b"second".to_vec()),
+                Value::Str("\u{1f980}".into()),
+                Value::Bytes(b"secondsecond".to_vec()),
+                Value::Str("\u{1f980}\u{1f980}".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn host_reads_payloads_projected_from_all_aggregate_kinds() {
+        struct InspectHost;
+        impl Host for InspectHost {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                args: &[ValueRef<'_>],
+                rets: &mut [Value],
+                _: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                let [
+                    ValueRef::Bytes(a),
+                    ValueRef::Str(b),
+                    ValueRef::Bytes(c),
+                    ValueRef::Bytes(d),
+                    ValueRef::Str(e),
+                ] = args
+                else {
+                    panic!("unexpected host arguments")
+                };
+                assert_eq!(*a, b"second");
+                assert_eq!(*b, "second");
+                assert_eq!(*c, b"second");
+                assert_eq!(*d, b"first");
+                assert_eq!(*e, "second");
+                rets[0] = Value::Bytes(a.to_vec());
+                rets[1] = Value::Str((*e).into());
+                Ok(0)
+            }
+        }
+        let mut pb = ProgramBuilder::new();
+        let b1 = pb.const_bytes(b"first");
+        let b2 = pb.const_bytes(b"second");
+        let s1 = pb.const_str("first");
+        let s2 = pb.const_str("second");
+        let st = pb.struct_type(crate::program::StructTypeDef {
+            field_names: vec!["bytes".into(), "text".into()],
+            field_types: vec![ValueType::Bytes, ValueType::Str],
+        });
+        let ab = pb.array_elem(ValueType::Bytes);
+        let ats = pb.array_elem(ValueType::Str);
+        let hs = pb.host_sig_for(
+            "inspect",
+            HostSig {
+                args: vec![
+                    ValueType::Bytes,
+                    ValueType::Str,
+                    ValueType::Bytes,
+                    ValueType::Bytes,
+                    ValueType::Str,
+                ],
+                rets: vec![ValueType::Bytes, ValueType::Str],
+            },
+        );
+        let mut a = Asm::new();
+        a.const_pool(1, b1);
+        a.const_pool(2, b2);
+        a.const_pool(3, s1);
+        a.const_pool(4, s2);
+        a.struct_new(5, st, &[2, 4]);
+        a.struct_get(6, 5, 0);
+        a.struct_get(7, 5, 1);
+        a.array_new(8, ab, &[1, 2]);
+        a.const_u64(9, 1);
+        a.array_get(10, 8, 9);
+        a.array_get_imm(11, 8, 0);
+        a.array_new(12, ats, &[3, 4]);
+        a.array_get_imm(13, 12, 1);
+        a.tuple_new(14, &[6, 7, 10, 11, 13]);
+        a.tuple_get(15, 14, 4);
+        a.host_call_sig_id(0, hs, 0, &[6, 7, 10, 11, 15], &[16, 17]);
+        a.ret(0, &[16, 17]);
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::Bytes, ValueType::Str],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(InspectHost, Limits::default());
+        assert_eq!(
+            vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap(),
+            vec![
+                Value::Bytes(b"second".to_vec()),
+                Value::Str("second".into())
+            ]
+        );
     }
 
     struct TestHost;

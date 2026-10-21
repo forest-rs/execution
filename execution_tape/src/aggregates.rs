@@ -721,6 +721,14 @@ impl AggHeap {
         AggHandle(idx)
     }
 
+    // Kind-specific projection validates the operation before a runtime payload source is stored.
+    pub(crate) fn value_ref(&self, handle: AggHandle, index: usize) -> Result<&Value, AggError> {
+        self.node(handle)?
+            .values()
+            .get(index)
+            .ok_or(AggError::OutOfBounds)
+    }
+
     fn node(&self, handle: AggHandle) -> Result<&AggNode, AggError> {
         self.nodes.get(handle.0 as usize).ok_or(AggError::BadHandle)
     }

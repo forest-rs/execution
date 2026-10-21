@@ -47,7 +47,15 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
 - `Decimal { mantissa: i64, scale: u8 }` (per-value scale; rounding/division TBD)
-- `Bytes` and/or `Str` (alloc-backed; stored by handle into a per-run arena in the VM)
+- `Bytes` and/or `Str` (owned public values; runtime registers use handles to owned or borrowed payloads)
+
+Within a run, byte/string handles resolve to immutable program constants, entry arguments,
+aggregate fields, or owned computed payloads. The execution context stores source indices rather
+than borrowed pointers, and discards them before reuse with another program, input set, or VM.
+Host arguments borrow these sources directly. Host-owned return payloads move into run storage.
+Owned results copy at the return boundary; persistent aggregates own their fields independently
+of the context. Clearing scratch therefore never invalidates a returned byte/string value or
+an aggregate retained in the VM heap. Aggregate handles remain scoped to their VM heap.
 
 ### Host objects
 - `Obj { host_type: HostTypeId, handle: u64 }`
