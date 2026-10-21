@@ -27,7 +27,7 @@ use crate::graph::{ExecutionGraph, GraphError};
 use crate::node_access::NodeAccess;
 
 /// Failures specific to tape nodes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum TapeError {
     /// A function id was not present in the verified program supplied for a node.
     BadEntryFunc {
@@ -83,7 +83,14 @@ impl fmt::Display for TapeError {
     }
 }
 
-impl core::error::Error for TapeError {}
+impl core::error::Error for TapeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Trap(trap) => Some(trap),
+            _ => None,
+        }
+    }
+}
 
 /// A graph node that runs one entry function of a verified tape program.
 #[derive(Clone, Debug)]
@@ -360,6 +367,71 @@ mod memory_tests {
             _: execution_tape::host::HostContext<'_, '_>,
         ) -> Result<u64, execution_tape::host::HostError> {
             unreachable!("the test program has no host calls")
+        }
+    }
+
+    #[test]
+    fn graph_errors_preserve_typed_host_failure_sources() {
+        use core::error::Error;
+        use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
+
+        #[derive(Debug)]
+        struct OperationFailure {
+            code: u32,
+        }
+        impl fmt::Display for OperationFailure {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "operation error {}", self.code)
+            }
+        }
+        impl Error for OperationFailure {}
+        struct FailingHost;
+        impl Host for FailingHost {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                _: &[ValueRef<'_>],
+                _: &mut [Value],
+                _: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                Err(HostError::custom(OperationFailure { code: 23 }))
+            }
+        }
+        let mut pb = ProgramBuilder::new();
+        let import = pb.host_sig_for(
+            "fallible",
+            HostSig {
+                args: vec![],
+                rets: vec![ValueType::I64],
+            },
+        );
+        let mut body = Asm::new();
+        body.host_call_sig_id(0, import, 0, &[], &[1]);
+        body.ret(0, &[1]);
+        let entry = pb
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        let p = Arc::new(pb.build_verified().unwrap());
+        let mut graph = ExecutionGraph::new(TapeExecutor::new(FailingHost, Limits::default()));
+        let node = graph.add_tape_node(p, entry, vec![]).unwrap();
+        let error = graph.run_all().unwrap_err();
+        assert!(matches!(&error, GraphError::Node { node: failed, .. } if *failed == node));
+        let mut source: &(dyn Error + 'static) = &error;
+        loop {
+            if let Some(failure) = source.downcast_ref::<OperationFailure>() {
+                assert_eq!(failure.code, 23);
+                break;
+            }
+            source = source
+                .source()
+                .expect("typed host failure in graph error chain");
         }
     }
 

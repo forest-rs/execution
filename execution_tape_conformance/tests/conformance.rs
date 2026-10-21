@@ -105,7 +105,7 @@ fn entry_arity_errors_allow_context_reuse() {
             )
             .unwrap_err();
         assert_eq!(error.func, entry);
-        assert_eq!(error.trap, Trap::ArityMismatch);
+        assert!(matches!(error.trap, Trap::ArityMismatch));
     }
     vm.run_with_ctx(
         &mut ctx,
@@ -119,12 +119,12 @@ fn entry_arity_errors_allow_context_reuse() {
     )
     .unwrap();
     assert_eq!(outputs, vec![Value::I64(42)]);
-    assert_eq!(
+    assert!(matches!(
         vm.run(&program, FuncId(u32::MAX), &[], TraceMask::NONE, None)
             .unwrap_err()
             .trap,
         Trap::InvalidPc
-    );
+    ));
 }
 
 #[test]
@@ -235,12 +235,12 @@ fn zero_call_depth_rejects_the_entry_frame() {
             ..Limits::default()
         },
     );
-    assert_eq!(
+    assert!(matches!(
         vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err()
             .trap,
         Trap::CallDepthExceeded
-    );
+    ));
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn float_to_integer_rejects_rounded_upper_bounds() {
             let mut vm = Vm::new(TestHost, Limits::default());
             let result = vm.run(&program, FuncId(0), &[], TraceMask::NONE, None);
             if out_of_range {
-                assert_eq!(result.unwrap_err().trap, Trap::IntCastOverflow);
+                assert!(matches!(result.unwrap_err().trap, Trap::IntCastOverflow));
             } else {
                 let expected = if signed {
                     Value::I64(i64::MAX - 1023)
@@ -966,7 +966,7 @@ fn vm_traps_decimal_scale_mismatch() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::DecimalScaleMismatch);
+    assert!(matches!(err.trap, Trap::DecimalScaleMismatch));
 }
 
 #[test]
@@ -992,7 +992,7 @@ fn vm_traps_decimal_overflow_on_scale_add() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::DecimalOverflow);
+    assert!(matches!(err.trap, Trap::DecimalOverflow));
 }
 
 #[test]
@@ -1051,7 +1051,7 @@ fn vm_traps_on_cast_overflow() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::IntCastOverflow);
+    assert!(matches!(err.trap, Trap::IntCastOverflow));
 }
 
 #[test]
@@ -1223,13 +1223,13 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
     let p = pb.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
     let err = vm.run(&p, caller, &[], TraceMask::NONE, None).unwrap_err();
-    assert_eq!(
+    assert!(matches!(
         err.trap,
         Trap::TypeMismatch {
             expected: ValueType::I64,
             actual: ValueType::U64,
         }
-    );
+    ));
 }
 
 #[test]
@@ -1273,7 +1273,7 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
     };
     let mut vm = Vm::new(TestHost, limits);
     let err = vm.run(&p, f, &[], TraceMask::NONE, None).unwrap_err();
-    assert_eq!(err.trap, Trap::CallDepthExceeded);
+    assert!(matches!(err.trap, Trap::CallDepthExceeded));
 }
 
 #[test]
@@ -1368,7 +1368,7 @@ fn vm_traps_fuel_in_tight_loop() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::FuelExceeded);
+    assert!(matches!(err.trap, Trap::FuelExceeded));
 }
 
 #[test]
@@ -1423,7 +1423,7 @@ fn vm_traps_host_call_limit_in_loop() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::HostCallLimitExceeded);
+    assert!(matches!(err.trap, Trap::HostCallLimitExceeded));
 }
 
 #[test]
@@ -1473,7 +1473,7 @@ fn vm_traps_on_negative_i64_to_u64() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::IntCastOverflow);
+    assert!(matches!(err.trap, Trap::IntCastOverflow));
 }
 
 #[test]
@@ -1587,7 +1587,7 @@ fn vm_traps_array_get_imm_oob() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::AggError(AggError::OutOfBounds));
+    assert!(matches!(err.trap, Trap::AggError(AggError::OutOfBounds)));
 }
 
 #[test]
@@ -1679,7 +1679,7 @@ fn vm_traps_div_by_zero() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::DivByZero);
+    assert!(matches!(err.trap, Trap::DivByZero));
 }
 
 #[test]
@@ -1705,7 +1705,7 @@ fn vm_traps_i64_div_overflow_min_over_minus_one() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::IntDivOverflow);
+    assert!(matches!(err.trap, Trap::IntDivOverflow));
 }
 
 #[test]
@@ -1857,7 +1857,7 @@ fn vm_traps_f64_to_int_on_nan() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::FloatToIntInvalid);
+    assert!(matches!(err.trap, Trap::FloatToIntInvalid));
 }
 
 #[test]
@@ -1882,7 +1882,7 @@ fn vm_traps_f64_to_u64_on_negative() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::IntCastOverflow);
+    assert!(matches!(err.trap, Trap::IntCastOverflow));
 }
 
 #[test]
@@ -1938,7 +1938,7 @@ fn vm_traps_dec_to_i64_on_nonzero_scale() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::DecimalScaleMismatch);
+    assert!(matches!(err.trap, Trap::DecimalScaleMismatch));
 }
 
 #[test]
@@ -2022,7 +2022,7 @@ fn vm_traps_str_slice_on_non_boundary() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::StrNotCharBoundary);
+    assert!(matches!(err.trap, Trap::StrNotCharBoundary));
 }
 
 #[test]
@@ -2049,5 +2049,5 @@ fn vm_traps_bytes_to_str_on_invalid_utf8() {
     let err = vm
         .run(&p, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap_err();
-    assert_eq!(err.trap, Trap::InvalidUtf8);
+    assert!(matches!(err.trap, Trap::InvalidUtf8));
 }

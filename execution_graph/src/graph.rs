@@ -1465,14 +1465,14 @@ mod tape_tests {
         g.clear_node_label(node).unwrap();
         assert_eq!(g.node_label(node), None);
 
-        assert_eq!(
+        assert!(matches!(
             g.set_node_label(NodeId::new(99), "missing"),
             Err(GraphError::BadNodeId)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             g.clear_node_label(NodeId::new(99)),
             Err(GraphError::BadNodeId)
-        );
+        ));
     }
 
     #[test]
@@ -1988,17 +1988,24 @@ mod tape_tests {
         let n = g.add_tape_node(prog, f, vec![]).unwrap();
         g.executor_mut().set_strict_deps(true);
 
-        assert_eq!(
-            g.run_all(),
-            Err(GraphError::Node {
-                node: n,
-                source: TapeError::StrictDepsViolation {
-                    symbol: "no_access".into(),
-                    sig_hash: sig_hash(&HostSig {
-                        args: vec![ValueType::I64],
-                        rets: vec![ValueType::I64],
-                    }),
+        let Err(GraphError::Node {
+            node,
+            source:
+                TapeError::StrictDepsViolation {
+                    symbol,
+                    sig_hash: actual_hash,
                 },
+        }) = g.run_all()
+        else {
+            panic!("expected a strict dependency violation");
+        };
+        assert_eq!(node, n);
+        assert_eq!(symbol.as_ref(), "no_access");
+        assert_eq!(
+            actual_hash,
+            sig_hash(&HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64]
             })
         );
     }
@@ -2061,17 +2068,24 @@ mod tape_tests {
         let n = g.add_tape_node(prog, f, vec![]).unwrap();
         g.executor_mut().set_strict_deps(true);
 
-        assert_eq!(
-            g.run_all(),
-            Err(GraphError::Node {
-                node: n,
-                source: TapeError::StrictDepsViolation {
-                    symbol: "write_input".into(),
-                    sig_hash: sig_hash(&HostSig {
-                        args: vec![ValueType::I64],
-                        rets: vec![ValueType::I64],
-                    }),
+        let Err(GraphError::Node {
+            node,
+            source:
+                TapeError::StrictDepsViolation {
+                    symbol,
+                    sig_hash: actual_hash,
                 },
+        }) = g.run_all()
+        else {
+            panic!("expected a strict dependency violation");
+        };
+        assert_eq!(node, n);
+        assert_eq!(symbol.as_ref(), "write_input");
+        assert_eq!(
+            actual_hash,
+            sig_hash(&HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64]
             })
         );
     }
@@ -2096,12 +2110,8 @@ mod tape_tests {
         let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
         let n = g.add_tape_node(prog, f, vec!["in".into()]).unwrap();
 
-        assert_eq!(
-            g.run_all(),
-            Err(GraphError::MissingInput {
-                node: n,
-                name: "in".into()
-            })
+        assert!(
+            matches!(g.run_all(), Err(GraphError::MissingInput { node, name }) if node == n && name.as_ref() == "in")
         );
     }
 
@@ -2121,7 +2131,7 @@ mod tape_tests {
         };
         assert_eq!(node, n);
         assert_eq!(trap.func, f);
-        assert_eq!(trap.trap, Trap::DivByZero);
+        assert!(matches!(trap.trap, Trap::DivByZero));
     }
 
     #[test]
@@ -2254,12 +2264,12 @@ mod tape_tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        assert_eq!(
+        assert!(matches!(
             g.add_tape_node(prog, FuncId(99), vec![]),
             Err(GraphError::InvalidNode(TapeError::BadEntryFunc {
                 func: FuncId(99)
             }))
-        );
+        ));
     }
 
     #[test]
@@ -2279,13 +2289,8 @@ mod tape_tests {
         let prog = Arc::new(pb.build_verified().unwrap());
 
         let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        assert_eq!(
-            g.add_tape_node(prog, f, vec![]),
-            Err(GraphError::InvalidNode(TapeError::BadInputArity {
-                func: f,
-                expected: 1,
-                actual: 0,
-            }))
+        assert!(
+            matches!(g.add_tape_node(prog, f, vec![]), Err(GraphError::InvalidNode(TapeError::BadInputArity { func, expected: 1, actual: 0 })) if func == f)
         );
     }
 
@@ -2308,12 +2313,8 @@ mod tape_tests {
         let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
         let n = g.add_tape_node(prog, f, vec!["qty".into()]).unwrap();
 
-        assert_eq!(
-            g.set_input_value(n, "unit_price", Value::I64(10)),
-            Err(GraphError::UnknownInput {
-                node: n,
-                name: "unit_price".into(),
-            })
+        assert!(
+            matches!(g.set_input_value(n, "unit_price", Value::I64(10)), Err(GraphError::UnknownInput { node, name }) if node == n && name.as_ref() == "unit_price")
         );
     }
 
@@ -2361,20 +2362,12 @@ mod tape_tests {
         let na = g.add_tape_node(a_prog, a_entry, vec![]).unwrap();
         let nb = g.add_tape_node(b_prog, b_entry, vec!["x".into()]).unwrap();
 
-        assert_eq!(
-            g.connect(na, "does_not_exist", nb, "x"),
-            Err(GraphError::UnknownOutput {
-                node: na,
-                name: "does_not_exist".into(),
-            })
+        assert!(
+            matches!(g.connect(na, "does_not_exist", nb, "x"), Err(GraphError::UnknownOutput { node, name }) if node == na && name.as_ref() == "does_not_exist")
         );
 
-        assert_eq!(
-            g.connect(na, "value", nb, "does_not_exist"),
-            Err(GraphError::UnknownInput {
-                node: nb,
-                name: "does_not_exist".into()
-            })
+        assert!(
+            matches!(g.connect(na, "value", nb, "does_not_exist"), Err(GraphError::UnknownInput { node, name }) if node == nb && name.as_ref() == "does_not_exist")
         );
     }
 
@@ -3101,7 +3094,10 @@ mod tape_tests {
     #[test]
     fn run_node_errors_on_bad_node_id() {
         let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
-        assert_eq!(g.run_node(NodeId::new(999)), Err(GraphError::BadNodeId));
+        assert!(matches!(
+            g.run_node(NodeId::new(999)),
+            Err(GraphError::BadNodeId)
+        ));
     }
 
     #[test]

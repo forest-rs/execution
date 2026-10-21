@@ -46,6 +46,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `TapeError` no longer implements `PartialEq`/`Eq`, following typed host failures in Execution
+  Tape. Match variants and compare fields or inspect the standard error source chain instead.
+
 - Reuse the graph output buffer directly in `TapeExecutor`, avoiding a temporary result vector. ([#119][] by [@waywardmonkeys][])
 - Improve crate and README documentation, keeping examples synchronized. ([#93][] by [@no-materials][])
 - Mark public report output structs as `non_exhaustive`. ([#94][] by [@waywardmonkeys][])

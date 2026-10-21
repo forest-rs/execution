@@ -100,6 +100,13 @@ including an equal clone, fail before a callback runs. This adapter suits repeat
 one program; custom `Host` implementations can also serve multiple programs. Callbacks still use
 the ordinary borrowed argument ABI, access recording, runtime return checks, and fuel charging.
 
+Host callbacks can return `HostError::custom(error)` for detailed operation failures. The payload
+must implement `core::error::Error + Send + Sync + 'static` and owns its data independently of
+the host. VM and graph results preserve its concrete type through the standard error source
+chain. Downcast a source to recover domain fields; no host-side last-error slot is needed.
+Cloned failures share the immutable payload. Errors containing arbitrary host payloads do not
+implement value equality; match variants and compare their diagnostic fields instead.
+
 Run the maintained example with:
 
 ```sh

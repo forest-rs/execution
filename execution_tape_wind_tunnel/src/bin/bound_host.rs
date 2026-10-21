@@ -11,7 +11,22 @@ use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, Value};
+use execution_tape::vm::Trap;
 use execution_tape::vm::{Limits, Vm};
+
+#[derive(Debug)]
+struct CounterOverflow {
+    current: i64,
+    addend: i64,
+}
+
+impl std::fmt::Display for CounterOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "counter overflow: {} + {}", self.current, self.addend)
+    }
+}
+
+impl std::error::Error for CounterOverflow {}
 
 fn add(
     state: &mut i64,
@@ -22,7 +37,12 @@ fn add(
     let [ValueRef::I64(value)] = args else {
         return Err(HostError::Failed);
     };
-    *state += value;
+    *state = state.checked_add(*value).ok_or_else(|| {
+        HostError::custom(CounterOverflow {
+            current: *state,
+            addend: *value,
+        })
+    })?;
     rets[0] = Value::I64(*state);
     Ok(0)
 }
@@ -58,5 +78,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_eq!(*first.host().state(), 5);
     assert_eq!(*second.host().state(), 105);
+    *first.host_mut().state_mut() = i64::MAX;
+    let failure = first
+        .run(&program, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+        .unwrap_err();
+    let Trap::HostCallFailed {
+        error: HostError::Custom(source),
+        ..
+    } = &failure.trap
+    else {
+        return Err(Box::new(failure));
+    };
+    let detail = source
+        .downcast_ref::<CounterOverflow>()
+        .expect("typed operation failure");
+    assert_eq!(detail.current, i64::MAX);
+    assert_eq!(detail.addend, 1);
+    assert_eq!(*first.host().state(), i64::MAX);
+    println!("failure={detail}");
     Ok(())
 }
