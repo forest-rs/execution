@@ -26,6 +26,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Reject direct calls whose known aggregate argument shapes contradict the callee contract.
+  Exhaustive matches on `VerifyError` must handle `CallArgShapeMismatch`.
+
 - Reject impossible collection counts in program sections and instruction register lists before
   reserving storage. ([#105][] by [@waywardmonkeys][])
 - Apply the call-depth limit to the entry frame, including a zero-depth limit. ([#106][] by [@waywardmonkeys][])

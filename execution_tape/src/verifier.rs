@@ -395,6 +395,21 @@ pub enum VerifyError {
         /// Byte offset of the instruction.
         pc: u32,
     },
+    /// A direct call supplies an aggregate shape incompatible with the callee's argument contract.
+    CallArgShapeMismatch {
+        /// Calling function index.
+        func: u32,
+        /// Byte offset of the call.
+        pc: u32,
+        /// Called function index.
+        callee: u32,
+        /// Zero-based value argument index.
+        arg: u32,
+        /// Shape required by the callee.
+        expected: AggShape,
+        /// Shape known at the call site.
+        actual: AggShape,
+    },
     /// A `ret` instruction does not match the function's return type count.
     ReturnArityMismatch {
         /// Function index within the program.
@@ -804,6 +819,19 @@ impl fmt::Display for VerifyError {
             }
             Self::CallArityMismatch { func, pc } => {
                 write!(f, "function {func} pc={pc} call arity mismatch")
+            }
+            Self::CallArgShapeMismatch {
+                func,
+                pc,
+                callee,
+                arg,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "function {func} pc={pc} call to function {callee} argument {arg} shape mismatch: expected {expected:?}, got {actual:?}"
+                )
             }
             Self::ReturnArityMismatch { func, pc } => {
                 write!(f, "function {func} pc={pc} return arity mismatch")
@@ -2980,6 +3008,32 @@ impl From<&AggShape> for AggMeta {
     }
 }
 
+impl AggMeta {
+    // Unknown tuple element types are unresolved obligations, not contradictions.
+    fn contradicts(&self, expected: &AggShape) -> bool {
+        match (self, expected) {
+            (Self::Tuple(actual), AggShape::Tuple { elems }) => {
+                actual.len() != elems.len()
+                    || actual
+                        .iter()
+                        .zip(elems)
+                        .any(|(a, e)| matches!((a, e), (Some(a), Some(e)) if a != e))
+            }
+            (Self::Struct(a), AggShape::Struct(e)) => a != e,
+            (Self::Array(a), AggShape::Array(e)) => a != e,
+            _ => true,
+        }
+    }
+
+    fn to_shape(&self) -> AggShape {
+        match self {
+            Self::Tuple(elems) => AggShape::tuple(elems.clone()),
+            Self::Struct(id) => AggShape::Struct(*id),
+            Self::Array(id) => AggShape::Array(*id),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RegType {
     Uninit,
@@ -3816,6 +3870,25 @@ fn validate_instr_types(
             }
             for (&r, &expected) in args.iter().zip(callee_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
+            }
+            for contract in program
+                .function_arg_agg_shapes
+                .iter()
+                .filter(|e| e.func == callee.0)
+            {
+                let reg = args[contract.arg as usize];
+                if let Some(actual) = a(reg)
+                    && actual.contradicts(&contract.shape)
+                {
+                    return Err(VerifyError::CallArgShapeMismatch {
+                        func: func_id,
+                        pc,
+                        callee: callee.0,
+                        arg: contract.arg,
+                        expected: contract.shape.clone(),
+                        actual: actual.to_shape(),
+                    });
+                }
             }
             for (&r, &expected) in rets.iter().zip(callee_rets.iter()) {
                 check_assignable(func_id, pc, r, t(r), expected)?;
@@ -5363,6 +5436,80 @@ mod tests {
         )
         .unwrap();
         pb.build_checked().unwrap();
+    }
+
+    #[test]
+    fn direct_calls_check_known_shapes_but_allow_unresolved_obligations() {
+        for (actual, expected, accepted) in [
+            (
+                Some(AggShape::tuple(vec![Some(ValueType::Bool)])),
+                AggShape::tuple(vec![Some(ValueType::I64)]),
+                false,
+            ),
+            (
+                Some(AggShape::tuple(vec![])),
+                AggShape::tuple(vec![None]),
+                false,
+            ),
+            (
+                Some(AggShape::tuple(vec![Some(ValueType::I64)])),
+                AggShape::tuple(vec![Some(ValueType::I64)]),
+                true,
+            ),
+            (
+                Some(AggShape::tuple(vec![Some(ValueType::Bool)])),
+                AggShape::tuple(vec![None]),
+                true,
+            ),
+            (
+                Some(AggShape::tuple(vec![None])),
+                AggShape::tuple(vec![Some(ValueType::I64)]),
+                true,
+            ),
+            (None, AggShape::tuple(vec![Some(ValueType::I64)]), true),
+        ] {
+            let mut pb = ProgramBuilder::new();
+            let mut callee = Asm::new();
+            callee.ret(0, &[]);
+            let target = pb
+                .push_function_checked(
+                    callee,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Agg],
+                        ret_types: vec![],
+                    }
+                    .with_arg_agg_shape(0, expected.clone()),
+                )
+                .unwrap();
+            let mut caller = Asm::new();
+            caller.call(0, target, 0, &[1], &[]);
+            caller.ret(0, &[]);
+            let mut abi = crate::asm::FunctionAbi::from(FunctionSig {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![],
+            });
+            if let Some(shape) = actual.clone() {
+                abi.set_arg_agg_shape(0, shape);
+            }
+            pb.push_function_checked(caller, abi).unwrap();
+            let result = verify_program_owned(pb.build(), &VerifyConfig::default());
+            if accepted {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(VerifyError::CallArgShapeMismatch {
+                            func: 1,
+                            callee: 0,
+                            arg: 0,
+                            ..
+                        })
+                    ),
+                    "expected a shape mismatch: {result:?}"
+                );
+            }
+        }
     }
 
     #[test]
