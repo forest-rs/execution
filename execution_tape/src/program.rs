@@ -1339,8 +1339,10 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry> = Vec::new();
     let mut function_sig_defs: Vec<DecodedFunctionSig> = Vec::new();
-    let mut bytecode_blobs: Vec<Vec<u8>> = Vec::new();
-    let mut span_tables: Vec<Vec<SpanEntry>> = Vec::new();
+    let mut bytecode_data = Vec::new();
+    let mut bytecode_ranges = Vec::new();
+    let mut spans = Vec::new();
+    let mut span_ranges = Vec::new();
     let mut function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry> = Vec::new();
     let mut names: NamesDef = NamesDef::default();
 
@@ -1402,14 +1404,14 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                     return Err(DecodeError::DuplicateSection);
                 }
                 saw_bytecode_blobs = true;
-                bytecode_blobs = decode_blob_list(payload)?;
+                (bytecode_data, bytecode_ranges) = decode_bytecode_blobs(payload)?;
             }
             Some(SectionTag::SpanTables) => {
                 if saw_span_tables {
                     return Err(DecodeError::DuplicateSection);
                 }
                 saw_span_tables = true;
-                span_tables = decode_span_tables(payload)?;
+                (spans, span_ranges) = decode_span_tables(payload)?;
             }
             Some(SectionTag::HostSigs) => {
                 if saw_host_sigs {
@@ -1484,25 +1486,6 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         return Err(DecodeError::MissingSection {
             tag: SectionTag::HostSigs as u8,
         });
-    }
-
-    // Pack arenas.
-    let mut bytecode_data: Vec<u8> = Vec::new();
-    let mut bytecode_ranges: Vec<ByteRange> = Vec::with_capacity(bytecode_blobs.len());
-    for b in bytecode_blobs {
-        let offset = u32::try_from(bytecode_data.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        bytecode_data.extend_from_slice(&b);
-        let len = u32::try_from(b.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        bytecode_ranges.push(ByteRange { offset, len });
-    }
-
-    let mut spans: Vec<SpanEntry> = Vec::new();
-    let mut span_ranges: Vec<ByteRange> = Vec::with_capacity(span_tables.len());
-    for s in span_tables {
-        let offset = u32::try_from(spans.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        spans.extend_from_slice(&s);
-        let len = u32::try_from(s.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        span_ranges.push(ByteRange { offset, len });
     }
 
     // Pack value types in builder order — host sigs, then functions, then call
@@ -2166,33 +2149,43 @@ fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, Deco
     Ok(out)
 }
 
-fn decode_blob_list(payload: &[u8]) -> Result<Vec<Vec<u8>>, DecodeError> {
+// Decode directly into the final arenas. Ranges stay indexed by encoded blob order so
+// function tables can share blobs or refer to them in any order.
+fn decode_bytecode_blobs(payload: &[u8]) -> Result<(Vec<u8>, Vec<ByteRange>), DecodeError> {
     let mut r = Reader::new(payload);
     let n = read_count(&mut r)?;
-    let mut out = Vec::with_capacity(n);
+    let mut data = Vec::new();
+    let mut ranges = Vec::with_capacity(n);
     for _ in 0..n {
         let len = read_usize(&mut r)?;
-        out.push(r.read_bytes(len)?.to_vec());
+        let bytes = r.read_bytes(len)?;
+        let offset = u32::try_from(data.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        let len = u32::try_from(len).map_err(|_| DecodeError::OutOfBounds)?;
+        data.extend_from_slice(bytes);
+        ranges.push(ByteRange { offset, len });
     }
-    Ok(out)
+    Ok((data, ranges))
 }
 
-fn decode_span_tables(payload: &[u8]) -> Result<Vec<Vec<SpanEntry>>, DecodeError> {
+fn decode_span_tables(payload: &[u8]) -> Result<(Vec<SpanEntry>, Vec<ByteRange>), DecodeError> {
     let mut r = Reader::new(payload);
     let n = read_count(&mut r)?;
-    let mut out = Vec::with_capacity(n);
+    let mut spans = Vec::new();
+    let mut ranges = Vec::with_capacity(n);
     for _ in 0..n {
         let span_count = read_count(&mut r)?;
-        let mut spans = Vec::with_capacity(span_count);
+        let offset = u32::try_from(spans.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        let len = u32::try_from(span_count).map_err(|_| DecodeError::OutOfBounds)?;
+        spans.reserve(span_count);
         for _ in 0..span_count {
             spans.push(SpanEntry {
                 pc_delta: r.read_uleb128_u64()?,
                 span_id: SpanId(r.read_uleb128_u64_nz()?),
             });
         }
-        out.push(spans);
+        ranges.push(ByteRange { offset, len });
     }
-    Ok(out)
+    Ok((spans, ranges))
 }
 
 // Every counted entry consumes at least one byte. Reject impossible counts before reserving
@@ -2249,6 +2242,69 @@ mod tests {
             let _ = r.read_bytes(len).unwrap();
         }
         out
+    }
+
+    #[test]
+    fn decode_preserves_shared_and_reordered_blob_references() {
+        let original = Program::new(
+            vec![],
+            vec![],
+            vec![],
+            TypeTableDef::default(),
+            (0_u8..4)
+                .map(|i| FunctionDef {
+                    arg_types: vec![],
+                    ret_types: vec![],
+                    reg_count: 1,
+                    bytecode: vec![i; usize::from(i)],
+                    spans: if i == 0 {
+                        vec![]
+                    } else {
+                        vec![SpanEntry {
+                            pc_delta: 0,
+                            span_id: sid(u64::from(i)),
+                        }]
+                    },
+                })
+                .collect(),
+        );
+        let encoded = original.encode();
+        let mut reader = Reader::new(&encoded[12..]);
+        let mut sections = Vec::new();
+        while reader.remaining() != 0 {
+            let tag = SectionTag::from_u8_opt(reader.read_u8().unwrap()).unwrap();
+            let len = read_usize(&mut reader).unwrap();
+            sections.push((tag, reader.read_bytes(len).unwrap()));
+        }
+
+        let mut table = Writer::new();
+        table.write_uleb128_u64(4);
+        let references = [(2, 1), (0, 0), (2, 1), (1, 2)];
+        for (bytecode, spans) in references {
+            table.write_uleb128_u32(0); // arguments
+            table.write_uleb128_u32(0); // returns
+            table.write_uleb128_u32(1); // registers
+            table.write_uleb128_u64(bytecode);
+            table.write_uleb128_u64(spans);
+        }
+        let mut reordered = Writer::new();
+        reordered.write_bytes(&encoded[..12]);
+        for (tag, payload) in sections.into_iter().rev() {
+            let payload = if matches!(tag, SectionTag::FunctionTable) {
+                table.as_slice()
+            } else {
+                payload
+            };
+            write_section(&mut reordered, tag, payload);
+        }
+
+        let mut expected = original.clone();
+        for (func, (bytecode, spans)) in expected.functions.iter_mut().zip(references) {
+            func.bytecode = original.functions[usize::try_from(bytecode).unwrap()].bytecode;
+            func.spans = original.functions[usize::try_from(spans).unwrap()].spans;
+        }
+        // Includes shared and empty entries, and retains the unreferenced fourth blobs.
+        assert_eq!(Program::decode(reordered.as_slice()).unwrap(), expected);
     }
 
     #[test]
