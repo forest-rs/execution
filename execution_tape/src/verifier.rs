@@ -1739,8 +1739,8 @@ fn verify_function_bytecode(
         }
     }
 
-    // Build a per-function register layout: each virtual register maps to exactly one class-local
-    // index.
+    // Map each virtual register to one class-local index while lowering. Only frame counts and
+    // argument locations need to survive in the executable layout.
     let mut counts = RegCounts::default();
     let mut reg_map: Vec<VReg> = Vec::with_capacity(reg_count);
     for t in reg_types.iter().copied() {
@@ -1820,11 +1820,7 @@ fn verify_function_bytecode(
             .unwrap_or(VReg::Unit(UnitReg(0)));
         arg_regs.push(r);
     }
-    let reg_layout = RegLayout {
-        reg_map,
-        counts,
-        arg_regs,
-    };
+    let reg_layout = RegLayout { counts, arg_regs };
 
     let map_pc_to_ix = |src_pc: u32, target_pc: u32| -> Result<u32, VerifyError> {
         let ix = decoded
@@ -1850,8 +1846,7 @@ fn verify_function_bytecode(
     for di in decoded {
         let pc = di.offset;
         let map = |reg: u32| -> Result<VReg, VerifyError> {
-            reg_layout
-                .reg_map
+            reg_map
                 .get(reg as usize)
                 .copied()
                 .ok_or(VerifyError::RegOutOfBounds {
@@ -2669,6 +2664,7 @@ fn verify_function_bytecode(
             instr: vi,
         });
     }
+    drop(reg_map);
     let span_by_instr_ix = build_span_by_instr_ix(decoded, spans);
 
     Ok(ExecFuncContainer {

@@ -127,7 +127,6 @@ pub(crate) struct RegCounts {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RegLayout {
-    pub(crate) reg_map: Vec<VReg>,
     pub(crate) counts: RegCounts,
     pub(crate) arg_regs: Vec<VReg>,
 }
