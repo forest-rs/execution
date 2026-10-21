@@ -15,6 +15,12 @@ You can find its changes [documented below](#001-2026-05-31).
 
 This release has an [MSRV][] of 1.88.
 
+### Added
+
+- Add owned `ValueSnapshot` retention through `AggHeap::snapshot` and `HostContext::retain`,
+  with `AggHeap::import` for moving retained data into another heap. Snapshots copy only
+  reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains.
+
 ### Changed
 
 - `AggHeap::tuple_new`, `struct_new`, and `array_new` now return `Result<AggHandle, AggError>`.

@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::aggregates::{AggError, AggHeap};
+use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
 use crate::program::{Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
@@ -256,6 +256,17 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
             aggregates,
             access,
         }
+    }
+
+    /// Retains borrowed values in an owned snapshot for use after this host call.
+    ///
+    /// Aggregate and closure-environment handles in call arguments are borrowed. The snapshot
+    /// copies only their reachable graph, independently of the VM's run-local storage. Read it
+    /// through [`ValueSnapshot::aggregates`], or import it into a destination heap before using
+    /// its aggregate roots in another run. Host objects and function IDs retain their own domains.
+    pub fn retain(&self, values: &[ValueRef<'_>]) -> Result<ValueSnapshot, AggError> {
+        self.aggregates
+            .snapshot_owned(values.iter().copied().map(ValueRef::to_value).collect())
     }
 
     /// Returns the verified program being executed.
@@ -654,6 +665,26 @@ fn hash_value_type(h: &mut Fnv1a64, t: ValueType) {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn retained_arguments_are_independent_of_the_source_heap() {
+        let program = crate::asm::ProgramBuilder::new().build();
+        let mut heap = AggHeap::new();
+        let root = heap
+            .tuple_new(alloc::vec![Value::Str("retained".into())])
+            .unwrap();
+        let snapshot = HostContext::new(&program, &heap, None)
+            .retain(&[ValueRef::Agg(root)])
+            .unwrap();
+        heap.clear();
+        let Value::Agg(root) = snapshot.values()[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            snapshot.aggregates().tuple_get(root, 0),
+            Ok(Value::Str("retained".into()))
+        );
+    }
 
     #[test]
     fn sig_hash_is_stable_for_same_sig() {
