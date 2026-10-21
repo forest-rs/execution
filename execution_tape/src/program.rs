@@ -1270,7 +1270,7 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
         return Err(DecodeError::OutOfBounds);
     };
 
-    let n_funcs = read_usize(&mut r)?;
+    let n_funcs = read_count(&mut r)?;
     let mut function_names = Vec::with_capacity(n_funcs);
     for _ in 0..n_funcs {
         let func = r.read_uleb128_u32()?;
@@ -1281,7 +1281,7 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
         });
     }
 
-    let n_labels = read_usize(&mut r)?;
+    let n_labels = read_count(&mut r)?;
     let mut labels = Vec::with_capacity(n_labels);
     for _ in 0..n_labels {
         let func = r.read_uleb128_u32()?;
@@ -1307,7 +1307,7 @@ fn decode_names(payload: &[u8]) -> Result<NamesDef, DecodeError> {
 
 fn decode_symbols(payload: &[u8]) -> Result<(Vec<SymbolEntry>, String), DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut symbols: Vec<SymbolEntry> = Vec::with_capacity(n);
     let mut symbol_data: String = String::new();
     for _ in 0..n {
@@ -1779,7 +1779,7 @@ fn decode_const_pool(
     const_str: &mut String,
 ) -> Result<Vec<ConstEntry>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         let tag = ConstTag::from_u8(r.read_u8()?)?;
@@ -1941,7 +1941,7 @@ fn encode_agg_shape(w: &mut Writer, shape: &AggShape) {
 fn decode_agg_shape(r: &mut Reader<'_>) -> Result<AggShape, DecodeError> {
     Ok(match AggShapeTag::from_u8(r.read_u8()?)? {
         AggShapeTag::Tuple => {
-            let elem_count = read_usize(r)?;
+            let elem_count = read_count(r)?;
             let mut elems = Vec::with_capacity(elem_count);
             for _ in 0..elem_count {
                 let has_type = r.read_u8()?;
@@ -1990,17 +1990,17 @@ fn encode_types(w: &mut Writer, t: &TypeTable) {
 
 fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
     let mut r = Reader::new(payload);
-    let field_name_count = read_usize(&mut r)?;
+    let field_name_count = read_count(&mut r)?;
     let mut interned_field_names = Vec::with_capacity(field_name_count);
     for _ in 0..field_name_count {
         let len = read_usize(&mut r)?;
         interned_field_names.push(String::from(r.read_str(len)?));
     }
 
-    let struct_count = read_usize(&mut r)?;
+    let struct_count = read_count(&mut r)?;
     let mut structs = Vec::with_capacity(struct_count);
     for _ in 0..struct_count {
-        let field_count = read_usize(&mut r)?;
+        let field_count = read_count(&mut r)?;
         let mut field_names = Vec::with_capacity(field_count);
         let mut field_types = Vec::with_capacity(field_count);
         for _ in 0..field_count {
@@ -2016,7 +2016,7 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
             field_types,
         });
     }
-    let elem_count = read_usize(&mut r)?;
+    let elem_count = read_count(&mut r)?;
     let mut array_elems = Vec::with_capacity(elem_count);
     for _ in 0..elem_count {
         array_elems.push(decode_value_type(&mut r)?);
@@ -2033,10 +2033,10 @@ type DecodedCallSig = (Vec<ValueType>, Vec<ValueType>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        let argc = read_usize(&mut r)?;
+        let argc = read_count(&mut r)?;
         let mut args = Vec::with_capacity(argc);
         for _ in 0..argc {
             args.push(decode_value_type(&mut r)?);
@@ -2053,7 +2053,7 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
         } else {
             return Err(DecodeError::OutOfBounds);
         };
-        let retc = read_usize(&mut r)?;
+        let retc = read_count(&mut r)?;
         let mut rets = Vec::with_capacity(retc);
         for _ in 0..retc {
             rets.push(decode_value_type(&mut r)?);
@@ -2077,17 +2077,17 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
 
 fn decode_host_sigs(payload: &[u8]) -> Result<Vec<DecodedHostSig>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         let symbol = SymbolId(r.read_uleb128_u32_nz()?);
         let sig_hash = SigHash(r.read_u64_le()?);
-        let argc = read_usize(&mut r)?;
+        let argc = read_count(&mut r)?;
         let mut args = Vec::with_capacity(argc);
         for _ in 0..argc {
             args.push(decode_value_type(&mut r)?);
         }
-        let retc = read_usize(&mut r)?;
+        let retc = read_count(&mut r)?;
         let mut rets = Vec::with_capacity(retc);
         for _ in 0..retc {
             rets.push(decode_value_type(&mut r)?);
@@ -2099,15 +2099,15 @@ fn decode_host_sigs(payload: &[u8]) -> Result<Vec<DecodedHostSig>, DecodeError> 
 
 fn decode_call_sigs(payload: &[u8]) -> Result<Vec<DecodedCallSig>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        let argc = read_usize(&mut r)?;
+        let argc = read_count(&mut r)?;
         let mut args = Vec::with_capacity(argc);
         for _ in 0..argc {
             args.push(decode_value_type(&mut r)?);
         }
-        let retc = read_usize(&mut r)?;
+        let retc = read_count(&mut r)?;
         let mut rets = Vec::with_capacity(retc);
         for _ in 0..retc {
             rets.push(decode_value_type(&mut r)?);
@@ -2121,7 +2121,7 @@ fn decode_function_arg_agg_shapes(
     payload: &[u8],
 ) -> Result<Vec<FunctionArgAggShapeEntry>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(FunctionArgAggShapeEntry {
@@ -2147,7 +2147,7 @@ struct FunctionTableEntry {
 
 fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         let arg_count = r.read_uleb128_u32()?;
@@ -2168,7 +2168,7 @@ fn decode_function_table(payload: &[u8]) -> Result<Vec<FunctionTableEntry>, Deco
 
 fn decode_blob_list(payload: &[u8]) -> Result<Vec<Vec<u8>>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         let len = read_usize(&mut r)?;
@@ -2179,10 +2179,10 @@ fn decode_blob_list(payload: &[u8]) -> Result<Vec<Vec<u8>>, DecodeError> {
 
 fn decode_span_tables(payload: &[u8]) -> Result<Vec<Vec<SpanEntry>>, DecodeError> {
     let mut r = Reader::new(payload);
-    let n = read_usize(&mut r)?;
+    let n = read_count(&mut r)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        let span_count = read_usize(&mut r)?;
+        let span_count = read_count(&mut r)?;
         let mut spans = Vec::with_capacity(span_count);
         for _ in 0..span_count {
             spans.push(SpanEntry {
@@ -2193,6 +2193,16 @@ fn decode_span_tables(payload: &[u8]) -> Result<Vec<Vec<SpanEntry>>, DecodeError
         out.push(spans);
     }
     Ok(out)
+}
+
+// Every counted entry consumes at least one byte. Reject impossible counts before reserving
+// storage, so a short malformed section cannot request an arbitrary allocation.
+fn read_count(r: &mut Reader<'_>) -> Result<usize, DecodeError> {
+    let count = read_usize(r)?;
+    if count > r.remaining() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    Ok(count)
 }
 
 fn read_usize(r: &mut Reader<'_>) -> Result<usize, DecodeError> {

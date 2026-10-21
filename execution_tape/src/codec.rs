@@ -373,12 +373,7 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
                 DecodedOperand::Reg(read_u32_uleb(&mut r)?)
             }
             (OperandKind::RegList, OperandEncoding::RegListU32UlebCountThenRegs) => {
-                let n = read_u32_uleb(&mut r)? as usize;
-                let mut regs = Vec::with_capacity(n);
-                for _ in 0..n {
-                    regs.push(read_u32_uleb(&mut r)?);
-                }
-                DecodedOperand::RegList(regs)
+                DecodedOperand::RegList(crate::codec_primitives::read_reg_list(&mut r)?)
             }
             (OperandKind::Pc, OperandEncoding::U32Uleb) => {
                 DecodedOperand::Pc(read_u32_uleb(&mut r)?)
