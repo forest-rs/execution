@@ -727,6 +727,9 @@ impl<H: Host> Vm<H> {
     ///
     /// Even for verified bytecode, host calls are a trust boundary, so the VM validates host ABI
     /// conformance (return arity and return types) at runtime.
+    ///
+    /// An incorrect entry argument count traps with [`Trap::ArityMismatch`]. An unknown entry
+    /// function traps with [`Trap::InvalidPc`].
     pub fn run(
         &mut self,
         program: &VerifiedProgram,
@@ -742,6 +745,7 @@ impl<H: Host> Vm<H> {
     /// Executes `program` starting at `entry` using an explicit per-run [`ExecutionContext`].
     ///
     /// Keeping the context separate allows embedders to reuse allocations across runs.
+    /// Entry validation follows the same rules as [`Self::run`].
     pub fn run_with_ctx(
         &mut self,
         ctx: &mut ExecutionContext,
@@ -795,9 +799,6 @@ impl<H: Host> Vm<H> {
             .functions
             .get(entry.0 as usize)
             .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
-        if args.len() != entry_fn.arg_count as usize {
-            return Err(ctx.trap(entry, 0, None, Trap::InvalidPc));
-        }
         validate_entry_args(program_ref, entry_fn, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
 
@@ -2907,7 +2908,7 @@ impl Value {
 fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -> Result<(), Trap> {
     let arg_types = entry_fn.arg_types(program).map_err(|_| Trap::InvalidPc)?;
     if arg_types.len() != args.len() {
-        return Err(Trap::InvalidPc);
+        return Err(Trap::ArityMismatch);
     }
     for (v, &t) in args.iter().zip(arg_types.iter()) {
         v.check_type(t)?;

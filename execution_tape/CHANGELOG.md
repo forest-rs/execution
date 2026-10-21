@@ -13,6 +13,11 @@ You can find its changes [documented below](#001-2026-05-31).
 
 ## [Unreleased]
 
+### Fixed
+
+- Entry calls with an incorrect argument count now report `Trap::ArityMismatch` instead of
+  `Trap::InvalidPc`. Callers matching invocation errors should handle `ArityMismatch`.
+
 ## [0.0.1][] (2026-05-31)
 
 This release has an [MSRV][] of 1.88.
