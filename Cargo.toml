@@ -8,6 +8,7 @@ members = [
   "execution_tape_conformance",
   "execution_graph_wind_tunnel",
   "execution_tape_profiling",
+  "execution_tape_recording",
   "execution_tape_wind_tunnel",
 ]
 
@@ -25,6 +26,7 @@ repository = "https://github.com/forest-rs/execution"
 # the version requirements that `cargo package`/`cargo publish` need.
 execution_tape = { path = "execution_tape", version = "0.0.1" }
 execution_graph = { path = "execution_graph", version = "0.0.1" }
+execution_tape_recording = { path = "execution_tape_recording", version = "0.0.1" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

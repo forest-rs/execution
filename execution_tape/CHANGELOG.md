@@ -26,6 +26,11 @@ This release has an [MSRV][] of 1.88.
   candidates precede validation/compaction and their handles are borrowed for the callback.
   Recording ownership and replay policy remain outside the VM. ([#144][] by [@waywardmonkeys][])
 
+- Own invocation boundary values and reachable aggregate graphs with the separate
+  `execution_tape_recording` crate. Capture budgets and incomplete states are explicit;
+  replay reexecutes guest code in a fresh VM with recorded host outcomes, preserving graph
+  identities and typed failures without invoking the live host. ([#145][] by [@waywardmonkeys][])
+
 - Declare typed control-flow joins with `Asm::block`, pass arguments with `Label::with_args`, and
   use the existing `br`/`jmp` methods. Edges transfer values simultaneously, including cycles,
   without extra guest instructions, fuel, or trace events. Inspect source arms with
@@ -178,5 +183,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_tape-v0.0.1
 
 [#144]: https://github.com/forest-rs/execution/pull/144
+
+[#145]: https://github.com/forest-rs/execution/pull/145
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

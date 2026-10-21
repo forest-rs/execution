@@ -11,6 +11,8 @@ Crates:
 - `execution_graph_examples/`: runnable graph examples, including the `tax` demo.
 - `execution_tape_conformance/`: conformance/regression tests for the tape format, verifier, and VM.
 - `execution_tape_profiling/`: optional profiling adapters; kept separate from the core crate.
+- `execution_tape_recording/`: owned boundary recordings and checked replay in a fresh VM,
+  with capture budgets and recording-local aggregate identities (`no_std + alloc`).
 - `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks.
 
 Docs:
