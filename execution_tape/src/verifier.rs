@@ -3,10 +3,9 @@
 
 //! Program verification for `execution_tape`.
 //!
-//! v1 verification is responsible for rejecting malformed or unsafe-to-execute programs before
-//! they reach the interpreter. It is intentionally split into:
-//! - container-level checks (bounds, consistency, monotonic tables)
-//! - bytecode-level checks (CFG, init-before-use, type discipline) (future tickets)
+//! Verification rejects malformed programs before they reach the interpreter. It checks container
+//! bounds and consistency, control flow, initialization, and types, then lowers bytecode to typed
+//! execution artifacts. The `_with_lints` entry points additionally run liveness-based diagnostics.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -998,7 +997,9 @@ impl Default for VerifyConfig {
     }
 }
 
-/// Verifies `program` according to v1 container-level rules.
+/// Verifies container, control-flow, initialization, type, and lowering rules for `program`.
+///
+/// Use [`verify_program_with_lints`] to additionally compute non-fatal diagnostics.
 pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), VerifyError> {
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
@@ -1007,7 +1008,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
 
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let _ = verify_function_container(program, func_id, func, cfg)?.exec;
+        let _ = verify_function_container(program, func_id, func, cfg, false)?.exec;
     }
     Ok(())
 }
@@ -1025,7 +1026,7 @@ pub fn verify_program_with_lints(
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let out = verify_function_container(program, func_id, func, cfg)?;
+        let out = verify_function_container(program, func_id, func, cfg, true)?;
         lints.extend(out.lints);
     }
     Ok(lints)
@@ -1045,7 +1046,8 @@ pub fn verify_program_owned(
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        verified_functions.push(verify_function_container(&program, func_id, func, cfg)?.exec);
+        verified_functions
+            .push(verify_function_container(&program, func_id, func, cfg, false)?.exec);
     }
 
     Ok(VerifiedProgram {
@@ -1070,7 +1072,7 @@ pub fn verify_program_owned_with_lints(
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let out = verify_function_container(&program, func_id, func, cfg)?;
+        let out = verify_function_container(&program, func_id, func, cfg, true)?;
         verified_functions.push(out.exec);
         lints.extend(out.lints);
     }
@@ -1342,6 +1344,7 @@ fn verify_function_container(
     func_id: u32,
     func: &Function,
     cfg: &VerifyConfig,
+    collect_lints: bool,
 ) -> Result<ExecFuncContainer, VerifyError> {
     if func.reg_count > cfg.max_regs_per_function {
         return Err(VerifyError::RegCountTooLarge {
@@ -1400,7 +1403,15 @@ fn verify_function_container(
     }
     verify_id_operands_in_bounds(program, func_id, &decoded)?;
     verify_function_bytecode(
-        program, func_id, func, bytecode, spans, arg_types, ret_types, &decoded,
+        program,
+        func_id,
+        func,
+        bytecode,
+        spans,
+        arg_types,
+        ret_types,
+        &decoded,
+        collect_lints,
     )
 }
 
@@ -1543,6 +1554,7 @@ fn verify_function_bytecode(
     arg_types: &[ValueType],
     ret_types: &[ValueType],
     decoded: &[DecodedInstr],
+    collect_lints: bool,
 ) -> Result<ExecFuncContainer, VerifyError> {
     if func.reg_count == 0 {
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
@@ -1600,7 +1612,11 @@ fn verify_function_bytecode(
         }
     }
 
-    let lints = lint_function_bytecode(func_id, func, decoded, &blocks, &reachable);
+    let lints = if collect_lints {
+        lint_function_bytecode(func_id, func, decoded, &blocks, &reachable)
+    } else {
+        Vec::new()
+    };
 
     // Must-init analysis (writes-only transfer).
     let reg_count = func.reg_count as usize;
@@ -5491,6 +5507,49 @@ mod tests {
     }
 
     #[test]
+    fn optional_lints_preserve_type_and_initialization_errors() {
+        for initialized in [false, true] {
+            let mut asm = Asm::new();
+            if initialized {
+                asm.const_bool(1, true);
+            }
+            asm.const_i64(2, 7);
+            asm.i64_add(3, 1, 2);
+            asm.ret(0, &[3]);
+            let mut builder = ProgramBuilder::new();
+            builder
+                .push_function_checked(
+                    asm,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap();
+            let program = builder.build();
+            let cfg = VerifyConfig::default();
+            let expected = verify_program(&program, &cfg).unwrap_err();
+            if initialized {
+                assert!(matches!(expected, VerifyError::TypeMismatch { .. }));
+            } else {
+                assert!(matches!(expected, VerifyError::UninitializedRead { .. }));
+            }
+            assert_eq!(
+                verify_program_with_lints(&program, &cfg).unwrap_err(),
+                expected
+            );
+            assert_eq!(
+                verify_program_owned(program.clone(), &cfg).unwrap_err(),
+                expected
+            );
+            assert_eq!(
+                verify_program_owned_with_lints(program, &cfg).unwrap_err(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn verifier_lints_unreachable_dead_store_redundant_mov_and_unused_call_ret() {
         let mut pb = ProgramBuilder::new();
 
@@ -5539,7 +5598,13 @@ mod tests {
         .unwrap();
 
         let p = pb.build();
-        let lints = verify_program_with_lints(&p, &VerifyConfig::default()).unwrap();
+        let cfg = VerifyConfig::default();
+        verify_program(&p, &cfg).unwrap();
+        let lints = verify_program_with_lints(&p, &cfg).unwrap();
+        let verified = verify_program_owned(p.clone(), &cfg).unwrap();
+        let (verified_with_lints, owned_lints) = verify_program_owned_with_lints(p, &cfg).unwrap();
+        assert_eq!(verified, verified_with_lints);
+        assert_eq!(lints, owned_lints);
 
         assert!(
             lints
