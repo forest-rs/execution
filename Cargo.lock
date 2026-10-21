@@ -231,6 +231,7 @@ name = "execution_tape_conformance"
 version = "0.0.1"
 dependencies = [
  "execution_tape",
+ "execution_tape_recording",
 ]
 
 [[package]]
@@ -239,6 +240,13 @@ version = "0.0.1"
 dependencies = [
  "execution_tape",
  "tracy-client",
+]
+
+[[package]]
+name = "execution_tape_recording"
+version = "0.0.1"
+dependencies = [
+ "execution_tape",
 ]
 
 [[package]]
