@@ -46,8 +46,7 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
-- Reuse the graph output buffer directly in `TapeExecutor`, avoiding a temporary result vector.
-
+- Reuse the graph output buffer directly in `TapeExecutor`, avoiding a temporary result vector. ([#119][] by [@waywardmonkeys][])
 - Improve crate and README documentation, keeping examples synchronized. ([#93][] by [@no-materials][])
 - Mark public report output structs as `non_exhaustive`. ([#94][] by [@waywardmonkeys][])
 - Include node labels in `ReportDetailMask::FULL`. ([#95][] by [@waywardmonkeys][])
@@ -116,6 +115,8 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#102]: https://github.com/forest-rs/execution/pull/102
 [#103]: https://github.com/forest-rs/execution/pull/103
 [#104]: https://github.com/forest-rs/execution/pull/104
+
+[#119]: https://github.com/forest-rs/execution/pull/119
 
 [Unreleased]: https://github.com/forest-rs/execution/compare/execution_graph-v0.0.1...HEAD
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_graph-v0.0.1
