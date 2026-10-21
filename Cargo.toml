@@ -6,6 +6,7 @@ members = [
   "execution_tape",
   "execution_tape_codegen",
   "execution_tape_conformance",
+  "execution_tape_footfall",
   "execution_graph_wind_tunnel",
   "execution_tape_profiling",
   "execution_tape_observatory",
@@ -29,11 +30,15 @@ execution_tape = { path = "execution_tape", version = "0.0.1" }
 execution_graph = { path = "execution_graph", version = "0.0.1" }
 execution_tape_recording = { path = "execution_tape_recording", version = "0.0.1" }
 execution_tape_observatory = { path = "execution_tape_observatory", version = "0.0.1" }
+execution_tape_footfall = { path = "execution_tape_footfall", version = "0.0.1" }
 
 # Shared by the optional terminal adapter and its executable demo.
 ratatui = { version = "0.30.2", default-features = false, features = [
   "crossterm",
 ] }
+
+# Footfall is not published yet; keep adapters on one reproducible public revision.
+footfall = { git = "https://github.com/forest-rs/footfall", rev = "bbe52283c3f398d16dd3ebb25ad8300babfef557", default-features = false }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7
