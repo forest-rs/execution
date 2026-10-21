@@ -444,6 +444,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         _func: FuncId,
         _pc: u32,
         _span_id: Option<u64>,
+        outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         let ScopeKind::HostCall { .. } = kind else {
             return;
@@ -453,6 +454,9 @@ impl TraceSink for StrictDepsTrace<'_> {
             return;
         };
 
+        if matches!(outcome, execution_tape::trace::TraceOutcome::Trap(_)) {
+            return;
+        }
         if self.violation.is_some() {
             return;
         }

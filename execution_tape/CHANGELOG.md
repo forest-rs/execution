@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Define `TraceSink::instr` as an instruction attempt; `next_pc` is its lexical end.
+  Use the new `instr_end` callback for success/trap and the actual control-flow successor.
+  Add a `TraceOutcome` argument to `scope_exit` implementations; scopes now close on traps
+  even without run tracing, and host success includes validating returned values.
+
 - Improve crate and README documentation, keeping examples synchronized. ([#93][] by [@no-materials][])
 - Reduce verifier allocations by reusing dataflow buffers and storing aggregate metadata sparsely.
   Verification only computes liveness-based diagnostics through the `_with_lints` entry points. ([#109][] by [@waywardmonkeys][])

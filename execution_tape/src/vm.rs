@@ -18,7 +18,7 @@ use crate::arena::{BytesHandle, StrHandle, ValueArena};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
-use crate::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
+use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
     I64Reg, ObjReg, StrReg, U64Reg, UnitReg, VReg, VRegSlice,
@@ -355,19 +355,26 @@ impl<H: Host> fmt::Debug for Vm<H> {
     }
 }
 
-/// Stack-only helper that centralizes trace mask checks and sink dispatch.
+/// Per-run trace state; scope storage allocates only when scope tracing is enabled.
 ///
 /// Keeping this out of [`ExecutionContext`] avoids storing borrowed trace state in the long-lived
 /// per-run context while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
     mask: TraceMask,
     sink: Option<&'a mut dyn TraceSink>,
+    scopes: Vec<(ScopeKind, usize)>,
+    pending: Option<TraceLocation>,
 }
 
 impl<'a> TraceCtx<'a> {
     #[inline]
     fn new(mask: TraceMask, sink: Option<&'a mut dyn TraceSink>) -> Self {
-        Self { mask, sink }
+        Self {
+            mask,
+            sink,
+            scopes: Vec::new(),
+            pending: None,
+        }
     }
 
     #[inline(always)]
@@ -409,6 +416,7 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
+            self.pending = Some(TraceLocation { func, pc });
             t.instr(program, func, pc, next_pc, span_id, opcode);
         }
     }
@@ -426,6 +434,7 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
+            self.scopes.push((ScopeKind::CallFrame { func }, depth));
             t.scope_enter(
                 program,
                 ScopeKind::CallFrame { func },
@@ -450,6 +459,7 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
+            self.scopes.pop();
             t.scope_exit(
                 program,
                 ScopeKind::CallFrame { func },
@@ -457,6 +467,7 @@ impl<'a> TraceCtx<'a> {
                 func,
                 pc,
                 span_id,
+                TraceOutcome::Ok,
             );
         }
     }
@@ -477,6 +488,14 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
+            self.scopes.push((
+                ScopeKind::HostCall {
+                    host_sig,
+                    symbol,
+                    sig_hash,
+                },
+                depth,
+            ));
             t.scope_enter(
                 program,
                 ScopeKind::HostCall {
@@ -508,6 +527,7 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
+            self.scopes.pop();
             t.scope_exit(
                 program,
                 ScopeKind::HostCall {
@@ -519,12 +539,67 @@ impl<'a> TraceCtx<'a> {
                 func,
                 pc,
                 span_id,
+                TraceOutcome::Ok,
             );
         }
+    }
+    fn instr_end(
+        &mut self,
+        program: &Program,
+        next: Option<TraceLocation>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        if let Some(location) = self.pending.take()
+            && let Some(sink) = self.sink.as_mut()
+        {
+            sink.instr_end(program, location, next, outcome);
+        }
+    }
+
+    fn finish(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        if let TraceOutcome::Trap(error) = outcome {
+            // A host ABI failure belongs to the host scope, before the instruction completes.
+            if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
+                let (kind, depth) = self.scopes.pop().expect("open host scope");
+                if let Some(sink) = self.sink.as_mut() {
+                    sink.scope_exit(
+                        program,
+                        kind,
+                        depth,
+                        error.func,
+                        error.pc,
+                        error.span_id,
+                        outcome,
+                    );
+                }
+            }
+            self.instr_end(program, None, outcome);
+            while let Some((kind, depth)) = self.scopes.pop() {
+                if let Some(sink) = self.sink.as_mut() {
+                    sink.scope_exit(
+                        program,
+                        kind,
+                        depth,
+                        error.func,
+                        error.pc,
+                        error.span_id,
+                        outcome,
+                    );
+                }
+            }
+        }
+        debug_assert!(
+            self.pending.is_none(),
+            "every instruction attempt must complete"
+        );
+        debug_assert!(self.scopes.is_empty(), "every entered scope must close");
     }
 }
 
 trait TracePolicy {
+    #[inline(always)]
+    fn instr_end(_trace: &mut TraceCtx<'_>, _program: &Program, _next: Option<TraceLocation>) {}
+
     fn instr(
         trace: &mut TraceCtx<'_>,
         program: &Program,
@@ -646,6 +721,11 @@ impl TracePolicy for NoTracePolicy {
 }
 
 impl TracePolicy for WithTracePolicy {
+    #[inline(always)]
+    fn instr_end(trace: &mut TraceCtx<'_>, program: &Program, next: Option<TraceLocation>) {
+        trace.instr_end(program, next, TraceOutcome::Ok);
+    }
+
     #[inline(always)]
     fn instr(
         trace: &mut TraceCtx<'_>,
@@ -788,6 +868,7 @@ impl<H: Host> Vm<H> {
             Ok(_) => TraceOutcome::Ok,
             Err(e) => TraceOutcome::Trap(e),
         };
+        trace.finish(program_ref, outcome);
         trace.run_end(program_ref, outcome);
 
         result
@@ -1653,8 +1734,6 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::Ret { eff_in: _, rets } => {
-                    P::call_scope_exit(trace, program_ref, ctx.frames.len(), func_id, pc, span_id);
-
                     if ctx.frames.len() == 1 {
                         let rets = vf.vregs(*rets);
                         let mut out: Vec<Value> = Vec::with_capacity(rets.len());
@@ -1664,6 +1743,15 @@ impl<H: Host> Vm<H> {
                                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
                         }
+                        P::call_scope_exit(
+                            trace,
+                            program_ref,
+                            ctx.frames.len(),
+                            func_id,
+                            pc,
+                            span_id,
+                        );
+                        P::instr_end(trace, program_ref, None);
                         return Ok(out);
                     }
 
@@ -1698,6 +1786,14 @@ impl<H: Host> Vm<H> {
                     }
 
                     ctx.truncate_to(base);
+                    P::call_scope_exit(
+                        trace,
+                        program_ref,
+                        ctx.frames.len() + 1,
+                        func_id,
+                        pc,
+                        span_id,
+                    );
                 }
 
                 ExecInstr::HostCall {
@@ -1810,18 +1906,6 @@ impl<H: Host> Vm<H> {
                         })?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
-                    P::host_scope_exit(
-                        trace,
-                        program_ref,
-                        *host_sig,
-                        hs.symbol,
-                        hs.sig_hash,
-                        ctx.frames.len(),
-                        func_id,
-                        pc,
-                        span_id,
-                    );
-
                     // v1: effect token is `Unit`.
                     ctx.write_unit(base, *eff_out, 0);
 
@@ -1845,6 +1929,17 @@ impl<H: Host> Vm<H> {
                         ctx.intern_value_to_vreg(base, dst, &val)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
+                    P::host_scope_exit(
+                        trace,
+                        program_ref,
+                        *host_sig,
+                        hs.symbol,
+                        hs.sig_hash,
+                        ctx.frames.len(),
+                        func_id,
+                        pc,
+                        span_id,
+                    );
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::CallIndirectFunc {
@@ -2472,6 +2567,14 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
             }
+            P::instr_end(
+                trace,
+                program_ref,
+                ctx.frames.last().map(|frame| TraceLocation {
+                    func: frame.func,
+                    pc: frame.pc,
+                }),
+            );
         }
     }
 
@@ -3262,6 +3365,168 @@ mod tests {
                 .unwrap(),
                 vec![Value::I64(42)]
             );
+        }
+    }
+
+    #[test]
+    fn trace_attempts_and_scopes_complete_on_success_and_traps() {
+        #[derive(Default)]
+        struct Sink {
+            pending: Option<TraceLocation>,
+            scopes: Vec<(ScopeKind, usize)>,
+            ends: Vec<(TraceLocation, Option<TraceLocation>, bool)>,
+            scope_ends: usize,
+            trapped_scopes: usize,
+        }
+        impl TraceSink for Sink {
+            fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, _: u8) {
+                assert!(self.pending.replace(TraceLocation { func, pc }).is_none());
+            }
+            fn instr_end(
+                &mut self,
+                _: &Program,
+                location: TraceLocation,
+                next: Option<TraceLocation>,
+                outcome: TraceOutcome<'_>,
+            ) {
+                assert_eq!(self.pending.take(), Some(location));
+                self.ends
+                    .push((location, next, matches!(outcome, TraceOutcome::Trap(_))));
+            }
+            fn scope_enter(
+                &mut self,
+                _: &Program,
+                kind: ScopeKind,
+                depth: usize,
+                _: FuncId,
+                _: u32,
+                _: Option<u64>,
+            ) {
+                self.scopes.push((kind, depth));
+            }
+            fn scope_exit(
+                &mut self,
+                _: &Program,
+                kind: ScopeKind,
+                depth: usize,
+                _: FuncId,
+                _: u32,
+                _: Option<u64>,
+                outcome: TraceOutcome<'_>,
+            ) {
+                assert_eq!(self.scopes.pop(), Some((kind, depth)));
+                self.scope_ends += 1;
+                self.trapped_scopes += usize::from(matches!(outcome, TraceOutcome::Trap(_)));
+            }
+        }
+        struct HostMode(u8);
+        impl Host for HostMode {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                _: &[ValueRef<'_>],
+                rets: &mut [Value],
+                _: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                match self.0 {
+                    0 => Err(HostError::Failed),
+                    1 => Ok(0),
+                    _ => {
+                        rets[0] = Value::I64(42);
+                        Ok(0)
+                    }
+                }
+            }
+        }
+        for mode in 0..7 {
+            let mut pb = ProgramBuilder::new();
+            let hs = pb.host_sig_for(
+                "trace.test",
+                HostSig {
+                    args: vec![],
+                    rets: vec![ValueType::I64],
+                },
+            );
+            let mut callee = Asm::new();
+            if mode == 2 {
+                callee.trap(99);
+            }
+            callee.host_call_sig_id(0, hs, 0, &[], &[1]);
+            callee.ret(0, &[1]);
+            let target = pb
+                .push_function_checked(
+                    callee,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap();
+            let mut caller = Asm::new();
+            caller.call(0, target, 0, &[], &[1]);
+            caller.ret(0, &[1]);
+            let entry = pb
+                .push_function_checked(
+                    caller,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap();
+            let p = pb.build_verified().unwrap();
+            for mask in [
+                TraceMask::INSTR,
+                TraceMask::CALL,
+                TraceMask::HOST,
+                TraceMask::INSTR | TraceMask::CALL | TraceMask::HOST,
+            ] {
+                let mut limits = Limits::default();
+                if mode == 3 {
+                    limits.fuel = 0;
+                }
+                if mode == 4 {
+                    limits.fuel = 1;
+                }
+                if mode == 5 {
+                    limits.max_call_depth = 1;
+                }
+                let mut vm = Vm::new(HostMode(mode), limits);
+                let mut sink = Sink::default();
+                let result = vm.run(&p, entry, &[], mask, Some(&mut sink));
+                assert_eq!(result.is_ok(), mode == 6, "mode={mode}: {result:?}");
+                assert!(sink.pending.is_none());
+                assert!(sink.scopes.is_empty());
+                if mask.contains(TraceMask::INSTR) {
+                    if mode == 3 {
+                        assert!(sink.ends.is_empty());
+                    } else if mode == 4 {
+                        assert_eq!(sink.ends.len(), 1);
+                        assert!(!sink.ends[0].2);
+                    } else {
+                        assert_eq!(sink.ends.last().unwrap().2, mode != 6);
+                    }
+                    if mode == 6 {
+                        assert_eq!(
+                            sink.ends[0].1,
+                            Some(TraceLocation {
+                                func: target,
+                                pc: 0
+                            })
+                        );
+                        assert_eq!(sink.ends[2].1.unwrap().func, entry);
+                        assert_eq!(sink.ends.last().unwrap().1, None);
+                    }
+                }
+                if mask.contains(TraceMask::CALL) {
+                    assert!(sink.scope_ends > 0);
+                    assert_eq!(sink.trapped_scopes > 0, mode != 6);
+                }
+                if mask == TraceMask::HOST && (mode == 0 || mode == 1) {
+                    assert_eq!(sink.trapped_scopes, 1);
+                }
+            }
         }
     }
 
