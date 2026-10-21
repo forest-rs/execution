@@ -1268,177 +1268,88 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
     let _ = src;
     out.push('\n');
 
+    let capacity = |kind: &str, access: &str| {
+        ops.iter()
+            .map(|(_, op)| {
+                op.operands
+                    .iter()
+                    .filter(|operand| {
+                        operand.kind == kind && operand.access.as_deref() == Some(access)
+                    })
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let max_scalars = capacity("reg", "read").max(capacity("reg", "write")).max(3);
+    let max_lists = capacity("reg_list", "read")
+        .max(capacity("reg_list", "write"))
+        .max(1);
+    u8::try_from(max_scalars).context("too many scalar register operands")?;
+    u8::try_from(max_lists).context("too many register lists")?;
+    out.push_str(&format!(
+        "pub(crate) const MAX_SCALAR_OPERANDS: usize = {max_scalars};\n"
+    ));
+    out.push_str(&format!(
+        "pub(crate) const MAX_REGISTER_LISTS: usize = {max_lists};\n\n"
+    ));
+    for (name, access) in [("ReadsIter", "read"), ("WritesIter", "write")] {
+        out.push_str(&format!(
+            "pub(crate) type {name}<'a> = OperandIter<'a, {}, {}>;\n",
+            capacity("reg", access),
+            capacity("reg_list", access)
+        ));
+    }
+    out.push('\n');
     out.push_str("impl Instr {\n");
-    out.push_str(
-        "    /// Iterates the virtual registers read by this instruction (allocation-free).\n",
-    );
-    out.push_str("    #[must_use]\n");
-    out.push_str("    pub(crate) fn reads(&self) -> ReadsIter<'_> {\n");
-    out.push_str("        match self {\n");
-    for (_b, op) in &ops {
-        let mut scalar_reads: Vec<&str> = Vec::new();
-        let mut list_read: Option<&str> = None;
-
-        for operand in &op.operands {
-            match (operand.kind.as_str(), operand.access.as_deref()) {
-                ("reg", Some("read")) => {
-                    scalar_reads
-                        .push(rust_field_name(&operand.field).with_context(|| {
-                            format!("bad operand field for opcode {}", op.name)
-                        })?);
+    for (method, access, iter) in [
+        ("reads", "read", "ReadsIter"),
+        ("writes", "write", "WritesIter"),
+    ] {
+        let scalar_capacity = capacity("reg", access);
+        let list_capacity = capacity("reg_list", access);
+        out.push_str(&format!("    /// Iterates virtual registers {access} by this instruction without allocation.\n    #[must_use]\n    pub(crate) fn {method}(&self) -> {iter}<'_> {{\n        match self {{\n"));
+        for (_, op) in &ops {
+            let operands: Vec<_> = op
+                .operands
+                .iter()
+                .filter(|operand| operand.access.as_deref() == Some(access))
+                .collect();
+            let mut scalar = Vec::new();
+            let mut lists = Vec::new();
+            let mut fields = Vec::new();
+            for operand in operands {
+                let field = rust_field_name(&operand.field)
+                    .with_context(|| format!("bad operand field for opcode {}", op.name))?;
+                fields.push(field);
+                match operand.kind.as_str() {
+                    "reg" => scalar.push(format!("*{field}")),
+                    "reg_list" => lists.push(format!("{field}.as_slice()")),
+                    _ => unreachable!("validated register access"),
                 }
-                ("reg_list", Some("read")) => {
-                    let field = rust_field_name(&operand.field)
-                        .with_context(|| format!("bad operand field for opcode {}", op.name))?;
-                    if list_read.replace(field).is_some() {
-                        bail!("opcode {} has multiple reg_list reads", op.name);
-                    }
-                }
-                _ => {}
             }
-        }
-
-        if list_read.is_some() && scalar_reads.len() > 2 {
-            bail!(
-                "opcode {} has reg_list reads plus {} scalar reads (max 2 supported)",
-                op.name,
-                scalar_reads.len()
-            );
-        }
-        if scalar_reads.len() > 3 {
-            bail!(
-                "opcode {} has {} scalar reads (max 3 supported)",
-                op.name,
-                scalar_reads.len()
-            );
-        }
-
-        if op.operands.is_empty() {
-            out.push_str(&format!("            Self::{} => ", op.name));
-        } else {
-            out.push_str(&format!("            Self::{} ", op.name));
-            if scalar_reads.is_empty() && list_read.is_none() {
-                out.push_str("{ .. } => ");
+            if op.operands.is_empty() {
+                out.push_str(&format!("            Self::{} => ", op.name));
+            } else if fields.is_empty() {
+                out.push_str(&format!("            Self::{} {{ .. }} => ", op.name));
             } else {
-                out.push_str("{ ");
-                let mut first = true;
-                for field in &scalar_reads {
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    first = false;
-                    out.push_str(field);
-                }
-                if let Some(field) = list_read {
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    out.push_str(field);
-                    out.push_str(": rest");
-                }
-                out.push_str(", .. } => ");
+                out.push_str(&format!(
+                    "            Self::{} {{ {}, .. }} => ",
+                    op.name,
+                    fields.join(", ")
+                ));
             }
+            let scalar_count = scalar.len();
+            scalar.resize(scalar_capacity, "0".into());
+            lists.resize(list_capacity, "&[]".into());
+            out.push_str(&format!(
+                "{iter}::from_parts([{}], {scalar_count}, [{}]),\n",
+                scalar.join(", "),
+                lists.join(", ")
+            ));
         }
-
-        match (scalar_reads.as_slice(), list_read) {
-            ([], None) => out.push_str("ReadsIter::none(),\n"),
-            ([a], None) => out.push_str(&format!("ReadsIter::one(*{a}),\n")),
-            ([a, b], None) => out.push_str(&format!("ReadsIter::two(*{a}, *{b}),\n")),
-            ([a, b, c], None) => out.push_str(&format!("ReadsIter::three(*{a}, *{b}, *{c}),\n")),
-            ([], Some(_)) => out.push_str("ReadsIter::slice(rest.as_slice()),\n"),
-            ([a], Some(_)) => out.push_str(&format!(
-                "ReadsIter::one_plus_slice(*{a}, rest.as_slice()),\n"
-            )),
-            ([a, b], Some(_)) => out.push_str(&format!(
-                "ReadsIter::two_plus_slice(*{a}, *{b}, rest.as_slice()),\n"
-            )),
-            _ => bail!("unhandled reads shape for opcode {}", op.name),
-        }
+        out.push_str("        }\n    }\n");
     }
-    out.push_str("        }\n");
-    out.push_str("    }\n\n");
-
-    out.push_str(
-        "    /// Iterates the virtual registers written by this instruction (allocation-free).\n",
-    );
-    out.push_str("    #[must_use]\n");
-    out.push_str("    pub(crate) fn writes(&self) -> WritesIter<'_> {\n");
-    out.push_str("        match self {\n");
-    for (_b, op) in &ops {
-        let mut scalar_writes: Vec<&str> = Vec::new();
-        let mut list_write: Option<&str> = None;
-
-        for operand in &op.operands {
-            match (operand.kind.as_str(), operand.access.as_deref()) {
-                ("reg", Some("write")) => {
-                    scalar_writes
-                        .push(rust_field_name(&operand.field).with_context(|| {
-                            format!("bad operand field for opcode {}", op.name)
-                        })?);
-                }
-                ("reg_list", Some("write")) => {
-                    let field = rust_field_name(&operand.field)
-                        .with_context(|| format!("bad operand field for opcode {}", op.name))?;
-                    if list_write.replace(field).is_some() {
-                        bail!("opcode {} has multiple reg_list writes", op.name);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if scalar_writes.len() > 1 {
-            bail!(
-                "opcode {} has {} scalar writes (max 1 supported)",
-                op.name,
-                scalar_writes.len()
-            );
-        }
-        if list_write.is_some() && scalar_writes.is_empty() {
-            bail!(
-                "opcode {} has reg_list writes but no scalar write (not supported)",
-                op.name
-            );
-        }
-
-        if op.operands.is_empty() {
-            out.push_str(&format!("            Self::{} => ", op.name));
-        } else {
-            out.push_str(&format!("            Self::{} ", op.name));
-            if scalar_writes.is_empty() && list_write.is_none() {
-                out.push_str("{ .. } => ");
-            } else {
-                out.push_str("{ ");
-                let mut first = true;
-                for field in &scalar_writes {
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    first = false;
-                    out.push_str(field);
-                }
-                if let Some(field) = list_write {
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    out.push_str(field);
-                    out.push_str(": rest");
-                }
-                out.push_str(", .. } => ");
-            }
-        }
-
-        match (scalar_writes.as_slice(), list_write) {
-            ([], None) => out.push_str("WritesIter::none(),\n"),
-            ([a], None) => out.push_str(&format!("WritesIter::one(*{a}),\n")),
-            ([a], Some(_)) => out.push_str(&format!(
-                "WritesIter::one_plus_slice(*{a}, rest.as_slice()),\n"
-            )),
-            _ => bail!("unhandled writes shape for opcode {}", op.name),
-        }
-    }
-    out.push_str("        }\n");
-    out.push_str("    }\n");
     out.push_str("}\n");
 
     Ok(out)
@@ -1534,6 +1445,110 @@ mod tests {
             normalize_newlines(rendered),
             normalize_newlines(existing),
             "{what} is out of date; re-run: cargo run -p execution_tape_codegen"
+        );
+    }
+
+    #[test]
+    fn generated_register_iteration_executes_multiple_lists_and_wide_scalar_operands() {
+        use std::process::Command;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        struct Temp(PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = Temp(std::env::temp_dir().join(format!(
+            "execution-register-iteration-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )));
+        fs::create_dir(&dir.0).expect("create fixture directory");
+        let spec: Spec = serde_json::from_value(serde_json::json!({
+            "version":1,
+            "opcodes":[
+                {"name":"ReadLists","mnemonic":"read_lists","byte":"0x01","terminator":false,"flags":[],"operands":[
+                    {"kind":"reg","role":"cond","encoding":"reg_u32_uleb","field":"cond","access":"read"},
+                    {"kind":"reg_list","role":"args","encoding":"reg_list_u32_uleb_count_then_regs","field":"left","access":"read"},
+                    {"kind":"reg_list","role":"args","encoding":"reg_list_u32_uleb_count_then_regs","field":"right","access":"read"}
+                ]},
+                {"name":"WriteLists","mnemonic":"write_lists","byte":"0x02","terminator":false,"flags":[],"operands":[
+                    {"kind":"reg_list","role":"rets","encoding":"reg_list_u32_uleb_count_then_regs","field":"left","access":"write"},
+                    {"kind":"reg_list","role":"rets","encoding":"reg_list_u32_uleb_count_then_regs","field":"right","access":"write"}
+                ]},
+                {"name":"Wide","mnemonic":"wide","byte":"0x03","terminator":false,"flags":[],"operands":[
+                    {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"a","access":"read"},
+                    {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"b","access":"read"},
+                    {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"c","access":"read"},
+                    {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"d","access":"read"},
+                    {"kind":"reg","role":"dst","encoding":"reg_u32_uleb","field":"x","access":"write"},
+                    {"kind":"reg","role":"dst","encoding":"reg_u32_uleb","field":"y","access":"write"}
+                ]}
+            ]
+        })).expect("parse fixture schema");
+        let generated = dir.0.join("generated.rs");
+        fs::write(&generated, generate_reads_writes(spec, &generated).unwrap()).unwrap();
+        let iterator = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../execution_tape/src/register_operands.rs")
+            .canonicalize()
+            .unwrap();
+        let source = dir.0.join("main.rs");
+        fs::write(&source,format!(r#"
+            #[allow(dead_code, reason="fixture tests generated iteration")]
+            #[path={iterator:?}] mod register_operands;
+            mod bytecode {{
+                use crate::register_operands::OperandIter;
+                enum Instr {{
+                    ReadLists{{cond:u32,left:Vec<u32>,right:Vec<u32>}},
+                    WriteLists{{left:Vec<u32>,right:Vec<u32>}},
+                    Wide{{a:u32,b:u32,c:u32,d:u32,x:u32,y:u32}},
+                }}
+                include!({generated:?});
+                pub fn check() {{
+                    assert_eq!(MAX_SCALAR_OPERANDS,4);
+                    assert_eq!(MAX_REGISTER_LISTS,2);
+                    for (left,right) in [(vec![],vec![9,10]),(vec![4,5],vec![]),(vec![4,5],vec![9,10]),(vec![],vec![])] {{
+                        let read=Instr::ReadLists{{cond:2,left:left.clone(),right:right.clone()}};
+                        let expected:Vec<_>=std::iter::once(2).chain(left.iter().copied()).chain(right.iter().copied()).collect();
+                        assert_eq!(read.reads().collect::<Vec<_>>(),expected);
+                        assert_eq!(read.writes().count(),0);
+                        let mut partial=read.reads();assert_eq!(partial.next(),Some(2));
+                        assert_eq!(partial.clone().collect::<Vec<_>>(),partial.collect::<Vec<_>>());
+                        let write=Instr::WriteLists{{left:left.clone(),right:right.clone()}};
+                        assert_eq!(write.reads().count(),0);
+                        let expected:Vec<_>=left.into_iter().chain(right).collect();
+                        let mut result=write.writes();assert_eq!(result.by_ref().collect::<Vec<_>>(),expected);
+                        assert_eq!(result.next(),None);assert_eq!(result.next(),None);
+                    }}
+                    let wide=Instr::Wide{{a:1,b:2,c:3,d:4,x:5,y:6}};
+                    assert_eq!(wide.reads().collect::<Vec<_>>(),vec![1,2,3,4]);
+                    assert_eq!(wide.writes().collect::<Vec<_>>(),vec![5,6]);
+                }}
+            }}
+            fn main(){{bytecode::check();}}
+        "#)).unwrap();
+        let binary = dir
+            .0
+            .join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
+        let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .args(["--edition=2024", "-Dwarnings"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("compile fixture");
+        assert!(
+            output.status.success(),
+            "fixture compile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(&binary).output().expect("execute fixture");
+        assert!(
+            output.status.success(),
+            "fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

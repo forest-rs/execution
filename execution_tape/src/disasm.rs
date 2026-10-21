@@ -18,12 +18,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::bytecode::{
-    BytecodeError, DecodedInstr, Instr, ReadsIter, WritesIter, decode_instructions,
-};
+use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
 use crate::program::{CallSigId, ConstId, ElemTypeId, HostSigId, Program, TypeId, ValueType};
+pub use crate::register_operands::RegIter;
 use crate::value::FuncId;
 use crate::verifier::VerifiedProgram;
 
@@ -291,105 +290,6 @@ pub struct InstrView<'a> {
     decoded: &'a DecodedInstr,
 }
 
-/// An iterator over register operands without allocation.
-#[derive(Copy, Clone, Debug)]
-pub struct RegIter<'a> {
-    prefix: [u32; 3],
-    prefix_len: u8,
-    prefix_idx: u8,
-    tail: &'a [u32],
-    tail_idx: usize,
-}
-
-impl<'a> RegIter<'a> {
-    /// Returns an empty register iterator.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            prefix: [0, 0, 0],
-            prefix_len: 0,
-            prefix_idx: 0,
-            tail: &[],
-            tail_idx: 0,
-        }
-    }
-
-    /// Returns an iterator over a single register.
-    #[must_use]
-    pub fn one(a: u32) -> Self {
-        Self {
-            prefix: [a, 0, 0],
-            prefix_len: 1,
-            prefix_idx: 0,
-            tail: &[],
-            tail_idx: 0,
-        }
-    }
-
-    /// Returns an iterator over two registers.
-    #[must_use]
-    pub fn two(a: u32, b: u32) -> Self {
-        Self {
-            prefix: [a, b, 0],
-            prefix_len: 2,
-            prefix_idx: 0,
-            tail: &[],
-            tail_idx: 0,
-        }
-    }
-
-    /// Returns an iterator over three registers.
-    #[must_use]
-    pub fn three(a: u32, b: u32, c: u32) -> Self {
-        Self {
-            prefix: [a, b, c],
-            prefix_len: 3,
-            prefix_idx: 0,
-            tail: &[],
-            tail_idx: 0,
-        }
-    }
-
-    /// Returns an iterator over a slice of registers.
-    #[must_use]
-    pub fn slice(tail: &'a [u32]) -> Self {
-        Self {
-            prefix: [0, 0, 0],
-            prefix_len: 0,
-            prefix_idx: 0,
-            tail,
-            tail_idx: 0,
-        }
-    }
-
-    /// Returns an iterator over `first`, followed by all registers in `tail`.
-    #[must_use]
-    pub fn one_plus_slice(first: u32, tail: &'a [u32]) -> Self {
-        Self {
-            prefix: [first, 0, 0],
-            prefix_len: 1,
-            prefix_idx: 0,
-            tail,
-            tail_idx: 0,
-        }
-    }
-}
-
-impl Iterator for RegIter<'_> {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.prefix_idx < self.prefix_len {
-            let out = self.prefix[usize::from(self.prefix_idx)];
-            self.prefix_idx += 1;
-            return Some(out);
-        }
-        let out = self.tail.get(self.tail_idx).copied()?;
-        self.tail_idx += 1;
-        Some(out)
-    }
-}
-
 impl<'a> InstrView<'a> {
     /// Function containing this instruction.
     #[must_use]
@@ -606,39 +506,13 @@ impl<'a> InstrView<'a> {
     /// Registers read by this instruction (best-effort; intended for tooling/dataflow).
     #[must_use]
     pub fn reads(&self) -> RegIter<'a> {
-        reg_iter_from_reads(self.decoded.instr.reads())
+        RegIter::from_operands(self.decoded.instr.reads())
     }
 
     /// Registers written by this instruction (best-effort; intended for tooling/dataflow).
     #[must_use]
     pub fn writes(&self) -> RegIter<'a> {
-        reg_iter_from_writes(self.decoded.instr.writes())
-    }
-}
-
-fn reg_iter_from_reads<'a>(it: ReadsIter<'a>) -> RegIter<'a> {
-    debug_assert_eq!(it.prefix_idx, 0, "ReadsIter must be unconsumed");
-    debug_assert_eq!(it.rest_idx, 0, "ReadsIter must be unconsumed");
-    RegIter {
-        prefix: it.prefix,
-        prefix_len: it.prefix_len,
-        prefix_idx: 0,
-        tail: it.rest,
-        tail_idx: 0,
-    }
-}
-
-fn reg_iter_from_writes<'a>(it: WritesIter<'a>) -> RegIter<'a> {
-    debug_assert_eq!(it.idx, 0, "WritesIter must be unconsumed");
-    match it.first {
-        None => RegIter::empty(),
-        Some(r) => {
-            if it.rest.is_empty() {
-                RegIter::one(r)
-            } else {
-                RegIter::one_plus_slice(r, it.rest)
-            }
-        }
+        RegIter::from_operands(self.decoded.instr.writes())
     }
 }
 

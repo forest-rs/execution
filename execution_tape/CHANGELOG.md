@@ -34,6 +34,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Share allocation-free register operand iteration between verification and disassembly.
+  Opcode generation now supports multiple register lists, list-only outputs, and additional
+  scalar operands without adding iterator constructors. ([#135][] by [@waywardmonkeys][])
+
 - `HostError`, `Trap`, and `TrapInfo` no longer implement `PartialEq`/`Eq`, because arbitrary
   host errors need not support value equality. Match variants and compare diagnostic fields or
   downcast concrete error sources instead. Exhaustive `HostError` matches must handle `Custom`.
@@ -105,6 +109,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [@waywardmonkeys]: https://github.com/waywardmonkeys
 
 [#134]: https://github.com/forest-rs/execution/pull/134
+[#135]: https://github.com/forest-rs/execution/pull/135
 
 [#93]: https://github.com/forest-rs/execution/pull/93
 [#105]: https://github.com/forest-rs/execution/pull/105
