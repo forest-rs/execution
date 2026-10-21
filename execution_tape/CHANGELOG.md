@@ -23,6 +23,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- VM runs now retain only new aggregates reachable from returned values; traps discard all new
+  aggregates. Previously retained values stay valid until the heap is cleared. Treat host
+  aggregate and closure-environment arguments as borrowed for the call; use `HostContext::retain`
+  for durable host state, then `AggHeap::import` before using it in a VM. Returning a dangling
+  aggregate or closure environment now traps at `ret`.
+
 - `AggHeap::tuple_new`, `struct_new`, and `array_new` now return `Result<AggHandle, AggError>`.
   Handle the result when constructing aggregates. Heap and staged constructors reject dangling
   aggregate children and closure environments before mutation, preventing forward references
