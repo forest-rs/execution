@@ -195,6 +195,22 @@ for its signature, aggregate contracts, and prepared instruction locations:
 cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et 0
 ```
 
+## Borrowed value observations
+
+`TraceMask::VALUES` enables `TraceSink::values` on the ordinary execution path. `ValueEvent::Entry`
+borrows arguments, limits and the initial aggregate heap before invocation validation. `HostCall`
+borrows host arguments and the raw returned values/fuel or typed error before ABI validation and
+fuel debit. A call denied by VM limits has no host outcome. `ReturnCandidate` borrows only newly
+appended top-level outputs before aggregate validation and compaction; it includes the root return
+location and does not report nested function returns.
+
+Combine `VALUES` with `RUN` for the final outcome. A candidate can still fail, and pre-commit
+aggregate handles can change at commit. Values and their heap are borrowed for the callback;
+the sink chooses what to retain. Snapshotting an invalid graph returns an error independently
+of the eventual VM trap. Missing completion, including panic unwinding, is incomplete evidence.
+These are observation primitives: recording storage, program identity, sharing across events,
+opaque host values/errors and replay policy belong outside the VM.
+
 ## Extension points (v2+)
 - Effect lanes (multiple tokens), plus rules for merging at control-flow joins.
 - Host-type capabilities (per-type eq/hash/serialization) and/or inline extern values.

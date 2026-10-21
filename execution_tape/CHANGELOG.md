@@ -21,6 +21,11 @@ This release has an [MSRV][] of 1.88.
   Compare equivalent transfer-heavy loops by cold preparation, reused execution, prepared
   storage, and frame requirements, checking output equality before timing. ([#137][] by [@waywardmonkeys][])
 
+- Borrow invocation inputs/limits, raw host outcomes/fuel and root return candidates through
+  `TraceSink::values` with `TraceMask::VALUES`. Combine with `RUN` for the final outcome;
+  candidates precede validation/compaction and their handles are borrowed for the callback.
+  Recording ownership and replay policy remain outside the VM. ([#144][] by [@waywardmonkeys][])
+
 - Declare typed control-flow joins with `Asm::block`, pass arguments with `Label::with_args`, and
   use the existing `br`/`jmp` methods. Edges transfer values simultaneously, including cycles,
   without extra guest instructions, fuel, or trace events. Inspect source arms with
@@ -171,5 +176,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [Unreleased]: https://github.com/forest-rs/execution/compare/execution_tape-v0.0.1...HEAD
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_tape-v0.0.1
+
+[#144]: https://github.com/forest-rs/execution/pull/144
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

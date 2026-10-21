@@ -19,7 +19,9 @@ use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::program_memory::{Checkpoint, ProgramMemory};
-use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
+use crate::trace::{
+    HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
+};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
     I64Reg, ObjReg, StrReg, U64Reg, UnitReg, VReg, VRegSlice,
@@ -413,6 +415,15 @@ impl<'a> TraceCtx<'a> {
     }
 
     #[inline]
+    fn values<'event>(&mut self, program: &Program, event: impl FnOnce() -> ValueEvent<'event>) {
+        if self.enabled(TraceMask::VALUES)
+            && let Some(sink) = self.sink.as_mut()
+        {
+            sink.values(program, event());
+        }
+    }
+
+    #[inline]
     fn instr_if_enabled(
         &mut self,
         program: &Program,
@@ -608,6 +619,14 @@ impl<'a> TraceCtx<'a> {
 
 trait TracePolicy {
     #[inline(always)]
+    fn values<'a>(
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _event: impl FnOnce() -> ValueEvent<'a>,
+    ) {
+    }
+
+    #[inline(always)]
     fn instr_end(_trace: &mut TraceCtx<'_>, _program: &Program, _next: Option<TraceLocation>) {}
 
     fn instr(
@@ -731,6 +750,15 @@ impl TracePolicy for NoTracePolicy {
 }
 
 impl TracePolicy for WithTracePolicy {
+    #[inline(always)]
+    fn values<'a>(
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        event: impl FnOnce() -> ValueEvent<'a>,
+    ) {
+        trace.values(program, event);
+    }
+
     #[inline(always)]
     fn instr_end(trace: &mut TraceCtx<'_>, program: &Program, next: Option<TraceLocation>) {
         trace.instr_end(program, next, TraceOutcome::Ok);
@@ -887,9 +915,16 @@ impl<H: Host> Vm<H> {
         // path with per-mask checks, instead of specializing every trace-mask combination.
         let trace_active = trace.enabled(TraceMask::INSTR)
             || trace.enabled(TraceMask::CALL)
-            || trace.enabled(TraceMask::HOST);
+            || trace.enabled(TraceMask::HOST)
+            || trace.enabled(TraceMask::VALUES);
 
         let result = if trace_active {
+            trace.values(program_ref, || ValueEvent::Entry {
+                entry,
+                args,
+                aggregates: self.memory.aggs(),
+                limits: &self.limits,
+            });
             self.run_body::<WithTracePolicy>(
                 ctx, program, entry, args, outputs, checkpoint, &mut trace, access,
             )
@@ -1775,6 +1810,11 @@ impl<H: Host> Vm<H> {
                                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
                         }
+                        P::values(trace, program_ref, || ValueEvent::ReturnCandidate {
+                            location: TraceLocation { func: func_id, pc },
+                            values: &outputs[output_start..],
+                            aggregates: self.memory.aggs(),
+                        });
                         self.memory
                             .commit(checkpoint, &mut outputs[output_start..])
                             .map_err(|error| {
@@ -1932,21 +1972,34 @@ impl<H: Host> Vm<H> {
                         self.memory.aggs(),
                         access_for_call,
                     );
-                    let extra_fuel = self
-                        .host
-                        .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx)
-                        .map_err(|error| {
-                            ctx.trap(
-                                func_id,
-                                pc,
-                                span_id,
-                                Trap::HostCallFailed {
-                                    symbol: Box::from(sym),
-                                    sig_hash: hs.sig_hash,
-                                    error,
-                                },
-                            )
-                        })?;
+                    let host_result =
+                        self.host
+                            .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx);
+                    P::values(trace, program_ref, || ValueEvent::HostCall {
+                        location: TraceLocation { func: func_id, pc },
+                        host_sig: *host_sig,
+                        args: call_args,
+                        outcome: match &host_result {
+                            Ok(extra_fuel) => HostCallOutcome::Returned {
+                                values: ret_slots,
+                                extra_fuel: *extra_fuel,
+                            },
+                            Err(error) => HostCallOutcome::Failed(error),
+                        },
+                        aggregates: self.memory.aggs(),
+                    });
+                    let extra_fuel = host_result.map_err(|error| {
+                        ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::HostCallFailed {
+                                symbol: Box::from(sym),
+                                sig_hash: hs.sig_hash,
+                                error,
+                            },
+                        )
+                    })?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
                     // v1: effect token is `Unit`.
