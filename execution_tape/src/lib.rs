@@ -100,7 +100,7 @@
 //! Print disassembly for a small branching program:
 //!
 //! ```sh
-//! cargo run -p execution_tape --example disasm
+//! cargo run -p execution_tape_wind_tunnel --bin disasm
 //! ```
 
 #![no_std]

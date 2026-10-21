@@ -103,7 +103,7 @@ The repository-level design notes live outside the packaged crate:
 Print disassembly for a small branching program:
 
 ```sh
-cargo run -p execution_tape --example disasm
+cargo run -p execution_tape_wind_tunnel --bin disasm
 ```
 
 <!-- cargo-rdme end -->
