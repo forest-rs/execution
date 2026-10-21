@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Register host callbacks with complete signatures through `HostFunctions`, validate imports with `bind`, and
+  create independent host instances with `HostBindings::with_state`. Binding failures identify
+  every missing/mismatched import and include expected and available complete signatures.
+
 - Expose the active program-local import through `HostContext::host_sig_id`, and embedded host
   state through `Vm::host` and `host_mut` for inspection and updates between runs.
 
@@ -25,6 +29,9 @@ This release has an [MSRV][] of 1.88.
   reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains.
 
 ### Changed
+
+- Exhaustive `HostError` matches must handle `ProgramMismatch`: prepared host instances reject
+  calls from another program, including equal cloned programs, before invoking a callback.
 
 - VM runs now retain only new aggregates reachable from returned values; traps discard all new
   aggregates. Previously retained values stay valid until the heap is cleared. Treat host

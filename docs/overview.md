@@ -83,6 +83,29 @@ Effectful operations consume `eff_in` and produce `eff_out`:
 
 This provides an explicit sequencing mechanism that is easy to verify and extend to effect lanes later.
 
+## Prepared host bindings
+
+`HostFunctions<State>` registers callbacks with complete signatures. `bind(&VerifiedProgram)`
+validates every declared import, including unused imports, before any operation runs. A binding
+failure reports all missing symbols and signature mismatches in import-ID order, with expected
+and available signatures. No mutable host state is consumed on failure.
+
+`HostBindings::with_state` creates per-VM host instances that borrow one immutable callback
+table. Each instance owns independent state, available through `vm.host().state()` and
+`vm.host_mut().state_mut()` between runs. The definition registry can be dropped after binding;
+changing registrations does not alter existing bindings.
+
+Bindings belong to the original verified program allocation. Calls from another program,
+including an equal clone, fail before a callback runs. This adapter suits repeated execution of
+one program; custom `Host` implementations can also serve multiple programs. Callbacks still use
+the ordinary borrowed argument ABI, access recording, runtime return checks, and fuel charging.
+
+Run the maintained example with:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin bound_host
+```
+
 ## Control flow
 - Loops + conditionals.
 - Recursion via `call` and frames.

@@ -482,6 +482,8 @@ pub enum HostError {
     UnknownSymbol,
     /// The signature hash does not match what the host expects for the symbol.
     SignatureMismatch,
+    /// A prepared host binding was invoked with a different program.
+    ProgramMismatch,
     /// The host failed during execution.
     Failed,
 }
@@ -491,6 +493,7 @@ impl fmt::Display for HostError {
         match self {
             Self::UnknownSymbol => write!(f, "unknown host symbol"),
             Self::SignatureMismatch => write!(f, "host signature mismatch"),
+            Self::ProgramMismatch => write!(f, "host binding program mismatch"),
             Self::Failed => write!(f, "host call failed"),
         }
     }
