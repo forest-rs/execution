@@ -8,10 +8,24 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct BitSet {
     bits: Vec<u64>,
     len: usize,
+}
+
+impl Clone for BitSet {
+    fn clone(&self) -> Self {
+        Self {
+            bits: self.bits.clone(),
+            len: self.len,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.bits.clone_from(&source.bits);
+        self.len = source.len;
+    }
 }
 
 impl BitSet {
@@ -67,10 +81,15 @@ impl BitSet {
         self.bits[w] &= !(1_u64 << b);
     }
 
-    pub(crate) fn intersect_with(&mut self, other: &Self) {
+    /// Intersects with `other`, returning whether any bit changed.
+    pub(crate) fn intersect_with(&mut self, other: &Self) -> bool {
+        let mut changed = false;
         for (a, b) in self.bits.iter_mut().zip(other.bits.iter()) {
-            *a &= *b;
+            let new = *a & *b;
+            changed |= new != *a;
+            *a = new;
         }
+        changed
     }
 
     pub(crate) fn union_with(&mut self, other: &Self) {
@@ -83,5 +102,28 @@ impl BitSet {
         for (a, b) in self.bits.iter_mut().zip(other.bits.iter()) {
             *a &= !*b;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intersection_reports_changes_and_clone_from_reuses_storage() {
+        let mut state = BitSet::new_full(65);
+        let mut incoming = BitSet::new_empty(65);
+        incoming.set(64);
+        let storage = state.bits.as_ptr();
+        assert!(state.intersect_with(&incoming));
+        assert_eq!(state, incoming);
+        assert!(!state.intersect_with(&incoming));
+
+        state.clone_from(&BitSet::new_empty(1));
+        assert_eq!(state.len, 1);
+        assert!(!state.get(64));
+        state.clone_from(&incoming);
+        assert_eq!(state, incoming);
+        assert_eq!(state.bits.as_ptr(), storage);
     }
 }

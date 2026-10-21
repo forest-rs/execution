@@ -1608,12 +1608,11 @@ fn verify_function_bytecode(
     let (in_sets, out_sets) =
         compute_must_init(&blocks, &reachable, reg_count, &entry_init, decoded)?;
 
-    // Validate reads.
-    for (b_idx, block) in blocks.iter().enumerate() {
+    // Validate reads, consuming the block states now that the fixpoint is complete.
+    for (b_idx, (block, mut state)) in blocks.iter().zip(in_sets).enumerate() {
         if !reachable[b_idx] {
             continue;
         }
-        let mut state = in_sets[b_idx].clone();
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
             validate_instr_reads_writes(program, func_id, di.offset, &di.instr, &mut state, func)?;
         }
@@ -1631,17 +1630,19 @@ fn verify_function_bytecode(
         &entry_types,
         decoded,
     )?;
+    let mut state = entry_types;
     for (b_idx, block) in blocks.iter().enumerate() {
         if !reachable[b_idx] {
             continue;
         }
-        let mut state = type_in[b_idx].clone();
+        state.clone_from(&type_in[b_idx]);
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
             validate_instr_types(program, func_id, di.offset, &di.instr, &state, ret_types)?;
             transfer_types(program, &di.instr, &mut state);
         }
         debug_assert_eq!(state, type_out[b_idx], "type OUT mismatch");
     }
+    drop(state);
 
     for b_idx in 0..blocks.len() {
         if !reachable[b_idx] {
@@ -1678,11 +1679,11 @@ fn verify_function_bytecode(
         }
     }
 
-    for (b_idx, block) in blocks.iter().enumerate() {
+    // The final pass can consume type IN states rather than copying every register again.
+    for (b_idx, (block, mut state)) in blocks.iter().zip(type_in).enumerate() {
         if !reachable[b_idx] {
             continue;
         }
-        let mut state = type_in[b_idx].clone();
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
             transfer_types(program, &di.instr, &mut state);
             for w in di.instr.writes() {
@@ -2957,7 +2958,7 @@ enum RegType {
     Ambiguous,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct TypeState {
     // `None` means "unknown/top" during fixpoint iteration (used to compute a greatest fixpoint for
     // loop-invariant types without assuming a particular type up front).
@@ -2967,6 +2968,20 @@ struct TypeState {
     // `Some(RegType::Ambiguous)` means "definitely initialized, but the type is not stable".
     values: Vec<Option<RegType>>,
     aggs: Vec<Option<AggMeta>>,
+}
+
+impl Clone for TypeState {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+            aggs: self.aggs.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.values.clone_from(&source.values);
+        self.aggs.clone_from(&source.aggs);
+    }
 }
 
 fn initial_types(
@@ -3022,13 +3037,6 @@ fn meet_value(a: Option<RegType>, b: Option<RegType>) -> Option<RegType> {
                 Some(RegType::Ambiguous)
             }
         }
-    }
-}
-
-fn meet_agg(a: &Option<AggMeta>, b: &Option<AggMeta>) -> Option<AggMeta> {
-    match (a, b) {
-        (Some(x), Some(y)) if x == y => Some(x.clone()),
-        _ => None,
     }
 }
 
@@ -3383,28 +3391,33 @@ fn compute_must_types(
         entry_types.clone(),
         bottom,
         |acc, incoming| {
+            let mut changed = false;
             for r in 0..reg_count {
+                // Unknown/top is the meet identity for shape facts as well as value types.
+                // The first concrete predecessor supplies the shape; later paths constrain it.
+                if acc.values[r].is_none()
+                    && incoming.values[r] == Some(RegType::Concrete(ValueType::Agg))
+                {
+                    acc.aggs[r].clone_from(&incoming.aggs[r]);
+                }
                 let value = meet_value(acc.values[r], incoming.values[r]);
-                if matches!(value, Some(RegType::Concrete(ValueType::Agg))) {
-                    // Unknown/top is the meet identity for shape facts as well as value types.
-                    // The first concrete predecessor supplies the shape; later paths constrain it.
-                    acc.aggs[r] = match (acc.values[r], incoming.values[r]) {
-                        (None, _) => incoming.aggs[r].clone(),
-                        (_, None) => acc.aggs[r].clone(),
-                        _ => meet_agg(&acc.aggs[r], &incoming.aggs[r]),
-                    };
-                } else {
+                changed |= value != acc.values[r];
+                acc.values[r] = value;
+                // Equal aggregate metadata is already in place, including tuple storage.
+                // The meet can only retain it or discard it.
+                if !matches!(value, Some(RegType::Concrete(ValueType::Agg)))
+                    || (incoming.values[r].is_some() && acc.aggs[r] != incoming.aggs[r])
+                {
+                    changed |= acc.aggs[r].is_some();
                     acc.aggs[r] = None;
                 }
-                acc.values[r] = value;
             }
+            changed
         },
-        |_b_idx, b, in_state| {
-            let mut out = in_state.clone();
+        |_b_idx, b, state| {
             for di in decoded.iter().take(b.instr_end).skip(b.instr_start) {
-                transfer_types(program, &di.instr, &mut out);
+                transfer_types(program, &di.instr, state);
             }
-            out
         },
     );
 
@@ -4108,10 +4121,8 @@ fn compute_must_init(
         entry_init.clone(),
         top,
         |acc, incoming| acc.intersect_with(incoming),
-        |b_idx, _b, in_state| {
-            let mut out = in_state.clone();
-            out.union_with(&writes[b_idx]);
-            out
+        |b_idx, _b, state| {
+            state.union_with(&writes[b_idx]);
         },
     );
 
@@ -4199,6 +4210,78 @@ mod tests {
             }],
         );
         verify_program(&p, &VerifyConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn type_state_clone_from_reuses_register_buffers_and_replaces_metadata() {
+        let mut state = initial_types(8, &[ValueType::I64], &[]);
+        state.aggs[2] = Some(AggMeta::Tuple(vec![Some(ValueType::I64)]));
+        let values = state.values.as_ptr();
+        let aggs = state.aggs.as_ptr();
+        let mut incoming = initial_types(8, &[ValueType::Bool], &[]);
+        incoming.aggs[3] = Some(AggMeta::Tuple(vec![Some(ValueType::Bool)]));
+
+        state.clone_from(&incoming);
+        assert_eq!(state, incoming);
+        assert_eq!(state.values.as_ptr(), values);
+        assert_eq!(state.aggs.as_ptr(), aggs);
+    }
+
+    #[test]
+    fn verifier_checks_types_and_initialization_at_branch_joins() {
+        for right_type in [Some(ValueType::I64), Some(ValueType::Bool), None] {
+            let mut asm = Asm::new();
+            let left = asm.label();
+            let right = asm.label();
+            let join = asm.label();
+            asm.br(1, left, right);
+            asm.place(left).unwrap();
+            asm.const_i64(2, 1);
+            asm.jmp(join);
+            asm.place(right).unwrap();
+            match right_type {
+                Some(ValueType::I64) => {
+                    asm.const_i64(2, 2);
+                }
+                Some(ValueType::Bool) => {
+                    asm.const_bool(2, true);
+                }
+                _ => {}
+            }
+            asm.jmp(join);
+            asm.place(join).unwrap();
+            asm.i64_add(3, 2, 2);
+            asm.ret(0, &[3]);
+
+            let mut builder = ProgramBuilder::new();
+            builder
+                .push_function_checked(
+                    asm,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Bool],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap();
+            let result = verify_program_owned(builder.build(), &VerifyConfig::default());
+            match right_type {
+                Some(ValueType::I64) => {
+                    result.unwrap();
+                }
+                Some(ValueType::Bool) => assert!(matches!(
+                    result,
+                    Err(VerifyError::UnknownTypeAtUse {
+                        reg: 2,
+                        expected: ValueType::I64,
+                        ..
+                    })
+                )),
+                _ => assert!(matches!(
+                    result,
+                    Err(VerifyError::UninitializedRead { reg: 2, .. })
+                )),
+            }
+        }
     }
 
     #[test]
