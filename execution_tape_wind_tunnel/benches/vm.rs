@@ -36,69 +36,93 @@ fn bench_vm(c: &mut Criterion) {
 }
 
 fn bench_run_memory(c: &mut Criterion) {
-    let mut group = c.benchmark_group("run_memory");
-    for mode in ["scalar", "retained_input", "trap"] {
-        let mut pb = ProgramBuilder::new();
-        let mut asm = Asm::new();
-        asm.const_i64(2, 42);
-        for _ in 0..32 {
-            asm.tuple_new(3, &[2]);
-        }
-        if mode == "trap" {
-            asm.trap(7);
+    for complete in [false, true] {
+        let mut group = c.benchmark_group(if complete {
+            "run_memory_complete"
         } else {
-            asm.ret(0, &[if mode == "scalar" { 2 } else { 1 }]);
-        }
-        let entry = pb
-            .push_function_checked(
-                asm,
-                FunctionSig {
-                    arg_types: vec![ValueType::Agg],
-                    ret_types: vec![if mode == "scalar" {
-                        ValueType::I64
-                    } else {
-                        ValueType::Agg
-                    }],
-                },
-            )
-            .unwrap();
-        let program = pb.build_verified().unwrap();
-        group.bench_function(mode, |b| {
-            b.iter_batched(
-                || {
-                    let mut vm = Vm::new(NopHost, wide_open_limits());
-                    let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
-                    (
-                        vm,
-                        ExecutionContext::new(),
-                        vec![Value::Agg(root)],
-                        Vec::with_capacity(1),
-                    )
-                },
-                |(mut vm, mut ctx, args, mut outputs)| {
-                    for _ in 0..100 {
-                        outputs.clear();
-                        let result = vm.run_with_ctx(
-                            &mut ctx,
-                            &program,
-                            entry,
-                            &args,
-                            &mut outputs,
-                            TraceMask::NONE,
-                            None,
-                            None,
-                        );
-                        assert_eq!(result.is_err(), mode == "trap");
-                    }
-                    black_box(vm.aggregates().len_u32());
-                    // Return the state so Criterion drops it outside the measured execution window.
-                    (vm, ctx, args, outputs)
-                },
-                criterion::BatchSize::SmallInput,
-            )
+            "run_memory"
         });
+        for mode in ["scalar", "retained_input", "trap", "new_root", "new_chain"] {
+            let mut pb = ProgramBuilder::new();
+            let mut asm = Asm::new();
+            asm.const_i64(2, 42);
+            for i in 0..32 {
+                let field = if mode == "new_chain" {
+                    if i == 0 { 1 } else { 3 }
+                } else {
+                    2
+                };
+                asm.tuple_new(3, &[field]);
+            }
+            if mode == "trap" {
+                asm.trap(7);
+            } else {
+                asm.ret(
+                    0,
+                    &[match mode {
+                        "scalar" => 2,
+                        "new_root" | "new_chain" => 3,
+                        _ => 1,
+                    }],
+                );
+            }
+            let entry = pb
+                .push_function_checked(
+                    asm,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Agg],
+                        ret_types: vec![if mode == "scalar" {
+                            ValueType::I64
+                        } else {
+                            ValueType::Agg
+                        }],
+                    },
+                )
+                .unwrap();
+            let program = pb.build_verified().unwrap();
+            group.bench_function(mode, |b| {
+                b.iter_batched(
+                    || {
+                        let mut vm = Vm::new(NopHost, wide_open_limits());
+                        let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+                        (
+                            vm,
+                            ExecutionContext::new(),
+                            vec![Value::Agg(root)],
+                            Vec::with_capacity(1),
+                        )
+                    },
+                    |(mut vm, mut ctx, args, mut outputs)| {
+                        for _ in 0..100 {
+                            outputs.clear();
+                            let result = vm.run_with_ctx(
+                                &mut ctx,
+                                &program,
+                                entry,
+                                &args,
+                                &mut outputs,
+                                TraceMask::NONE,
+                                None,
+                                None,
+                            );
+                            assert_eq!(result.is_err(), mode == "trap");
+                        }
+                        black_box(vm.aggregates().len_u32());
+                        if complete {
+                            // Include reclamation and final retained-state destruction in this window.
+                            drop((vm, ctx, args, outputs));
+                            None
+                        } else {
+                            // Keep the execution-only window comparable with existing measurements.
+                            Some((vm, ctx, args, outputs))
+                        }
+                    },
+                    criterion::BatchSize::SmallInput,
+                )
+            });
+        }
+        group.finish();
     }
-    group.finish();
 }
 
 fn bench_payloads(c: &mut Criterion) {
