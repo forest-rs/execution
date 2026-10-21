@@ -13,7 +13,8 @@ Crates:
 - `execution_tape_profiling/`: optional profiling adapters; kept separate from the core crate.
 - `execution_tape_recording/`: owned boundary recordings and checked replay in a fresh VM,
   with capture budgets and recording-local aggregate identities (`no_std + alloc`).
-- `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks.
+- `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks and
+  runnable inspection/comparison tools.
 
 Docs:
 - `docs/overview.md`: design notes for the tape VM and host boundary.
@@ -38,3 +39,15 @@ cargo package -p execution_graph
 cargo bench -p execution_tape_wind_tunnel
 cargo bench -p execution_graph_wind_tunnel
 ```
+
+Record real host calls, drop the live VM/host, and check a fresh replay:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin record_replay -- 1000 256 65536
+cargo bench -p execution_tape_wind_tunnel --bench recording
+```
+
+The arguments select host-call count, graph depth and byte-payload size. The recording benchmark
+compares ordinary execution, capture/freeze/drop, and fresh replay/drop of the same guest workload.
+It checks output equality and graph/payload counts before timing; preparation and initial VM
+construction are excluded from the ordinary execution and capture windows.

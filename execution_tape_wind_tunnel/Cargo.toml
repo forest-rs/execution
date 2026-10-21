@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 execution_tape = { workspace = true, features = ["std"] }
+execution_tape_recording.workspace = true
 
 [dev-dependencies]
 criterion = "0.5"
@@ -27,4 +28,8 @@ harness = false
 
 [[bench]]
 name = "block_parameters"
+harness = false
+
+[[bench]]
+name = "recording"
 harness = false

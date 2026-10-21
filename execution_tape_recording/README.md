@@ -33,4 +33,9 @@ object/function handles retain their original domains. External object state, ho
 resource accesses are not reconstructed. No portable archive, cross-platform float guarantee,
 or per-instruction register history is claimed.
 
+Run `cargo run -p execution_tape_wind_tunnel --bin record_replay` from the workspace for an
+executable capture/drop/replay example. Optional arguments select host-call count, shared graph
+depth and byte-payload size. `cargo bench -p execution_tape_wind_tunnel --bench recording`
+measures ordinary execution, capture/freeze/drop and fresh replay/drop separately.
+
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.

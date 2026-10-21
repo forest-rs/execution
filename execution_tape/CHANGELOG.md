@@ -31,6 +31,10 @@ This release has an [MSRV][] of 1.88.
   replay reexecutes guest code in a fresh VM with recorded host outcomes, preserving graph
   identities and typed failures without invoking the live host. ([#145][] by [@waywardmonkeys][])
 
+- Run `record_replay` in the wind-tunnel crate to capture a shared-graph workload, drop the
+  live VM/host, and check fresh replay. The `recording` benchmark measures ordinary execution,
+  capture/freeze/drop and fresh replay/drop, checking results and storage counts before timing. ([#146][] by [@waywardmonkeys][])
+
 - Declare typed control-flow joins with `Asm::block`, pass arguments with `Label::with_args`, and
   use the existing `br`/`jmp` methods. Edges transfer values simultaneously, including cycles,
   without extra guest instructions, fuel, or trace events. Inspect source arms with
@@ -185,5 +189,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#144]: https://github.com/forest-rs/execution/pull/144
 
 [#145]: https://github.com/forest-rs/execution/pull/145
+
+[#146]: https://github.com/forest-rs/execution/pull/146
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv
