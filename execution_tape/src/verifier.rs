@@ -7,6 +7,10 @@
 //! bounds and consistency, control flow, initialization, and types, then lowers bytecode to typed
 //! execution artifacts. The `_with_lints` entry points additionally run liveness-based diagnostics.
 
+mod metadata;
+
+pub use metadata::MetadataTable;
+
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -164,6 +168,15 @@ impl VerifiedProgram {
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
+    /// Immutable program metadata is malformed, including entries unused by bytecode.
+    InvalidMetadata {
+        /// Table containing the invalid entry.
+        table: MetadataTable,
+        /// Zero-based table entry (function index for signature name ranges).
+        entry: u32,
+        /// Invalid range, count, identifier, or UTF-8 boundary.
+        error: DecodeError,
+    },
     /// The program failed to decode.
     Decode(DecodeError),
     /// Internal error: opcode schema does not match the decoded instruction shape.
@@ -667,6 +680,11 @@ pub enum InvalidJumpTargetReason {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidMetadata {
+                table,
+                entry,
+                error,
+            } => write!(f, "invalid {table:?} metadata entry {entry}: {error}"),
             Self::Decode(e) => write!(f, "decode failed: {e}"),
             Self::InternalOpcodeSchemaMismatch { func, pc, opcode } => write!(
                 f,
@@ -987,7 +1005,7 @@ impl fmt::Display for VerifyError {
 impl core::error::Error for VerifyError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Decode(e) => Some(e),
+            Self::Decode(e) | Self::InvalidMetadata { error: e, .. } => Some(e),
             _ => None,
         }
     }
@@ -1029,6 +1047,7 @@ impl Default for VerifyConfig {
 ///
 /// Use [`verify_program_with_lints`] to additionally compute non-fatal diagnostics.
 pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), VerifyError> {
+    metadata::verify(program)?;
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     verify_function_value_names(program)?;
@@ -1046,6 +1065,7 @@ pub fn verify_program_with_lints(
     program: &Program,
     cfg: &VerifyConfig,
 ) -> Result<Vec<VerifyLint>, VerifyError> {
+    metadata::verify(program)?;
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     verify_function_value_names(program)?;
@@ -1065,6 +1085,7 @@ pub fn verify_program_owned(
     program: Program,
     cfg: &VerifyConfig,
 ) -> Result<VerifiedProgram, VerifyError> {
+    metadata::verify(&program)?;
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
@@ -1090,6 +1111,7 @@ pub fn verify_program_owned_with_lints(
     program: Program,
     cfg: &VerifyConfig,
 ) -> Result<(VerifiedProgram, Vec<VerifyLint>), VerifyError> {
+    metadata::verify(&program)?;
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;

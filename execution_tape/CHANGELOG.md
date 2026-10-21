@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Verification now validates immutable metadata, including unused constant ranges, symbol and
+  field-name ranges, struct layouts, and optional names. Malformed programs fail preparation
+  with `VerifyError::InvalidMetadata` instead of trapping during execution. Exhaustive error
+  matches must handle the new variant; `MetadataTable` identifies the failing table.
+
 - Borrow immutable byte/string payloads from constants, entry arguments, and aggregate fields
   during execution. Move host-owned return payloads into run storage. Owned outputs and
   persistent aggregate contents retain their existing lifetime and representation. ([#120][] by [@waywardmonkeys][])

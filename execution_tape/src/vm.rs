@@ -1196,19 +1196,11 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolBytes { dst, idx } => {
-                    // Container metadata may be authored directly; preserve load-time validation.
-                    program_ref
-                        .const_bytes(*idx)
-                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let h = ctx.arena.borrow_bytes(PayloadSource::Constant(*idx));
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolStr { dst, idx } => {
-                    // Container metadata may be authored directly; preserve load-time validation.
-                    program_ref
-                        .const_str(*idx)
-                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let h = ctx.arena.borrow_str(PayloadSource::Constant(*idx));
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
@@ -3861,51 +3853,6 @@ mod tests {
                 Value::Str("second".into())
             ]
         );
-    }
-
-    #[test]
-    fn malformed_payload_constants_trap_at_load_even_when_unused() {
-        for text in [false, true] {
-            let mut pb = ProgramBuilder::new();
-            let id = if text {
-                pb.const_str("\u{00e9}")
-            } else {
-                pb.const_bytes(b"x")
-            };
-            let mut a = Asm::new();
-            a.const_pool(1, id);
-            a.const_i64(2, 7);
-            a.ret(0, &[2]);
-            pb.push_function_checked(
-                a,
-                FunctionSig {
-                    arg_types: vec![],
-                    ret_types: vec![ValueType::I64],
-                },
-            )
-            .unwrap();
-            let p = pb.build();
-            for range in [
-                ByteRange { offset: 10, len: 1 },
-                ByteRange {
-                    offset: u32::MAX,
-                    len: 1,
-                },
-                ByteRange { offset: 1, len: 1 },
-            ] {
-                let mut invalid = p.clone();
-                invalid.const_pool[id.0 as usize] = if text {
-                    ConstEntry::Str(range)
-                } else {
-                    ConstEntry::Bytes(range)
-                };
-                let verified = verify_program_owned(invalid, &VerifyConfig::default()).unwrap();
-                let e = Vm::new(TestHost, Limits::default())
-                    .run(&verified, FuncId(0), &[], TraceMask::NONE, None)
-                    .unwrap_err();
-                assert_eq!((e.func, e.pc, e.trap), (FuncId(0), 0, Trap::InvalidPc));
-            }
-        }
     }
 
     struct TestHost;
