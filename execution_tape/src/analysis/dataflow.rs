@@ -27,8 +27,8 @@ use crate::analysis::cfg::BasicBlock;
 /// The analysis is defined by:
 /// - `entry`: initial state at block 0 (only used if block 0 is reachable)
 /// - `bottom`: initial state for all other blocks (usually "uninitialized" / "top")
-/// - `meet_into`: in-place meet operation: `acc = meet(acc, incoming)`
-/// - `transfer_block`: transfer function for a single basic block
+/// - `meet_into`: in-place meet operation: `acc = meet(acc, incoming)`, returning whether it changed
+/// - `transfer_block`: in-place transfer function for a single basic block
 ///
 /// The meet over an empty predecessor set is the current `bottom` value. (For analyses that want
 /// a different identity element, pass it as `bottom`.)
@@ -44,8 +44,8 @@ pub(crate) fn solve_forward<State, MeetInto, TransferBlock>(
 ) -> (Vec<State>, Vec<State>)
 where
     State: Clone + PartialEq,
-    MeetInto: FnMut(&mut State, &State),
-    TransferBlock: FnMut(usize, &BasicBlock, &State) -> State,
+    MeetInto: FnMut(&mut State, &State) -> bool,
+    TransferBlock: FnMut(usize, &BasicBlock, &mut State),
 {
     // Convention: `in_states[b]` is the fixpoint state at block entry, and `out_states[b]` is the
     // fixpoint state at block exit (after applying the block transfer).
@@ -67,32 +67,32 @@ where
     if reachable.first().copied().unwrap_or(false) {
         // Seed entry.
         in_states[0] = entry;
-        out_states[0] = transfer_block(0, &blocks[0], &in_states[0]);
+        out_states[0].clone_from(&in_states[0]);
+        transfer_block(0, &blocks[0], &mut out_states[0]);
         work.push_back(0);
     }
 
+    // Reuse the previous OUT allocation after each update. State implementations can preserve
+    // their backing buffers with `clone_from`; propagation itself never needs a snapshot of OUT.
+    let mut scratch = bottom;
     while let Some(b_idx) = work.pop_front() {
         if !reachable.get(b_idx).copied().unwrap_or(false) {
             continue;
         }
 
         // Re-propagate this block's OUT to its successors.
-        let out = out_states[b_idx].clone();
         for succ in blocks[b_idx].succs.iter().copied().flatten() {
             if !reachable.get(succ).copied().unwrap_or(false) {
                 continue;
             }
 
             // IN_succ = meet(IN_succ, OUT_pred) for each predecessor.
-            let mut new_in = in_states[succ].clone();
-            meet_into(&mut new_in, &out);
-            if new_in != in_states[succ] {
-                in_states[succ] = new_in;
-
+            if meet_into(&mut in_states[succ], &out_states[b_idx]) {
                 // OUT_succ is derived purely from IN_succ via the per-block transfer.
-                let new_out = transfer_block(succ, &blocks[succ], &in_states[succ]);
-                if new_out != out_states[succ] {
-                    out_states[succ] = new_out;
+                scratch.clone_from(&in_states[succ]);
+                transfer_block(succ, &blocks[succ], &mut scratch);
+                if scratch != out_states[succ] {
+                    core::mem::swap(&mut out_states[succ], &mut scratch);
                     work.push_back(succ);
                 }
             }
@@ -192,4 +192,45 @@ where
     }
 
     (in_states, out_states)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_meets_branches_and_backedges_and_ignores_unreachable_blocks() {
+        let successors = [
+            [Some(1), Some(2)],
+            [Some(3), None],
+            [Some(3), None],
+            [Some(3), Some(4)],
+            [None, None],
+            [Some(3), None],
+        ];
+        let blocks: Vec<_> = successors
+            .into_iter()
+            .map(|succs| BasicBlock {
+                start_pc: 0,
+                end_pc: 0,
+                instr_start: 0,
+                instr_end: 0,
+                succs,
+            })
+            .collect();
+        let (inputs, outputs) = solve_forward(
+            &blocks,
+            &[true, true, true, true, true, false],
+            1_u8,
+            u8::MAX,
+            |acc, incoming| {
+                let previous = *acc;
+                *acc &= incoming;
+                *acc != previous
+            },
+            |index, _, state| *state |= 1 << index,
+        );
+        assert_eq!(inputs, [1, 1, 1, 1, 9, u8::MAX]);
+        assert_eq!(outputs, [1, 3, 5, 9, 25, u8::MAX]);
+    }
 }
