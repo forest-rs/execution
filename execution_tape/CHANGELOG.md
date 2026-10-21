@@ -76,6 +76,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
+  Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
+
 - Preserve load-time traps for malformed byte/string constant ranges, even when the loaded
   value is unused. ([#123][] by [@waywardmonkeys][])
 
@@ -100,6 +103,8 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [@no-materials]: https://github.com/no-materials
 [@waywardmonkeys]: https://github.com/waywardmonkeys
+
+[#134]: https://github.com/forest-rs/execution/pull/134
 
 [#93]: https://github.com/forest-rs/execution/pull/93
 [#105]: https://github.com/forest-rs/execution/pull/105
