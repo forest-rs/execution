@@ -117,6 +117,7 @@ pub(crate) mod codec_primitives;
 pub mod disasm;
 pub mod format;
 pub mod host;
+pub mod host_binding;
 pub mod host_catalog;
 pub(crate) mod instr_operands;
 pub mod opcode;
