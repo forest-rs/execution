@@ -109,6 +109,20 @@ impl<'a> FunctionDisassembly<'a> {
             .map(move |di| instr_view(self.program, self.func, di))
     }
 
+    /// Maps a source instruction or declaration PC to its first executable instruction PC.
+    ///
+    /// Declarations carry no fuel or trace events. Returns `None` for non-boundaries, decode
+    /// errors, or declarations with no following instruction. This does not verify control flow.
+    #[must_use]
+    pub fn executable_pc(&self, pc: u32) -> Option<u32> {
+        let decoded = self.decoded.as_ref().ok()?;
+        let ix = decoded.binary_search_by_key(&pc, |di| di.offset).ok()?;
+        decoded[ix..]
+            .iter()
+            .find(|di| !matches!(di.instr, Instr::Block { .. }))
+            .map(|di| di.offset)
+    }
+
     /// Computes label indices for this function.
     ///
     /// Labels are derived from control-flow targets (`br`/`jmp`) plus the function entry (`pc=0`).
@@ -122,18 +136,10 @@ impl<'a> FunctionDisassembly<'a> {
         let mut pcs: Vec<u32> = Vec::new();
         pcs.push(0);
         for iv in self.instrs() {
-            match iv.operands() {
-                Operands::Br {
-                    pc_true, pc_false, ..
-                } => {
-                    pcs.push(pc_true);
-                    pcs.push(pc_false);
-                }
-                Operands::Jmp { pc_target } => {
-                    pcs.push(pc_target);
-                }
-                _ => {}
+            if matches!(iv.decoded.instr, Instr::Block { .. }) {
+                pcs.push(iv.pc());
             }
+            crate::instr_operands::visit_pcs(&iv.decoded.instr, |pc| pcs.push(pc));
         }
         pcs.sort_unstable();
         pcs.dedup();
@@ -233,6 +239,33 @@ pub enum CallTarget<'a> {
 /// Disassembled instruction operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operands<'a> {
+    /// Typed parameter declaration; no runtime instruction is emitted.
+    Block {
+        /// Destination registers in declaration order.
+        params: &'a [u32],
+        /// Value kinds in the same order (`Agg` does not assert a shape).
+        types: &'a [ValueType],
+    },
+    /// Jump with simultaneous arguments.
+    JmpArgs {
+        /// Target header PC.
+        pc_target: u32,
+        /// Source registers in parameter order.
+        args: &'a [u32],
+    },
+    /// Branch argument storage. Use [`InstrView::edge`] for per-arm borrowed views.
+    BrArgs {
+        /// Condition register.
+        cond: u32,
+        /// True target header PC.
+        pc_true: u32,
+        /// False target header PC.
+        pc_false: u32,
+        /// Number of arguments belonging to the true arm.
+        true_arg_count: u32,
+        /// True then false arguments (one owned list in the decoded source).
+        args: &'a [u32],
+    },
     /// Most instructions: `dst` + `srcs` + optional immediate/index.
     Simple,
     /// `br cond, pc_true, pc_false`.
@@ -258,6 +291,15 @@ pub enum Operands<'a> {
         /// Return registers.
         rets: &'a [u32],
     },
+}
+
+/// A borrowed source control-flow edge.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BlockEdge<'a> {
+    /// Target declaration or unparameterized source PC.
+    pub target: u32,
+    /// Incoming argument registers in parameter order.
+    pub args: &'a [u32],
 }
 
 /// A table/index-like immediate operand.
@@ -487,6 +529,24 @@ impl<'a> InstrView<'a> {
         }
 
         match &self.decoded.instr {
+            Instr::Block { params, types } => Operands::Block { params, types },
+            Instr::JmpArgs { pc_target, args } => Operands::JmpArgs {
+                pc_target: *pc_target,
+                args,
+            },
+            Instr::BrArgs {
+                cond,
+                pc_true,
+                pc_false,
+                true_arg_count,
+                args,
+            } => Operands::BrArgs {
+                cond: *cond,
+                pc_true: *pc_true,
+                pc_false: *pc_false,
+                true_arg_count: *true_arg_count,
+                args,
+            },
             Instr::Br {
                 cond,
                 pc_true,
@@ -501,6 +561,17 @@ impl<'a> InstrView<'a> {
             },
             _ => Operands::Simple,
         }
+    }
+
+    /// Returns a source edge: zero for jump/true, one for false.
+    ///
+    /// Malformed argument splits return `None`; the verifier reports a structured error.
+    #[must_use]
+    pub fn edge(&self, arm: usize) -> Option<BlockEdge<'a>> {
+        self.decoded
+            .instr
+            .edge(arm)
+            .map(|(target, args)| BlockEdge { target, args })
     }
 
     /// Registers read by this instruction (best-effort; intended for tooling/dataflow).
@@ -1108,6 +1179,58 @@ fn fmt_label_ref(f: &mut fmt::Formatter<'_>, pc: u32, label_pcs: &[u32]) -> fmt:
     }
 }
 
+fn fmt_block(f: &mut fmt::Formatter<'_>, params: &[u32], types: &[ValueType]) -> fmt::Result {
+    write!(f, " (")?;
+    for (ix, reg) in params.iter().enumerate() {
+        if ix != 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "r{reg}:")?;
+        if let Some(ty) = types.get(ix) {
+            write!(f, "{ty:?}")?;
+        } else {
+            write!(f, "?")?;
+        }
+    }
+    write!(f, ")")?;
+    if params.len() != types.len() {
+        write!(f, " ; types={types:?}")?;
+    }
+    Ok(())
+}
+
+fn fmt_branch_args(
+    f: &mut fmt::Formatter<'_>,
+    cond: u32,
+    t: u32,
+    false_pc: u32,
+    split: u32,
+    args: &[u32],
+    labels: &[u32],
+) -> fmt::Result {
+    let split = split as usize;
+    if split > args.len() {
+        return write!(
+            f,
+            " r{cond}, @{t:06}, @{false_pc:06}, invalid split={split}, args={args:?}"
+        );
+    }
+    write!(f, " r{cond}, ")?;
+    for (ix, (pc, values)) in [(t, &args[..split]), (false_pc, &args[split..])]
+        .into_iter()
+        .enumerate()
+    {
+        if ix != 0 {
+            write!(f, ", ")?;
+        }
+        fmt_label_ref(f, pc, labels)?;
+        write!(f, "(")?;
+        fmt_reg_iter(f, RegIter::slice(values))?;
+        write!(f, ")")?;
+    }
+    Ok(())
+}
+
 fn fmt_instr_with_labels(
     f: &mut fmt::Formatter<'_>,
     iv: &InstrView<'_>,
@@ -1115,6 +1238,21 @@ fn fmt_instr_with_labels(
 ) -> fmt::Result {
     write!(f, "  {:06}: {}", iv.pc(), iv.opcode().mnemonic())?;
     match iv.operands() {
+        Operands::Block { params, types } => fmt_block(f, params, types)?,
+        Operands::JmpArgs { pc_target, args } => {
+            write!(f, " ")?;
+            fmt_label_ref(f, pc_target, label_pcs)?;
+            write!(f, "(")?;
+            fmt_reg_iter(f, RegIter::slice(args))?;
+            write!(f, ")")?;
+        }
+        Operands::BrArgs {
+            cond,
+            pc_true,
+            pc_false,
+            true_arg_count,
+            args,
+        } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, label_pcs)?,
         Operands::Simple => {
             if let Some(dst) = iv.dst() {
                 write!(f, " ")?;
@@ -1255,6 +1393,19 @@ impl fmt::Display for InstrView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:06}: {}", self.pc(), self.opcode().mnemonic())?;
         match self.operands() {
+            Operands::Block { params, types } => fmt_block(f, params, types)?,
+            Operands::JmpArgs { pc_target, args } => {
+                write!(f, " @{pc_target:06}(")?;
+                fmt_reg_iter(f, RegIter::slice(args))?;
+                write!(f, ")")?;
+            }
+            Operands::BrArgs {
+                cond,
+                pc_true,
+                pc_false,
+                true_arg_count,
+                args,
+            } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, &[])?,
             Operands::Simple => {
                 if let Some(dst) = self.dst() {
                     write!(f, " ")?;

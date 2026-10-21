@@ -43,6 +43,34 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
   - VM traps: invalid bytecode, out-of-bounds, type mismatch at runtime boundary, fuel exceeded, stack overflow.
   - Host traps: host call reports fatal error (no rollback semantics).
 
+## Typed joins
+
+Reserve typed destinations with `Asm::block`, place their declarations with `place`, and pass
+incoming registers through the existing branch methods:
+
+```rust
+let join = asm.block(&[(4, ValueType::I64), (5, ValueType::I64)]);
+asm.br(1, join.with_args(&[2, 3]), join.with_args(&[3, 2]));
+asm.place(join)?;
+asm.ret(0, &[4, 5]);
+```
+
+Both arms are checked even when a condition is constant. Transfers read all arguments before
+changing destinations, so loops, cycles, and repeated sources have ordinary simultaneous-copy
+semantics. Bare labels still work. This is a typed block-parameter contract within the existing
+register VM; it does not require global SSA or declare recursive aggregate/callable types.
+`Agg` is a kind-only declaration: compatible incoming shape facts support projections, while
+conflicting or opaque facts cannot establish a projection's result type.
+
+Declarations take no fuel and emit no instruction events. Prepared inspection lists executable
+operations with their original lexical ends; the end of an instruction preceding a declaration
+can differ from the next executable PC. Source disassembly exposes ordered parameter/type
+lists and borrowed per-arm `InstrView::edge` views. `FunctionDisassembly::executable_pc` maps a
+header to its first executable operation without hiding the original edge target. Structured
+`VerifyError::BlockDeclaration` and `BlockEdge` failures retain source locations and contract
+fields. Structural checks cover all encoded edges; type/initialization checks follow the
+verifier's reachable-code policy.
+
 ## Values and types (v1)
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`

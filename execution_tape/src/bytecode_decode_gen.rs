@@ -21,6 +21,14 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 code,
             }
         },
+        Opcode::Block => {
+            let params = crate::codec_primitives::read_reg_list(r)?;
+            let types = crate::codec_primitives::read_value_type_list(r)?;
+            Instr::Block {
+                params,
+                types,
+            }
+        },
         Opcode::ConstUnit => {
             let dst = crate::codec_primitives::read_reg(r)?;
             Instr::ConstUnit {
@@ -447,6 +455,28 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             let pc_target = crate::codec_primitives::read_u32_uleb(r)?;
             Instr::Jmp {
                 pc_target,
+            }
+        },
+        Opcode::JmpArgs => {
+            let pc_target = crate::codec_primitives::read_u32_uleb(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::JmpArgs {
+                pc_target,
+                args,
+            }
+        },
+        Opcode::BrArgs => {
+            let cond = crate::codec_primitives::read_reg(r)?;
+            let pc_true = crate::codec_primitives::read_u32_uleb(r)?;
+            let pc_false = crate::codec_primitives::read_u32_uleb(r)?;
+            let true_arg_count = crate::codec_primitives::read_u32_uleb(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::BrArgs {
+                cond,
+                pc_true,
+                pc_false,
+                true_arg_count,
+                args,
             }
         },
         Opcode::Call => {

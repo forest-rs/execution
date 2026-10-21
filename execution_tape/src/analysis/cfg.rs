@@ -59,6 +59,9 @@ pub(crate) fn build_basic_blocks(
         };
 
         let op = Opcode::from_u8(di.opcode).expect("decoded instruction opcode must be known");
+        if matches!(di.instr, crate::bytecode::Instr::Block { .. }) {
+            leader[di.offset as usize] = true;
+        }
 
         let mut err: Option<InvalidJumpTarget> = None;
         instr_operands::visit_pcs(&di.instr, |target_pc| {

@@ -955,7 +955,7 @@ impl<H: Host> Vm<H> {
             .map_err(|t| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), t))?;
         ctx.frames.push(Frame {
             func: entry,
-            pc: 0,
+            pc: entry_vf.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
             byte_len: entry_vf.byte_len,
             base: entry_base,
@@ -967,7 +967,7 @@ impl<H: Host> Vm<H> {
             program_ref,
             ctx.frames.len(),
             entry,
-            0,
+            entry_vf.pc_at_ix(0).unwrap_or(0),
             entry_vf.span_at_ix(0).map(|id| id.get()),
         );
 
@@ -1001,17 +1001,29 @@ impl<H: Host> Vm<H> {
             // through this hot path caused measurable regressions in branch-heavy benchmarks.
             // The verifier/program pipeline still enforces non-zero span ids via `SpanId`.
             let span_id = vf.span_at_ix(instr_ix).map(|id| id.get());
-            let (opcode, instr, actual_pc, next_pc) =
-                vf.fetch_at_ix(instr_ix).ok_or_else(|| {
-                    let trap_span = span_id.or_else(|| ctx.span_at(program_ref, func_id, pc));
-                    ctx.trap(func_id, pc, trap_span, Trap::InvalidPc)
-                })?;
+            let (instr, actual_pc, next_pc) = vf.fetch_at_ix(instr_ix).ok_or_else(|| {
+                let trap_span = span_id.or_else(|| ctx.span_at(program_ref, func_id, pc));
+                ctx.trap(func_id, pc, trap_span, Trap::InvalidPc)
+            })?;
             debug_assert_eq!(
                 pc, actual_pc,
                 "frame pc must match verified instruction offset"
             );
             let next_instr_ix = instr_ix.saturating_add(1);
 
+            // Source bytes remain authoritative for reporting. Untraced dispatch can eliminate
+            // this non-panicking lookup; prepared instructions keep source offset/end instead of
+            // duplicating the opcode and growing every instruction record.
+            let opcode = program_ref
+                .functions
+                .get(func_id.0 as usize)
+                .and_then(|f| {
+                    program_ref
+                        .bytecode_data
+                        .get(f.bytecode.offset as usize + pc as usize)
+                })
+                .copied()
+                .unwrap_or_default();
             P::instr(trace, program_ref, func_id, pc, next_pc, span_id, opcode);
 
             // Default fallthrough: advance to the next decoded instruction.
@@ -1654,12 +1666,18 @@ impl<H: Host> Vm<H> {
                     cond,
                     true_ix,
                     false_ix,
+                    true_copies,
+                    false_copies,
                 } => {
-                    let target_ix_u32 = if ctx.read_bool(base, *cond) {
-                        *true_ix
+                    let (target_ix_u32, copies) = if ctx.read_bool(base, *cond) {
+                        (*true_ix, *true_copies)
                     } else {
-                        *false_ix
+                        (*false_ix, *false_copies)
                     };
+                    for pair in vf.vregs(copies).as_chunks::<2>().0 {
+                        ctx.copy_vreg(base, pair[1], base, pair[0])
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
                     let target_ix = usize::try_from(target_ix_u32)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let target_pc = vf
@@ -1668,7 +1686,11 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = target_pc;
                     ctx.frames[frame_index].instr_ix = target_ix;
                 }
-                ExecInstr::Jmp { target_ix } => {
+                ExecInstr::Jmp { target_ix, copies } => {
+                    for pair in vf.vregs(*copies).as_chunks::<2>().0 {
+                        ctx.copy_vreg(base, pair[1], base, pair[0])
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
                     let target_ix = usize::try_from(*target_ix)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let target_pc = vf
@@ -1719,7 +1741,7 @@ impl<H: Host> Vm<H> {
 
                     ctx.frames.push(Frame {
                         func: *callee,
-                        pc: 0,
+                        pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
                         base: callee_base,
@@ -1733,7 +1755,7 @@ impl<H: Host> Vm<H> {
                         program_ref,
                         ctx.frames.len(),
                         *callee,
-                        0,
+                        callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                     );
 
@@ -2015,7 +2037,7 @@ impl<H: Host> Vm<H> {
 
                     ctx.frames.push(Frame {
                         func: callee_func,
-                        pc: 0,
+                        pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
                         base: callee_base,
@@ -2029,7 +2051,7 @@ impl<H: Host> Vm<H> {
                         program_ref,
                         ctx.frames.len(),
                         callee_func,
-                        0,
+                        callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                     );
 
@@ -2096,7 +2118,7 @@ impl<H: Host> Vm<H> {
 
                     ctx.frames.push(Frame {
                         func: callee.func,
-                        pc: 0,
+                        pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
                         base: callee_base,
@@ -2110,7 +2132,7 @@ impl<H: Host> Vm<H> {
                         program_ref,
                         ctx.frames.len(),
                         callee.func,
-                        0,
+                        callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                     );
 

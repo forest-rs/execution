@@ -17,6 +17,13 @@ pub(crate) fn visit_pcs(instr: &Instr, mut f: impl FnMut(u32)) {
         Instr::Jmp { pc_target, .. } => {
             f(*pc_target);
         }
+        Instr::JmpArgs { pc_target, .. } => {
+            f(*pc_target);
+        }
+        Instr::BrArgs { pc_true, pc_false, .. } => {
+            f(*pc_true);
+            f(*pc_false);
+        }
         _ => {}
     }
 }

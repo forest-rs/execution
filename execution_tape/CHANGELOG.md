@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Declare typed control-flow joins with `Asm::block`, pass arguments with `Label::with_args`, and
+  use the existing `br`/`jmp` methods. Edges transfer values simultaneously, including cycles,
+  without extra guest instructions, fuel, or trace events. Inspect source arms with
+  `InstrView::edge` and declaration mappings with `FunctionDisassembly::executable_pc`. ([#136][] by [@waywardmonkeys][])
+
 - Preserve typed, owned operation errors with `HostError::custom`. Recover concrete failures
   through the standard error source chain, including after dropping the host or VM. Cloning a
   failure shares its immutable payload.
@@ -38,6 +43,13 @@ This release has an [MSRV][] of 1.88.
   `inspect_prepared` tool prints a summary and optional instruction detail from an encoded file.
 
 ### Changed
+
+- The draft bytecode adds `Block`, `JmpArgs`, and `BrArgs`; older readers reject these opcodes.
+  Existing label-only branches remain supported. Exhaustive opcode, operand codec/schema,
+  disassembly operand, and `VerifyError` matches must handle the new variants. Block failures
+  report declaration or source-edge context, including arm, target, and argument details.
+  A block reserved with `Asm::block` may be placed once; failed repeated placement preserves
+  its existing bytes and name.
 
 - Share allocation-free register operand iteration between verification and disassembly.
   Opcode generation now supports multiple register lists, list-only outputs, and additional
@@ -115,6 +127,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#134]: https://github.com/forest-rs/execution/pull/134
 [#135]: https://github.com/forest-rs/execution/pull/135
+[#136]: https://github.com/forest-rs/execution/pull/136
 
 [#93]: https://github.com/forest-rs/execution/pull/93
 [#105]: https://github.com/forest-rs/execution/pull/105

@@ -92,6 +92,26 @@ pub(crate) enum VReg {
     Closure(ClosureReg),
 }
 
+impl VReg {
+    /// A function-local ordering for preparation indexes, never a wire identity.
+    pub(crate) fn key(self) -> (u8, u32) {
+        match self {
+            Self::Unit(reg) => (0, reg.0),
+            Self::Bool(reg) => (1, reg.0),
+            Self::I64(reg) => (2, reg.0),
+            Self::U64(reg) => (3, reg.0),
+            Self::F64(reg) => (4, reg.0),
+            Self::Decimal(reg) => (5, reg.0),
+            Self::Bytes(reg) => (6, reg.0),
+            Self::Str(reg) => (7, reg.0),
+            Self::Obj(reg) => (8, reg.0),
+            Self::Agg(reg) => (9, reg.0),
+            Self::Func(reg) => (10, reg.0),
+            Self::Closure(reg) => (11, reg.0),
+        }
+    }
+}
+
 /// A slice of typed registers stored in a per-function operand pool.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VRegSlice {
@@ -134,7 +154,7 @@ pub(crate) struct RegLayout {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExecDecoded {
     pub(crate) offset: u32,
-    pub(crate) opcode: u8,
+    pub(crate) end: u32,
     pub(crate) instr: ExecInstr,
 }
 
@@ -600,11 +620,14 @@ pub(crate) enum ExecInstr {
     },
 
     Br {
+        true_copies: VRegSlice,
+        false_copies: VRegSlice,
         cond: BoolReg,
         true_ix: u32,
         false_ix: u32,
     },
     Jmp {
+        copies: VRegSlice,
         target_ix: u32,
     },
 
@@ -850,13 +873,8 @@ impl ExecFunc {
         self.instrs.get(ix).map(|di| di.offset)
     }
 
-    pub(crate) fn fetch_at_ix(&self, ix: usize) -> Option<(u8, &ExecInstr, u32, u32)> {
+    pub(crate) fn fetch_at_ix(&self, ix: usize) -> Option<(&ExecInstr, u32, u32)> {
         let di = self.instrs.get(ix)?;
-        let next_pc = self
-            .instrs
-            .get(ix + 1)
-            .map(|n| n.offset)
-            .unwrap_or(self.byte_len);
-        Some((di.opcode, &di.instr, di.offset, next_pc))
+        Some((&di.instr, di.offset, di.end))
     }
 }

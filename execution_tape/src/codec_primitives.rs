@@ -94,3 +94,26 @@ pub(crate) fn write_reg_list(out: &mut Vec<u8>, regs: &[u32]) -> Result<(), OutO
     }
     Ok(())
 }
+
+pub(crate) fn read_value_type_list(
+    r: &mut Reader<'_>,
+) -> Result<Vec<crate::program::ValueType>, DecodeError> {
+    let count = read_u32_uleb(r)? as usize;
+    if count > r.remaining() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    (0..count)
+        .map(|_| crate::program::decode_value_type(r))
+        .collect()
+}
+
+pub(crate) fn write_value_type_list(
+    out: &mut Vec<u8>,
+    types: &[crate::program::ValueType],
+) -> Result<(), OutOfBounds> {
+    write_u32_uleb(out, types.len().try_into().map_err(|_| OutOfBounds)?);
+    for &ty in types {
+        crate::program::write_value_type(out, ty);
+    }
+    Ok(())
+}

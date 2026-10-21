@@ -19,7 +19,7 @@ use crate::format::{
     DecodeError as FormatDecodeError, Reader, write_sleb128_i64, write_uleb128_u64,
 };
 use crate::opcode::{Opcode, OperandEncoding, OperandKind};
-use crate::program::{ConstId, ElemTypeId, HostSigId, TypeId};
+use crate::program::{ConstId, ElemTypeId, HostSigId, TypeId, ValueType};
 use crate::value::FuncId;
 
 /// An operand value for encoding an instruction.
@@ -29,6 +29,8 @@ pub enum Operand<'a> {
     Reg(u32),
     /// A list of virtual registers.
     RegList(&'a [u32]),
+    /// Value types declared by a block header.
+    ValueTypeList(&'a [ValueType]),
     /// A bytecode PC (byte offset).
     Pc(u32),
 
@@ -62,6 +64,7 @@ impl Operand<'_> {
         match self {
             Self::Reg(_) => OperandKind::Reg,
             Self::RegList(_) => OperandKind::RegList,
+            Self::ValueTypeList(_) => OperandKind::ValueTypeList,
             Self::Pc(_) => OperandKind::Pc,
             Self::ImmBool(_) => OperandKind::ImmBool,
             Self::ImmU8(_) => OperandKind::ImmU8,
@@ -84,6 +87,8 @@ pub enum DecodedOperand {
     Reg(u32),
     /// A list of virtual registers.
     RegList(Vec<u32>),
+    /// Value types declared by a block header.
+    ValueTypeList(Vec<ValueType>),
     /// A bytecode PC (byte offset).
     Pc(u32),
 
@@ -117,6 +122,7 @@ impl DecodedOperand {
         match self {
             Self::Reg(_) => OperandKind::Reg,
             Self::RegList(_) => OperandKind::RegList,
+            Self::ValueTypeList(_) => OperandKind::ValueTypeList,
             Self::Pc(_) => OperandKind::Pc,
             Self::ImmBool(_) => OperandKind::ImmBool,
             Self::ImmU8(_) => OperandKind::ImmU8,
@@ -294,6 +300,14 @@ pub fn encode_instruction(
         }
 
         match (operand, spec.kind, spec.encoding) {
+            (
+                Operand::ValueTypeList(types),
+                OperandKind::ValueTypeList,
+                OperandEncoding::ValueTypeList,
+            ) => {
+                crate::codec_primitives::write_value_type_list(out, types)
+                    .map_err(|_| EncodeError::OutOfBounds)?;
+            }
             (Operand::Reg(r), OperandKind::Reg, OperandEncoding::RegU32Uleb) => {
                 write_uleb128_u64(out, u64::from(r));
             }
@@ -369,6 +383,11 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
     let mut operands: Vec<DecodedOperand> = Vec::with_capacity(schema.len());
     for (i, spec) in schema.iter().enumerate() {
         let operand = match (spec.kind, spec.encoding) {
+            (OperandKind::ValueTypeList, OperandEncoding::ValueTypeList) => {
+                DecodedOperand::ValueTypeList(crate::codec_primitives::read_value_type_list(
+                    &mut r,
+                )?)
+            }
             (OperandKind::Reg, OperandEncoding::RegU32Uleb) => {
                 DecodedOperand::Reg(read_u32_uleb(&mut r)?)
             }
@@ -461,6 +480,7 @@ pub fn canonicalize(bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
             operands.push(match o {
                 DecodedOperand::Reg(r) => Operand::Reg(*r),
                 DecodedOperand::RegList(rs) => Operand::RegList(rs.as_slice()),
+                DecodedOperand::ValueTypeList(types) => Operand::ValueTypeList(types),
                 DecodedOperand::Pc(pc) => Operand::Pc(*pc),
                 DecodedOperand::ImmBool(b) => Operand::ImmBool(*b),
                 DecodedOperand::ImmU8(v) => Operand::ImmU8(*v),
