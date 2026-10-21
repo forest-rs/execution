@@ -3218,9 +3218,9 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         if let Some(slot) = state.values.get_mut(reg as usize) {
             *slot = Some(ty);
         }
-        if ty != RegType::Concrete(ValueType::Agg) {
-            clear_agg(state, reg);
-        }
+        // A value kind alone carries no aggregate shape. In particular, opaque call results
+        // and nested aggregate projections must not inherit the destination's previous facts.
+        clear_agg(state, reg);
     }
 
     fn set_value(state: &mut TypeState, reg: u32, ty: ValueType) {
@@ -3232,7 +3232,9 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
     }
 
     fn set_agg(state: &mut TypeState, reg: u32, meta: Option<AggMeta>) {
-        set_value(state, reg, ValueType::Agg);
+        if let Some(slot) = state.values.get_mut(reg as usize) {
+            *slot = Some(RegType::Concrete(ValueType::Agg));
+        }
         state.set_agg(reg as usize, meta);
     }
 
@@ -3352,9 +3354,17 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         Instr::BytesEq { dst, .. } | Instr::StrEq { dst, .. } => {
             set_value(state, *dst, ValueType::Bool);
         }
-        Instr::Select { dst, a, .. } => {
+        Instr::Select { dst, a, b, .. } => {
             let t = state.values.get(*a as usize).copied().unwrap_or(None);
             match t {
+                Some(RegType::Concrete(ValueType::Agg)) => {
+                    // Read both inputs before replacing the destination, which may alias either.
+                    let meta = state
+                        .agg(*a as usize)
+                        .filter(|meta| Some(*meta) == state.agg(*b as usize))
+                        .cloned();
+                    set_agg(state, *dst, meta);
+                }
                 Some(t) => set_reg_type(state, *dst, t),
                 None => {
                     if let Some(slot) = state.values.get_mut(*dst as usize) {
@@ -4438,6 +4448,185 @@ mod tests {
             expected.values[reg] = Some(RegType::Concrete(ValueType::I64));
         }
         assert_eq!(state, expected);
+    }
+
+    #[test]
+    fn aggregate_results_without_shape_contracts_clear_old_facts() {
+        let mut builder = ProgramBuilder::new();
+        let callee = builder.declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::Agg],
+        });
+        let mut body = Asm::new();
+        body.tuple_new(1, &[]).ret(0, &[1]);
+        builder.define_function(callee, body).unwrap();
+        let host_sig = builder.host_sig_for(
+            "make",
+            crate::host::HostSig {
+                args: vec![],
+                rets: vec![ValueType::Agg],
+            },
+        );
+        let call_sig = builder.call_sig(&[], &[ValueType::Agg]);
+        let struct_id = builder.struct_type(StructTypeDef {
+            field_names: vec!["child".into()],
+            field_types: vec![ValueType::Agg],
+        });
+        let elem_id = builder.array_elem(ValueType::Agg);
+        let program = builder.build();
+        let writes = [
+            Instr::Call {
+                eff_out: 0,
+                func_id: callee,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![3],
+            },
+            Instr::HostCall {
+                eff_out: 0,
+                host_sig,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![3],
+            },
+            Instr::CallIndirect {
+                eff_out: 0,
+                call_sig: call_sig.0,
+                callee: 2,
+                eff_in: 0,
+                args: vec![],
+                rets: vec![3],
+            },
+            Instr::TupleGet {
+                dst: 3,
+                tuple: 1,
+                index: 0,
+            },
+            Instr::StructGet {
+                dst: 3,
+                st: 4,
+                field_index: 0,
+            },
+            Instr::ArrayGet {
+                dst: 3,
+                arr: 5,
+                index: 6,
+            },
+            Instr::ArrayGetImm {
+                dst: 3,
+                arr: 5,
+                index: 0,
+            },
+            // Nested projections may overwrite their own source, whose outer shape is obsolete.
+            Instr::TupleGet {
+                dst: 1,
+                tuple: 1,
+                index: 0,
+            },
+            Instr::StructGet {
+                dst: 4,
+                st: 4,
+                field_index: 0,
+            },
+            Instr::ArrayGetImm {
+                dst: 5,
+                arr: 5,
+                index: 0,
+            },
+        ];
+        for write in writes {
+            let mut state = initial_types(7, &[ValueType::Agg], &[]);
+            state.set_agg(1, Some(AggMeta::Tuple(vec![Some(ValueType::Agg)])));
+            state.values[2] = Some(RegType::Concrete(ValueType::Func));
+            state.values[3] = Some(RegType::Concrete(ValueType::Agg));
+            state.set_agg(3, Some(AggMeta::Tuple(vec![Some(ValueType::I64)])));
+            state.values[4] = Some(RegType::Concrete(ValueType::Agg));
+            state.set_agg(4, Some(AggMeta::Struct(struct_id)));
+            state.values[5] = Some(RegType::Concrete(ValueType::Agg));
+            state.set_agg(5, Some(AggMeta::Array(elem_id)));
+            state.values[6] = Some(RegType::Concrete(ValueType::U64));
+            let destination = write.writes().last().unwrap() as usize;
+            transfer_types(&program, &write, &mut state);
+            assert_eq!(
+                state.values[destination],
+                Some(RegType::Concrete(ValueType::Agg)),
+                "{write:?}"
+            );
+            assert_eq!(state.agg(destination), None, "{write:?}");
+        }
+    }
+
+    #[test]
+    fn select_keeps_only_common_shape_facts_and_handles_source_aliases() {
+        let program = ProgramBuilder::new().build();
+        for right in [
+            Some(AggMeta::Tuple(vec![Some(ValueType::I64)])),
+            Some(AggMeta::Tuple(vec![Some(ValueType::Bool)])),
+            None,
+        ] {
+            for dst in [1, 2, 3] {
+                let left = AggMeta::Tuple(vec![Some(ValueType::I64)]);
+                let expected = (right.as_ref() == Some(&left)).then_some(left.clone());
+                let mut state = initial_types(5, &[ValueType::Agg, ValueType::Agg], &[]);
+                state.set_agg(1, Some(left));
+                state.set_agg(2, right.clone());
+                state.values[3] = Some(RegType::Concrete(ValueType::Agg));
+                state.set_agg(3, Some(AggMeta::Tuple(vec![Some(ValueType::Str)])));
+                state.values[4] = Some(RegType::Concrete(ValueType::Bool));
+                transfer_types(
+                    &program,
+                    &Instr::Select {
+                        dst,
+                        cond: 4,
+                        a: 1,
+                        b: 2,
+                    },
+                    &mut state,
+                );
+                assert_eq!(
+                    state.agg(dst as usize),
+                    expected.as_ref(),
+                    "dst={dst}, right={right:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn select_replaces_the_destinations_previous_aggregate_shape() {
+        for ret_type in [ValueType::Bool, ValueType::I64] {
+            let mut asm = Asm::new();
+            asm.const_bool(1, true);
+            asm.const_i64(2, 7);
+            asm.tuple_new(3, &[2]);
+            asm.tuple_new(4, &[1]);
+            asm.select(3, 1, 4, 4);
+            asm.tuple_get(5, 3, 0);
+            asm.ret(0, &[5]);
+            let mut builder = ProgramBuilder::new();
+            builder
+                .push_function_checked(
+                    asm,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ret_type],
+                    },
+                )
+                .unwrap();
+            let result = verify_program_owned(builder.build(), &VerifyConfig::default());
+            if ret_type == ValueType::Bool {
+                result.unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(VerifyError::TypeMismatch {
+                        expected: ValueType::I64,
+                        actual: ValueType::Bool,
+                        ..
+                    })
+                ));
+            }
+        }
     }
 
     #[test]
