@@ -255,6 +255,7 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "execution_tape",
+ "execution_tape_recording",
 ]
 
 [[package]]
