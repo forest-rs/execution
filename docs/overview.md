@@ -71,6 +71,12 @@ header to its first executable operation without hiding the original edge target
 fields. Structural checks cover all encoded edges; type/initialization checks follow the
 verifier's reachable-code policy.
 
+Run `cargo run -p execution_tape_wind_tunnel --bin block_parameters` to execute equivalent
+loops using explicit moves and block arguments, with prepared/frame statistics. Run
+`cargo bench -p execution_tape_wind_tunnel --bench block_parameters` for cold owned preparation
+(fixture cloning excluded) and reused execution. Each case checks results before timing;
+reported buffer bytes are layout measurements, not allocator traffic or RSS.
+
 ## Values and types (v1)
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
