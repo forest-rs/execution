@@ -14,6 +14,7 @@ use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
 
 fn bench_vm(c: &mut Criterion) {
+    bench_payloads(c);
     bench_run_results(c);
     bench_i64_add_chain(c);
     bench_i64_add_chain_traced_instr(c);
@@ -31,6 +32,130 @@ fn bench_vm(c: &mut Criterion) {
     bench_host_call_traced_run(c);
     bench_host_call_traced_instr(c);
     bench_host_call_traced_host(c);
+}
+
+fn bench_payloads(c: &mut Criterion) {
+    let mut group = c.benchmark_group("payload");
+    for size in [32, 65_536] {
+        for text in [false, true] {
+            let ty = if text {
+                ValueType::Str
+            } else {
+                ValueType::Bytes
+            };
+            let kind = if text { "str" } else { "bytes" };
+            let value = if text {
+                Value::Str("x".repeat(size))
+            } else {
+                Value::Bytes(vec![42; size])
+            };
+            for source in ["constant", "input", "tuple", "host"] {
+                for length_only in [false, true] {
+                    let mut pb = ProgramBuilder::new();
+                    let mut asm = Asm::new();
+                    let mut inputs = Vec::new();
+                    let mut arg_types = Vec::new();
+                    if source == "input" {
+                        inputs.push(value.clone());
+                        arg_types.push(ty);
+                    } else if source == "host" {
+                        let hs = pb.host_sig_for(
+                            "payload",
+                            HostSig {
+                                args: vec![],
+                                rets: vec![ty],
+                            },
+                        );
+                        asm.host_call_sig_id(0, hs, 0, &[], &[1]);
+                    } else {
+                        let id = match &value {
+                            Value::Bytes(b) => pb.const_bytes(b),
+                            Value::Str(s) => pb.const_str(s),
+                            _ => unreachable!(),
+                        };
+                        asm.const_pool(1, id);
+                    }
+                    let reg = if source == "tuple" {
+                        asm.tuple_new(2, &[1]);
+                        asm.tuple_get(3, 2, 0);
+                        3
+                    } else {
+                        1
+                    };
+                    let result = if length_only {
+                        if text {
+                            asm.str_len(4, reg);
+                        } else {
+                            asm.bytes_len(4, reg);
+                        }
+                        4
+                    } else {
+                        reg
+                    };
+                    asm.ret(0, &[result]);
+                    let entry = pb
+                        .push_function_checked(
+                            asm,
+                            FunctionSig {
+                                arg_types,
+                                ret_types: vec![if length_only { ValueType::U64 } else { ty }],
+                            },
+                        )
+                        .unwrap();
+                    let p = pb.build_verified().unwrap();
+                    let mut vm = Vm::new(PayloadHost { size, text }, wide_open_limits());
+                    let mut ctx = ExecutionContext::new();
+                    let mut outputs = Vec::with_capacity(1);
+                    let operation = if length_only { "len" } else { "return" };
+                    group.bench_function(
+                        BenchmarkId::new(format!("{kind}_{source}_{operation}"), size),
+                        |b| {
+                            b.iter(|| {
+                                outputs.clear();
+                                vm.run_with_ctx(
+                                    &mut ctx,
+                                    &p,
+                                    entry,
+                                    &inputs,
+                                    &mut outputs,
+                                    TraceMask::NONE,
+                                    None,
+                                    None,
+                                )
+                                .unwrap();
+                                black_box(&outputs);
+                                // These fixtures return owned payloads/scalars, never heap handles.
+                                vm.aggregates_mut().clear();
+                            })
+                        },
+                    );
+                }
+            }
+        }
+    }
+    group.finish();
+}
+
+struct PayloadHost {
+    size: usize,
+    text: bool,
+}
+impl Host for PayloadHost {
+    fn call(
+        &mut self,
+        _: &str,
+        _: SigHash,
+        _: &[ValueRef<'_>],
+        rets: &mut [Value],
+        _: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        rets[0] = if self.text {
+            Value::Str("x".repeat(self.size))
+        } else {
+            Value::Bytes(vec![42; self.size])
+        };
+        Ok(0)
+    }
 }
 
 fn bench_run_results(c: &mut Criterion) {
