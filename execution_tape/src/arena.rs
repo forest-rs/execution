@@ -154,7 +154,9 @@ mod tests {
         let p = pb.build();
         let args = [Value::Bytes(vec![1, 2]), Value::Str("input".into())];
         let mut heap = AggHeap::new();
-        let tuple = heap.tuple_new(vec![Value::Bytes(vec![3, 4]), Value::Str("field".into())]);
+        let tuple = heap
+            .tuple_new(vec![Value::Bytes(vec![3, 4]), Value::Str("field".into())])
+            .unwrap();
         let sources = ValueSources::new(&p, &args, &heap);
         let mut arena = ValueArena::default();
         let cb = arena.borrow_bytes(PayloadSource::Constant(bytes));

@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `AggHeap::tuple_new`, `struct_new`, and `array_new` now return `Result<AggHandle, AggError>`.
+  Handle the result when constructing aggregates. Heap and staged constructors reject dangling
+  aggregate children and closure environments before mutation, preventing forward references
+  and cycles. Schema validation remains a separate operation.
+
 - Verification now validates immutable metadata, including unused constant ranges, symbol and
   field-name ranges, struct layouts, and optional names. Malformed programs fail preparation
   with `VerifyError::InvalidMetadata` instead of trapping during execution. Exhaustive error

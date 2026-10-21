@@ -106,6 +106,14 @@ impl core::error::Error for AggShapeError {
     }
 }
 
+fn aggregate_handle(value: &Value) -> Option<AggHandle> {
+    match value {
+        Value::Agg(handle) => Some(*handle),
+        Value::Closure(closure) => Some(closure.env),
+        _ => None,
+    }
+}
+
 /// A heap node storing an aggregate value.
 #[derive(Clone, Debug, PartialEq)]
 enum AggNode {
@@ -413,8 +421,15 @@ impl<'a> AggOverlay<'a> {
 
     /// Allocates a tuple in staged storage and returns a staged-encoded handle.
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, AggError> {
-        let local = self.staged.tuple_new(values);
-        self.encode_staged_handle(local)
+        for value in &values {
+            if let Some(handle) = aggregate_handle(value) {
+                self.agg_type(handle)?;
+            }
+        }
+        self.staged.check_capacity()?;
+        let encoded = self.encode_staged_handle(AggHandle(self.staged.len_u32()))?;
+        self.staged.push(AggNode::Tuple { values });
+        Ok(encoded)
     }
 
     /// Returns tuple element `index`.
@@ -439,8 +454,15 @@ impl<'a> AggOverlay<'a> {
         type_id: TypeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, AggError> {
-        let local = self.staged.struct_new(type_id, values);
-        self.encode_staged_handle(local)
+        for value in &values {
+            if let Some(handle) = aggregate_handle(value) {
+                self.agg_type(handle)?;
+            }
+        }
+        self.staged.check_capacity()?;
+        let encoded = self.encode_staged_handle(AggHandle(self.staged.len_u32()))?;
+        self.staged.push(AggNode::Struct { type_id, values });
+        Ok(encoded)
     }
 
     /// Returns struct field `field_index`.
@@ -465,8 +487,18 @@ impl<'a> AggOverlay<'a> {
         elem_type_id: ElemTypeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, AggError> {
-        let local = self.staged.array_new(elem_type_id, values);
-        self.encode_staged_handle(local)
+        for value in &values {
+            if let Some(handle) = aggregate_handle(value) {
+                self.agg_type(handle)?;
+            }
+        }
+        self.staged.check_capacity()?;
+        let encoded = self.encode_staged_handle(AggHandle(self.staged.len_u32()))?;
+        self.staged.push(AggNode::Array {
+            elem_type_id,
+            values,
+        });
+        Ok(encoded)
     }
 
     /// Returns array element `index`.
@@ -617,21 +649,41 @@ impl AggHeap {
     }
 
     /// Allocates a tuple aggregate.
-    pub fn tuple_new(&mut self, values: Vec<Value>) -> AggHandle {
-        self.push(AggNode::Tuple { values })
+    ///
+    /// Rejects dangling aggregate/closure-environment children and handle overflow before mutation.
+    pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, AggError> {
+        self.check_children(&values)?;
+        self.check_capacity()?;
+        Ok(self.push(AggNode::Tuple { values }))
     }
 
     /// Allocates a struct aggregate.
-    pub fn struct_new(&mut self, type_id: TypeId, values: Vec<Value>) -> AggHandle {
-        self.push(AggNode::Struct { type_id, values })
+    ///
+    /// Rejects dangling children and handle overflow. Field schemas are checked separately.
+    pub fn struct_new(
+        &mut self,
+        type_id: TypeId,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        self.check_children(&values)?;
+        self.check_capacity()?;
+        Ok(self.push(AggNode::Struct { type_id, values }))
     }
 
     /// Allocates an array aggregate.
-    pub fn array_new(&mut self, elem_type_id: ElemTypeId, values: Vec<Value>) -> AggHandle {
-        self.push(AggNode::Array {
+    ///
+    /// Rejects dangling children and handle overflow. Element schemas are checked separately.
+    pub fn array_new(
+        &mut self,
+        elem_type_id: ElemTypeId,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        self.check_children(&values)?;
+        self.check_capacity()?;
+        Ok(self.push(AggNode::Array {
             elem_type_id,
             values,
-        })
+        }))
     }
 
     /// Returns tuple element `index`.
@@ -715,6 +767,23 @@ impl AggHeap {
         })
     }
 
+    fn check_children(&self, values: &[Value]) -> Result<(), AggError> {
+        for value in values {
+            if let Some(handle) = aggregate_handle(value) {
+                self.node(handle)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_capacity(&self) -> Result<(), AggError> {
+        if self.nodes.len() >= u32::MAX as usize {
+            Err(AggError::HandleOverflow)
+        } else {
+            Ok(())
+        }
+    }
+
     fn push(&mut self, node: AggNode) -> AggHandle {
         let idx = u32::try_from(self.nodes.len()).unwrap_or(u32::MAX);
         self.nodes.push(node);
@@ -762,6 +831,43 @@ mod tests {
     }
 
     #[test]
+    fn constructors_reject_dangling_children_and_closure_environments_atomically() {
+        for value in [
+            Value::Agg(AggHandle(0)),
+            Value::Closure(Closure {
+                func: FuncId(0),
+                env: AggHandle(0),
+            }),
+        ] {
+            let mut heap = AggHeap::new();
+            assert_eq!(
+                heap.tuple_new(vec![value.clone()]),
+                Err(AggError::BadHandle)
+            );
+            assert_eq!(
+                heap.struct_new(TypeId(0), vec![value.clone()]),
+                Err(AggError::BadHandle)
+            );
+            assert_eq!(
+                heap.array_new(ElemTypeId(0), vec![value]),
+                Err(AggError::BadHandle)
+            );
+            assert_eq!(heap.len_u32(), 0);
+        }
+        let mut base = AggHeap::new();
+        let child = base.tuple_new(vec![]).unwrap();
+        let mut delta = AggDelta::for_base(&base);
+        let mut overlay = delta.overlay(&base);
+        assert_eq!(
+            overlay.tuple_new(vec![Value::Agg(AggHandle(1))]),
+            Err(AggError::BadHandle)
+        );
+        let parent = overlay.tuple_new(vec![Value::Agg(child)]).unwrap();
+        assert_eq!(parent, AggHandle(1));
+        assert_eq!(overlay.tuple_get(parent, 0), Ok(Value::Agg(child)));
+    }
+
+    #[test]
     fn shape_checks_validate_contents_and_nominal_ids() {
         use crate::program::{StructTypeDef, TypeTableDef};
         let p = Program::new(
@@ -778,17 +884,19 @@ mod tests {
             vec![],
         );
         let mut heap = AggHeap::new();
-        let st = heap.struct_new(TypeId(0), vec![Value::Bool(true)]);
+        let st = heap.struct_new(TypeId(0), vec![Value::Bool(true)]).unwrap();
         assert!(matches!(
             heap.check_shape(&p, st, &AggShape::Struct(TypeId(0))),
             Err(AggShapeError::Element { index: 0, .. })
         ));
-        let short = heap.struct_new(TypeId(0), vec![]);
+        let short = heap.struct_new(TypeId(0), vec![]).unwrap();
         assert!(matches!(
             heap.check_shape(&p, short, &AggShape::Struct(TypeId(0))),
             Err(AggShapeError::Arity { .. })
         ));
-        let array = heap.array_new(ElemTypeId(0), vec![Value::I64(1), Value::Bool(false)]);
+        let array = heap
+            .array_new(ElemTypeId(0), vec![Value::I64(1), Value::Bool(false)])
+            .unwrap();
         assert!(matches!(
             heap.check_shape(&p, array, &AggShape::Array(ElemTypeId(0))),
             Err(AggShapeError::Element { index: 1, .. })
@@ -797,7 +905,7 @@ mod tests {
             heap.check_shape(&p, array, &AggShape::Struct(TypeId(0))),
             Err(AggShapeError::Shape { .. })
         ));
-        let wrong_id = heap.array_new(ElemTypeId(1), vec![]);
+        let wrong_id = heap.array_new(ElemTypeId(1), vec![]).unwrap();
         assert!(matches!(
             heap.check_shape(&p, wrong_id, &AggShape::Array(ElemTypeId(0))),
             Err(AggShapeError::Shape { .. })
@@ -806,7 +914,7 @@ mod tests {
             heap.check_shape(&p, wrong_id, &AggShape::Array(ElemTypeId(1))),
             Err(AggShapeError::InvalidSchema)
         );
-        let tuple = heap.tuple_new(vec![Value::Bool(false)]);
+        let tuple = heap.tuple_new(vec![Value::Bool(false)]).unwrap();
         assert_eq!(
             heap.check_shape(&p, tuple, &AggShape::tuple(vec![None])),
             Ok(())
@@ -820,7 +928,7 @@ mod tests {
     #[test]
     fn tuple_roundtrip() {
         let mut h = AggHeap::new();
-        let t = h.tuple_new(vec![Value::I64(1), Value::Bool(true)]);
+        let t = h.tuple_new(vec![Value::I64(1), Value::Bool(true)]).unwrap();
         assert_eq!(h.tuple_get(t, 0), Ok(Value::I64(1)));
         assert_eq!(h.tuple_get_ref(t, 0), Ok(&Value::I64(1)));
         assert_eq!(h.tuple_get(t, 1), Ok(Value::Bool(true)));
@@ -831,7 +939,9 @@ mod tests {
     #[test]
     fn array_len_get() {
         let mut h = AggHeap::new();
-        let a = h.array_new(ElemTypeId(0), vec![Value::U64(7), Value::U64(8)]);
+        let a = h
+            .array_new(ElemTypeId(0), vec![Value::U64(7), Value::U64(8)])
+            .unwrap();
         assert_eq!(h.array_len(a), Ok(2));
         assert_eq!(h.array_get(a, 1), Ok(Value::U64(8)));
         assert_eq!(h.array_get_ref(a, 1), Ok(&Value::U64(8)));
@@ -840,7 +950,9 @@ mod tests {
     #[test]
     fn struct_get_ref_borrows_field() {
         let mut h = AggHeap::new();
-        let st = h.struct_new(TypeId(3), vec![Value::Str("name".into())]);
+        let st = h
+            .struct_new(TypeId(3), vec![Value::Str("name".into())])
+            .unwrap();
         assert_eq!(h.struct_get_ref(st, 0), Ok(&Value::Str("name".into())));
         assert_eq!(h.struct_get_ref(st, 1), Err(AggError::OutOfBounds));
     }
@@ -849,17 +961,17 @@ mod tests {
     fn len_u32_tracks_nodes() {
         let mut h = AggHeap::new();
         assert_eq!(h.len_u32(), 0);
-        let _ = h.tuple_new(vec![]);
+        let _ = h.tuple_new(vec![]).unwrap();
         assert_eq!(h.len_u32(), 1);
-        let _ = h.array_new(ElemTypeId(0), vec![]);
+        let _ = h.array_new(ElemTypeId(0), vec![]).unwrap();
         assert_eq!(h.len_u32(), 2);
     }
 
     #[test]
     fn clear_empties_heap_and_preserves_capacity() {
         let mut h = AggHeap::new();
-        let _ = h.tuple_new(vec![Value::I64(1)]);
-        let _ = h.struct_new(TypeId(7), vec![Value::Bool(true)]);
+        let _ = h.tuple_new(vec![Value::I64(1)]).unwrap();
+        let _ = h.struct_new(TypeId(7), vec![Value::Bool(true)]).unwrap();
         let cap_before = h.nodes.capacity();
         assert!(cap_before > 0);
 
@@ -872,8 +984,10 @@ mod tests {
     #[test]
     fn overlay_reads_base_and_staged_by_handle_domain() {
         let mut base = AggHeap::new();
-        let base_tuple = base.tuple_new(vec![Value::I64(11)]);
-        let base_array = base.array_new(ElemTypeId(3), vec![Value::U64(1), Value::U64(2)]);
+        let base_tuple = base.tuple_new(vec![Value::I64(11)]).unwrap();
+        let base_array = base
+            .array_new(ElemTypeId(3), vec![Value::U64(1), Value::U64(2)])
+            .unwrap();
         let base_len = base.len_u32();
         let mut staged = AggHeap::new();
 
@@ -897,7 +1011,9 @@ mod tests {
     #[test]
     fn overlay_supports_struct_and_agg_type_across_spaces() {
         let mut base = AggHeap::new();
-        let base_struct = base.struct_new(TypeId(10), vec![Value::Bool(true), Value::I64(8)]);
+        let base_struct = base
+            .struct_new(TypeId(10), vec![Value::Bool(true), Value::I64(8)])
+            .unwrap();
         let base_len = base.len_u32();
         let mut staged = AggHeap::new();
         let mut overlay = AggOverlay::new(&base, base_len, &mut staged);
@@ -928,8 +1044,8 @@ mod tests {
     #[test]
     fn overlay_new_allocations_are_staged_encoded() {
         let mut base = AggHeap::new();
-        let _ = base.tuple_new(vec![Value::I64(1)]);
-        let _ = base.tuple_new(vec![Value::I64(2)]);
+        let _ = base.tuple_new(vec![Value::I64(1)]).unwrap();
+        let _ = base.tuple_new(vec![Value::I64(2)]).unwrap();
         let base_len = base.len_u32();
         let mut staged = AggHeap::new();
         let mut overlay = AggOverlay::new(&base, base_len, &mut staged);
@@ -945,7 +1061,7 @@ mod tests {
     #[test]
     fn overlay_allocations_round_trip_through_merge() {
         let mut base = AggHeap::new();
-        let _ = base.tuple_new(vec![Value::I64(1)]); // base node 0
+        let _ = base.tuple_new(vec![Value::I64(1)]).unwrap(); // base node 0
 
         let mut delta = AggDelta::for_base(&base);
         let root = {
@@ -986,7 +1102,7 @@ mod tests {
     #[test]
     fn delta_merge_is_deterministic_for_identical_inputs() {
         let mut base_a = AggHeap::new();
-        let _ = base_a.tuple_new(vec![Value::I64(7)]);
+        let _ = base_a.tuple_new(vec![Value::I64(7)]).unwrap();
         let mut base_b = base_a.clone();
 
         let (delta, root) = staged_delta(&base_a, |o| {
@@ -1063,7 +1179,7 @@ mod tests {
     #[test]
     fn delta_merge_rejects_out_of_range_staged_root_handle() {
         let mut base = AggHeap::new();
-        let _ = base.tuple_new(vec![Value::I64(7)]);
+        let _ = base.tuple_new(vec![Value::I64(7)]).unwrap();
         let base_len = base.len_u32();
         let (delta, _filler) =
             staged_delta(&base, |o| o.tuple_new(vec![Value::I64(8)]).expect("alloc"));
@@ -1078,10 +1194,16 @@ mod tests {
     fn delta_merge_rejects_reachable_node_with_unresolved_nested_staged_handle() {
         let mut base = AggHeap::new();
         let base_len = base.len_u32();
-        let (delta, root) = staged_delta(&base, |o| {
-            o.tuple_new(vec![Value::Agg(AggHandle(base_len + 99))])
-                .expect("alloc")
-        });
+        // Forge corrupted internal data: public constructors now reject this reference.
+        let delta = AggDelta {
+            base_len,
+            staged: AggHeap {
+                nodes: vec![AggNode::Tuple {
+                    values: vec![Value::Agg(AggHandle(base_len + 99))],
+                }],
+            },
+        };
+        let root = AggHandle(base_len);
         let roots = vec![Value::Agg(root)];
 
         let remap = delta.merge_into(&mut base, &roots);
@@ -1097,17 +1219,21 @@ mod tests {
         let base_len = base.len_u32();
         assert_eq!(base_len, 0);
 
-        let (delta, node0) = staged_delta(&base, |o| {
-            // node 0 forward-references node 1, which isn't allocated yet, so this handle is
-            // necessarily hand-encoded; node 1 then references an out-of-range handle.
-            let n0 = o
-                .tuple_new(vec![Value::Agg(AggHandle(base_len + 1))])
-                .expect("alloc");
-            let _n1 = o
-                .tuple_new(vec![Value::Agg(AggHandle(base_len + 99))])
-                .expect("alloc");
-            n0
-        });
+        // Forge invalid nodes directly to exercise defensive merge validation.
+        let delta = AggDelta {
+            base_len,
+            staged: AggHeap {
+                nodes: vec![
+                    AggNode::Tuple {
+                        values: vec![Value::Agg(AggHandle(base_len + 1))],
+                    },
+                    AggNode::Tuple {
+                        values: vec![Value::Agg(AggHandle(base_len + 99))],
+                    },
+                ],
+            },
+        };
+        let node0 = AggHandle(base_len);
         let roots = vec![Value::Agg(node0)];
 
         let result = delta.merge_into(&mut base, &roots);
@@ -1122,7 +1248,7 @@ mod tests {
         // A u32::MAX base snapshot can't come from a real base (so `for_base`/`overlay` can't
         // build it); construct the boundary delta directly.
         let mut staged = AggHeap::new();
-        let _ = staged.tuple_new(vec![Value::I64(44)]);
+        let _ = staged.tuple_new(vec![Value::I64(44)]).unwrap();
         let delta = AggDelta {
             base_len: u32::MAX,
             staged,
@@ -1152,7 +1278,7 @@ mod tests {
     #[test]
     fn remapped_outputs_do_not_contain_staged_handles() {
         let mut base = AggHeap::new();
-        let _ = base.tuple_new(vec![Value::I64(100)]);
+        let _ = base.tuple_new(vec![Value::I64(100)]).unwrap();
 
         let (delta, (leaf, root)) = staged_delta(&base, |o| {
             let leaf = o.tuple_new(vec![Value::I64(1)]).expect("alloc");
@@ -1196,7 +1322,7 @@ mod tests {
     #[test]
     fn delta_merge_traces_and_remaps_root_closure_env() {
         let mut base = AggHeap::new();
-        let _ = base.tuple_new(vec![Value::I64(7)]); // base node 0
+        let _ = base.tuple_new(vec![Value::I64(7)]).unwrap(); // base node 0
 
         // An unreachable filler before the env makes the env's staged encoding (2) differ from
         // its post-merge base index (1), so this proves the closure env is actually rewritten,

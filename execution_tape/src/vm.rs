@@ -2104,7 +2104,10 @@ impl<H: Host> Vm<H> {
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
-                    let h = self.agg.tuple_new(vals);
+                    let h = self
+                        .agg
+                        .tuple_new(vals)
+                        .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2153,7 +2156,10 @@ impl<H: Host> Vm<H> {
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
-                    let h = self.agg.struct_new(*type_id, vals);
+                    let h = self
+                        .agg
+                        .struct_new(*type_id, vals)
+                        .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2206,7 +2212,10 @@ impl<H: Host> Vm<H> {
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
-                    let h = self.agg.array_new(*elem_type_id, vals);
+                    let h = self
+                        .agg
+                        .array_new(*elem_type_id, vals)
+                        .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3402,8 +3411,11 @@ mod tests {
             };
             let p = pb.build_verified().unwrap();
             let mut vm = Vm::new(TestHost, Limits::default());
-            let wrong = vm.aggregates_mut().tuple_new(vec![Value::Bool(true)]);
-            let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]);
+            let wrong = vm
+                .aggregates_mut()
+                .tuple_new(vec![Value::Bool(true)])
+                .unwrap();
+            let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
             let mut ctx = ExecutionContext::new();
             let mut outputs = Vec::new();
             for handle in [wrong, AggHandle(u32::MAX)] {
@@ -3635,7 +3647,7 @@ mod tests {
             .unwrap();
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(TestHost, Limits::default());
-        let aggregate = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]);
+        let aggregate = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
         let args = vec![
             Value::I64(42),
             Value::Bytes(vec![1, 2]),
@@ -4410,10 +4422,11 @@ mod tests {
 
         let closure = Closure {
             func: FuncId(42),
-            env: AggHandle(7),
+            env: AggHandle(0),
         };
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -4463,7 +4476,8 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let env = vm
             .aggregates_mut()
-            .tuple_new(vec![Value::I64(11), Value::Bool(true)]);
+            .tuple_new(vec![Value::I64(11), Value::Bool(true)])
+            .unwrap();
 
         let out = vm
             .run(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
