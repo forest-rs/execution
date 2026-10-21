@@ -36,6 +36,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Preserve load-time traps for malformed byte/string constant ranges, even when the loaded
+  value is unused. ([#123][] by [@waywardmonkeys][])
+
 - Validate aggregate argument contracts before entry and direct, indirect, and closure calls.
   Exhaustive matches on `Trap` must handle `ArgumentShapeMismatch`; `AggHeap::check_shape`
   exposes allocation-free validation with structured `AggShapeError` diagnostics. ([#117][] by [@waywardmonkeys][])
@@ -72,6 +75,8 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#118]: https://github.com/forest-rs/execution/pull/118
 [#119]: https://github.com/forest-rs/execution/pull/119
 [#120]: https://github.com/forest-rs/execution/pull/120
+
+[#123]: https://github.com/forest-rs/execution/pull/123
 
 [Unreleased]: https://github.com/forest-rs/execution/compare/execution_tape-v0.0.1...HEAD
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_tape-v0.0.1
