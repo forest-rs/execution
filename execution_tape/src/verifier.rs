@@ -2934,11 +2934,28 @@ fn initial_init(reg_count: usize, arg_count: usize) -> BitSet {
     s
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum AggMeta {
     Tuple(Vec<Option<ValueType>>),
     Struct(TypeId),
     Array(ElemTypeId),
+}
+
+impl Clone for AggMeta {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Tuple(elems) => Self::Tuple(elems.clone()),
+            Self::Struct(id) => Self::Struct(*id),
+            Self::Array(id) => Self::Array(*id),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        match (self, source) {
+            (Self::Tuple(elems), Self::Tuple(source)) => elems.clone_from(source),
+            (target, source) => *target = source.clone(),
+        }
+    }
 }
 
 impl From<&AggShape> for AggMeta {
@@ -2967,7 +2984,43 @@ struct TypeState {
     // `Some(RegType::Concrete(t))` means "definitely initialized with concrete type `t`".
     // `Some(RegType::Ambiguous)` means "definitely initialized, but the type is not stable".
     values: Vec<Option<RegType>>,
-    aggs: Vec<Option<AggMeta>>,
+    // Only known shapes are stored, in increasing register order. This makes state equality
+    // independent of update order and avoids a metadata slot for every scalar register.
+    aggs: Vec<(usize, AggMeta)>,
+}
+
+impl TypeState {
+    fn agg(&self, reg: usize) -> Option<&AggMeta> {
+        match self.aggs.last() {
+            Some((last, meta)) if *last == reg => Some(meta),
+            Some((last, _)) if *last > reg => self
+                .aggs
+                .binary_search_by_key(&reg, |(reg, _)| *reg)
+                .ok()
+                .map(|index| &self.aggs[index].1),
+            _ => None,
+        }
+    }
+
+    fn set_agg(&mut self, reg: usize, meta: Option<AggMeta>) {
+        if reg >= self.values.len() {
+            return;
+        }
+        if self.aggs.last().is_none_or(|(last, _)| *last < reg) {
+            if let Some(meta) = meta {
+                self.aggs.push((reg, meta));
+            }
+            return;
+        }
+        match (self.aggs.binary_search_by_key(&reg, |(reg, _)| *reg), meta) {
+            (Ok(index), Some(meta)) => self.aggs[index].1 = meta,
+            (Ok(index), None) => {
+                self.aggs.remove(index);
+            }
+            (Err(index), Some(meta)) => self.aggs.insert(index, (reg, meta)),
+            (Err(_), None) => {}
+        }
+    }
 }
 
 impl Clone for TypeState {
@@ -2989,20 +3042,22 @@ fn initial_types(
     arg_types: &[ValueType],
     arg_agg_metas: &[Option<AggMeta>],
 ) -> TypeState {
-    let mut values: Vec<Option<RegType>> = vec![Some(RegType::Uninit); reg_count];
-    let mut aggs: Vec<Option<AggMeta>> = vec![None; reg_count];
+    let mut state = TypeState {
+        values: vec![Some(RegType::Uninit); reg_count],
+        aggs: Vec::new(),
+    };
     if reg_count != 0 {
-        values[0] = Some(RegType::Concrete(ValueType::Unit)); // effect token
+        state.values[0] = Some(RegType::Concrete(ValueType::Unit)); // effect token
         for (i, &t) in arg_types.iter().enumerate() {
             if 1 + i < reg_count {
-                values[1 + i] = Some(RegType::Concrete(t));
+                state.values[1 + i] = Some(RegType::Concrete(t));
                 if t == ValueType::Agg {
-                    aggs[1 + i] = arg_agg_metas.get(i).cloned().unwrap_or(None);
+                    state.set_agg(1 + i, arg_agg_metas.get(i).cloned().flatten());
                 }
             }
         }
     }
-    TypeState { values, aggs }
+    state
 }
 
 fn initial_arg_agg_metas(
@@ -3055,9 +3110,7 @@ fn const_value_type(c: &ConstEntry) -> ValueType {
 
 fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
     fn clear_agg(state: &mut TypeState, reg: u32) {
-        if let Some(slot) = state.aggs.get_mut(reg as usize) {
-            *slot = None;
-        }
+        state.set_agg(reg as usize, None);
     }
 
     fn set_reg_type(state: &mut TypeState, reg: u32, ty: RegType) {
@@ -3079,9 +3132,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
 
     fn set_agg(state: &mut TypeState, reg: u32, meta: Option<AggMeta>) {
         set_value(state, reg, ValueType::Agg);
-        if let Some(slot) = state.aggs.get_mut(reg as usize) {
-            *slot = meta;
-        }
+        state.set_agg(reg as usize, meta);
     }
 
     fn copy_reg(state: &mut TypeState, dst: u32, src: u32) {
@@ -3089,13 +3140,12 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         if let Some(slot) = state.values.get_mut(dst as usize) {
             *slot = t;
         }
-        let meta = state.aggs.get(src as usize).cloned().unwrap_or(None);
-        if let Some(slot) = state.aggs.get_mut(dst as usize) {
-            *slot = meta;
-        }
-        if t != Some(RegType::Concrete(ValueType::Agg)) {
-            clear_agg(state, dst);
-        }
+        let meta = if t == Some(RegType::Concrete(ValueType::Agg)) {
+            state.agg(src as usize).cloned()
+        } else {
+            None
+        };
+        state.set_agg(dst as usize, meta);
     }
 
     match instr {
@@ -3308,7 +3358,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             set_agg(state, *dst, Some(AggMeta::Array(*elem_type_id)));
         }
         Instr::TupleGet { dst, tuple, index } => {
-            let out = match state.aggs.get(*tuple as usize).and_then(|m| m.as_ref()) {
+            let out = match state.agg(*tuple as usize) {
                 Some(AggMeta::Tuple(elems)) => elems.get(*index as usize).and_then(|t| *t),
                 _ => None,
             };
@@ -3322,7 +3372,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             st,
             field_index,
         } => {
-            let out = match state.aggs.get(*st as usize).and_then(|m| m.as_ref()) {
+            let out = match state.agg(*st as usize) {
                 Some(AggMeta::Struct(type_id)) => program
                     .types
                     .structs
@@ -3337,7 +3387,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             set_reg_type(state, *dst, out);
         }
         Instr::ArrayGet { dst, arr, .. } => {
-            let out = match state.aggs.get(*arr as usize).and_then(|m| m.as_ref()) {
+            let out = match state.agg(*arr as usize) {
                 Some(AggMeta::Array(elem_type_id)) => program
                     .types
                     .array_elems
@@ -3350,7 +3400,7 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
             set_reg_type(state, *dst, out);
         }
         Instr::ArrayGetImm { dst, arr, .. } => {
-            let out = match state.aggs.get(*arr as usize).and_then(|m| m.as_ref()) {
+            let out = match state.agg(*arr as usize) {
                 Some(AggMeta::Array(elem_type_id)) => program
                     .types
                     .array_elems
@@ -3382,7 +3432,7 @@ fn compute_must_types(
     // type assignment for each register (or reject instability later).
     let bottom = TypeState {
         values: vec![None; reg_count],
-        aggs: vec![None; reg_count],
+        aggs: Vec::new(),
     };
 
     let (in_sets, out_sets) = dataflow::solve_forward(
@@ -3398,20 +3448,20 @@ fn compute_must_types(
                 if acc.values[r].is_none()
                     && incoming.values[r] == Some(RegType::Concrete(ValueType::Agg))
                 {
-                    acc.aggs[r].clone_from(&incoming.aggs[r]);
+                    acc.set_agg(r, incoming.agg(r).cloned());
                 }
                 let value = meet_value(acc.values[r], incoming.values[r]);
                 changed |= value != acc.values[r];
                 acc.values[r] = value;
+            }
+            acc.aggs.retain(|(r, meta)| {
                 // Equal aggregate metadata is already in place, including tuple storage.
                 // The meet can only retain it or discard it.
-                if !matches!(value, Some(RegType::Concrete(ValueType::Agg)))
-                    || (incoming.values[r].is_some() && acc.aggs[r] != incoming.aggs[r])
-                {
-                    changed |= acc.aggs[r].is_some();
-                    acc.aggs[r] = None;
-                }
-            }
+                let keep = matches!(acc.values[*r], Some(RegType::Concrete(ValueType::Agg)))
+                    && (incoming.values[*r].is_none() || Some(meta) == incoming.agg(*r));
+                changed |= !keep;
+                keep
+            });
             changed
         },
         |_b_idx, b, state| {
@@ -3501,7 +3551,7 @@ fn validate_instr_types(
     func_ret_types: &[ValueType],
 ) -> Result<(), VerifyError> {
     let t = |reg: u32| state.values.get(reg as usize).copied().flatten();
-    let a = |reg: u32| state.aggs.get(reg as usize).and_then(|m| m.as_ref());
+    let a = |reg: u32| state.agg(reg as usize);
 
     match instr {
         Instr::Nop | Instr::Trap { .. } | Instr::Jmp { .. } => {}
@@ -4215,16 +4265,59 @@ mod tests {
     #[test]
     fn type_state_clone_from_reuses_register_buffers_and_replaces_metadata() {
         let mut state = initial_types(8, &[ValueType::I64], &[]);
-        state.aggs[2] = Some(AggMeta::Tuple(vec![Some(ValueType::I64)]));
+        state.set_agg(4, Some(AggMeta::Tuple(vec![Some(ValueType::I64)])));
         let values = state.values.as_ptr();
         let aggs = state.aggs.as_ptr();
         let mut incoming = initial_types(8, &[ValueType::Bool], &[]);
-        incoming.aggs[3] = Some(AggMeta::Tuple(vec![Some(ValueType::Bool)]));
+        incoming.set_agg(3, Some(AggMeta::Tuple(vec![Some(ValueType::Bool)])));
 
         state.clone_from(&incoming);
         assert_eq!(state, incoming);
         assert_eq!(state.values.as_ptr(), values);
         assert_eq!(state.aggs.as_ptr(), aggs);
+    }
+
+    #[test]
+    fn aggregate_metadata_tracks_only_known_shapes_as_registers_are_overwritten() {
+        let program = ProgramBuilder::new().build();
+        let mut state = initial_types(256, &[], &[]);
+        assert_eq!(state.aggs.capacity(), 0);
+        transfer_types(&program, &Instr::ConstI64 { dst: 1, imm: 7 }, &mut state);
+        assert_eq!(state.aggs.capacity(), 0);
+
+        transfer_types(
+            &program,
+            &Instr::TupleNew {
+                dst: 255,
+                values: vec![1],
+            },
+            &mut state,
+        );
+        assert_eq!(state.aggs.len(), 1);
+        transfer_types(&program, &Instr::Mov { dst: 200, src: 255 }, &mut state);
+        transfer_types(&program, &Instr::Mov { dst: 255, src: 255 }, &mut state);
+        assert_eq!(state.agg(200), state.agg(255));
+        assert_eq!(state.aggs.len(), 2);
+
+        // A projection may overwrite its own source; retain the lower aggregate's metadata.
+        transfer_types(
+            &program,
+            &Instr::TupleGet {
+                dst: 255,
+                tuple: 255,
+                index: 0,
+            },
+            &mut state,
+        );
+        assert_eq!(state.values[255], Some(RegType::Concrete(ValueType::I64)));
+        assert_eq!(state.aggs.len(), 1);
+        transfer_types(&program, &Instr::Mov { dst: 200, src: 1 }, &mut state);
+        assert!(state.aggs.is_empty());
+        let mut expected = initial_types(256, &[], &[]);
+        for reg in [1, 200, 255] {
+            expected.values[reg] = Some(RegType::Concrete(ValueType::I64));
+        }
+        assert_eq!(state, expected);
     }
 
     #[test]
