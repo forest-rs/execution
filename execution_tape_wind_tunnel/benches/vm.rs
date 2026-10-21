@@ -741,6 +741,7 @@ impl TraceSink for CountingHostScopes {
         _func: FuncId,
         _pc: u32,
         _span_id: Option<u64>,
+        _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         self._count = self._count.wrapping_add(1);
     }

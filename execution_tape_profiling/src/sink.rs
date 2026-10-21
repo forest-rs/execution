@@ -133,6 +133,7 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<R> {
         _func: execution_tape::value::FuncId,
         _pc: u32,
         _span_id: Option<u64>,
+        _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         self.on_scope_exit(kind, depth);
     }
