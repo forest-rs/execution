@@ -12,6 +12,13 @@ use execution_tape::program::ValueType;
 
 fn main() {
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     let l_then = a.label_named("then");
     let l_else = a.label_named("else");
 

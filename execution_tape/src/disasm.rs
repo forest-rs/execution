@@ -243,8 +243,6 @@ pub enum Operands<'a> {
     Block {
         /// Destination registers in declaration order.
         params: &'a [u32],
-        /// Value kinds in the same order (`Agg` does not assert a shape).
-        types: &'a [ValueType],
     },
     /// Jump with simultaneous arguments.
     JmpArgs {
@@ -333,6 +331,13 @@ pub struct InstrView<'a> {
 }
 
 impl<'a> InstrView<'a> {
+    /// Returns a virtual register's declared kind, or `None` for malformed or missing metadata.
+    #[must_use]
+    pub fn register_type(&self, reg: u32) -> Option<ValueType> {
+        let function = self.program.functions.get(self.func.0 as usize)?;
+        function.register_type(self.program, reg).ok()
+    }
+
     /// Function containing this instruction.
     #[must_use]
     pub fn func(&self) -> FuncId {
@@ -529,7 +534,7 @@ impl<'a> InstrView<'a> {
         }
 
         match &self.decoded.instr {
-            Instr::Block { params, types } => Operands::Block { params, types },
+            Instr::Block { params } => Operands::Block { params },
             Instr::JmpArgs { pc_target, args } => Operands::JmpArgs {
                 pc_target: *pc_target,
                 args,
@@ -1179,23 +1184,20 @@ fn fmt_label_ref(f: &mut fmt::Formatter<'_>, pc: u32, label_pcs: &[u32]) -> fmt:
     }
 }
 
-fn fmt_block(f: &mut fmt::Formatter<'_>, params: &[u32], types: &[ValueType]) -> fmt::Result {
+fn fmt_block(f: &mut fmt::Formatter<'_>, params: &[u32], iv: &InstrView<'_>) -> fmt::Result {
     write!(f, " (")?;
     for (ix, reg) in params.iter().enumerate() {
         if ix != 0 {
             write!(f, ", ")?;
         }
         write!(f, "r{reg}:")?;
-        if let Some(ty) = types.get(ix) {
+        if let Some(ty) = iv.register_type(*reg) {
             write!(f, "{ty:?}")?;
         } else {
             write!(f, "?")?;
         }
     }
     write!(f, ")")?;
-    if params.len() != types.len() {
-        write!(f, " ; types={types:?}")?;
-    }
     Ok(())
 }
 
@@ -1238,7 +1240,7 @@ fn fmt_instr_with_labels(
 ) -> fmt::Result {
     write!(f, "  {:06}: {}", iv.pc(), iv.opcode().mnemonic())?;
     match iv.operands() {
-        Operands::Block { params, types } => fmt_block(f, params, types)?,
+        Operands::Block { params } => fmt_block(f, params, iv)?,
         Operands::JmpArgs { pc_target, args } => {
             write!(f, " ")?;
             fmt_label_ref(f, pc_target, label_pcs)?;
@@ -1393,7 +1395,7 @@ impl fmt::Display for InstrView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:06}: {}", self.pc(), self.opcode().mnemonic())?;
         match self.operands() {
-            Operands::Block { params, types } => fmt_block(f, params, types)?,
+            Operands::Block { params } => fmt_block(f, params, self)?,
             Operands::JmpArgs { pc_target, args } => {
                 write!(f, " @{pc_target:06}(")?;
                 fmt_reg_iter(f, RegIter::slice(args))?;
@@ -1522,6 +1524,7 @@ mod tests {
     #[test]
     fn disasm_formats_labels_for_branches() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label();
         let l_else = a.label();
         a.const_bool(1, true);
@@ -1553,6 +1556,7 @@ mod tests {
     #[test]
     fn disasm_includes_program_and_function_and_label_names() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label_named("then");
         let l_else = a.label_named("else");
         a.const_bool(1, true);
@@ -1590,6 +1594,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
 
         let mut callee = Asm::new();
+        callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         callee.ret(0, &[1]);
         let callee_id = pb
             .push_function_checked(
@@ -1604,6 +1609,7 @@ mod tests {
         pb.set_function_output_name(callee_id, 0, "value").unwrap();
 
         let mut main = Asm::new();
+        main.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         main.const_i64(1, 7);
         main.call(0, callee_id, 0, &[1], &[2]);
         main.ret(0, &[2]);
@@ -1630,6 +1636,12 @@ mod tests {
         let mut pb = ProgramBuilder::new();
 
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Bool,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         // Return argument `a` (r2) so the function verifies without additional setup.
         a.ret(0, &[2]);
         let func = pb
@@ -1653,6 +1665,7 @@ mod tests {
     #[test]
     fn function_labels_map_pcs_to_indices() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label();
         let l_else = a.label();
         a.const_bool(1, true);
@@ -1698,6 +1711,7 @@ mod tests {
     #[test]
     fn instr_view_is_terminator_matches_opcode() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, 7);
         a.ret(0, &[1]);
 
@@ -1725,6 +1739,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
 
         let mut callee = Asm::new();
+        callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         callee.ret(0, &[1]);
         let callee_id = pb
             .push_function_checked(
@@ -1738,6 +1753,12 @@ mod tests {
 
         let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
         let mut caller = Asm::new();
+        caller.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Func,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         caller.const_func(1, callee_id);
         caller.const_i64(2, 7);
         caller.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
@@ -1764,6 +1785,12 @@ mod tests {
         let mut pb = ProgramBuilder::new();
 
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Func,
+            ValueType::Agg,
+            ValueType::Closure,
+        ]);
         a.closure_new(3, 1, 2);
         a.ret(0, &[3]);
         pb.push_function_checked(

@@ -101,9 +101,14 @@ impl core::error::Error for AsmError {
     }
 }
 
-/// Final bytecode + span table produced by [`Asm`].
+/// Complete assembled function body: register declarations, bytecode, spans and label names.
+///
+/// Keep the register declarations when constructing a [`FunctionDef`]. Bytecode alone does not
+/// contain the required register contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AsmParts {
+    /// Declared kind of every register, including r0 and argument registers.
+    pub register_types: Vec<ValueType>,
     /// Final bytecode stream.
     pub bytecode: Vec<u8>,
     /// Span table entries, encoded as `(pc_delta, span_id)`.
@@ -388,6 +393,7 @@ impl From<&Self> for FunctionAbi {
 /// use execution_tape::program::ValueType;
 ///
 /// let mut a = Asm::new();
+/// a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64, ValueType::I64]);
 /// a.const_i64(1, 1);
 /// a.const_i64(2, 2);
 /// a.i64_add(3, 1, 2);
@@ -735,12 +741,11 @@ impl ProgramBuilder {
     pub fn declare_function(&mut self, abi: impl Into<FunctionAbi>) -> FuncId {
         let abi = abi.into();
         let sig = abi.sig;
-        let reg_count = min_reg_count_for_arg_count(sig.arg_types.len());
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
         self.functions.push(FunctionDef {
             arg_types: sig.arg_types,
             ret_types: sig.ret_types,
-            reg_count,
+            register_types: Vec::new(),
             bytecode: Vec::new(),
             spans: Vec::new(),
         });
@@ -750,13 +755,11 @@ impl ProgramBuilder {
 
     /// Defines the body of a previously declared function.
     pub fn define_function(&mut self, func: FuncId, a: Asm) -> Result<(), BuildError> {
-        let inferred_reg_count = a.inferred_reg_count();
         let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
-        let reg_count = inferred_reg_count_for_arg_count(inferred_reg_count, slot.arg_types.len());
-        slot.reg_count = reg_count;
+        slot.register_types = parts.register_types;
         slot.bytecode = parts.bytecode;
         slot.spans = parts.spans;
         for l in parts.labels {
@@ -777,13 +780,11 @@ impl ProgramBuilder {
         a: Asm,
         spans: Vec<SpanEntry>,
     ) -> Result<(), BuildError> {
-        let inferred_reg_count = a.inferred_reg_count();
         let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
-        let reg_count = inferred_reg_count_for_arg_count(inferred_reg_count, slot.arg_types.len());
-        slot.reg_count = reg_count;
+        slot.register_types = parts.register_types;
         slot.bytecode = parts.bytecode;
         slot.spans = spans;
         for l in parts.labels {
@@ -808,13 +809,12 @@ impl ProgramBuilder {
     ) -> Result<FuncId, AsmError> {
         let abi = abi.into();
         let sig = abi.sig;
-        let reg_count = a.inferred_reg_count_for_args(sig.arg_types.len());
         let parts = a.finish_parts()?;
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
         self.functions.push(FunctionDef {
             arg_types: sig.arg_types,
             ret_types: sig.ret_types,
-            reg_count,
+            register_types: parts.register_types,
             bytecode: parts.bytecode,
             spans: parts.spans,
         });
@@ -972,14 +972,11 @@ impl ProgramBuilder {
 #[derive(Clone, Debug, Default)]
 pub struct Asm {
     bytes: Vec<u8>,
-    /// `max(register_operand + 1)` seen while encoding instructions.
-    ///
-    /// This is used to infer function `reg_count` without requiring callers to provide it.
-    max_reg_plus_one: u32,
+    register_types: Vec<ValueType>,
     next_label: u32,
     labels: Vec<Option<u32>>,
     label_names: Vec<Option<String>>,
-    block_params: Vec<Option<Vec<(u32, ValueType)>>>,
+    block_params: Vec<Option<Vec<u32>>>,
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, SpanId)>,
 }
@@ -1009,16 +1006,14 @@ impl Asm {
         u32::try_from(self.bytes.len()).unwrap_or(u32::MAX)
     }
 
-    /// Returns inferred register count, floored by argument convention requirements.
+    /// Takes ownership of the complete register kind ledger, replacing previous declarations.
     ///
-    /// The floor is `arg_count + 1` to reserve `r0` for the implicit effect token.
-    fn inferred_reg_count_for_args(&self, arg_count: usize) -> u32 {
-        inferred_reg_count_for_arg_count(self.inferred_reg_count(), arg_count)
-    }
-
-    /// Returns inferred register count from observed register operands only.
-    fn inferred_reg_count(&self) -> u32 {
-        self.max_reg_plus_one.max(1)
+    /// Include r0 (`Unit`), argument registers in signature order, and every temporary. Declaring
+    /// a kind does not initialize a register or supply aggregate shape facts. Instruction methods
+    /// do not infer or grow this ledger; verification rejects missing or incompatible declarations.
+    pub fn set_register_types(&mut self, types: Vec<ValueType>) -> &mut Self {
+        self.register_types = types;
+        self
     }
 
     /// Allocates a new label.
@@ -1038,7 +1033,7 @@ impl Asm {
     /// aggregate shape facts are preserved only when all incoming values agree. Parameters may
     /// not include the effect token `r0`. The entry block uses the function signature instead.
     #[must_use]
-    pub fn block(&mut self, params: &[(u32, ValueType)]) -> Label {
+    pub fn block(&mut self, params: &[u32]) -> Label {
         let label = self.label();
         self.block_params[label.0 as usize] = Some(params.into());
         label
@@ -1085,12 +1080,8 @@ impl Asm {
         if let Some(params) = self.block_params[label.0 as usize].take() {
             self.opcode(Opcode::Block);
             self.uleb(u32::try_from(params.len()).unwrap_or(u32::MAX));
-            for &(reg, _) in &params {
+            for &reg in &params {
                 self.reg(reg);
-            }
-            self.uleb(u32::try_from(params.len()).unwrap_or(u32::MAX));
-            for &(_, ty) in &params {
-                crate::program::write_value_type(&mut self.bytes, ty);
             }
             // Retain the declaration so repeated placement cannot orphan its original header.
             self.block_params[label.0 as usize] = Some(params);
@@ -1121,12 +1112,15 @@ impl Asm {
         self
     }
 
-    /// Finalizes and returns the encoded bytecode.
+    /// Finalizes and returns only the encoded instruction bytes.
+    ///
+    /// This discards register declarations, spans and labels. Use [`Self::finish_parts`] to retain
+    /// the complete function body needed by [`Program`].
     pub fn finish(self) -> Result<Vec<u8>, UnresolvedLabel> {
         Ok(self.finish_parts()?.bytecode)
     }
 
-    /// Finalizes and returns the encoded bytecode and span table.
+    /// Finalizes and returns the complete assembled function body.
     pub fn finish_parts(mut self) -> Result<AsmParts, UnresolvedLabel> {
         // Apply fixups.
         for f in &self.fixups {
@@ -1159,13 +1153,16 @@ impl Asm {
         }
 
         Ok(AsmParts {
+            register_types: self.register_types,
             bytecode: self.bytes,
             spans,
             labels: labels_out,
         })
     }
 
-    /// Finalizes, then verifies the resulting bytecode under `sig`.
+    /// Finalizes, then verifies the resulting body under `sig`, returning only instruction bytes.
+    ///
+    /// This discards the required declarations; prefer [`Self::finish_checked_parts`].
     ///
     /// This constructs a tiny single-function [`Program`] wrapper and runs the verifier. It is
     /// intended as a quick sanity check for builder users.
@@ -1196,7 +1193,6 @@ impl Asm {
     ) -> Result<AsmParts, AsmError> {
         let abi = abi.into();
         let sig = abi.sig;
-        let reg_count = self.inferred_reg_count_for_args(sig.arg_types.len());
         let parts = self.finish_parts()?;
         let mut p = Program::new(
             Vec::new(),
@@ -1206,7 +1202,7 @@ impl Asm {
             vec![FunctionDef {
                 arg_types: sig.arg_types.clone(),
                 ret_types: sig.ret_types.clone(),
-                reg_count,
+                register_types: parts.register_types.clone(),
                 bytecode: parts.bytecode.clone(),
                 spans: parts.spans.clone(),
             }],
@@ -2273,7 +2269,6 @@ impl Asm {
     }
 
     fn reg(&mut self, r: u32) {
-        self.max_reg_plus_one = self.max_reg_plus_one.max(r.saturating_add(1));
         self.uleb(r);
     }
 
@@ -2307,20 +2302,6 @@ fn patch_uleb128_u32(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at + 4] = b4;
 }
 
-fn min_reg_count_for_arg_count(arg_count: usize) -> u32 {
-    u32::try_from(arg_count)
-        .unwrap_or(u32::MAX)
-        .saturating_add(1)
-}
-
-/// Combines operand-driven inference with argument convention requirements.
-///
-/// This keeps `r0` available for the implicit effect token even if a function body does not
-/// explicitly reference it in operands.
-fn inferred_reg_count_for_arg_count(inferred_reg_count: u32, arg_count: usize) -> u32 {
-    inferred_reg_count.max(min_reg_count_for_arg_count(arg_count))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2345,6 +2326,7 @@ mod tests {
     #[test]
     fn asm_resolves_labels() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label();
         let l_else = a.label();
 
@@ -2364,6 +2346,7 @@ mod tests {
     #[test]
     fn asm_finish_checked_accepts_simple_program() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, 7);
         a.ret(0, &[1]);
         let bytes = a
@@ -2378,6 +2361,7 @@ mod tests {
     #[test]
     fn asm_finish_checked_rejects_uninitialized_read() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Unit]);
         let l0 = a.label();
         a.place(l0).unwrap();
         // br r1, l0, l0  (r1 is uninitialized under arg_count=0)
@@ -2408,11 +2392,13 @@ mod tests {
 
         // Define `foo` first; it calls `bar` by its declared `FuncId`.
         let mut a_foo = Asm::new();
+        a_foo.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a_foo.call(0, bar, 0, &[], &[1]);
         a_foo.ret(0, &[1]);
         pb.define_function(foo, a_foo).unwrap();
 
         let mut a_bar = Asm::new();
+        a_bar.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a_bar.const_i64(1, 7);
         a_bar.ret(0, &[1]);
         pb.define_function(bar, a_bar).unwrap();
@@ -2422,13 +2408,23 @@ mod tests {
     }
 
     #[test]
-    fn program_builder_infers_reg_count_from_max_used_register() {
+    fn program_builder_preserves_declared_unused_registers() {
         let mut pb = ProgramBuilder::new();
         let func = pb.declare_function(FunctionSig {
             arg_types: vec![],
             ret_types: vec![],
         });
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::I64,
+        ]);
         a.const_i64(7, 1);
         a.ret(0, &[]);
         pb.define_function(func, a).unwrap();
@@ -2438,9 +2434,10 @@ mod tests {
     }
 
     #[test]
-    fn program_builder_infers_reg_count_floor_from_argument_count() {
+    fn program_builder_preserves_declared_argument_registers() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Bool]);
         a.ret(0, &[]);
         let func = pb
             .push_function_checked(
@@ -2592,6 +2589,7 @@ mod tests {
     fn program_builder_preserves_function_arg_agg_shapes() {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
         a.tuple_get(2, 1, 0);
         a.ret(0, &[2]);
 
@@ -2628,10 +2626,17 @@ mod tests {
         let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
         let mut callee_asm = Asm::new();
+        callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         callee_asm.ret(0, &[1]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
+        caller_asm.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Func,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         caller_asm.const_func(1, callee);
         caller_asm.const_i64(2, 7);
         caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
@@ -2672,10 +2677,17 @@ mod tests {
         });
 
         let mut callee_asm = Asm::new();
+        callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         callee_asm.ret(0, &[1]);
         pb.define_function(callee, callee_asm).unwrap();
 
         let mut caller_asm = Asm::new();
+        caller_asm.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Func,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         caller_asm.const_func(1, callee);
         caller_asm.const_i64(2, 7);
         caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);

@@ -407,6 +407,7 @@ mod memory_tests {
             },
         );
         let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         body.host_call_sig_id(0, import, 0, &[], &[1]);
         body.ret(0, &[1]);
         let entry = pb
@@ -439,6 +440,12 @@ mod memory_tests {
     fn cached_aggregate_output_survives_later_node_reclamation() {
         let mut pb = ProgramBuilder::new();
         let mut producer = Asm::new();
+        producer.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::Agg,
+        ]);
         producer.tuple_new(2, &[1]);
         producer.tuple_new(3, &[2]); // Unreachable wrapper.
         producer.ret(0, &[2]);
@@ -452,6 +459,12 @@ mod memory_tests {
             )
             .unwrap();
         let mut reader = Asm::new();
+        reader.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Agg,
+            ValueType::Agg,
+            ValueType::I64,
+        ]);
         reader.tuple_new(2, &[1]); // Unreachable wrapper around a retained input.
         reader.tuple_get(3, 1, 0);
         reader.ret(0, &[3]);

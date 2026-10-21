@@ -57,6 +57,7 @@ impl Host for NopHost {
 fn build_identity_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     a.ret(0, &[1]);
     let f = pb
         .push_function_checked(
@@ -100,6 +101,9 @@ fn build_wide_input_program(
     // fn wide(in0, in1, ..., inN) -> i64 { in0 }
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
+    let mut kinds = vec![ValueType::I64; input_count + 1];
+    kinds[0] = ValueType::Unit;
+    a.set_register_types(kinds);
     a.ret(0, &[1]);
 
     let f = pb
@@ -300,6 +304,7 @@ fn build_flap_reads_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
     let host_sig_id = pb.host_sig_for("flap_reads_i64", host_sig);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     a.host_call(0, host_sig_id, 0, &[], &[1]);
     a.ret(0, &[1]);
 
@@ -452,6 +457,7 @@ fn build_param_program() -> (Arc<VerifiedProgram>, FuncId, HostOpId) {
     let host_sig_id = pb.host_sig_for("param_i64", host_sig);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
     a.host_call(0, host_sig_id, 0, &[1], &[2]);
     a.ret(0, &[2]);
 
@@ -555,6 +561,12 @@ fn build_add2_program(output_name: &str) -> (Arc<VerifiedProgram>, FuncId) {
     // fn add2(a: i64, b: i64) -> i64 { a + b }
     let mut pb = ProgramBuilder::new();
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a.i64_add(3, 1, 2);
     a.ret(0, &[3]);
 

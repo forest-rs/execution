@@ -9,7 +9,7 @@ use core::mem::size_of;
 use super::VerifiedProgram;
 use crate::arena::{BytesHandle, StrHandle};
 use crate::opcode::Opcode;
-use crate::program::{AggShape, Function, SpanId, ValueType};
+use crate::program::{AggShape, Function, RegisterTypes, SpanId, ValueType};
 use crate::typed::{ExecFunc, RegCounts};
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj};
 
@@ -81,6 +81,13 @@ impl<'a> VerifiedFunction<'a> {
     #[must_use]
     pub fn id(self) -> FuncId {
         self.id
+    }
+
+    /// Borrows declared virtual-register kinds, including unused registers and r0.
+    #[must_use]
+    pub fn register_types(self) -> RegisterTypes<'a> {
+        self.definition
+            .verified_register_types(self.program.program())
     }
 
     /// Returns value argument types, excluding the implicit effect token.
@@ -243,6 +250,22 @@ mod tests {
             ValueType::Closure,
         ];
         let mut body = Asm::new();
+        body.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Unit,
+            ValueType::Bool,
+            ValueType::I64,
+            ValueType::U64,
+            ValueType::F64,
+            ValueType::Decimal,
+            ValueType::Bytes,
+            ValueType::Str,
+            ValueType::Obj(HostTypeId(11)),
+            ValueType::Obj(HostTypeId(22)),
+            ValueType::Agg,
+            ValueType::Func,
+            ValueType::Closure,
+        ]);
         body.ret(
             0,
             &(1..=u32::try_from(types.len()).unwrap()).collect::<Vec<_>>(),
@@ -258,6 +281,7 @@ mod tests {
             )
             .unwrap();
         let mut unrelated = Asm::new();
+        unrelated.set_register_types(vec![ValueType::Unit]);
         unrelated.ret(0, &[]);
         let other = pb
             .push_function_checked(
@@ -306,6 +330,12 @@ mod tests {
     fn contract_views_visit_only_the_selected_functions_checks() {
         let mut pb = ProgramBuilder::new();
         let mut body = Asm::new();
+        body.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Agg,
+            ValueType::Agg,
+            ValueType::Agg,
+        ]);
         body.ret(0, &[1]);
         let id = pb
             .push_function_checked(
@@ -321,6 +351,7 @@ mod tests {
         pb.set_function_arg_agg_shape(id, 2, last.clone()).unwrap();
         pb.set_function_arg_agg_shape(id, 0, first.clone()).unwrap();
         let mut unrelated = Asm::new();
+        unrelated.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
         unrelated.ret(0, &[]);
         pb.push_function_checked(
             unrelated,
@@ -341,6 +372,7 @@ mod tests {
         let first_span = SpanId(NonZeroU64::new(5).unwrap());
         let last_span = SpanId(NonZeroU64::new(7).unwrap());
         let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
         let yes = body.label();
         let no = body.label();
         body.const_bool(1, true);

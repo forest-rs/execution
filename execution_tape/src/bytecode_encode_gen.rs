@@ -18,10 +18,9 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_u32_uleb(out, *code);
             Ok(())
         },
-        Instr::Block { params, types } => {
+        Instr::Block { params } => {
             out.push(Opcode::Block as u8);
             crate::codec_primitives::write_reg_list(out, params).map_err(|_| EncodeError::OutOfBounds)?;
-            crate::codec_primitives::write_value_type_list(out, types).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::ConstUnit { dst } => {

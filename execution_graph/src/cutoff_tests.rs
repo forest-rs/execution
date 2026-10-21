@@ -556,6 +556,7 @@ mod tape {
     fn constant_program() -> TapeNode {
         let mut pb = ProgramBuilder::new();
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(2, 7);
         a.ret(0, &[2]);
         let entry = pb

@@ -45,17 +45,26 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 
 ## Typed joins
 
-Reserve typed destinations with `Asm::block`, place their declarations with `place`, and pass
-incoming registers through the existing branch methods:
+Each function declares every register kind with `Asm::set_register_types`, including r0 (`Unit`),
+arguments and compiler temporaries. Record kinds when allocating registers. Declarations determine
+execution banks; the verifier checks definitions and operands against them without reconstructing
+scalar types at control-flow joins. Declarations do not initialize registers or prove aggregate shapes.
+
+Reserve destinations with `Asm::block`, place their declarations with `place`, and pass incoming
+registers through the existing branch methods. Parameter kinds come from the function ledger:
 
 ```rust
-let join = asm.block(&[(4, ValueType::I64), (5, ValueType::I64)]);
+asm.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64,
+    ValueType::I64, ValueType::I64, ValueType::I64]);
+let join = asm.block(&[4, 5]);
 asm.br(1, join.with_args(&[2, 3]), join.with_args(&[3, 2]));
 asm.place(join)?;
 asm.ret(0, &[4, 5]);
 ```
 
-Both arms are checked even when a condition is constant. Transfers read all arguments before
+Kinds, register bounds and call/return contracts are checked even in unreachable instructions.
+Initialization and flow-sensitive shape proofs apply to reachable instructions. Both branch arms are
+checked even when a condition is constant. Transfers read all arguments before
 changing destinations, so loops, cycles, and repeated sources have ordinary simultaneous-copy
 semantics. Bare labels still work. This is a typed block-parameter contract within the existing
 register VM; it does not require global SSA or declare recursive aggregate/callable types.

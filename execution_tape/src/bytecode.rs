@@ -94,10 +94,7 @@ pub(crate) enum Instr {
     /// No-op.
     Nop,
     /// Typed block parameter declaration, erased during preparation.
-    Block {
-        params: Vec<u32>,
-        types: Vec<crate::program::ValueType>,
-    },
+    Block { params: Vec<u32> },
     /// Jump carrying block arguments.
     JmpArgs { pc_target: u32, args: Vec<u32> },
     /// Branch carrying a combined argument list split at `true_arg_count`.

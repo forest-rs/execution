@@ -33,9 +33,8 @@ pub fn rotation(width: u32, rounds: i64, typed: bool) -> Program {
     assert!(rounds > 0, "rounds must be positive");
     let mut asm = Asm::new();
     let values: Vec<_> = (1..=width).collect();
-    let parameters: Vec<_> = values.iter().map(|&reg| (reg, ValueType::I64)).collect();
     let head = if typed {
-        asm.block(&parameters)
+        asm.block(&values)
     } else {
         asm.label()
     };
@@ -81,6 +80,11 @@ pub fn rotation(width: u32, rounds: i64, typed: bool) -> Program {
     }
     asm.place(exit).unwrap();
     asm.ret(0, &values);
+    let register_count = if typed { condition + 1 } else { temporary + 1 };
+    let mut kinds = vec![ValueType::I64; register_count as usize];
+    kinds[0] = ValueType::Unit;
+    kinds[condition as usize] = ValueType::Bool;
+    asm.set_register_types(kinds);
     let mut builder = ProgramBuilder::new();
     builder
         .push_function_checked(

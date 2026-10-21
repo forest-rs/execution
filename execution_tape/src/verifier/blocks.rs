@@ -9,13 +9,6 @@ use super::*;
 /// A malformed typed block declaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockDeclarationError {
-    /// Parameter register and type lists have different lengths.
-    LengthMismatch {
-        /// Register count.
-        registers: usize,
-        /// Type count.
-        types: usize,
-    },
     /// Function entry parameters must come from the function signature.
     EntryParameters,
     /// A parameter names r0 or a register outside the function.
@@ -64,10 +57,10 @@ pub enum BlockEdgeError {
     },
 }
 
-pub(super) fn declaration(decoded: &[DecodedInstr], target: u32) -> Option<(&[u32], &[ValueType])> {
+pub(super) fn declaration(decoded: &[DecodedInstr], target: u32) -> Option<&[u32]> {
     let ix = decoded.binary_search_by_key(&target, |di| di.offset).ok()?;
     match &decoded[ix].instr {
-        Instr::Block { params, types } => Some((params, types)),
+        Instr::Block { params } => Some(params),
         _ => None,
     }
 }
@@ -88,13 +81,8 @@ pub(super) fn validate_structure(
     let mut owner = None;
     let mut owners = Vec::with_capacity(decoded.len());
     for di in decoded {
-        if let Instr::Block { params, types } = &di.instr {
-            let invalid = if params.len() != types.len() {
-                Some(BlockDeclarationError::LengthMismatch {
-                    registers: params.len(),
-                    types: types.len(),
-                })
-            } else if di.offset == 0 && !params.is_empty() {
+        if let Instr::Block { params } = &di.instr {
+            let invalid = if di.offset == 0 && !params.is_empty() {
                 Some(BlockDeclarationError::EntryParameters)
             } else {
                 let mut sorted = params.iter().copied().enumerate().collect::<Vec<_>>();
@@ -156,7 +144,7 @@ pub(super) fn validate_structure(
             let error = if let Some(header) = owners[ix].filter(|&header| header != target) {
                 Some(BlockEdgeError::BypassesHeader { header })
             } else {
-                let expected = declaration(decoded, target).map_or(0, |(params, _)| params.len());
+                let expected = declaration(decoded, target).map_or(0, |params| params.len());
                 (expected != args.len()).then_some(BlockEdgeError::Arity {
                     expected,
                     actual: args.len(),
@@ -181,16 +169,18 @@ pub(super) fn validate_initialized(
     pc: u32,
     instr: &Instr,
     state: &BitSet,
+    types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
     for arm in 0..2 {
         let Some((target, args)) = instr.edge(arm) else {
             continue;
         };
-        let Some((_, types)) = declaration(decoded, target) else {
+        let Some(params) = declaration(decoded, target) else {
             continue;
         };
-        for (index, (&reg, &expected)) in args.iter().zip(types).enumerate() {
+        for (index, (&reg, &param)) in args.iter().zip(params).enumerate() {
+            let expected = types.get(param).expect("validated parameter register");
             if !state.get(reg as usize) {
                 return Err(VerifyError::BlockEdge {
                     func,
@@ -214,21 +204,19 @@ pub(super) fn validate_types(
     func: u32,
     pc: u32,
     instr: &Instr,
-    state: &TypeState,
+    types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
     for arm in 0..2 {
         let Some((target, args)) = instr.edge(arm) else {
             continue;
         };
-        let Some((_, types)) = declaration(decoded, target) else {
+        let Some(params) = declaration(decoded, target) else {
             continue;
         };
-        for (index, (&reg, &expected)) in args.iter().zip(types).enumerate() {
-            let actual = match state.values.get(reg as usize).copied().flatten() {
-                Some(RegType::Concrete(ty)) => Some(ty),
-                _ => None,
-            };
+        for (index, (&reg, &param)) in args.iter().zip(params).enumerate() {
+            let expected = types.get(param).expect("validated parameter register");
+            let actual = types.get(reg);
             if actual != Some(expected) {
                 return Err(VerifyError::BlockEdge {
                     func,
@@ -250,16 +238,13 @@ pub(super) fn validate_types(
 
 /// Copies facts from the original predecessor into a reusable scratch state before meeting.
 pub(super) fn transfer_edge(
-    incoming: &TypeState,
-    scratch: &mut TypeState,
+    incoming: &ShapeState,
+    scratch: &mut ShapeState,
     params: &[u32],
     args: &[u32],
 ) {
     scratch.clone_from(incoming);
     for (&dst, &src) in params.iter().zip(args) {
-        if let Some(slot) = scratch.values.get_mut(dst as usize) {
-            *slot = incoming.values.get(src as usize).copied().flatten();
-        }
         scratch.set_agg(dst as usize, incoming.agg(src as usize).cloned());
     }
 }

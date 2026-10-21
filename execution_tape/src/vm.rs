@@ -3443,6 +3443,7 @@ mod tests {
         for mode in 0..4 {
             let mut pb = ProgramBuilder::new();
             let mut body = Asm::new();
+            body.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
             body.tuple_get(2, 1, 0);
             body.ret(0, &[2]);
             let target = pb
@@ -3459,6 +3460,13 @@ mod tests {
                 target
             } else {
                 let mut caller = Asm::new();
+                caller.set_register_types(vec![
+                    ValueType::Unit,
+                    ValueType::Agg,
+                    ValueType::Func,
+                    ValueType::Closure,
+                    ValueType::I64,
+                ]);
                 match mode {
                     1 => {
                         caller.call(0, target, 0, &[1], &[4]);
@@ -3609,6 +3617,7 @@ mod tests {
                 },
             );
             let mut callee = Asm::new();
+            callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             if mode == 2 {
                 callee.trap(99);
             }
@@ -3624,6 +3633,7 @@ mod tests {
                 )
                 .unwrap();
             let mut caller = Asm::new();
+            caller.set_register_types(vec![ValueType::Unit, ValueType::I64]);
             caller.call(0, target, 0, &[], &[1]);
             caller.ret(0, &[1]);
             let entry = pb
@@ -3765,6 +3775,7 @@ mod tests {
             },
         );
         let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
         body.tuple_new(1, &[]);
         body.host_call_sig_id(0, import, 0, &[], &[]);
         body.ret(0, &[]);
@@ -3837,6 +3848,7 @@ mod tests {
         let first = pb.host_sig_for("first", sig.clone());
         let second = pb.host_sig_for("second", sig);
         let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         body.host_call_sig_id(0, first, 0, &[], &[1]);
         body.host_call_sig_id(0, second, 0, &[], &[2]);
         body.ret(0, &[1, 2]);
@@ -3869,6 +3881,12 @@ mod tests {
         for mode in ["scalar", "retained", "trap"] {
             let mut pb = ProgramBuilder::new();
             let mut body = Asm::new();
+            body.set_register_types(vec![
+                ValueType::Unit,
+                ValueType::Agg,
+                ValueType::I64,
+                ValueType::Agg,
+            ]);
             body.const_i64(2, 42);
             for _ in 0..32 {
                 body.tuple_new(3, &[2]);
@@ -3925,6 +3943,7 @@ mod tests {
     fn returned_graphs_are_compacted_with_sharing_and_closure_environments() {
         let mut pb = ProgramBuilder::new();
         let mut target = Asm::new();
+        target.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
         target.ret(0, &[]);
         let target = pb
             .push_function_checked(
@@ -3937,6 +3956,15 @@ mod tests {
             .unwrap();
         let text = pb.const_str("retained text");
         let mut body = Asm::new();
+        body.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Str,
+            ValueType::Agg,
+            ValueType::Agg,
+            ValueType::Func,
+            ValueType::Closure,
+            ValueType::Agg,
+        ]);
         body.const_pool(1, text);
         body.tuple_new(2, &[1]); // Unreachable allocation before the environment.
         body.tuple_new(3, &[1]);
@@ -3955,6 +3983,7 @@ mod tests {
             )
             .unwrap();
         let mut passthrough = Asm::new();
+        passthrough.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::Agg]);
         passthrough.tuple_get(2, 1, 0);
         passthrough.ret(0, &[2]);
         let read = pb
@@ -4051,6 +4080,7 @@ mod tests {
         for ty in [ValueType::Agg, ValueType::Closure] {
             let mut pb = ProgramBuilder::new();
             let mut body = Asm::new();
+            body.set_register_types(vec![ValueType::Unit, ty, ValueType::Agg]);
             body.tuple_new(2, &[]);
             body.ret(0, &[1]);
             let entry = pb
@@ -4149,6 +4179,12 @@ mod tests {
                 },
             );
             let mut body = Asm::new();
+            body.set_register_types(vec![
+                ValueType::Unit,
+                ValueType::I64,
+                ValueType::Agg,
+                ValueType::Agg,
+            ]);
             body.const_i64(1, 42);
             body.tuple_new(2, &[1]);
             body.host_call_sig_id(0, sig, 0, &[2], &[3]);
@@ -4190,6 +4226,13 @@ mod tests {
     fn reusable_results_append_preserve_on_traps_and_outlive_context_reset() {
         let mut pb = ProgramBuilder::new();
         let mut body = Asm::new();
+        body.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::Bytes,
+            ValueType::Str,
+            ValueType::Agg,
+        ]);
         body.ret(0, &[1, 2, 3, 4]);
         let types = vec![
             ValueType::I64,
@@ -4207,6 +4250,7 @@ mod tests {
             )
             .unwrap();
         let mut failing = Asm::new();
+        failing.set_register_types(vec![ValueType::Unit]);
         failing.trap(123);
         let failure = pb
             .push_function_checked(
@@ -4278,6 +4322,7 @@ mod tests {
         fn program(bytes: &[u8], text: &str) -> VerifiedProgram {
             let mut pb = ProgramBuilder::new();
             let mut callee = Asm::new();
+            callee.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::Str]);
             callee.ret(0, &[1, 2]);
             let types = vec![ValueType::Bytes, ValueType::Str];
             let target = pb
@@ -4292,6 +4337,18 @@ mod tests {
             let bytes_id = pb.const_bytes(bytes);
             let text_id = pb.const_str(text);
             let mut caller = Asm::new();
+            caller.set_register_types(vec![
+                ValueType::Unit,
+                ValueType::Bytes,
+                ValueType::Str,
+                ValueType::Bytes,
+                ValueType::Str,
+                ValueType::Agg,
+                ValueType::Bytes,
+                ValueType::Str,
+                ValueType::Bytes,
+                ValueType::Str,
+            ]);
             caller.const_pool(1, bytes_id);
             caller.const_pool(2, text_id);
             caller.call(0, target, 0, &[1, 2], &[3, 4]);
@@ -4403,6 +4460,26 @@ mod tests {
             },
         );
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Bytes,
+            ValueType::Bytes,
+            ValueType::Str,
+            ValueType::Str,
+            ValueType::Agg,
+            ValueType::Bytes,
+            ValueType::Str,
+            ValueType::Agg,
+            ValueType::U64,
+            ValueType::Bytes,
+            ValueType::Bytes,
+            ValueType::Agg,
+            ValueType::Str,
+            ValueType::Agg,
+            ValueType::Str,
+            ValueType::Bytes,
+            ValueType::Str,
+        ]);
         a.const_pool(1, b1);
         a.const_pool(2, b2);
         a.const_pool(3, s1);
@@ -4489,6 +4566,7 @@ mod tests {
     fn vm_runs_const_and_ret() {
         // const_i64 r1, 7; ret r0, r1
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, 7);
         a.ret(0, &[1]);
 
@@ -4544,6 +4622,7 @@ mod tests {
         }
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, 7);
         a.ret(0, &[1]);
 
@@ -4591,6 +4670,7 @@ mod tests {
         let host_sig = pb.host_sig_for("id", sig.clone());
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(1, 9);
         a.host_call(0, host_sig, 0, &[1], &[2]);
         a.ret(0, &[2]);
@@ -4621,6 +4701,7 @@ mod tests {
         let host_sig = pb.host_sig_for("id", sig);
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         // host_call with 0 args, 0 rets — should succeed without touching the arg buffer.
         a.host_call(0, host_sig, 0, &[], &[]);
         a.const_i64(1, 42);
@@ -4652,6 +4733,7 @@ mod tests {
         let host_sig = pb.host_sig_for("missing.literal", sig);
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.host_call(0, host_sig, 0, &[], &[]);
         a.const_i64(1, 42);
         a.ret(0, &[1]);
@@ -4697,6 +4779,27 @@ mod tests {
         //   r1 ..= r9  = arg values (distinct i64s 10..=18)
         //   r10..= r18 = ret values written by the host
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         let arg_regs: Vec<u32> = (1..=n).collect();
         let ret_regs: Vec<u32> = (n + 1..=2 * n).collect();
 
@@ -4752,6 +4855,7 @@ mod tests {
         let host_sig = pb.host_sig_for("lazy", sig);
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.host_call(0, host_sig, 0, &[], &[1]);
         a.ret(0, &[1]);
         pb.push_function_checked(
@@ -4832,6 +4936,7 @@ mod tests {
         let host_sig = pb.host_sig_for("id", sig);
 
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         a.const_i64(1, 9);
         a.host_call(0, host_sig, 0, &[1], &[2]);
         a.ret(0, &[2]);
@@ -4914,6 +5019,13 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let host_sig = pb.host_sig_for("tuple.sum2", sig);
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::I64,
+        ]);
         a.const_i64(1, 20);
         a.const_i64(2, 22);
         a.tuple_new(3, &[1, 2]);
@@ -4940,6 +5052,7 @@ mod tests {
     #[test]
     fn vm_returns_closure_value() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Closure]);
         a.ret(0, &[1]);
 
         let mut pb = ProgramBuilder::new();
@@ -4975,6 +5088,12 @@ mod tests {
     #[test]
     fn vm_stores_and_loads_closure_via_tuple() {
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Closure,
+            ValueType::Agg,
+            ValueType::Closure,
+        ]);
         a.tuple_new(2, &[1]);
         a.tuple_get(3, 2, 0);
         a.ret(0, &[3]);
@@ -5036,7 +5155,12 @@ mod tests {
             vec![FunctionDef {
                 arg_types: vec![ValueType::Agg],
                 ret_types: vec![ValueType::Closure],
-                reg_count: 4,
+                register_types: vec![
+                    ValueType::Unit,
+                    ValueType::Agg,
+                    ValueType::Func,
+                    ValueType::Closure,
+                ],
                 bytecode,
                 spans: vec![],
             }],
@@ -5107,14 +5231,19 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 4,
+                    register_types: vec![
+                        ValueType::Unit,
+                        ValueType::Func,
+                        ValueType::I64,
+                        ValueType::I64,
+                    ],
                     bytecode: entry_bytecode,
                     spans: vec![],
                 },
                 FunctionDef {
                     arg_types: vec![ValueType::I64],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 2,
+                    register_types: vec![ValueType::Unit, ValueType::I64],
                     bytecode: callee_bytecode,
                     spans: vec![],
                 },
@@ -5179,14 +5308,23 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![ValueType::U64],
-                    reg_count: 8,
+                    register_types: vec![
+                        ValueType::Unit,
+                        ValueType::I64,
+                        ValueType::I64,
+                        ValueType::Agg,
+                        ValueType::Func,
+                        ValueType::Closure,
+                        ValueType::Agg,
+                        ValueType::U64,
+                    ],
                     bytecode: entry_bytecode,
                     spans: vec![],
                 },
                 FunctionDef {
                     arg_types: vec![ValueType::Agg],
                     ret_types: vec![ValueType::Agg],
-                    reg_count: 2,
+                    register_types: vec![ValueType::Unit, ValueType::Agg],
                     bytecode: callee_bytecode,
                     spans: vec![],
                 },
@@ -5206,6 +5344,15 @@ mod tests {
         let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
         let mut entry = Asm::new();
+        entry.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::Func,
+            ValueType::Closure,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         entry.const_i64(1, 40);
         entry.tuple_new(2, &[1]);
         entry.const_func(3, FuncId(1));
@@ -5223,6 +5370,13 @@ mod tests {
         .unwrap();
 
         let mut body = Asm::new();
+        body.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Agg,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         body.tuple_get(3, 1, 0);
         body.i64_add(4, 3, 2);
         body.ret(0, &[4]);
@@ -5282,14 +5436,19 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 4,
+                    register_types: vec![
+                        ValueType::Unit,
+                        ValueType::Func,
+                        ValueType::I64,
+                        ValueType::I64,
+                    ],
                     bytecode: entry_bytecode,
                     spans: vec![],
                 },
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 2,
+                    register_types: vec![ValueType::Unit, ValueType::I64],
                     bytecode: callee_bytecode,
                     spans: vec![],
                 },
@@ -5348,14 +5507,19 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 4,
+                    register_types: vec![
+                        ValueType::Unit,
+                        ValueType::Func,
+                        ValueType::I64,
+                        ValueType::I64,
+                    ],
                     bytecode: entry_bytecode,
                     spans: vec![],
                 },
                 FunctionDef {
                     arg_types: vec![ValueType::U64],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 3,
+                    register_types: vec![ValueType::Unit, ValueType::U64, ValueType::I64],
                     bytecode: callee_bytecode,
                     spans: vec![],
                 },
@@ -5406,7 +5570,7 @@ mod tests {
             vec![FunctionDef {
                 arg_types: vec![ValueType::Closure],
                 ret_types: vec![ValueType::I64],
-                reg_count: 3,
+                register_types: vec![ValueType::Unit, ValueType::Closure, ValueType::I64],
                 bytecode,
                 spans: vec![],
             }],
@@ -5433,6 +5597,7 @@ mod tests {
     #[test]
     fn vm_branches() {
         let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
         let l_then = a.label();
         let l_else = a.label();
         a.const_bool(1, true);
@@ -5462,6 +5627,12 @@ mod tests {
     #[test]
     fn vm_i64_add() {
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         a.const_i64(1, 7);
         a.const_i64(2, 9);
         a.i64_add(3, 1, 2);
@@ -5487,6 +5658,11 @@ mod tests {
     fn vm_mov_closure() {
         // mov r2, r1; ret [r2] — r1 is the closure arg, r2 is the copy
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Closure,
+            ValueType::Closure,
+        ]);
         a.mov(2, 1);
         a.ret(0, &[2]);
 
@@ -5525,6 +5701,13 @@ mod tests {
         // select r4, r1, r2, r3; ret [r4]
         // r1=cond (Bool), r2/r3=closures
         let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Bool,
+            ValueType::Closure,
+            ValueType::Closure,
+            ValueType::Closure,
+        ]);
         a.select(4, 1, 2, 3);
         a.ret(0, &[4]);
 
@@ -5601,6 +5784,18 @@ mod tests {
         // recursive case: const_func r5 = FuncId(1), closure_new r6 = (r5, r1),
         //   i64_sub r7 = r2 - r3_one, call_indirect r8 = r6(r7), ret [r8]
         let mut a1 = Asm::new();
+        a1.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::Agg,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::Bool,
+            ValueType::Func,
+            ValueType::Closure,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         let l_base = a1.label();
         let l_recurse = a1.label();
         a1.const_i64(3, 0);
@@ -5624,6 +5819,15 @@ mod tests {
         // -- func0 (entry) --
         // create a tuple env, create closure over func1, call it with n=100
         let mut a0 = Asm::new();
+        a0.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::Func,
+            ValueType::Closure,
+            ValueType::I64,
+            ValueType::I64,
+        ]);
         a0.const_i64(1, 0);
         a0.tuple_new(2, &[1]); // env = (0,)
         a0.const_func(3, FuncId(1));
@@ -5672,6 +5876,7 @@ mod tests {
         // r0 = eff, r1 = env (Agg)
         // ret [r1]
         let mut a1 = Asm::new();
+        a1.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
         a1.ret(0, &[1]);
 
         let mut pb = ProgramBuilder::new();
@@ -5679,6 +5884,18 @@ mod tests {
 
         // -- func0 (entry) --
         let mut a0 = Asm::new();
+        a0.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::I64,
+            ValueType::Agg,
+            ValueType::Func,
+            ValueType::Closure,
+            ValueType::Closure,
+            ValueType::Agg,
+            ValueType::Agg,
+        ]);
         a0.const_i64(1, 11);
         a0.tuple_new(2, &[1]); // env_a = (11,)
         a0.const_i64(3, 22);
@@ -5783,14 +6000,21 @@ mod tests {
                 FunctionDef {
                     arg_types: vec![],
                     ret_types: vec![ValueType::I64],
-                    reg_count: 6,
+                    register_types: vec![
+                        ValueType::Unit,
+                        ValueType::I64,
+                        ValueType::Agg,
+                        ValueType::Func,
+                        ValueType::Closure,
+                        ValueType::I64,
+                    ],
                     bytecode: entry_bytecode,
                     spans: vec![],
                 },
                 FunctionDef {
                     arg_types: vec![ValueType::Agg],
                     ret_types: vec![ValueType::U64],
-                    reg_count: 3,
+                    register_types: vec![ValueType::Unit, ValueType::Agg, ValueType::U64],
                     bytecode: callee_bytecode,
                     spans: vec![],
                 },

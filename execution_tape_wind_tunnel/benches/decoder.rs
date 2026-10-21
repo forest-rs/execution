@@ -17,6 +17,7 @@ fn encoded_program(functions: u32, additions: u32) -> Vec<u8> {
     let mut builder = ProgramBuilder::new();
     for _ in 0..functions {
         let mut asm = Asm::new();
+        asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         asm.const_i64(1, 1);
         for instruction in 0..additions {
             asm.span(SpanId::try_from(u64::from(instruction) + 1).unwrap());

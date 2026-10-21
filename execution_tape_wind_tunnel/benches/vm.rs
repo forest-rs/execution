@@ -45,6 +45,12 @@ fn bench_run_memory(c: &mut Criterion) {
         for mode in ["scalar", "retained_input", "trap", "new_root", "new_chain"] {
             let mut pb = ProgramBuilder::new();
             let mut asm = Asm::new();
+            asm.set_register_types(vec![
+                ValueType::Unit,
+                ValueType::Agg,
+                ValueType::I64,
+                ValueType::Agg,
+            ]);
             asm.const_i64(2, 42);
             for i in 0..32 {
                 let field = if mode == "new_chain" {
@@ -183,6 +189,16 @@ fn bench_payloads(c: &mut Criterion) {
                     } else {
                         reg
                     };
+                    let mut kinds = vec![ValueType::Unit; result as usize + 1];
+                    kinds[1] = ty;
+                    if source == "tuple" {
+                        kinds[2] = ValueType::Agg;
+                        kinds[3] = ty;
+                    }
+                    if length_only {
+                        kinds[4] = ValueType::U64;
+                    }
+                    asm.set_register_types(kinds);
                     asm.ret(0, &[result]);
                     let entry = pb
                         .push_function_checked(
@@ -253,6 +269,9 @@ fn bench_run_results(c: &mut Criterion) {
     let mut group = c.benchmark_group("run_results");
     for count in [1_u32, 16, 64] {
         let mut asm = Asm::new();
+        let mut kinds = vec![ValueType::I64; count as usize + 1];
+        kinds[0] = ValueType::Unit;
+        asm.set_register_types(kinds);
         for reg in 1..=count {
             asm.const_i64(reg, i64::from(reg));
         }
@@ -570,6 +589,9 @@ fn bench_host_call_traced_host(c: &mut Criterion) {
 
 fn build_i64_add_chain(chain_len: u32) -> execution_tape::verifier::VerifiedProgram {
     let mut a = Asm::new();
+    let mut kinds = vec![ValueType::I64; chain_len as usize + 3];
+    kinds[0] = ValueType::Unit;
+    a.set_register_types(kinds);
     a.const_i64(1, 1);
     a.const_i64(2, 2);
     let mut cur = 3;
@@ -598,6 +620,9 @@ fn build_i64_add_chain_with_spans(
     assert_ne!(span_every, 0, "span_every must be non-zero");
 
     let mut a = Asm::new();
+    let mut kinds = vec![ValueType::I64; chain_len as usize + 3];
+    kinds[0] = ValueType::Unit;
+    a.set_register_types(kinds);
     a.const_i64(1, 1);
     a.const_i64(2, 2);
     let mut cur = 3;
@@ -629,6 +654,7 @@ fn build_bytes_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram 
     let bytes = pb.constant(Const::Bytes(vec![0_u8; n]));
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::Bytes, ValueType::U64]);
     a.const_pool(1, bytes);
     a.bytes_len(2, 1);
     a.ret(0, &[2]);
@@ -649,6 +675,7 @@ fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
     let s = pb.constant(Const::Str("a".repeat(n)));
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::Str, ValueType::U64]);
     a.const_pool(1, s);
     a.str_len(2, 1);
     a.ret(0, &[2]);
@@ -676,6 +703,12 @@ fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     });
 
     let mut a1 = Asm::new();
+    a1.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a1.const_i64(1, 1);
     a1.const_i64(2, 2);
     a1.i64_add(3, 1, 2);
@@ -683,6 +716,7 @@ fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     pb.define_function(f1, a1).unwrap();
 
     let mut a0 = Asm::new();
+    a0.set_register_types(vec![ValueType::Unit, ValueType::I64]);
     a0.call(0, f1, 0, &[], &[1]);
     a0.ret(0, &[1]);
     pb.define_function(f0, a0).unwrap();
@@ -702,6 +736,12 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     });
 
     let mut a1 = Asm::new();
+    a1.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
     a1.const_i64(1, 1);
     a1.const_i64(2, 2);
     a1.i64_add(3, 1, 2);
@@ -710,6 +750,15 @@ fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
 
     // r1: counter, r2: limit, r3: one, r4: sum, r5: cond, r6: tmp (call result)
     let mut a0 = Asm::new();
+    a0.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::I64,
+    ]);
     let l_loop = a0.label();
     let l_body = a0.label();
     let l_done = a0.label();
@@ -759,6 +808,12 @@ fn build_call_indirect_loop(
     });
 
     let mut callee = Asm::new();
+    let callee_kinds = if closure_target {
+        &[ValueType::Unit, ValueType::Agg][..]
+    } else {
+        &[ValueType::Unit][..]
+    };
+    callee.set_register_types(callee_kinds.to_vec());
     callee.ret(0, &[]);
     pb.define_function(f1, callee).unwrap();
 
@@ -766,6 +821,29 @@ fn build_call_indirect_loop(
     // r5: callee func register, r6: env aggregate, r7: callee closure register
     // r8: env payload constant
     let mut entry = Asm::new();
+    let entry_kinds = if closure_target {
+        &[
+            ValueType::Unit,
+            ValueType::U64,
+            ValueType::U64,
+            ValueType::U64,
+            ValueType::Bool,
+            ValueType::Func,
+            ValueType::Agg,
+            ValueType::Closure,
+            ValueType::I64,
+        ][..]
+    } else {
+        &[
+            ValueType::Unit,
+            ValueType::U64,
+            ValueType::U64,
+            ValueType::U64,
+            ValueType::Bool,
+            ValueType::Func,
+        ][..]
+    };
+    entry.set_register_types(entry_kinds.to_vec());
     let l_loop = entry.label();
     let l_body = entry.label();
     let l_done = entry.label();
@@ -803,6 +881,17 @@ fn build_branch_hot_loop(iters: u64) -> execution_tape::verifier::VerifiedProgra
     // r1: counter, r2: limit, r3: one, r4: zero
     // r5: done?, r6: parity, r7: even?, r8: accumulator
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::Bool,
+        ValueType::U64,
+        ValueType::Bool,
+        ValueType::I64,
+    ]);
     let l_loop = a.label();
     let l_check = a.label();
     let l_even = a.label();
@@ -860,6 +949,7 @@ fn build_host_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     let host_sig = pb.host_sig_for("id", sig);
 
     let mut a = Asm::new();
+    a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     a.const_i64(1, 9);
     a.host_call(0, host_sig, 0, &[1], &[2]);
     a.ret(0, &[2]);
@@ -884,6 +974,15 @@ fn build_host_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram
 
     // r1: counter, r2: limit, r3: one, r4: arg, r5: ret, r6: cond
     let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::U64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::Bool,
+    ]);
     let l_loop = a.label();
     let l_body = a.label();
     let l_done = a.label();

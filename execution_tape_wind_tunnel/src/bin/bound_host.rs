@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = ProgramBuilder::new();
     let import = builder.host_sig_for("counter.add", signature);
     let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
     body.host_call_sig_id(0, import, 0, &[1], &[2]);
     body.ret(0, &[2]);
     builder.push_function_checked(

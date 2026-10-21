@@ -66,6 +66,9 @@ fn program_price_subtotal() -> (Arc<VerifiedProgram>, FuncId) {
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("tax_price_subtotal_program");
     let mut a = Asm::new();
+    let mut kinds = vec![ValueType::I64; 4];
+    kinds[0] = ValueType::Unit;
+    a.set_register_types(kinds);
     a.i64_mul(3, 1, 2);
     a.ret(0, &[3]);
 
@@ -94,6 +97,9 @@ fn program_tax_amount() -> (Arc<VerifiedProgram>, FuncId) {
     let host_sig = pb.host_sig_for("tax_rate_bp", sig.clone());
 
     let mut a = Asm::new();
+    let mut kinds = vec![ValueType::I64; 6];
+    kinds[0] = ValueType::Unit;
+    a.set_register_types(kinds);
     a.host_call(0, host_sig, 0, &[], &[2]); // rate_bp in r2
     a.i64_mul(3, 1, 2); // subtotal * rate
     a.const_i64(4, 10_000);
@@ -119,6 +125,9 @@ fn program_total() -> (Arc<VerifiedProgram>, FuncId) {
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("tax_total_program");
     let mut a = Asm::new();
+    let mut kinds = vec![ValueType::I64; 4];
+    kinds[0] = ValueType::Unit;
+    a.set_register_types(kinds);
     a.i64_add(3, 1, 2);
     a.ret(0, &[3]);
 

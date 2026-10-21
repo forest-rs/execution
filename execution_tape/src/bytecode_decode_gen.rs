@@ -23,10 +23,8 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
         },
         Opcode::Block => {
             let params = crate::codec_primitives::read_reg_list(r)?;
-            let types = crate::codec_primitives::read_value_type_list(r)?;
             Instr::Block {
                 params,
-                types,
             }
         },
         Opcode::ConstUnit => {

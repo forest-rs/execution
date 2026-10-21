@@ -368,6 +368,7 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let sig = pb.host_sig_for(symbol, signature());
         let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
         body.host_call_sig_id(0, sig, 0, &[1], &[2]);
         body.ret(0, &[2]);
         pb.push_function_checked(
