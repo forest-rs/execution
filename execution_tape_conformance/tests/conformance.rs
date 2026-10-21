@@ -187,6 +187,54 @@ fn zero_call_depth_rejects_the_entry_frame() {
 }
 
 #[test]
+fn float_to_integer_rejects_rounded_upper_bounds() {
+    for signed in [true, false] {
+        let upper = if signed {
+            i64::MAX as f64
+        } else {
+            u64::MAX as f64
+        };
+        for (input, out_of_range) in [(upper, true), (f64::from_bits(upper.to_bits() - 1), false)] {
+            let mut asm = Asm::new();
+            asm.const_f64(1, input);
+            if signed {
+                asm.f64_to_i64(2, 1);
+            } else {
+                asm.f64_to_u64(2, 1);
+            }
+            asm.ret(0, &[2]);
+            let mut builder = ProgramBuilder::new();
+            builder
+                .push_function_checked(
+                    asm,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![if signed {
+                            ValueType::I64
+                        } else {
+                            ValueType::U64
+                        }],
+                    },
+                )
+                .unwrap();
+            let program = builder.build_verified().unwrap();
+            let mut vm = Vm::new(TestHost, Limits::default());
+            let result = vm.run(&program, FuncId(0), &[], TraceMask::NONE, None);
+            if out_of_range {
+                assert_eq!(result.unwrap_err().trap, Trap::IntCastOverflow);
+            } else {
+                let expected = if signed {
+                    Value::I64(i64::MAX - 1023)
+                } else {
+                    Value::U64(u64::MAX - 2047)
+                };
+                assert_eq!(result.unwrap(), vec![expected]);
+            }
+        }
+    }
+}
+
+#[test]
 fn golden_program_bytes_v0_0_1() {
     let mut p = Program::new(
         vec![],
