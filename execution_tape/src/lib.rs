@@ -123,6 +123,7 @@ pub(crate) mod instr_operands;
 pub mod opcode;
 pub mod program;
 pub mod program_memory;
+mod register_operands;
 pub mod trace;
 pub(crate) mod typed;
 pub mod value;
