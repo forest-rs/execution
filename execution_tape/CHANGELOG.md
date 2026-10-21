@@ -47,6 +47,8 @@ This release has an [MSRV][] of 1.88.
   `HostCall::stack` and `Recording::outcome_stack`; trap ancestry survives VM unwinding.
   Replay checks captured activation order, caller locations and boundary ancestry. ([#148][] by [@waywardmonkeys][])
 
+- Add full-lifecycle aggregate benchmarks covering repeated runs, temporary retention, and
+  returned aggregate graphs. ([#125][] and [#128][] by [@waywardmonkeys][])
 
 - Add a runnable block-argument comparison and Criterion benchmark in `execution_tape_wind_tunnel`.
   Compare equivalent transfer-heavy loops by cold preparation, reused execution, prepared
@@ -73,23 +75,23 @@ This release has an [MSRV][] of 1.88.
 
 - Preserve typed, owned operation errors with `HostError::custom`. Recover concrete failures
   through the standard error source chain, including after dropping the host or VM. Cloning a
-  failure shares its immutable payload.
+  failure shares its immutable payload. ([#133][] by [@waywardmonkeys][])
 
 - Register host callbacks with complete signatures through `HostFunctions`, validate imports with `bind`, and
   create independent host instances with `HostBindings::with_state`. Binding failures identify
-  every missing/mismatched import and include expected and available complete signatures.
+  every missing/mismatched import and include expected and available complete signatures. ([#132][] by [@waywardmonkeys][])
 
 - Expose the active program-local import through `HostContext::host_sig_id`, and embedded host
-  state through `Vm::host` and `host_mut` for inspection and updates between runs.
+  state through `Vm::host` and `host_mut` for inspection and updates between runs. ([#131][] by [@waywardmonkeys][])
 
 - Add owned `ValueSnapshot` retention through `AggHeap::snapshot` and `HostContext::retain`,
   with `AggHeap::import` for moving retained data into another heap. Snapshots copy only
-  reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains.
+  reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains. ([#127][] by [@waywardmonkeys][])
 
 - Inspect prepared functions through `VerifiedProgram::function` and `functions`, with borrowed
   signatures, aggregate contracts, instruction locations, register-bank requirements, and
   function-local buffer sizes. No bytecode decoding or allocation is needed. The wind-tunnel
-  `inspect_prepared` tool prints a summary and optional instruction detail from an encoded file.
+  `inspect_prepared` tool prints a summary and optional instruction detail from an encoded file. ([#130][] by [@waywardmonkeys][])
 
 - Explore recordings through the optional Ratatui `execution_tape_observatory` crate:
   navigate invocation/host-call/outcome boundaries, open immediate aggregate fields, inspect
@@ -116,14 +118,14 @@ This release has an [MSRV][] of 1.88.
   Preserve the complete `AsmParts` when assembling raw definitions. `Asm::block` now takes only
   register IDs; parameter kinds come from the function ledger. Programs use wire version 0.2;
   regenerate serialized programs with the updated producer. Declarations do not initialize values
-  or establish aggregate shapes.
+  or establish aggregate shapes. ([#141][] by [@waywardmonkeys][])
 
 - Replace `VerifyError::{TypeMismatch, UnknownTypeAtUse, UnknownTypeAtSelect, UnstableRegType,
   UnstableRegTypeAt}` with `MissingRegisterTypes`, `RegisterTypeMismatch` and
   `UnknownAggregateShape`. A register mismatch's `pc: None` identifies the r0/argument prefix;
   instruction failures carry their source PC. Static kind and call/return contracts are checked
   even in unreachable code. `Program::encode` now panics on manually malformed register
-  declarations; verify manually edited containers before encoding them.
+  declarations; verify manually edited containers before encoding them. ([#141][] by [@waywardmonkeys][])
 
 - Run the disassembler example with `cargo run -p execution_tape_wind_tunnel --bin disasm`.
   Examples now live in the separate tool crate, keeping the core crate focused on the library. ([#138][] by [@waywardmonkeys][])
@@ -133,7 +135,7 @@ This release has an [MSRV][] of 1.88.
   disassembly operand, and `VerifyError` matches must handle the new variants. Block failures
   report declaration or source-edge context, including arm, target, and argument details.
   A block reserved with `Asm::block` may be placed once; failed repeated placement preserves
-  its existing bytes and name.
+  its existing bytes and name. ([#136][] by [@waywardmonkeys][])
 
 - Share allocation-free register operand iteration between verification and disassembly.
   Opcode generation now supports multiple register lists, list-only outputs, and additional
@@ -141,26 +143,26 @@ This release has an [MSRV][] of 1.88.
 
 - `HostError`, `Trap`, and `TrapInfo` no longer implement `PartialEq`/`Eq`, because arbitrary
   host errors need not support value equality. Match variants and compare diagnostic fields or
-  downcast concrete error sources instead. Exhaustive `HostError` matches must handle `Custom`.
+  downcast concrete error sources instead. Exhaustive `HostError` matches must handle `Custom`. ([#133][] by [@waywardmonkeys][])
 
 - Exhaustive `HostError` matches must handle `ProgramMismatch`: prepared host instances reject
-  calls from another program, including equal cloned programs, before invoking a callback.
+  calls from another program, including equal cloned programs, before invoking a callback. ([#132][] by [@waywardmonkeys][])
 
 - VM runs now retain only new aggregates reachable from returned values; traps discard all new
   aggregates. Previously retained values stay valid until the heap is cleared. Treat host
   aggregate and closure-environment arguments as borrowed for the call; use `HostContext::retain`
   for durable host state, then `AggHeap::import` before using it in a VM. Returning a dangling
-  aggregate or closure environment now traps at `ret`.
+  aggregate or closure environment now traps at `ret`. ([#129][] by [@waywardmonkeys][])
 
 - `AggHeap::tuple_new`, `struct_new`, and `array_new` now return `Result<AggHandle, AggError>`.
   Handle the result when constructing aggregates. Heap and staged constructors reject dangling
   aggregate children and closure environments before mutation, preventing forward references
-  and cycles. Schema validation remains a separate operation.
+  and cycles. Schema validation remains a separate operation. ([#126][] by [@waywardmonkeys][])
 
 - Verification now validates immutable metadata, including unused constant ranges, symbol and
   field-name ranges, struct layouts, and optional names. Malformed programs fail preparation
   with `VerifyError::InvalidMetadata` instead of trapping during execution. Exhaustive error
-  matches must handle the new variant; `MetadataTable` identifies the failing table.
+  matches must handle the new variant; `MetadataTable` identifies the failing table. ([#124][] by [@waywardmonkeys][])
 
 - Borrow immutable byte/string payloads from constants, entry arguments, and aggregate fields
   during execution. Move host-owned return payloads into run storage. Owned outputs and
@@ -208,6 +210,18 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [@no-materials]: https://github.com/no-materials
 [@waywardmonkeys]: https://github.com/waywardmonkeys
+
+[#124]: https://github.com/forest-rs/execution/pull/124
+[#125]: https://github.com/forest-rs/execution/pull/125
+[#126]: https://github.com/forest-rs/execution/pull/126
+[#127]: https://github.com/forest-rs/execution/pull/127
+[#128]: https://github.com/forest-rs/execution/pull/128
+[#129]: https://github.com/forest-rs/execution/pull/129
+[#130]: https://github.com/forest-rs/execution/pull/130
+[#131]: https://github.com/forest-rs/execution/pull/131
+[#132]: https://github.com/forest-rs/execution/pull/132
+[#133]: https://github.com/forest-rs/execution/pull/133
+[#141]: https://github.com/forest-rs/execution/pull/141
 
 [#134]: https://github.com/forest-rs/execution/pull/134
 [#135]: https://github.com/forest-rs/execution/pull/135

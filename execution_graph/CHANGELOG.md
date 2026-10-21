@@ -47,7 +47,7 @@ This release has an [MSRV][] of 1.88.
 ### Changed
 
 - `TapeError` no longer implements `PartialEq`/`Eq`, following typed host failures in Execution
-  Tape. Match variants and compare fields or inspect the standard error source chain instead.
+  Tape. Match variants and compare fields or inspect the standard error source chain instead. ([#133][] by [@waywardmonkeys][])
 
 - Reuse the graph output buffer directly in `TapeExecutor`, avoiding a temporary result vector. ([#119][] by [@waywardmonkeys][])
 - Improve crate and README documentation, keeping examples synchronized. ([#93][] by [@no-materials][])
@@ -120,6 +120,8 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#104]: https://github.com/forest-rs/execution/pull/104
 
 [#119]: https://github.com/forest-rs/execution/pull/119
+
+[#133]: https://github.com/forest-rs/execution/pull/133
 
 [Unreleased]: https://github.com/forest-rs/execution/compare/execution_graph-v0.0.1...HEAD
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_graph-v0.0.1
