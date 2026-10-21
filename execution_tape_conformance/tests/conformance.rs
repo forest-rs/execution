@@ -235,6 +235,127 @@ fn float_to_integer_rejects_rounded_upper_bounds() {
 }
 
 #[test]
+fn verifier_preserves_tuple_shape_across_a_jump() {
+    let mut asm = Asm::new();
+    let next = asm.label();
+    asm.const_i64(1, 7);
+    asm.tuple_new(2, &[1]);
+    asm.jmp(next);
+    asm.place(next).unwrap();
+    asm.tuple_get(3, 2, 0);
+    asm.ret(0, &[3]);
+    let mut builder = ProgramBuilder::new();
+    builder
+        .push_function_checked(
+            asm,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+    let program = builder.build_verified().unwrap();
+    let mut vm = Vm::new(TestHost, Limits::default());
+    assert_eq!(
+        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap(),
+        vec![Value::I64(7)]
+    );
+}
+
+#[test]
+fn verifier_meets_tuple_shapes_at_branch_joins() {
+    for compatible in [true, false] {
+        let mut asm = Asm::new();
+        let left = asm.label();
+        let right = asm.label();
+        let join = asm.label();
+        asm.const_i64(2, 13);
+        asm.br(1, left, right);
+        asm.place(left).unwrap();
+        asm.tuple_new(3, &[2]);
+        asm.jmp(join);
+        asm.place(right).unwrap();
+        asm.tuple_new(3, &[if compatible { 2 } else { 1 }]);
+        asm.jmp(join);
+        asm.place(join).unwrap();
+        asm.tuple_get(4, 3, 0);
+        asm.ret(0, &[4]);
+        let mut builder = ProgramBuilder::new();
+        builder
+            .push_function_checked(
+                asm,
+                FunctionSig {
+                    arg_types: vec![ValueType::Bool],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        let result = verify_program_owned(builder.build(), &VerifyConfig::default());
+        if compatible {
+            let program = result.unwrap();
+            let mut vm = Vm::new(TestHost, Limits::default());
+            for condition in [true, false] {
+                assert_eq!(
+                    vm.run(
+                        &program,
+                        FuncId(0),
+                        &[Value::Bool(condition)],
+                        TraceMask::NONE,
+                        None
+                    )
+                    .unwrap(),
+                    vec![Value::I64(13)]
+                );
+            }
+        } else {
+            assert!(matches!(result, Err(VerifyError::UnknownTypeAtUse { .. })));
+        }
+    }
+}
+
+#[test]
+fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
+    let mut asm = Asm::new();
+    let head = asm.label();
+    let body = asm.label();
+    let done = asm.label();
+    asm.const_i64(1, 7);
+    asm.tuple_new(2, &[1]);
+    asm.const_u64(3, 0);
+    asm.const_u64(4, 2);
+    asm.const_u64(5, 1);
+    asm.jmp(head);
+    asm.place(head).unwrap();
+    asm.u64_eq(6, 3, 4);
+    asm.br(6, done, body);
+    asm.place(body).unwrap();
+    asm.tuple_get(7, 2, 0);
+    asm.u64_add(3, 3, 5);
+    asm.jmp(head);
+    asm.place(done).unwrap();
+    asm.tuple_get(7, 2, 0);
+    asm.ret(0, &[7]);
+    let mut builder = ProgramBuilder::new();
+    builder
+        .push_function_checked(
+            asm,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+    let program = builder.build_verified().unwrap();
+    let mut vm = Vm::new(TestHost, Limits::default());
+    assert_eq!(
+        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap(),
+        vec![Value::I64(7)]
+    );
+}
+
+#[test]
 fn golden_program_bytes_v0_0_1() {
     let mut p = Program::new(
         vec![],

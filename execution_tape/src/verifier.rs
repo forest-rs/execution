@@ -3384,12 +3384,19 @@ fn compute_must_types(
         bottom,
         |acc, incoming| {
             for r in 0..reg_count {
-                acc.values[r] = meet_value(acc.values[r], incoming.values[r]);
-                if matches!(acc.values[r], Some(RegType::Concrete(ValueType::Agg))) {
-                    acc.aggs[r] = meet_agg(&acc.aggs[r], &incoming.aggs[r]);
+                let value = meet_value(acc.values[r], incoming.values[r]);
+                if matches!(value, Some(RegType::Concrete(ValueType::Agg))) {
+                    // Unknown/top is the meet identity for shape facts as well as value types.
+                    // The first concrete predecessor supplies the shape; later paths constrain it.
+                    acc.aggs[r] = match (acc.values[r], incoming.values[r]) {
+                        (None, _) => incoming.aggs[r].clone(),
+                        (_, None) => acc.aggs[r].clone(),
+                        _ => meet_agg(&acc.aggs[r], &incoming.aggs[r]),
+                    };
                 } else {
                     acc.aggs[r] = None;
                 }
+                acc.values[r] = value;
             }
         },
         |_b_idx, b, in_state| {
