@@ -194,12 +194,13 @@ use crate::value::Value;
 /// let mut ctx = ExecutionContext::new();
 /// let mut access = RecordingAccessSink::default();
 ///
-/// let out = vm
-///     .run_with_ctx(
+/// let mut out = Vec::new();
+/// vm.run_with_ctx(
 ///         &mut ctx,
 ///         &program,
 ///         FuncId(0),
 ///         &[],
+///         &mut out,
 ///         TraceMask::NONE,
 ///         None,
 ///         Some(&mut access),

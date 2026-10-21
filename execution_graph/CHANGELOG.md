@@ -46,6 +46,8 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Reuse the graph output buffer directly in `TapeExecutor`, avoiding a temporary result vector.
+
 - Improve crate and README documentation, keeping examples synchronized. ([#93][] by [@no-materials][])
 - Mark public report output structs as `non_exhaustive`. ([#94][] by [@waywardmonkeys][])
 - Include node labels in `ReportDetailMask::FULL`. ([#95][] by [@waywardmonkeys][])

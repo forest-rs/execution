@@ -831,23 +831,38 @@ impl<H: Host> Vm<H> {
         trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let mut ctx = ExecutionContext::new();
-        self.run_with_ctx(&mut ctx, program, entry, args, trace_mask, trace, None)
+        let mut outputs = Vec::new();
+        self.run_with_ctx(
+            &mut ctx,
+            program,
+            entry,
+            args,
+            &mut outputs,
+            trace_mask,
+            trace,
+            None,
+        )?;
+        Ok(outputs)
     }
 
-    /// Executes `program` starting at `entry` using an explicit per-run [`ExecutionContext`].
+    /// Executes a program using reusable scratch and appending returns to `outputs`.
     ///
-    /// Keeping the context separate allows embedders to reuse allocations across runs.
-    /// Entry validation follows the same rules as [`Self::run`].
+    /// Clear `outputs` before calling to replace previous results while keeping its capacity.
+    /// A trap preserves its original contents. Successful calls append in signature order;
+    /// aggregate handles remain valid in this VM's heap until explicitly cleared.
+    /// [`Self::run`] delegates to this execution path. Entry validation follows its rules.
     pub fn run_with_ctx(
         &mut self,
         ctx: &mut ExecutionContext,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
+        outputs: &mut Vec<Value>,
         trace_mask: TraceMask,
         trace: Option<&mut dyn TraceSink>,
         access: Option<&mut dyn AccessSink>,
-    ) -> Result<Vec<Value>, TrapInfo> {
+    ) -> Result<(), TrapInfo> {
+        let original_len = outputs.len();
         let program_ref = program.program();
         let mut trace = TraceCtx::new(trace_mask, trace);
         trace.run_start(program_ref, entry, args.len());
@@ -859,15 +874,18 @@ impl<H: Host> Vm<H> {
             || trace.enabled(TraceMask::HOST);
 
         let result = if trace_active {
-            self.run_body::<WithTracePolicy>(ctx, program, entry, args, &mut trace, access)
+            self.run_body::<WithTracePolicy>(ctx, program, entry, args, outputs, &mut trace, access)
         } else {
-            self.run_body::<NoTracePolicy>(ctx, program, entry, args, &mut trace, access)
+            self.run_body::<NoTracePolicy>(ctx, program, entry, args, outputs, &mut trace, access)
         };
 
         let outcome = match &result {
             Ok(_) => TraceOutcome::Ok,
             Err(e) => TraceOutcome::Trap(e),
         };
+        if result.is_err() {
+            outputs.truncate(original_len);
+        }
         trace.finish(program_ref, outcome);
         trace.run_end(program_ref, outcome);
 
@@ -880,9 +898,10 @@ impl<H: Host> Vm<H> {
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
+        outputs: &mut Vec<Value>,
         trace: &mut TraceCtx<'_>,
         mut access: Option<&mut dyn AccessSink>,
-    ) -> Result<Vec<Value>, TrapInfo> {
+    ) -> Result<(), TrapInfo> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
@@ -1736,9 +1755,9 @@ impl<H: Host> Vm<H> {
                 ExecInstr::Ret { eff_in: _, rets } => {
                     if ctx.frames.len() == 1 {
                         let rets = vf.vregs(*rets);
-                        let mut out: Vec<Value> = Vec::with_capacity(rets.len());
+                        outputs.reserve(rets.len());
                         for &r in rets {
-                            out.push(
+                            outputs.push(
                                 ctx.materialize_vreg(base, r)
                                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
@@ -1752,7 +1771,7 @@ impl<H: Host> Vm<H> {
                             span_id,
                         );
                         P::instr_end(trace, program_ref, None);
-                        return Ok(out);
+                        return Ok(());
                     }
 
                     let finished = ctx
@@ -3334,6 +3353,7 @@ mod tests {
             let wrong = vm.aggregates_mut().tuple_new(vec![Value::Bool(true)]);
             let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]);
             let mut ctx = ExecutionContext::new();
+            let mut outputs = Vec::new();
             for handle in [wrong, AggHandle(u32::MAX)] {
                 let e = vm
                     .run_with_ctx(
@@ -3341,6 +3361,7 @@ mod tests {
                         &p,
                         entry,
                         &[Value::Agg(handle)],
+                        &mut outputs,
                         TraceMask::NONE,
                         None,
                         None,
@@ -3352,19 +3373,18 @@ mod tests {
                     "mode={mode}: {e:?}"
                 );
             }
-            assert_eq!(
-                vm.run_with_ctx(
-                    &mut ctx,
-                    &p,
-                    entry,
-                    &[Value::Agg(good)],
-                    TraceMask::NONE,
-                    None,
-                    None
-                )
-                .unwrap(),
-                vec![Value::I64(42)]
-            );
+            vm.run_with_ctx(
+                &mut ctx,
+                &p,
+                entry,
+                &[Value::Agg(good)],
+                &mut outputs,
+                TraceMask::NONE,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(outputs, vec![Value::I64(42)]);
         }
     }
 
@@ -3528,6 +3548,93 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn reusable_results_append_preserve_on_traps_and_outlive_context_reset() {
+        let mut pb = ProgramBuilder::new();
+        let mut body = Asm::new();
+        body.ret(0, &[1, 2, 3, 4]);
+        let types = vec![
+            ValueType::I64,
+            ValueType::Bytes,
+            ValueType::Str,
+            ValueType::Agg,
+        ];
+        let entry = pb
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: types.clone(),
+                    ret_types: types,
+                },
+            )
+            .unwrap();
+        let mut failing = Asm::new();
+        failing.trap(123);
+        let failure = pb
+            .push_function_checked(
+                failing,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![],
+                },
+            )
+            .unwrap();
+        let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let aggregate = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]);
+        let args = vec![
+            Value::I64(42),
+            Value::Bytes(vec![1, 2]),
+            Value::Str("text".into()),
+            Value::Agg(aggregate),
+        ];
+        let mut outputs = Vec::with_capacity(16);
+        outputs.push(Value::Unit);
+        let pointer = outputs.as_ptr();
+        let mut ctx = ExecutionContext::new();
+        vm.run_with_ctx(
+            &mut ctx,
+            &p,
+            entry,
+            &args,
+            &mut outputs,
+            TraceMask::NONE,
+            None,
+            None,
+        )
+        .unwrap();
+        let first = outputs.clone();
+        let error = vm
+            .run_with_ctx(
+                &mut ctx,
+                &p,
+                failure,
+                &[],
+                &mut outputs,
+                TraceMask::NONE,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.trap, Trap::TrapCode(123));
+        assert_eq!(outputs, first);
+        vm.run_with_ctx(
+            &mut ctx,
+            &p,
+            entry,
+            &args,
+            &mut outputs,
+            TraceMask::NONE,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(outputs.as_ptr(), pointer);
+        assert_eq!(&outputs[1..5], args);
+        assert_eq!(&outputs[5..], args);
+        assert_eq!(vm.aggregates().tuple_get(aggregate, 0), Ok(Value::I64(99)));
     }
 
     struct TestHost;
@@ -3943,17 +4050,18 @@ mod tests {
         let mut ctx = ExecutionContext::new();
         let mut access = CountingAccessSink::default();
 
-        let out = vm
-            .run_with_ctx(
-                &mut ctx,
-                &p,
-                FuncId(0),
-                &[],
-                TraceMask::NONE,
-                None,
-                Some(&mut access),
-            )
-            .unwrap();
+        let mut out = Vec::new();
+        vm.run_with_ctx(
+            &mut ctx,
+            &p,
+            FuncId(0),
+            &[],
+            &mut out,
+            TraceMask::NONE,
+            None,
+            Some(&mut access),
+        )
+        .unwrap();
 
         assert_eq!(out, vec![Value::I64(9)]);
         assert!(access.reads > 0);
