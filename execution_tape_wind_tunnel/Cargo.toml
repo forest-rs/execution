@@ -16,3 +16,7 @@ criterion = "0.5"
 [[bench]]
 name = "vm"
 harness = false
+
+[[bench]]
+name = "verifier"
+harness = false
