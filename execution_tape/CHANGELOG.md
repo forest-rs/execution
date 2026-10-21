@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Borrow immutable byte/string payloads from constants, entry arguments, and aggregate fields
+  during execution. Move host-owned return payloads into run storage. Owned outputs and
+  persistent aggregate contents retain their existing lifetime and representation.
+
 - `Vm::run_with_ctx` now takes a mutable output `Vec` and returns `Result<(), TrapInfo>`.
   Pass an empty or cleared buffer to replace results, or retain contents to append. Traps
   preserve existing contents. `run` remains the allocating convenience entry point.
