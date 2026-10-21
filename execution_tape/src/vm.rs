@@ -1895,8 +1895,12 @@ impl<H: Host> Vm<H> {
                     let access_for_call = access
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
-                    let host_ctx =
-                        HostContext::new(program_ref, self.memory.aggs(), access_for_call);
+                    let host_ctx = HostContext::new(
+                        program_ref,
+                        *host_sig,
+                        self.memory.aggs(),
+                        access_for_call,
+                    );
                     let extra_fuel = self
                         .host
                         .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx)
@@ -2656,6 +2660,17 @@ impl<H: Host> Vm<H> {
                 })?;
         }
         Ok(())
+    }
+
+    /// Returns the embedded host, for inspecting state between runs.
+    #[must_use]
+    pub fn host(&self) -> &H {
+        &self.host
+    }
+
+    /// Returns the embedded host, for updating host-owned state between runs.
+    pub fn host_mut(&mut self) -> &mut H {
+        &mut self.host
     }
 
     /// Returns a reference to the aggregate heap.
@@ -3642,6 +3657,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn host_context_identifies_imports_and_host_state_is_accessible_between_runs() {
+        #[derive(Default)]
+        struct StateHost {
+            offset: i64,
+            calls: Vec<crate::program::HostSigId>,
+        }
+        impl Host for StateHost {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                _: &[ValueRef<'_>],
+                rets: &mut [Value],
+                ctx: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                let id = ctx.host_sig_id();
+                assert!(ctx.program().host_sig(id).is_some());
+                self.calls.push(id);
+                rets[0] = Value::I64(self.offset + i64::from(id.0));
+                Ok(0)
+            }
+        }
+        let mut pb = ProgramBuilder::new();
+        let sig = HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        };
+        pb.host_sig_for("unused", sig.clone());
+        let first = pb.host_sig_for("first", sig.clone());
+        let second = pb.host_sig_for("second", sig);
+        let mut body = Asm::new();
+        body.host_call_sig_id(0, first, 0, &[], &[1]);
+        body.host_call_sig_id(0, second, 0, &[], &[2]);
+        body.ret(0, &[1, 2]);
+        let entry = pb
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64; 2],
+                },
+            )
+            .unwrap();
+        let program = pb.build_verified().unwrap();
+        let mut vm = Vm::new(StateHost::default(), Limits::default());
+        assert_eq!(
+            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            [Value::I64(1), Value::I64(2)]
+        );
+        assert_eq!(vm.host().calls, [first, second]);
+        vm.host_mut().offset = 10;
+        assert_eq!(
+            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            [Value::I64(11), Value::I64(12)]
+        );
+        assert_eq!(vm.host().calls, [first, second, first, second]);
     }
 
     #[test]

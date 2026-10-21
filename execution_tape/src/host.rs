@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
-use crate::program::{Program, ValueType};
+use crate::program::{HostSigId, Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
@@ -230,6 +230,7 @@ pub trait AccessSink {
 /// depend on external state.
 pub struct HostContext<'vm, 'access> {
     program: &'vm Program,
+    host_sig_id: HostSigId,
     aggregates: &'vm AggHeap,
     access: Option<&'access mut dyn AccessSink>,
 }
@@ -238,6 +239,7 @@ impl fmt::Debug for HostContext<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostContext")
             .field("program_name", &self.program.name())
+            .field("host_sig_id", &self.host_sig_id)
             .field("aggregate_count", &self.aggregates.len_u32())
             .field("has_access", &self.access.is_some())
             .finish()
@@ -248,11 +250,13 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// Creates a host context for one VM host call.
     pub(crate) fn new(
         program: &'vm Program,
+        host_sig_id: HostSigId,
         aggregates: &'vm AggHeap,
         access: Option<&'access mut dyn AccessSink>,
     ) -> Self {
         Self {
             program,
+            host_sig_id,
             aggregates,
             access,
         }
@@ -273,6 +277,15 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     #[must_use]
     pub fn program(&self) -> &Program {
         self.program
+    }
+
+    /// Returns the declared host import being called in [`Self::program`].
+    ///
+    /// The ID is local to that program. It allows a prepared host adapter to dispatch through
+    /// an indexed binding table after checking program identity.
+    #[must_use]
+    pub fn host_sig_id(&self) -> HostSigId {
+        self.host_sig_id
     }
 
     /// Returns the VM aggregate heap for reading aggregate argument contents.
@@ -678,7 +691,7 @@ mod tests {
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
             .unwrap();
-        let snapshot = HostContext::new(&program, &heap, None)
+        let snapshot = HostContext::new(&program, HostSigId(0), &heap, None)
             .retain(&[ValueRef::Agg(root)])
             .unwrap();
         heap.clear();

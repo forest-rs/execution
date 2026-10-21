@@ -17,6 +17,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Expose the active program-local import through `HostContext::host_sig_id`, and embedded host
+  state through `Vm::host` and `host_mut` for inspection and updates between runs.
+
 - Add owned `ValueSnapshot` retention through `AggHeap::snapshot` and `HostContext::retain`,
   with `AggHeap::import` for moving retained data into another heap. Snapshots copy only
   reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains.
