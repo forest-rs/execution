@@ -17,6 +17,7 @@ Crates:
   source instructions and checked replay (`std`, Ratatui).
 - `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks and
   runnable inspection/comparison tools.
+- `execution_tape_footfall/`: `no_std + alloc` Footfall adapter for semantic VM observations.
 
 Docs:
 - `docs/overview.md`: design notes for the tape VM and host boundary.

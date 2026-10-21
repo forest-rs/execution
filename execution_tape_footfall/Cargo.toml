@@ -1,0 +1,19 @@
+[package]
+name = "execution_tape_footfall"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Semantic Footfall observations for Execution Tape."
+readme = "README.md"
+keywords = ["profiling", "tracing", "vm"]
+categories = ["development-tools::profiling", "no-std"]
+
+[dependencies]
+execution_tape = { workspace = true }
+footfall = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true

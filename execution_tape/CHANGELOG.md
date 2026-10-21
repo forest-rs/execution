@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Correlate VM runs, guest calls and host work with the optional `execution_tape_footfall`
+  adapter. Instruction details are opt-in; bounded captures preserve loss metadata. The
+  `footfall_capture` tool saves the tape, context manifest and Footfall/Perfetto exports. ([#143][] by [@waywardmonkeys][])
+
 - Open compiled tapes with `observatory --program PATH`, using the same browser interactively
   or with `--snapshot`. Decode errors identify the file; rejected programs remain inspectable.
   `--write-demo PATH` creates a compiled sample without overwriting an existing file. ([#151][] by [@waywardmonkeys][])
@@ -264,5 +268,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#150]: https://github.com/forest-rs/execution/pull/150
 
 [#151]: https://github.com/forest-rs/execution/pull/151
+
+[#143]: https://github.com/forest-rs/execution/pull/143
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

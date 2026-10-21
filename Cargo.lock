@@ -408,6 +408,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_tape_footfall"
+version = "0.0.1"
+dependencies = [
+ "execution_tape",
+ "footfall",
+]
+
+[[package]]
 name = "execution_tape_observatory"
 version = "0.0.1"
 dependencies = [
@@ -437,8 +445,10 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "execution_tape",
+ "execution_tape_footfall",
  "execution_tape_observatory",
  "execution_tape_recording",
+ "footfall",
  "ratatui",
 ]
 
@@ -453,6 +463,52 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "footfall"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=bbe52283c3f398d16dd3ebb25ad8300babfef557#bbe52283c3f398d16dd3ebb25ad8300babfef557"
+dependencies = [
+ "footfall_core",
+ "footfall_export",
+ "footfall_runtime",
+ "footfall_session",
+]
+
+[[package]]
+name = "footfall_core"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=bbe52283c3f398d16dd3ebb25ad8300babfef557#bbe52283c3f398d16dd3ebb25ad8300babfef557"
+
+[[package]]
+name = "footfall_export"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=bbe52283c3f398d16dd3ebb25ad8300babfef557#bbe52283c3f398d16dd3ebb25ad8300babfef557"
+dependencies = [
+ "footfall_core",
+ "footfall_runtime",
+ "footfall_session",
+ "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "footfall_runtime"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=bbe52283c3f398d16dd3ebb25ad8300babfef557#bbe52283c3f398d16dd3ebb25ad8300babfef557"
+dependencies = [
+ "footfall_core",
+ "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "footfall_session"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/footfall?rev=bbe52283c3f398d16dd3ebb25ad8300babfef557#bbe52283c3f398d16dd3ebb25ad8300babfef557"
+dependencies = [
+ "footfall_core",
+ "footfall_runtime",
+ "hashbrown 0.17.1",
+]
 
 [[package]]
 name = "generator"
