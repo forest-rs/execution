@@ -157,6 +157,36 @@ fn both_instruction_decoders_reject_impossible_register_lists() {
 }
 
 #[test]
+fn zero_call_depth_rejects_the_entry_frame() {
+    let mut asm = Asm::new();
+    asm.ret(0, &[]);
+    let mut builder = ProgramBuilder::new();
+    builder
+        .push_function_checked(
+            asm,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+    let program = builder.build_verified().unwrap();
+    let mut vm = Vm::new(
+        TestHost,
+        Limits {
+            max_call_depth: 0,
+            ..Limits::default()
+        },
+    );
+    assert_eq!(
+        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap_err()
+            .trap,
+        Trap::CallDepthExceeded
+    );
+}
+
+#[test]
 fn golden_program_bytes_v0_0_1() {
     let mut p = Program::new(
         vec![],

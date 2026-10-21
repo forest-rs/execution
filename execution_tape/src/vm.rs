@@ -804,6 +804,14 @@ impl<H: Host> Vm<H> {
         let entry_vf = program
             .verified(entry)
             .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
+        if max_call_depth == 0 {
+            return Err(ctx.trap(
+                entry,
+                0,
+                entry_vf.span_at_ix(0).map(|id| id.get()),
+                Trap::CallDepthExceeded,
+            ));
+        }
         let entry_base = ctx.alloc_frame(entry_vf);
         ctx.init_args(entry_base, entry_vf, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
