@@ -2213,7 +2213,8 @@ impl<H: Host> Vm<H> {
                     if !a.is_finite() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
                     }
-                    if a < i64::MIN as f64 || a > i64::MAX as f64 {
+                    // The integer maximum rounds up to the exclusive upper bound in f64.
+                    if a < i64::MIN as f64 || a >= i64::MAX as f64 {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
                     }
                     #[allow(
@@ -2229,7 +2230,8 @@ impl<H: Host> Vm<H> {
                     if !a.is_finite() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
                     }
-                    if a < 0.0 || a > u64::MAX as f64 {
+                    // The integer maximum rounds up to the exclusive upper bound in f64.
+                    if a < 0.0 || a >= u64::MAX as f64 {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
                     }
                     #[allow(
