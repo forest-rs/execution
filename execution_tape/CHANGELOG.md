@@ -19,17 +19,14 @@ This release has an [MSRV][] of 1.88.
 
 - Borrow immutable byte/string payloads from constants, entry arguments, and aggregate fields
   during execution. Move host-owned return payloads into run storage. Owned outputs and
-  persistent aggregate contents retain their existing lifetime and representation.
-
+  persistent aggregate contents retain their existing lifetime and representation. ([#120][] by [@waywardmonkeys][])
 - `Vm::run_with_ctx` now takes a mutable output `Vec` and returns `Result<(), TrapInfo>`.
   Pass an empty or cleared buffer to replace results, or retain contents to append. Traps
-  preserve existing contents. `run` remains the allocating convenience entry point.
-
+  preserve existing contents. `run` remains the allocating convenience entry point. ([#119][] by [@waywardmonkeys][])
 - Define `TraceSink::instr` as an instruction attempt; `next_pc` is its lexical end.
   Use the new `instr_end` callback for success/trap and the actual control-flow successor.
   Add a `TraceOutcome` argument to `scope_exit` implementations; scopes now close on traps
-  even without run tracing, and host success includes validating returned values.
-
+  even without run tracing, and host success includes validating returned values. ([#118][] by [@waywardmonkeys][])
 - Improve crate and README documentation, keeping examples synchronized. ([#93][] by [@no-materials][])
 - Reduce verifier allocations by reusing dataflow buffers and storing aggregate metadata sparsely.
   Verification only computes liveness-based diagnostics through the `_with_lints` entry points. ([#109][] by [@waywardmonkeys][])
@@ -41,11 +38,9 @@ This release has an [MSRV][] of 1.88.
 
 - Validate aggregate argument contracts before entry and direct, indirect, and closure calls.
   Exhaustive matches on `Trap` must handle `ArgumentShapeMismatch`; `AggHeap::check_shape`
-  exposes allocation-free validation with structured `AggShapeError` diagnostics.
-
+  exposes allocation-free validation with structured `AggShapeError` diagnostics. ([#117][] by [@waywardmonkeys][])
 - Reject direct calls whose known aggregate argument shapes contradict the callee contract.
-  Exhaustive matches on `VerifyError` must handle `CallArgShapeMismatch`.
-
+  Exhaustive matches on `VerifyError` must handle `CallArgShapeMismatch`. ([#116][] by [@waywardmonkeys][])
 - Reject impossible collection counts in program sections and instruction register lists before
   reserving storage. ([#105][] by [@waywardmonkeys][])
 - Apply the call-depth limit to the entry frame, including a zero-depth limit. ([#106][] by [@waywardmonkeys][])
@@ -71,6 +66,12 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#111]: https://github.com/forest-rs/execution/pull/111
 [#112]: https://github.com/forest-rs/execution/pull/112
 [#113]: https://github.com/forest-rs/execution/pull/113
+
+[#116]: https://github.com/forest-rs/execution/pull/116
+[#117]: https://github.com/forest-rs/execution/pull/117
+[#118]: https://github.com/forest-rs/execution/pull/118
+[#119]: https://github.com/forest-rs/execution/pull/119
+[#120]: https://github.com/forest-rs/execution/pull/120
 
 [Unreleased]: https://github.com/forest-rs/execution/compare/execution_tape-v0.0.1...HEAD
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_tape-v0.0.1
