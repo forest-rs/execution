@@ -49,7 +49,7 @@ impl Default for Limits {
 }
 
 /// A runtime trap.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum Trap {
     /// Fuel limit exceeded.
     FuelExceeded,
@@ -173,10 +173,19 @@ impl fmt::Display for Trap {
     }
 }
 
-impl core::error::Error for Trap {}
+impl core::error::Error for Trap {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::HostCallFailed { error, .. } => Some(error),
+            Self::AggError(error) => Some(error),
+            Self::ArgumentShapeMismatch { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// A trap annotated with location information.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct TrapInfo {
     /// Function id.
     pub func: FuncId,
@@ -3660,6 +3669,121 @@ mod tests {
     }
 
     #[test]
+    fn typed_host_failures_outlive_host_state_and_reach_instruction_outcomes() {
+        use alloc::rc::Rc;
+        use core::cell::Cell;
+        use core::error::Error;
+
+        // Deliberately neither Clone nor Eq: the host's domain model need not provide either.
+        #[derive(Debug)]
+        struct OperationFailure {
+            operand: String,
+            code: u32,
+        }
+        impl fmt::Display for OperationFailure {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "operation {} rejected {}", self.code, self.operand)
+            }
+        }
+        impl Error for OperationFailure {}
+        fn find<'a>(mut error: &'a (dyn Error + 'static)) -> &'a OperationFailure {
+            loop {
+                if let Some(failure) = error.downcast_ref::<OperationFailure>() {
+                    return failure;
+                }
+                error = error.source().expect("operation failure in source chain");
+            }
+        }
+        struct FailingHost {
+            dropped: Rc<Cell<bool>>,
+            operand: String,
+        }
+        impl Drop for FailingHost {
+            fn drop(&mut self) {
+                self.dropped.set(true);
+            }
+        }
+        impl Host for FailingHost {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                _: &[ValueRef<'_>],
+                _: &mut [Value],
+                _: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                Err(HostError::custom(OperationFailure {
+                    operand: self.operand.clone(),
+                    code: 17,
+                }))
+            }
+        }
+        #[derive(Default)]
+        struct Observe(bool);
+        impl TraceSink for Observe {
+            fn instr_end(
+                &mut self,
+                _: &Program,
+                _: TraceLocation,
+                _: Option<TraceLocation>,
+                outcome: TraceOutcome<'_>,
+            ) {
+                if let TraceOutcome::Trap(error) = outcome {
+                    assert_eq!(find(error).code, 17);
+                    self.0 = true;
+                }
+            }
+        }
+        let mut pb = ProgramBuilder::new();
+        let import = pb.host_sig_for(
+            "fallible",
+            HostSig {
+                args: vec![],
+                rets: vec![],
+            },
+        );
+        let mut body = Asm::new();
+        body.tuple_new(1, &[]);
+        body.host_call_sig_id(0, import, 0, &[], &[]);
+        body.ret(0, &[]);
+        let entry = pb
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![],
+                },
+            )
+            .unwrap();
+        let p = pb.build_verified().unwrap();
+        let dropped = Rc::new(Cell::new(false));
+        let mut observer = Observe::default();
+        let error = {
+            let mut vm = Vm::new(
+                FailingHost {
+                    dropped: Rc::clone(&dropped),
+                    operand: "owned input".into(),
+                },
+                Limits::default(),
+            );
+            let error = vm
+                .run(&p, entry, &[], TraceMask::INSTR, Some(&mut observer))
+                .unwrap_err();
+            assert_eq!(vm.aggregates().len_u32(), 0);
+            error
+        };
+        assert!(dropped.get());
+        assert!(observer.0);
+        let failure = find(&error);
+        assert_eq!(failure.operand, "owned input");
+        assert_eq!(failure.code, 17);
+        let cloned = error.clone();
+        assert!(core::ptr::eq(failure, find(&cloned)));
+        assert_eq!(error.func, entry);
+        assert!(format!("{error}").contains("operation 17 rejected owned input"));
+    }
+
+    #[test]
     fn host_context_identifies_imports_and_host_state_is_accessible_between_runs() {
         #[derive(Default)]
         struct StateHost {
@@ -3942,7 +4066,10 @@ mod tests {
                     None,
                 )
                 .unwrap_err();
-            assert_eq!(error.trap, Trap::AggError(AggError::UnresolvedStagedHandle));
+            assert!(matches!(
+                error.trap,
+                Trap::AggError(AggError::UnresolvedStagedHandle)
+            ));
             assert_eq!(outputs, [Value::I64(12)]);
             assert_eq!(vm.aggregates().len_u32(), 0);
             assert_eq!(ends.instructions, [true, false]);
@@ -4105,7 +4232,7 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert_eq!(error.trap, Trap::TrapCode(123));
+        assert!(matches!(error.trap, Trap::TrapCode(123)));
         assert_eq!(outputs, first);
         vm.run_with_ctx(
             &mut ctx,
@@ -4520,14 +4647,11 @@ mod tests {
         let err = vm
             .run(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert_eq!(
-            err.trap,
-            Trap::HostCallFailed {
-                symbol: "missing.literal".into(),
-                sig_hash: expected_hash,
-                error: HostError::UnknownSymbol,
-            }
-        );
+        assert!(matches!(
+            &err.trap,
+            Trap::HostCallFailed { symbol, sig_hash, error: HostError::UnknownSymbol }
+                if symbol.as_ref() == "missing.literal" && *sig_hash == expected_hash
+        ));
         let rendered = format!("{err}");
         assert!(rendered.contains("host_call=missing.literal"));
         assert!(rendered.contains(&format!("sig_hash={}", expected_hash.0)));
@@ -4622,13 +4746,13 @@ mod tests {
         let err = vm
             .run(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.trap,
             Trap::TypeMismatch {
                 expected: ValueType::I64,
                 actual: ValueType::Unit,
             }
-        );
+        ));
     }
 
     #[derive(Debug, Default)]
@@ -5159,7 +5283,7 @@ mod tests {
         let err = vm
             .run(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert_eq!(err.trap, Trap::ArityMismatch);
+        assert!(matches!(err.trap, Trap::ArityMismatch));
     }
 
     #[test]
@@ -5225,13 +5349,13 @@ mod tests {
         let err = vm
             .run(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.trap,
             Trap::TypeMismatch {
                 expected: ValueType::I64,
                 actual: ValueType::U64,
             }
-        );
+        ));
     }
 
     #[test]
@@ -5281,7 +5405,7 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert_eq!(err.trap, Trap::InvalidPc);
+        assert!(matches!(err.trap, Trap::InvalidPc));
     }
 
     #[test]
@@ -5514,7 +5638,7 @@ mod tests {
         let err = vm
             .run(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert_eq!(err.trap, Trap::CallDepthExceeded);
+        assert!(matches!(err.trap, Trap::CallDepthExceeded));
     }
 
     #[test]
@@ -5658,13 +5782,13 @@ mod tests {
         let err = vm
             .run(&p, FuncId(0), &[], TraceMask::NONE, None)
             .unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err.trap,
             Trap::TypeMismatch {
                 expected: ValueType::I64,
                 actual: ValueType::U64,
             }
-        );
+        ));
     }
 
     // Keep the rest of the legacy tests in conformance; PR6 focuses on the execution model.

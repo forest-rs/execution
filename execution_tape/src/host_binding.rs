@@ -588,7 +588,7 @@ mod tests {
                 .run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap_err();
             if fuel_trap {
-                assert_eq!(error.trap, Trap::FuelExceeded);
+                assert!(matches!(error.trap, Trap::FuelExceeded));
             } else {
                 assert!(matches!(
                     error.trap,

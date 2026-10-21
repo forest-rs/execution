@@ -6,6 +6,7 @@
 //! The VM delegates effectful operations to an embedder-provided [`Host`].
 //! Host calls are identified by a stable symbol string plus a signature hash.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -476,7 +477,10 @@ pub fn sig_hash_slices(args: &[ValueType], rets: &[ValueType]) -> SigHash {
 }
 
 /// Errors a host call can return.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Use [`Self::custom`] to preserve an owned domain error in the VM result. Detailed failures
+/// can be recovered by downcasting the error source; they need no host-side last-error channel.
+#[derive(Clone, Debug)]
 pub enum HostError {
     /// The symbol is unknown to the host.
     UnknownSymbol,
@@ -484,8 +488,21 @@ pub enum HostError {
     SignatureMismatch,
     /// A prepared host binding was invoked with a different program.
     ProgramMismatch,
-    /// The host failed during execution.
+    /// The host failed during execution without additional detail.
     Failed,
+    /// An owned, typed operation failure. Clones share the immutable error payload.
+    Custom(Arc<dyn core::error::Error + Send + Sync>),
+}
+
+impl HostError {
+    /// Preserves a host-owned failure for recovery through the ordinary VM result.
+    ///
+    /// The error must own its data so it stays valid after host state or the VM is dropped.
+    /// Use [`core::error::Error::source`] and `downcast_ref` to recover its concrete type.
+    #[must_use]
+    pub fn custom(error: impl core::error::Error + Send + Sync + 'static) -> Self {
+        Self::Custom(Arc::new(error))
+    }
 }
 
 impl fmt::Display for HostError {
@@ -495,11 +512,19 @@ impl fmt::Display for HostError {
             Self::SignatureMismatch => write!(f, "host signature mismatch"),
             Self::ProgramMismatch => write!(f, "host binding program mismatch"),
             Self::Failed => write!(f, "host call failed"),
+            Self::Custom(error) => error.fmt(f),
         }
     }
 }
 
-impl core::error::Error for HostError {}
+impl core::error::Error for HostError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Custom(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// A borrowed host-call argument value.
 ///

@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Preserve typed, owned operation errors with `HostError::custom`. Recover concrete failures
+  through the standard error source chain, including after dropping the host or VM. Cloning a
+  failure shares its immutable payload.
+
 - Register host callbacks with complete signatures through `HostFunctions`, validate imports with `bind`, and
   create independent host instances with `HostBindings::with_state`. Binding failures identify
   every missing/mismatched import and include expected and available complete signatures.
@@ -29,6 +33,10 @@ This release has an [MSRV][] of 1.88.
   reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains.
 
 ### Changed
+
+- `HostError`, `Trap`, and `TrapInfo` no longer implement `PartialEq`/`Eq`, because arbitrary
+  host errors need not support value equality. Match variants and compare diagnostic fields or
+  downcast concrete error sources instead. Exhaustive `HostError` matches must handle `Custom`.
 
 - Exhaustive `HostError` matches must handle `ProgramMismatch`: prepared host instances reject
   calls from another program, including equal cloned programs, before invoking a callback.
