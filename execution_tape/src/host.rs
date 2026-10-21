@@ -60,7 +60,7 @@ use crate::value::Value;
 ///
 /// This example records a host call's external reads/writes without using `execution_graph` yet.
 ///
-/// ```no_run
+/// ```
 /// extern crate alloc;
 ///
 /// use alloc::collections::BTreeMap;
@@ -167,6 +167,10 @@ use crate::value::Value;
 /// let set_host = pb.host_sig_for("kv.set", set_sig);
 ///
 /// let mut a = Asm::new();
+/// a.set_register_types(vec![
+///     ValueType::Unit, ValueType::U64, ValueType::I64,
+///     ValueType::I64, ValueType::I64, ValueType::Unit,
+/// ]);
 /// a.const_u64(1, 42); // r1 = 42
 /// a.host_call(0, get_host, 0, &[1], &[2]); // r2 = kv.get(r1)
 /// a.const_i64(3, 1); // r3 = 1
