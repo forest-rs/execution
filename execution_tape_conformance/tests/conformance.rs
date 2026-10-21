@@ -71,6 +71,54 @@ fn verify_owned(program: Program) -> execution_tape::verifier::VerifiedProgram {
 }
 
 #[test]
+fn entry_arity_errors_allow_context_reuse() {
+    use execution_tape::vm::ExecutionContext;
+
+    let mut asm = Asm::new();
+    asm.ret(0, &[1]);
+    let mut builder = ProgramBuilder::new();
+    let entry = builder
+        .push_function_checked(
+            asm,
+            FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+    let program = builder.build_verified().unwrap();
+    let mut vm = Vm::new(TestHost, Limits::default());
+    let mut ctx = ExecutionContext::new();
+    let too_many = [Value::I64(1), Value::I64(2)];
+    for args in [&[][..], &too_many[..]] {
+        let error = vm
+            .run_with_ctx(&mut ctx, &program, entry, args, TraceMask::NONE, None, None)
+            .unwrap_err();
+        assert_eq!(error.func, entry);
+        assert_eq!(error.trap, Trap::ArityMismatch);
+    }
+    assert_eq!(
+        vm.run_with_ctx(
+            &mut ctx,
+            &program,
+            entry,
+            &[Value::I64(42)],
+            TraceMask::NONE,
+            None,
+            None,
+        )
+        .unwrap(),
+        vec![Value::I64(42)]
+    );
+    assert_eq!(
+        vm.run(&program, FuncId(u32::MAX), &[], TraceMask::NONE, None)
+            .unwrap_err()
+            .trap,
+        Trap::InvalidPc
+    );
+}
+
+#[test]
 fn decoder_rejects_impossible_section_counts() {
     use execution_tape::format::{DecodeError, Writer};
 
