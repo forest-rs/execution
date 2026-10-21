@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add a runnable block-argument comparison and Criterion benchmark in `execution_tape_wind_tunnel`.
+  Compare equivalent transfer-heavy loops by cold preparation, reused execution, prepared
+  storage, and frame requirements, checking output equality before timing. ([#137][] by [@waywardmonkeys][])
+
 - Declare typed control-flow joins with `Asm::block`, pass arguments with `Label::with_args`, and
   use the existing `br`/`jmp` methods. Edges transfer values simultaneously, including cycles,
   without extra guest instructions, fuel, or trace events. Inspect source arms with
@@ -128,6 +132,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#134]: https://github.com/forest-rs/execution/pull/134
 [#135]: https://github.com/forest-rs/execution/pull/135
 [#136]: https://github.com/forest-rs/execution/pull/136
+[#137]: https://github.com/forest-rs/execution/pull/137
 
 [#93]: https://github.com/forest-rs/execution/pull/93
 [#105]: https://github.com/forest-rs/execution/pull/105

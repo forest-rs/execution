@@ -24,3 +24,7 @@ harness = false
 [[bench]]
 name = "decoder"
 harness = false
+
+[[bench]]
+name = "block_parameters"
+harness = false
