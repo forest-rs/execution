@@ -249,13 +249,14 @@ impl<H: Host> Executor for TapeExecutor<H> {
             access,
             counter: &access_count,
         };
-        let out = self
-            .vm
+        let original_len = outputs.len();
+        self.vm
             .run_with_ctx(
                 &mut self.ctx,
                 &node.program,
                 node.entry,
                 inputs,
+                outputs,
                 trace_mask,
                 trace,
                 Some(&mut sink),
@@ -265,13 +266,13 @@ impl<H: Host> Executor for TapeExecutor<H> {
         if self.strict_deps
             && let Some(v) = strict.violation()
         {
+            outputs.truncate(original_len);
             return Err(TapeError::StrictDepsViolation {
                 symbol: v.symbol.clone(),
                 sig_hash: v.sig_hash,
             });
         }
 
-        outputs.extend(out);
         Ok(crate::NodeOutcome::Complete)
     }
 

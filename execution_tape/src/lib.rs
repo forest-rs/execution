@@ -71,6 +71,11 @@
 //! }
 //! ```
 //!
+//! For repeated execution, keep an [`ExecutionContext`](vm::ExecutionContext) and a result `Vec`.
+//! Clear the result buffer between runs and call [`Vm::run_with_ctx`](vm::Vm::run_with_ctx)
+//! to reuse both allocations. Results append in return-signature order; a trap preserves the
+//! buffer's original contents. Aggregate results belong to the VM heap and survive context resets.
+//!
 //! ## Core Pieces
 //!
 //! - `asm`: ergonomic builders for functions, call signatures, constants, host signatures, and

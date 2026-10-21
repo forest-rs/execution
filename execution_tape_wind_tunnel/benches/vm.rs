@@ -11,9 +11,10 @@ use execution_tape::program::Program;
 use execution_tape::program::{Const, SpanId, ValueType};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::{FuncId, Value};
-use execution_tape::vm::{Limits, Vm};
+use execution_tape::vm::{ExecutionContext, Limits, Vm};
 
 fn bench_vm(c: &mut Criterion) {
+    bench_run_results(c);
     bench_i64_add_chain(c);
     bench_i64_add_chain_traced_instr(c);
     bench_i64_add_chain_traced_instr_span_dense(c);
@@ -30,6 +31,71 @@ fn bench_vm(c: &mut Criterion) {
     bench_host_call_traced_run(c);
     bench_host_call_traced_instr(c);
     bench_host_call_traced_host(c);
+}
+
+fn bench_run_results(c: &mut Criterion) {
+    let mut group = c.benchmark_group("run_results");
+    for count in [1_u32, 16, 64] {
+        let mut asm = Asm::new();
+        for reg in 1..=count {
+            asm.const_i64(reg, i64::from(reg));
+        }
+        let regs: Vec<_> = (1..=count).collect();
+        asm.ret(0, &regs);
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            asm,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64; count as usize],
+            },
+        )
+        .unwrap();
+        let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(NopHost, wide_open_limits());
+        group.bench_function(BenchmarkId::new("fresh", count), |b| {
+            b.iter(|| {
+                black_box(vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap());
+            })
+        });
+        let mut ctx = ExecutionContext::new();
+        group.bench_function(BenchmarkId::new("context", count), |b| {
+            b.iter(|| {
+                let mut outputs = Vec::new();
+                vm.run_with_ctx(
+                    &mut ctx,
+                    &p,
+                    FuncId(0),
+                    &[],
+                    &mut outputs,
+                    TraceMask::NONE,
+                    None,
+                    None,
+                )
+                .unwrap();
+                black_box(outputs);
+            })
+        });
+        let mut outputs = Vec::with_capacity(count as usize);
+        group.bench_function(BenchmarkId::new("context_and_results", count), |b| {
+            b.iter(|| {
+                outputs.clear();
+                vm.run_with_ctx(
+                    &mut ctx,
+                    &p,
+                    FuncId(0),
+                    &[],
+                    &mut outputs,
+                    TraceMask::NONE,
+                    None,
+                    None,
+                )
+                .unwrap();
+                black_box(&outputs);
+            })
+        });
+    }
+    group.finish();
 }
 
 fn bench_i64_add_chain(c: &mut Criterion) {

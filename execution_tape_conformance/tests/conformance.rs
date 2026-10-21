@@ -89,27 +89,36 @@ fn entry_arity_errors_allow_context_reuse() {
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
     let mut ctx = ExecutionContext::new();
+    let mut outputs = Vec::new();
     let too_many = [Value::I64(1), Value::I64(2)];
     for args in [&[][..], &too_many[..]] {
         let error = vm
-            .run_with_ctx(&mut ctx, &program, entry, args, TraceMask::NONE, None, None)
+            .run_with_ctx(
+                &mut ctx,
+                &program,
+                entry,
+                args,
+                &mut outputs,
+                TraceMask::NONE,
+                None,
+                None,
+            )
             .unwrap_err();
         assert_eq!(error.func, entry);
         assert_eq!(error.trap, Trap::ArityMismatch);
     }
-    assert_eq!(
-        vm.run_with_ctx(
-            &mut ctx,
-            &program,
-            entry,
-            &[Value::I64(42)],
-            TraceMask::NONE,
-            None,
-            None,
-        )
-        .unwrap(),
-        vec![Value::I64(42)]
-    );
+    vm.run_with_ctx(
+        &mut ctx,
+        &program,
+        entry,
+        &[Value::I64(42)],
+        &mut outputs,
+        TraceMask::NONE,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(outputs, vec![Value::I64(42)]);
     assert_eq!(
         vm.run(&program, FuncId(u32::MAX), &[], TraceMask::NONE, None)
             .unwrap_err()

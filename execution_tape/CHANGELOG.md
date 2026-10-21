@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `Vm::run_with_ctx` now takes a mutable output `Vec` and returns `Result<(), TrapInfo>`.
+  Pass an empty or cleared buffer to replace results, or retain contents to append. Traps
+  preserve existing contents. `run` remains the allocating convenience entry point.
+
 - Define `TraceSink::instr` as an instruction attempt; `next_pc` is its lexical end.
   Use the new `instr_end` callback for success/trap and the actual control-flow successor.
   Add a `TraceOutcome` argument to `scope_exit` implementations; scopes now close on traps
