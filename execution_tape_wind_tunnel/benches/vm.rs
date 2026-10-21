@@ -67,7 +67,7 @@ fn bench_run_memory(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let mut vm = Vm::new(NopHost, wide_open_limits());
-                    let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]);
+                    let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
                     (
                         vm,
                         ExecutionContext::new(),
