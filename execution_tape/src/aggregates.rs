@@ -107,7 +107,7 @@ impl core::error::Error for AggShapeError {
     }
 }
 
-fn aggregate_handle(value: &Value) -> Option<AggHandle> {
+pub(crate) fn aggregate_handle(value: &Value) -> Option<AggHandle> {
     match value {
         Value::Agg(handle) => Some(*handle),
         Value::Closure(closure) => Some(closure.env),
@@ -259,7 +259,7 @@ impl AggDelta {
     /// Returns [`AggError::UnresolvedStagedHandle`] if `roots` (or nested values in reachable
     /// staged nodes) contain a staged-domain handle that does not resolve to this delta.
     pub fn merge_into(self, base: &mut AggHeap, roots: &[Value]) -> Result<AggRemap, AggError> {
-        let reachable = self.reachable_staged_nodes(roots)?;
+        let reachable = reachable_nodes(&self.staged.nodes, self.base_len, roots)?;
         let remap = AggRemap::from_reachable(self.base_len, base.len_u32(), &reachable)?;
 
         // All validation ran above, before `base` is touched, so this append loop cannot fail
@@ -284,58 +284,48 @@ impl AggDelta {
 
         Ok(remap)
     }
+}
 
-    fn reachable_staged_nodes(&self, roots: &[Value]) -> Result<Vec<bool>, AggError> {
-        let mut reachable = vec![false; self.staged.nodes.len()];
-        let mut stack: Vec<usize> = Vec::new();
-
-        for root in roots {
-            self.mark_reachable(root, &mut reachable, &mut stack)?;
-        }
-
-        while let Some(idx) = stack.pop() {
-            let Some(node) = self.staged.nodes.get(idx) else {
-                continue;
-            };
-            for value in node.values() {
-                self.mark_reachable(value, &mut reachable, &mut stack)?;
-            }
-        }
-
-        Ok(reachable)
+/// Finds reachable nodes encoded relative to `base_len`, without visiting the retained base.
+fn reachable_nodes(
+    nodes: &[AggNode],
+    base_len: u32,
+    roots: &[Value],
+) -> Result<Vec<bool>, AggError> {
+    let mut reachable = vec![false; nodes.len()];
+    let mut stack = Vec::new();
+    for root in roots {
+        mark_reachable(root, base_len, &mut reachable, &mut stack)?;
     }
-
-    /// Marks the staged node referenced by `value` reachable (if any) and queues it.
-    ///
-    /// Base-domain handles (`< base_len`) are ignored; an out-of-range staged handle is a
-    /// malformed delta and is rejected here, before `merge_into` appends anything, keeping the
-    /// commit atomic.
-    fn mark_reachable(
-        &self,
-        value: &Value,
-        reachable: &mut [bool],
-        stack: &mut Vec<usize>,
-    ) -> Result<(), AggError> {
-        let handle = match value {
-            Value::Agg(handle) => *handle,
-            Value::Closure(closure) => closure.env,
-            _ => return Ok(()),
-        };
-        if handle.0 < self.base_len {
-            return Ok(());
+    while let Some(idx) = stack.pop() {
+        for value in nodes[idx].values() {
+            mark_reachable(value, base_len, &mut reachable, &mut stack)?;
         }
-
-        let local = handle.0 - self.base_len;
-        let idx = usize::try_from(local)
-            .ok()
-            .filter(|&idx| idx < self.staged.nodes.len())
-            .ok_or(AggError::UnresolvedStagedHandle)?;
-        if !reachable[idx] {
-            reachable[idx] = true;
-            stack.push(idx);
-        }
-        Ok(())
     }
+    Ok(reachable)
+}
+
+fn mark_reachable(
+    value: &Value,
+    base_len: u32,
+    reachable: &mut [bool],
+    stack: &mut Vec<usize>,
+) -> Result<(), AggError> {
+    let Some(handle) = aggregate_handle(value) else {
+        return Ok(());
+    };
+    if handle.0 < base_len {
+        return Ok(());
+    }
+    let idx = usize::try_from(handle.0 - base_len)
+        .ok()
+        .filter(|&idx| idx < reachable.len())
+        .ok_or(AggError::UnresolvedStagedHandle)?;
+    if !reachable[idx] {
+        reachable[idx] = true;
+        stack.push(idx);
+    }
+    Ok(())
 }
 
 /// Handle remapping produced by [`AggDelta::merge_into`].
@@ -654,6 +644,37 @@ impl AggHeap {
     /// Removes all aggregate nodes while preserving allocated capacity.
     pub fn clear(&mut self) {
         self.nodes.clear();
+    }
+
+    pub(crate) fn truncate(&mut self, len: u32) {
+        self.nodes.truncate(len as usize);
+    }
+
+    /// Compacts only the run-local suffix; retained nodes cannot refer to it.
+    pub(crate) fn retain_since(
+        &mut self,
+        base_len: u32,
+        roots: &mut [Value],
+    ) -> Result<(), AggError> {
+        let start = base_len as usize;
+        let reachable = reachable_nodes(&self.nodes[start..], base_len, roots)?;
+        if reachable.iter().all(|&live| live) {
+            return Ok(());
+        }
+        let remap = AggRemap::from_reachable(base_len, base_len, &reachable)?;
+        // Reachability validated every reachable edge and root before any mutation. Preserve
+        // staged-index order, sharing, and the heap's capacity without detaching the suffix.
+        let mut next = start;
+        for (local, live) in reachable.into_iter().enumerate() {
+            if live {
+                let current = start + local;
+                remap.remap_values_in_place(self.nodes[current].values_mut())?;
+                self.nodes.swap(next, current);
+                next += 1;
+            }
+        }
+        self.nodes.truncate(next);
+        remap.remap_values_in_place(roots)
     }
 
     /// Checks a concrete aggregate against a program's argument shape.

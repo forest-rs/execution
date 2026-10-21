@@ -540,6 +540,8 @@ impl<'a> ValueRef<'a> {
     /// Converts this borrowed view into an owned [`Value`].
     ///
     /// This allocates for bytes/strings and is mainly intended for tests and simple hosts.
+    /// Aggregate and closure-environment handles are copied without retaining their data; use
+    /// [`HostContext::retain`] for storage that must survive the host call.
     #[must_use]
     pub fn to_value(self) -> Value {
         match self {
@@ -597,6 +599,9 @@ pub trait Host {
     ///
     /// `rets` is pre-sized by the VM to match the declared return count and pre-filled with
     /// [`Value::Unit`]. The host must overwrite each slot with the correct return value.
+    /// Aggregate and closure-environment argument handles are borrowed for this call. Use
+    /// [`HostContext::retain`] to keep their data afterward. Returning a borrowed argument in
+    /// `rets` is supported; the VM retains it if it remains reachable from the run's outputs.
     ///
     /// If [`HostContext::access`] is present, the host should record any external reads and
     /// writes that are relevant for incremental execution.

@@ -342,6 +342,85 @@ impl From<ResourceKeyRef<'_>> for ResourceKey {
     }
 }
 
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use alloc::vec;
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::program::{AggShape, ValueType};
+
+    struct NoHost;
+    impl Host for NoHost {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            _: &[execution_tape::host::ValueRef<'_>],
+            _: &mut [Value],
+            _: execution_tape::host::HostContext<'_, '_>,
+        ) -> Result<u64, execution_tape::host::HostError> {
+            unreachable!("the test program has no host calls")
+        }
+    }
+
+    #[test]
+    fn cached_aggregate_output_survives_later_node_reclamation() {
+        let mut pb = ProgramBuilder::new();
+        let mut producer = Asm::new();
+        producer.tuple_new(2, &[1]);
+        producer.tuple_new(3, &[2]); // Unreachable wrapper.
+        producer.ret(0, &[2]);
+        let producer = pb
+            .push_function_checked(
+                producer,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::Agg],
+                },
+            )
+            .unwrap();
+        let mut reader = Asm::new();
+        reader.tuple_new(2, &[1]); // Unreachable wrapper around a retained input.
+        reader.tuple_get(3, 1, 0);
+        reader.ret(0, &[3]);
+        let reader = pb
+            .push_function_checked(
+                reader,
+                FunctionSig {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![ValueType::I64],
+                }
+                .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+            )
+            .unwrap();
+        let program = Arc::new(pb.build_verified().unwrap());
+        let mut graph = ExecutionGraph::new(TapeExecutor::new(NoHost, Limits::default()));
+        let a = graph
+            .add_tape_node(Arc::clone(&program), producer, vec!["x".into()])
+            .unwrap();
+        let b = graph
+            .add_tape_node(program, reader, vec!["tuple".into()])
+            .unwrap();
+        graph.set_input_value(a, "x", Value::I64(42)).unwrap();
+        graph.connect(a, "ret0", b, "tuple").unwrap();
+        assert_eq!(graph.run_all().unwrap().executed_nodes, 2);
+        let retained = graph.node_outputs(a).unwrap().get("ret0").cloned();
+        for _ in 0..3 {
+            graph.invalidate(ResourceKey::node_output(b, crate::OutputId::new(0)));
+            assert_eq!(graph.run_all().unwrap().executed_nodes, 1);
+            assert_eq!(
+                graph.node_outputs(a).unwrap().get("ret0"),
+                retained.as_ref()
+            );
+            assert_eq!(
+                graph.node_outputs(b).unwrap().get("ret0"),
+                Some(&Value::I64(42))
+            );
+            assert_eq!(graph.executor().vm.aggregates().len_u32(), 1);
+        }
+    }
+}
+
 /// Translates tape host access events into graph dependency recording.
 struct TapeAccessSink<'a, 'b> {
     access: &'a mut NodeAccess<'b, Value>,

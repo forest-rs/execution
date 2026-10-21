@@ -18,6 +18,7 @@ use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSourc
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
+use crate::program_memory::{Checkpoint, ProgramMemory};
 use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
@@ -343,8 +344,8 @@ pub struct Vm<H: Host> {
     host: H,
     limits: Limits,
 
-    /// Aggregate heap storage. This is VM-owned so embedders can inspect aggregates after a run.
-    agg: AggHeap,
+    /// Retained aggregates and temporary allocations from the active run.
+    memory: ProgramMemory,
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -805,7 +806,7 @@ impl<H: Host> Vm<H> {
         Self {
             host,
             limits,
-            agg: AggHeap::new(),
+            memory: ProgramMemory::new(),
         }
     }
 
@@ -822,6 +823,11 @@ impl<H: Host> Vm<H> {
     ///
     /// An incorrect entry argument count traps with [`Trap::ArityMismatch`]. An unknown entry
     /// function traps with [`Trap::InvalidPc`].
+    ///
+    /// Only new aggregates reachable from returned values survive a successful run. Traps
+    /// discard all aggregates allocated during the run. Previously retained values stay valid.
+    /// Host argument handles are borrowed for the call; use [`HostContext::retain`] for durable
+    /// host state. A returned dangling aggregate or closure environment traps at `ret`.
     pub fn run(
         &mut self,
         program: &VerifiedProgram,
@@ -863,6 +869,7 @@ impl<H: Host> Vm<H> {
         access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
         let original_len = outputs.len();
+        let checkpoint = self.memory.checkpoint();
         let program_ref = program.program();
         let mut trace = TraceCtx::new(trace_mask, trace);
         trace.run_start(program_ref, entry, args.len());
@@ -874,9 +881,13 @@ impl<H: Host> Vm<H> {
             || trace.enabled(TraceMask::HOST);
 
         let result = if trace_active {
-            self.run_body::<WithTracePolicy>(ctx, program, entry, args, outputs, &mut trace, access)
+            self.run_body::<WithTracePolicy>(
+                ctx, program, entry, args, outputs, checkpoint, &mut trace, access,
+            )
         } else {
-            self.run_body::<NoTracePolicy>(ctx, program, entry, args, outputs, &mut trace, access)
+            self.run_body::<NoTracePolicy>(
+                ctx, program, entry, args, outputs, checkpoint, &mut trace, access,
+            )
         };
 
         let outcome = match &result {
@@ -884,6 +895,7 @@ impl<H: Host> Vm<H> {
             Err(e) => TraceOutcome::Trap(e),
         };
         if result.is_err() {
+            self.memory.rollback(checkpoint);
             outputs.truncate(original_len);
         }
         trace.finish(program_ref, outcome);
@@ -899,9 +911,11 @@ impl<H: Host> Vm<H> {
         entry: FuncId,
         args: &[Value],
         outputs: &mut Vec<Value>,
+        checkpoint: Checkpoint,
         trace: &mut TraceCtx<'_>,
         mut access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
+        let output_start = outputs.len();
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
@@ -995,7 +1009,7 @@ impl<H: Host> Vm<H> {
             ctx.frames[frame_index].pc = next_pc;
             ctx.frames[frame_index].instr_ix = next_instr_ix;
 
-            let sources = ValueSources::new(program_ref, args, &self.agg);
+            let sources = ValueSources::new(program_ref, args, self.memory.aggs());
             match instr {
                 ExecInstr::Nop => {}
                 ExecInstr::Trap { code } => {
@@ -1730,6 +1744,11 @@ impl<H: Host> Vm<H> {
                                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
                         }
+                        self.memory
+                            .commit(checkpoint, &mut outputs[output_start..])
+                            .map_err(|error| {
+                                ctx.trap(func_id, pc, span_id, Trap::AggError(error))
+                            })?;
                         P::call_scope_exit(
                             trace,
                             program_ref,
@@ -1876,7 +1895,8 @@ impl<H: Host> Vm<H> {
                     let access_for_call = access
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
-                    let host_ctx = HostContext::new(program_ref, &self.agg, access_for_call);
+                    let host_ctx =
+                        HostContext::new(program_ref, self.memory.aggs(), access_for_call);
                     let extra_fuel = self
                         .host
                         .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx)
@@ -2104,17 +2124,18 @@ impl<H: Host> Vm<H> {
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
-                    let h = self
-                        .agg
-                        .tuple_new(vals)
-                        .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
+                    let h =
+                        self.memory.aggs_mut().tuple_new(vals).map_err(|error| {
+                            ctx.trap(func_id, pc, span_id, Trap::AggError(error))
+                        })?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::TupleGet { dst, tuple, index } => {
                     let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let out = self
-                        .agg
+                        .memory
+                        .aggs()
                         .tuple_get_ref(h, *index as usize)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_borrowed_value(
@@ -2157,7 +2178,8 @@ impl<H: Host> Vm<H> {
                         );
                     }
                     let h = self
-                        .agg
+                        .memory
+                        .aggs_mut()
                         .struct_new(*type_id, vals)
                         .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
@@ -2171,7 +2193,8 @@ impl<H: Host> Vm<H> {
                 } => {
                     let h = ctx.read_agg_handle(base, AggReg(st.0));
                     let out = self
-                        .agg
+                        .memory
+                        .aggs()
                         .struct_get_ref(h, *field_index as usize)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_borrowed_value(
@@ -2213,7 +2236,8 @@ impl<H: Host> Vm<H> {
                         );
                     }
                     let h = self
-                        .agg
+                        .memory
+                        .aggs_mut()
                         .array_new(*elem_type_id, vals)
                         .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
@@ -2223,7 +2247,8 @@ impl<H: Host> Vm<H> {
                 ExecInstr::ArrayLen { dst, arr } => {
                     let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let n = self
-                        .agg
+                        .memory
+                        .aggs()
                         .array_len(h)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
@@ -2234,7 +2259,8 @@ impl<H: Host> Vm<H> {
                     let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let ix = usize::try_from(ctx.read_u64(base, *index)).unwrap_or(usize::MAX);
                     let out = self
-                        .agg
+                        .memory
+                        .aggs()
                         .array_get_ref(h, ix)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_borrowed_value(
@@ -2254,7 +2280,8 @@ impl<H: Host> Vm<H> {
                     let h = ctx.read_agg_handle(base, AggReg(arr.0));
                     let ix = usize::try_from(*index).unwrap_or(usize::MAX);
                     let out = self
-                        .agg
+                        .memory
+                        .aggs()
                         .array_get_ref(h, ix)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_borrowed_value(
@@ -2273,7 +2300,8 @@ impl<H: Host> Vm<H> {
                 ExecInstr::TupleLen { dst, tuple } => {
                     let h = ctx.read_agg_handle(base, AggReg(tuple.0));
                     let n = self
-                        .agg
+                        .memory
+                        .aggs()
                         .tuple_len(h)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
@@ -2283,7 +2311,8 @@ impl<H: Host> Vm<H> {
                 ExecInstr::StructFieldCount { dst, st } => {
                     let h = ctx.read_agg_handle(base, AggReg(st.0));
                     let n = self
-                        .agg
+                        .memory
+                        .aggs()
                         .struct_field_count(h)
                         .map_err(|e| ctx.trap(func_id, pc, span_id, Trap::AggError(e)))?;
                     ctx.write_u64(base, *dst, u64::try_from(n).unwrap_or(u64::MAX));
@@ -2617,7 +2646,8 @@ impl<H: Host> Vm<H> {
     ) -> Result<(), Trap> {
         for &(reg, index) in &vf.arg_shape_checks {
             let contract = &program.function_arg_agg_shapes[index];
-            self.agg
+            self.memory
+                .aggs()
                 .check_shape(program, ctx.read_agg_handle(base, reg), &contract.shape)
                 .map_err(|error| Trap::ArgumentShapeMismatch {
                     callee,
@@ -2630,12 +2660,12 @@ impl<H: Host> Vm<H> {
 
     /// Returns a reference to the aggregate heap.
     pub fn aggregates(&self) -> &AggHeap {
-        &self.agg
+        self.memory.aggs()
     }
 
     /// Returns a mutable reference to the aggregate heap.
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {
-        &mut self.agg
+        self.memory.aggs_mut()
     }
 }
 
@@ -3615,6 +3645,325 @@ mod tests {
     }
 
     #[test]
+    fn temporary_aggregates_do_not_accumulate_across_returns_or_traps() {
+        for mode in ["scalar", "retained", "trap"] {
+            let mut pb = ProgramBuilder::new();
+            let mut body = Asm::new();
+            body.const_i64(2, 42);
+            for _ in 0..32 {
+                body.tuple_new(3, &[2]);
+            }
+            if mode == "trap" {
+                body.trap(7);
+            } else {
+                body.ret(0, &[if mode == "scalar" { 2 } else { 1 }]);
+            }
+            let entry = pb
+                .push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Agg],
+                        ret_types: vec![if mode == "scalar" {
+                            ValueType::I64
+                        } else {
+                            ValueType::Agg
+                        }],
+                    },
+                )
+                .unwrap();
+            let program = pb.build_verified().unwrap();
+            let mut vm = Vm::new(TestHost, Limits::default());
+            let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+            let mut ctx = ExecutionContext::new();
+            let mut outputs = vec![Value::Unit];
+            for _ in 0..100 {
+                outputs.truncate(1);
+                let result = vm.run_with_ctx(
+                    &mut ctx,
+                    &program,
+                    entry,
+                    &[Value::Agg(root)],
+                    &mut outputs,
+                    TraceMask::NONE,
+                    None,
+                    None,
+                );
+                assert_eq!(result.is_err(), mode == "trap");
+                assert_eq!(vm.aggregates().len_u32(), 1);
+                assert_eq!(vm.aggregates().tuple_get(root, 0), Ok(Value::I64(1)));
+                assert_eq!(outputs[0], Value::Unit);
+                match mode {
+                    "scalar" => assert_eq!(outputs[1..], [Value::I64(42)]),
+                    "retained" => assert_eq!(outputs[1..], [Value::Agg(root)]),
+                    _ => assert_eq!(outputs.len(), 1),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn returned_graphs_are_compacted_with_sharing_and_closure_environments() {
+        let mut pb = ProgramBuilder::new();
+        let mut target = Asm::new();
+        target.ret(0, &[]);
+        let target = pb
+            .push_function_checked(
+                target,
+                FunctionSig {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![],
+                },
+            )
+            .unwrap();
+        let text = pb.const_str("retained text");
+        let mut body = Asm::new();
+        body.const_pool(1, text);
+        body.tuple_new(2, &[1]); // Unreachable allocation before the environment.
+        body.tuple_new(3, &[1]);
+        body.const_func(4, target);
+        body.closure_new(5, 4, 3);
+        body.tuple_new(6, &[3, 5, 3]);
+        body.tuple_new(2, &[6]); // Unreachable allocation after the returned graph.
+        body.ret(0, &[6, 5]);
+        let entry = pb
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::Agg, ValueType::Closure],
+                },
+            )
+            .unwrap();
+        let mut passthrough = Asm::new();
+        passthrough.tuple_get(2, 1, 0);
+        passthrough.ret(0, &[2]);
+        let read = pb
+            .push_function_checked(
+                passthrough,
+                FunctionSig {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![ValueType::Agg],
+                }
+                .with_arg_agg_shape(
+                    0,
+                    AggShape::tuple(vec![
+                        Some(ValueType::Agg),
+                        Some(ValueType::Closure),
+                        Some(ValueType::Agg),
+                    ]),
+                ),
+            )
+            .unwrap();
+        let program = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let mut prior = Vec::new();
+        for run in 0..3 {
+            let outputs = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
+            assert_eq!(vm.aggregates().len_u32(), (run + 1) * 2);
+            let [Value::Agg(root), Value::Closure(closure)] = outputs[..] else {
+                panic!("unexpected returned graph");
+            };
+            assert_eq!(
+                vm.aggregates().tuple_get(root, 0),
+                Ok(Value::Agg(closure.env))
+            );
+            assert_eq!(
+                vm.aggregates().tuple_get(root, 1),
+                Ok(Value::Closure(closure))
+            );
+            assert_eq!(
+                vm.aggregates().tuple_get(root, 2),
+                Ok(Value::Agg(closure.env))
+            );
+            assert_eq!(closure.func, target);
+            assert_eq!(
+                vm.aggregates().tuple_get(closure.env, 0),
+                Ok(Value::Str("retained text".into()))
+            );
+            prior.push(root);
+            for &old_root in &prior {
+                assert_eq!(
+                    vm.run(
+                        &program,
+                        read,
+                        &[Value::Agg(old_root)],
+                        TraceMask::NONE,
+                        None
+                    )
+                    .unwrap(),
+                    [vm.aggregates().tuple_get(old_root, 0).unwrap()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dangling_return_traps_before_success_events_and_preserves_outputs() {
+        #[derive(Default)]
+        struct Ends {
+            instructions: Vec<bool>,
+            scopes: Vec<bool>,
+        }
+        impl TraceSink for Ends {
+            fn instr_end(
+                &mut self,
+                _: &Program,
+                _: TraceLocation,
+                _: Option<TraceLocation>,
+                outcome: TraceOutcome<'_>,
+            ) {
+                self.instructions.push(matches!(outcome, TraceOutcome::Ok));
+            }
+
+            fn scope_exit(
+                &mut self,
+                _: &Program,
+                _: ScopeKind,
+                _: usize,
+                _: FuncId,
+                _: u32,
+                _: Option<u64>,
+                outcome: TraceOutcome<'_>,
+            ) {
+                self.scopes.push(matches!(outcome, TraceOutcome::Ok));
+            }
+        }
+        for ty in [ValueType::Agg, ValueType::Closure] {
+            let mut pb = ProgramBuilder::new();
+            let mut body = Asm::new();
+            body.tuple_new(2, &[]);
+            body.ret(0, &[1]);
+            let entry = pb
+                .push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![ty],
+                        ret_types: vec![ty],
+                    },
+                )
+                .unwrap();
+            let program = pb.build_verified().unwrap();
+            let invalid = AggHandle(99);
+            let arg = if ty == ValueType::Agg {
+                Value::Agg(invalid)
+            } else {
+                Value::Closure(Closure {
+                    func: entry,
+                    env: invalid,
+                })
+            };
+            let mut vm = Vm::new(TestHost, Limits::default());
+            let mut outputs = vec![Value::I64(12)];
+            let mut ctx = ExecutionContext::new();
+            let mut ends = Ends::default();
+            let error = vm
+                .run_with_ctx(
+                    &mut ctx,
+                    &program,
+                    entry,
+                    &[arg],
+                    &mut outputs,
+                    TraceMask::INSTR | TraceMask::CALL,
+                    Some(&mut ends),
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error.trap, Trap::AggError(AggError::UnresolvedStagedHandle));
+            assert_eq!(outputs, [Value::I64(12)]);
+            assert_eq!(vm.aggregates().len_u32(), 0);
+            assert_eq!(ends.instructions, [true, false]);
+            assert_eq!(ends.scopes, [false]);
+            let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+            let valid = if ty == ValueType::Agg {
+                Value::Agg(env)
+            } else {
+                Value::Closure(Closure { func: entry, env })
+            };
+            vm.run_with_ctx(
+                &mut ctx,
+                &program,
+                entry,
+                core::slice::from_ref(&valid),
+                &mut outputs,
+                TraceMask::NONE,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(outputs, [Value::I64(12), valid]);
+            assert_eq!(vm.aggregates().len_u32(), 1);
+        }
+    }
+
+    #[test]
+    fn hosts_can_retain_borrowed_graphs_even_when_the_run_traps() {
+        #[derive(Default)]
+        struct RetainingHost {
+            retained: Vec<crate::aggregates::ValueSnapshot>,
+        }
+        impl Host for RetainingHost {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                args: &[ValueRef<'_>],
+                rets: &mut [Value],
+                ctx: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                self.retained
+                    .push(ctx.retain(args).map_err(|_| HostError::Failed)?);
+                rets[0] = args[0].to_value();
+                Ok(0)
+            }
+        }
+        for trap in [true, false] {
+            let mut pb = ProgramBuilder::new();
+            let sig = pb.host_sig_for(
+                "remember",
+                HostSig {
+                    args: vec![ValueType::Agg],
+                    rets: vec![ValueType::Agg],
+                },
+            );
+            let mut body = Asm::new();
+            body.const_i64(1, 42);
+            body.tuple_new(2, &[1]);
+            body.host_call_sig_id(0, sig, 0, &[2], &[3]);
+            if trap {
+                body.trap(7);
+            } else {
+                body.ret(0, &[3]);
+            }
+            let entry = pb
+                .push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ValueType::Agg],
+                    },
+                )
+                .unwrap();
+            let program = pb.build_verified().unwrap();
+            let mut vm = Vm::new(RetainingHost::default(), Limits::default());
+            let result = vm.run(&program, entry, &[], TraceMask::NONE, None);
+            assert_eq!(result.is_err(), trap);
+            assert_eq!(vm.aggregates().len_u32(), u32::from(!trap));
+            if let Ok(outputs) = result {
+                let [Value::Agg(root)] = outputs[..] else {
+                    panic!("expected retained host return");
+                };
+                assert_eq!(vm.aggregates().tuple_get(root, 0), Ok(Value::I64(42)));
+            }
+            vm.aggregates_mut().clear();
+            let values = vm.memory.aggs_mut().import(&vm.host.retained[0]).unwrap();
+            let [Value::Agg(root)] = values[..] else {
+                panic!("expected imported retained argument");
+            };
+            assert_eq!(vm.aggregates().tuple_get(root, 0), Ok(Value::I64(42)));
+        }
+    }
+
+    #[test]
     fn reusable_results_append_preserve_on_traps_and_outlive_context_reset() {
         let mut pb = ProgramBuilder::new();
         let mut body = Asm::new();
@@ -4386,10 +4735,11 @@ mod tests {
 
         let closure = Closure {
             func: FuncId(123),
-            env: AggHandle(456),
+            env: AggHandle(0),
         };
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -4933,10 +5283,11 @@ mod tests {
 
         let closure = Closure {
             func: FuncId(42),
-            env: AggHandle(7),
+            env: AggHandle(0),
         };
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -4970,15 +5321,17 @@ mod tests {
 
         let closure_a = Closure {
             func: FuncId(10),
-            env: AggHandle(100),
+            env: AggHandle(0),
         };
         let closure_b = Closure {
             func: FuncId(20),
-            env: AggHandle(200),
+            env: AggHandle(1),
         };
 
         // cond=true → selects r2 (closure_a)
         let mut vm = Vm::new(TestHost, Limits::default());
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -4996,6 +5349,8 @@ mod tests {
 
         // cond=false → selects r3 (closure_b)
         let mut vm = Vm::new(TestHost, Limits::default());
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
