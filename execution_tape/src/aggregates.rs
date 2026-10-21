@@ -6,6 +6,7 @@
 //! v1 aggregates are immutable, acyclic, and structural.
 //! They are stored out-of-line in an arena owned by the VM/runtime.
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -156,6 +157,31 @@ impl AggNode {
 #[derive(Clone, Debug, Default)]
 pub struct AggHeap {
     nodes: Vec<AggNode>,
+}
+
+/// Owned values and their reachable aggregate graph, independent of the source heap.
+///
+/// Snapshots retain exact byte/string contents and sharing between aggregate references.
+/// Host objects remain host-owned handles; function IDs still refer to their original program.
+/// Import into a destination heap before passing snapshot aggregate handles to that VM.
+#[derive(Clone, Debug)]
+pub struct ValueSnapshot {
+    values: Vec<Value>,
+    aggregates: AggHeap,
+}
+
+impl ValueSnapshot {
+    /// Returns the snapshot roots, whose aggregate handles refer to [`Self::aggregates`].
+    #[must_use]
+    pub fn values(&self) -> &[Value] {
+        &self.values
+    }
+
+    /// Returns the immutable aggregate storage owned by this snapshot.
+    #[must_use]
+    pub fn aggregates(&self) -> &AggHeap {
+        &self.aggregates
+    }
 }
 
 /// Base+staged aggregate view used by staged execution.
@@ -543,6 +569,80 @@ impl AggHeap {
         Self { nodes: Vec::new() }
     }
 
+    /// Copies roots and their reachable aggregate graph into an independent owned snapshot.
+    ///
+    /// Visits only reachable nodes, preserves sharing and distinct node identity, and rejects
+    /// dangling handles. Plain byte/string roots are copied. Unreachable heap data is not copied.
+    pub fn snapshot(&self, values: &[Value]) -> Result<ValueSnapshot, AggError> {
+        self.snapshot_owned(values.to_vec())
+    }
+
+    pub(crate) fn snapshot_owned(&self, mut values: Vec<Value>) -> Result<ValueSnapshot, AggError> {
+        let mut aggregates = Self::new();
+        self.copy_roots_into(&mut aggregates, &mut values)?;
+        Ok(ValueSnapshot { values, aggregates })
+    }
+
+    /// Imports a snapshot, returning roots whose aggregate handles belong to this heap.
+    ///
+    /// Import copies reachable contents and preserves sharing. The heap is unchanged on error.
+    pub fn import(&mut self, snapshot: &ValueSnapshot) -> Result<Vec<Value>, AggError> {
+        let mut values = snapshot.values.clone();
+        snapshot.aggregates.copy_roots_into(self, &mut values)?;
+        Ok(values)
+    }
+
+    fn copy_roots_into(&self, target: &mut Self, roots: &mut [Value]) -> Result<(), AggError> {
+        let base_len = target.len_u32();
+        let mut indices = BTreeMap::new();
+        let mut pending = Vec::new();
+        let remap = |value: &mut Value,
+                     indices: &mut BTreeMap<u32, u32>,
+                     pending: &mut Vec<u32>|
+         -> Result<(), AggError> {
+            let handle = match value {
+                Value::Agg(h) => h,
+                Value::Closure(c) => &mut c.env,
+                _ => return Ok(()),
+            };
+            self.node(*handle)?;
+            let next = u32::try_from(indices.len()).map_err(|_| AggError::HandleOverflow)?;
+            let mapped = match indices.entry(handle.0) {
+                alloc::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+                alloc::collections::btree_map::Entry::Vacant(entry) => {
+                    // Leave the final count representable by the heap's u32 length.
+                    base_len
+                        .checked_add(next)
+                        .and_then(|x| x.checked_add(1))
+                        .ok_or(AggError::HandleOverflow)?;
+                    pending.push(handle.0);
+                    *entry.insert(base_len + next)
+                }
+            };
+            *handle = AggHandle(mapped);
+            Ok(())
+        };
+        for root in roots.iter_mut() {
+            remap(root, &mut indices, &mut pending)?;
+        }
+        let mut nodes = Vec::new();
+        let mut cursor = 0;
+        while cursor < pending.len() {
+            let mut node = self.node(AggHandle(pending[cursor]))?.clone();
+            for value in node.values_mut() {
+                remap(value, &mut indices, &mut pending)?;
+            }
+            nodes.push(node);
+            cursor += 1;
+        }
+        let delta = AggDelta {
+            base_len,
+            staged: Self { nodes },
+        };
+        let remap = delta.merge_into(target, roots)?;
+        remap.remap_values_in_place(roots)
+    }
+
     /// Returns the current heap length as `u32`.
     ///
     /// This mirrors the handle index domain used by [`AggHandle`].
@@ -828,6 +928,93 @@ mod tests {
             build(&mut overlay)
         };
         (delta, result)
+    }
+
+    #[test]
+    fn snapshots_preserve_sharing_identity_and_contents_across_heaps() {
+        let mut source = AggHeap::new();
+        let child = source
+            .tuple_new(vec![Value::Bytes(vec![1, 2]), Value::Str("é".into())])
+            .unwrap();
+        let equal_distinct = source
+            .tuple_new(vec![Value::Bytes(vec![1, 2]), Value::Str("é".into())])
+            .unwrap();
+        source.tuple_new(vec![Value::I64(999)]).unwrap();
+        let root = source
+            .tuple_new(vec![
+                Value::Agg(child),
+                Value::Agg(child),
+                Value::Agg(equal_distinct),
+                Value::Closure(Closure {
+                    func: FuncId(42),
+                    env: child,
+                }),
+            ])
+            .unwrap();
+        let bits = 0x7ff8_0000_0000_0123;
+        let snapshot = source
+            .snapshot(&[Value::Agg(root), Value::F64(f64::from_bits(bits))])
+            .unwrap();
+        source.clear();
+        assert_eq!(snapshot.aggregates().len_u32(), 3);
+        let Value::Agg(root) = snapshot.values()[0] else {
+            unreachable!()
+        };
+        let first = snapshot.aggregates().tuple_get(root, 0).unwrap();
+        assert_eq!(first, snapshot.aggregates().tuple_get(root, 1).unwrap());
+        assert_ne!(first, snapshot.aggregates().tuple_get(root, 2).unwrap());
+        let Value::Agg(first) = first else {
+            unreachable!()
+        };
+        assert_eq!(
+            snapshot.aggregates().tuple_get(first, 1),
+            Ok(Value::Str("é".into()))
+        );
+        assert_eq!(
+            snapshot.aggregates().tuple_get(root, 3),
+            Ok(Value::Closure(Closure {
+                func: FuncId(42),
+                env: first
+            }))
+        );
+        let mut target = AggHeap::new();
+        let prior = target.tuple_new(vec![Value::Bool(true)]).unwrap();
+        let imported = target.import(&snapshot).unwrap();
+        assert_eq!(target.len_u32(), 4);
+        assert_eq!(target.tuple_get(prior, 0), Ok(Value::Bool(true)));
+        let Value::F64(f) = imported[1] else {
+            unreachable!()
+        };
+        assert_eq!(f.to_bits(), bits);
+        let Value::Agg(root) = imported[0] else {
+            unreachable!()
+        };
+        assert_eq!(target.tuple_get(root, 0), target.tuple_get(root, 1));
+        assert_ne!(target.tuple_get(root, 0), target.tuple_get(root, 2));
+    }
+
+    #[test]
+    fn snapshot_import_rejects_bad_handles_without_mutating_the_destination() {
+        let invalid = ValueSnapshot {
+            values: vec![Value::Agg(AggHandle(9))],
+            aggregates: AggHeap::new(),
+        };
+        let mut target = AggHeap::new();
+        let old = target.tuple_new(vec![Value::I64(42)]).unwrap();
+        assert_eq!(target.import(&invalid), Err(AggError::BadHandle));
+        assert_eq!(target.len_u32(), 1);
+        assert_eq!(target.tuple_get(old, 0), Ok(Value::I64(42)));
+    }
+
+    #[test]
+    fn snapshot_traversal_is_iterative_for_deep_graphs() {
+        let mut heap = AggHeap::new();
+        let mut root = heap.tuple_new(vec![]).unwrap();
+        for _ in 0..10_000 {
+            root = heap.tuple_new(vec![Value::Agg(root)]).unwrap();
+        }
+        let snapshot = heap.snapshot(&[Value::Agg(root)]).unwrap();
+        assert_eq!(snapshot.aggregates().len_u32(), 10_001);
     }
 
     #[test]
