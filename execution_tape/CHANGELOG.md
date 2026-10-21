@@ -48,6 +48,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Run the disassembler example with `cargo run -p execution_tape_wind_tunnel --bin disasm`.
+  Examples now live in the separate tool crate, keeping the core crate focused on the library. ([#138][] by [@waywardmonkeys][])
+
 - The draft bytecode adds `Block`, `JmpArgs`, and `BrArgs`; older readers reject these opcodes.
   Existing label-only branches remain supported. Exhaustive opcode, operand codec/schema,
   disassembly operand, and `VerifyError` matches must handle the new variants. Block failures
@@ -133,6 +136,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#135]: https://github.com/forest-rs/execution/pull/135
 [#136]: https://github.com/forest-rs/execution/pull/136
 [#137]: https://github.com/forest-rs/execution/pull/137
+[#138]: https://github.com/forest-rs/execution/pull/138
 
 [#93]: https://github.com/forest-rs/execution/pull/93
 [#105]: https://github.com/forest-rs/execution/pull/105
