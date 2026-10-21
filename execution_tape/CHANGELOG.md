@@ -32,6 +32,11 @@ This release has an [MSRV][] of 1.88.
   with `AggHeap::import` for moving retained data into another heap. Snapshots copy only
   reachable aggregate data and preserve sharing. Host objects and function IDs keep their domains.
 
+- Inspect prepared functions through `VerifiedProgram::function` and `functions`, with borrowed
+  signatures, aggregate contracts, instruction locations, register-bank requirements, and
+  function-local buffer sizes. No bytecode decoding or allocation is needed. The wind-tunnel
+  `inspect_prepared` tool prints a summary and optional instruction detail from an encoded file.
+
 ### Changed
 
 - Share allocation-free register operand iteration between verification and disassembly.

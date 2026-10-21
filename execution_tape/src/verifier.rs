@@ -7,8 +7,10 @@
 //! bounds and consistency, control flow, initialization, and types, then lowers bytecode to typed
 //! execution artifacts. The `_with_lints` entry points additionally run liveness-based diagnostics.
 
+mod inspection;
 mod metadata;
 
+pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
 
 use alloc::vec;
@@ -127,6 +129,31 @@ impl VerifiedProgram {
     #[must_use]
     pub fn program(&self) -> &Program {
         &self.program
+    }
+
+    /// Borrows the prepared execution facts for `func`, or returns `None` for an unknown id.
+    /// No bytecode decoding or allocation is needed.
+    #[must_use]
+    pub fn function(&self, func: FuncId) -> Option<VerifiedFunction<'_>> {
+        Some(VerifiedFunction {
+            program: self,
+            id: func,
+            definition: self.program.functions.get(func.0 as usize)?,
+            executable: self.verified(func)?,
+        })
+    }
+
+    /// Iterates prepared functions in function-id order without allocation or decoding.
+    pub fn functions(&self) -> impl ExactSizeIterator<Item = VerifiedFunction<'_>> + '_ {
+        self.verified_functions
+            .iter()
+            .enumerate()
+            .map(|(index, executable)| VerifiedFunction {
+                program: self,
+                id: FuncId(u32::try_from(index).expect("verified function index")),
+                definition: &self.program.functions[index],
+                executable,
+            })
     }
 
     #[must_use]

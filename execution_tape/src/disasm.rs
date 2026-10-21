@@ -45,9 +45,9 @@ pub fn disassemble(program: &Program) -> Disassembly<'_> {
 
 /// Disassembles a [`VerifiedProgram`].
 ///
-/// Currently this uses the underlying [`Program`] bytecode; verifier-enriched disassembly (e.g.
-/// spans, block boundaries, typed registers) can be layered on later without changing the basic
-/// output model.
+/// This decodes the underlying [`Program`] bytecode to show source virtual-register operands.
+/// For prepared instruction locations, register-bank requirements, and aggregate contracts, use
+/// [`VerifiedProgram::function`] or [`VerifiedProgram::functions`] without decoding bytecode.
 #[must_use]
 pub fn disassemble_verified(program: &VerifiedProgram) -> Disassembly<'_> {
     disassemble(program.program())

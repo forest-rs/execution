@@ -131,6 +131,27 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 - Resource bounds: max call depth and optional max blocks/instructions.
 - Structural constraints: aggregate graphs are acyclic (enforced by construction or validated when deserializing aggregates).
 
+## Prepared-program inspection
+
+`VerifiedProgram::function(FuncId)` borrows one prepared function; `functions()` visits all
+functions in ID order. These views expose signatures, aggregate argument contracts, instruction
+locations/spans, register-bank requirements, and buffer sizes without decoding bytecode or
+allocating inspection records. Unknown function IDs return `None`.
+
+`FunctionStats` distinguishes used prepared-buffer bytes from reserved capacity. Its register
+bytes cover bank elements for one frame, with bytes/strings represented by handles. Counts use
+the current build's layout and exclude payloads, aggregate data, frame bookkeeping, source
+program storage, shared signature caches, and allocator overhead. They are not total heap or RSS
+measurements. Instructions include unreachable code; `next_pc` is the lexical end, not a branch's
+runtime successor.
+
+The wind-tunnel tool prints tab-separated per-function statistics. Supply an optional function ID
+for its signature, aggregate contracts, and prepared instruction locations:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et 0
+```
+
 ## Extension points (v2+)
 - Effect lanes (multiple tokens), plus rules for merging at control-flow joins.
 - Host-type capabilities (per-type eq/hash/serialization) and/or inline extern values.
