@@ -13,7 +13,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::aggregates::{AggError, AggHeap};
+use crate::aggregates::{AggError, AggHeap, AggShapeError};
 use crate::arena::{BytesHandle, StrHandle, ValueArena};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
@@ -71,6 +71,15 @@ pub enum Trap {
     },
     /// Aggregate heap error.
     AggError(AggError),
+    /// A concrete argument failed the callee's aggregate shape contract.
+    ArgumentShapeMismatch {
+        /// Function whose argument contract was checked.
+        callee: FuncId,
+        /// Zero-based value argument index, including a closure's environment argument.
+        arg: u32,
+        /// Concrete shape validation failure.
+        error: AggShapeError,
+    },
     /// A type id immediate was out of bounds.
     TypeIdOutOfBounds,
     /// An element type id immediate was out of bounds.
@@ -128,6 +137,9 @@ impl fmt::Display for Trap {
                 write!(f, "type mismatch (expected {expected:?}, got {actual:?})")
             }
             Self::AggError(e) => write!(f, "aggregate error: {e}"),
+            Self::ArgumentShapeMismatch { callee, arg, error } => {
+                write!(f, "function {} argument {arg}: {error}", callee.0)
+            }
             Self::TypeIdOutOfBounds => write!(f, "type id out of bounds"),
             Self::ElemTypeIdOutOfBounds => write!(f, "elem type id out of bounds"),
             Self::ArityMismatch => write!(f, "arity mismatch"),
@@ -816,6 +828,8 @@ impl<H: Host> Vm<H> {
         let entry_base = ctx.alloc_frame(entry_vf);
         ctx.init_args(entry_base, entry_vf, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
+        self.check_arg_shapes(ctx, program_ref, entry, entry_vf, entry_base)
+            .map_err(|t| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), t))?;
         ctx.frames.push(Frame {
             func: entry,
             pc: 0,
@@ -1609,6 +1623,9 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
+                    self.check_arg_shapes(ctx, program_ref, *callee, callee_vf, callee_base)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+
                     ctx.frames.push(Frame {
                         func: *callee,
                         pc: 0,
@@ -1877,6 +1894,9 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
+                    self.check_arg_shapes(ctx, program_ref, callee_func, callee_vf, callee_base)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+
                     ctx.frames.push(Frame {
                         func: callee_func,
                         pc: 0,
@@ -1954,6 +1974,9 @@ impl<H: Host> Vm<H> {
                         ctx.copy_vreg(base, src, callee_base, dst)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
+
+                    self.check_arg_shapes(ctx, program_ref, callee.func, callee_vf, callee_base)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     ctx.frames.push(Frame {
                         func: callee.func,
@@ -2450,6 +2473,27 @@ impl<H: Host> Vm<H> {
                 }
             }
         }
+    }
+
+    fn check_arg_shapes(
+        &self,
+        ctx: &ExecutionContext,
+        program: &Program,
+        callee: FuncId,
+        vf: &ExecFunc,
+        base: RegBase,
+    ) -> Result<(), Trap> {
+        for &(reg, index) in &vf.arg_shape_checks {
+            let contract = &program.function_arg_agg_shapes[index];
+            self.agg
+                .check_shape(program, ctx.read_agg_handle(base, reg), &contract.shape)
+                .map_err(|error| Trap::ArgumentShapeMismatch {
+                    callee,
+                    arg: contract.arg,
+                    error,
+                })?;
+        }
+        Ok(())
     }
 
     /// Returns a reference to the aggregate heap.
@@ -3134,6 +3178,92 @@ mod tests {
     use alloc::format;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    #[test]
+    fn aggregate_contracts_are_checked_before_entry_and_every_call_kind() {
+        for mode in 0..4 {
+            let mut pb = ProgramBuilder::new();
+            let mut body = Asm::new();
+            body.tuple_get(2, 1, 0);
+            body.ret(0, &[2]);
+            let target = pb
+                .push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Agg],
+                        ret_types: vec![ValueType::I64],
+                    }
+                    .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+                )
+                .unwrap();
+            let entry = if mode == 0 {
+                target
+            } else {
+                let mut caller = Asm::new();
+                match mode {
+                    1 => {
+                        caller.call(0, target, 0, &[1], &[4]);
+                    }
+                    2 => {
+                        let sig = pb.call_sig(&[ValueType::Agg], &[ValueType::I64]);
+                        caller.const_func(2, target);
+                        caller.call_indirect(0, sig, 2, 0, &[1], &[4]);
+                    }
+                    _ => {
+                        let sig = pb.call_sig(&[], &[ValueType::I64]);
+                        caller.const_func(2, target);
+                        caller.closure_new(3, 2, 1);
+                        caller.call_indirect(0, sig, 3, 0, &[], &[4]);
+                    }
+                }
+                caller.ret(0, &[4]);
+                pb.push_function_checked(
+                    caller,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Agg],
+                        ret_types: vec![ValueType::I64],
+                    },
+                )
+                .unwrap()
+            };
+            let p = pb.build_verified().unwrap();
+            let mut vm = Vm::new(TestHost, Limits::default());
+            let wrong = vm.aggregates_mut().tuple_new(vec![Value::Bool(true)]);
+            let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]);
+            let mut ctx = ExecutionContext::new();
+            for handle in [wrong, AggHandle(u32::MAX)] {
+                let e = vm
+                    .run_with_ctx(
+                        &mut ctx,
+                        &p,
+                        entry,
+                        &[Value::Agg(handle)],
+                        TraceMask::NONE,
+                        None,
+                        None,
+                    )
+                    .unwrap_err();
+                assert_eq!(e.func, entry);
+                assert!(
+                    matches!(e.trap, Trap::ArgumentShapeMismatch { callee, arg: 0, .. } if callee == target),
+                    "mode={mode}: {e:?}"
+                );
+            }
+            assert_eq!(
+                vm.run_with_ctx(
+                    &mut ctx,
+                    &p,
+                    entry,
+                    &[Value::Agg(good)],
+                    TraceMask::NONE,
+                    None,
+                    None
+                )
+                .unwrap(),
+                vec![Value::I64(42)]
+            );
+        }
+    }
 
     struct TestHost;
 

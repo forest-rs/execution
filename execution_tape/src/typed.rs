@@ -820,6 +820,8 @@ pub(crate) enum ExecInstr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExecFunc {
+    /// Aggregate register and source contract index, prepared once for argument checks.
+    pub(crate) arg_shape_checks: Vec<(AggReg, usize)>,
     pub(crate) byte_len: u32,
     pub(crate) reg_layout: RegLayout,
     pub(crate) operands: Vec<VReg>,

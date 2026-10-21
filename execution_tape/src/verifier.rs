@@ -2692,11 +2692,24 @@ fn verify_function_bytecode(
             instr: vi,
         });
     }
+    let arg_shape_checks = program
+        .function_arg_agg_shapes
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.func == func_id)
+        .map(|(index, e)| {
+            let VReg::Agg(reg) = reg_layout.arg_regs[e.arg as usize] else {
+                unreachable!("validated aggregate argument")
+            };
+            (reg, index)
+        })
+        .collect();
     drop(reg_map);
     let span_by_instr_ix = build_span_by_instr_ix(decoded, spans);
 
     Ok(ExecFuncContainer {
         exec: ExecFunc {
+            arg_shape_checks,
             byte_len,
             reg_layout,
             operands,
