@@ -7,8 +7,10 @@
 //! bounds and consistency, control flow, initialization, and types, then lowers bytecode to typed
 //! execution artifacts. The `_with_lints` entry points additionally run liveness-based diagnostics.
 
+mod blocks;
 mod inspection;
 mod metadata;
+pub use blocks::{BlockDeclarationError, BlockEdgeError};
 
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
@@ -195,6 +197,28 @@ impl VerifiedProgram {
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
+    /// A typed block declaration is invalid.
+    BlockDeclaration {
+        /// Function index.
+        func: u32,
+        /// Header byte offset.
+        pc: u32,
+        /// Invalid declaration component.
+        error: BlockDeclarationError,
+    },
+    /// A source edge does not satisfy its target's block contract.
+    BlockEdge {
+        /// Function index.
+        func: u32,
+        /// Source branch byte offset.
+        pc: u32,
+        /// Zero for jump/true; one for false.
+        arm: usize,
+        /// Source target header byte offset.
+        target: u32,
+        /// Failed contract component.
+        error: BlockEdgeError,
+    },
     /// Immutable program metadata is malformed, including entries unused by bytecode.
     InvalidMetadata {
         /// Table containing the invalid entry.
@@ -707,6 +731,19 @@ pub enum InvalidJumpTargetReason {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BlockDeclaration { func, pc, error } => {
+                write!(f, "invalid block: function {func} pc={pc}: {error:?}")
+            }
+            Self::BlockEdge {
+                func,
+                pc,
+                arm,
+                target,
+                error,
+            } => write!(
+                f,
+                "invalid block edge: function {func} pc={pc} arm={arm} target={target}: {error:?}"
+            ),
             Self::InvalidMetadata {
                 table,
                 entry,
@@ -1599,8 +1636,12 @@ fn verify_span_table(bytecode_len: u64, spans: &[SpanEntry]) -> Result<(), ()> {
     Ok(())
 }
 
-fn build_span_by_instr_ix(decoded: &[DecodedInstr], spans: &[SpanEntry]) -> Vec<Option<SpanId>> {
-    let mut by_ix: Vec<Option<SpanId>> = Vec::with_capacity(decoded.len());
+fn build_span_by_instr_ix(
+    decoded: &[DecodedInstr],
+    spans: &[SpanEntry],
+    executable_count: usize,
+) -> Vec<Option<SpanId>> {
+    let mut by_ix: Vec<Option<SpanId>> = Vec::with_capacity(executable_count);
     let mut span_ix: usize = 0;
     let mut span_pc: u64 = 0;
     let mut cur_span: Option<SpanId> = None;
@@ -1616,7 +1657,9 @@ fn build_span_by_instr_ix(decoded: &[DecodedInstr], spans: &[SpanEntry]) -> Vec<
             cur_span = Some(s.span_id);
             span_ix += 1;
         }
-        by_ix.push(cur_span);
+        if !matches!(di.instr, Instr::Block { .. }) {
+            by_ix.push(cur_span);
+        }
     }
 
     by_ix
@@ -1641,6 +1684,10 @@ fn verify_function_bytecode(
         return Err(VerifyError::ArgCountExceedsRegs { func: func_id });
     }
 
+    blocks::validate_structure(func_id, func.reg_count, decoded)?;
+    let has_blocks = decoded
+        .iter()
+        .any(|di| matches!(di.instr, Instr::Block { .. }));
     let boundaries = cfg::compute_boundaries(bytecode.len(), decoded);
 
     // Build CFG blocks and reachability.
@@ -1707,6 +1754,9 @@ fn verify_function_bytecode(
             continue;
         }
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
+            if has_blocks {
+                blocks::validate_initialized(func_id, di.offset, &di.instr, &state, decoded)?;
+            }
             validate_instr_reads_writes(program, func_id, di.offset, &di.instr, &mut state, func)?;
         }
         debug_assert_eq!(state, out_sets[b_idx], "must-init OUT mismatch");
@@ -1730,6 +1780,9 @@ fn verify_function_bytecode(
         }
         state.clone_from(&type_in[b_idx]);
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
+            if has_blocks {
+                blocks::validate_types(func_id, di.offset, &di.instr, &state, decoded)?;
+            }
             validate_instr_types(program, func_id, di.offset, &di.instr, &state, ret_types)?;
             transfer_types(program, &di.instr, &mut state);
         }
@@ -1897,7 +1950,20 @@ fn verify_function_bytecode(
             .unwrap_or(VReg::Unit(UnitReg(0)));
         arg_regs.push(r);
     }
-    let reg_layout = RegLayout { counts, arg_regs };
+    let mut reg_layout = RegLayout { counts, arg_regs };
+    let mut source_to_exec = Vec::new();
+    let mut execution_count = decoded.len();
+    if has_blocks {
+        source_to_exec.reserve(decoded.len());
+        let mut exec_ix = 0_u32;
+        for di in decoded {
+            source_to_exec.push(exec_ix);
+            if !matches!(di.instr, Instr::Block { .. }) {
+                exec_ix += 1;
+            }
+        }
+        execution_count = exec_ix as usize;
+    }
 
     let map_pc_to_ix = |src_pc: u32, target_pc: u32| -> Result<u32, VerifyError> {
         let ix = decoded
@@ -1915,12 +1981,20 @@ fn verify_function_bytecode(
                     reason,
                 }
             })?;
-        u32::try_from(ix).map_err(|_| VerifyError::BytecodeDecode { func: func_id })
+        Ok(source_to_exec
+            .get(ix)
+            .copied()
+            .unwrap_or(u32::try_from(ix).expect("instruction index bounded by bytecode length")))
     };
 
     let mut operands: Vec<VReg> = Vec::new();
-    let mut execution_instrs: Vec<ExecDecoded> = Vec::with_capacity(decoded.len());
-    for di in decoded {
+    let mut execution_instrs: Vec<ExecDecoded> = Vec::with_capacity(execution_count);
+    let mut scratch_regs = Vec::new();
+    let mut copy_schedule = blocks::CopyScheduler::default();
+    for (source_ix, di) in decoded.iter().enumerate() {
+        if matches!(di.instr, Instr::Block { .. }) {
+            continue;
+        }
         let pc = di.offset;
         let map = |reg: u32| -> Result<VReg, VerifyError> {
             reg_map
@@ -2016,6 +2090,7 @@ fn verify_function_bytecode(
         };
 
         let vi = match &di.instr {
+            Instr::Block { .. } => unreachable!("declarations have no execution step"),
             Instr::Nop => ExecInstr::Nop,
             Instr::Trap { code } => ExecInstr::Trap { code: *code },
 
@@ -2470,14 +2545,60 @@ fn verify_function_bytecode(
                 pc_true,
                 pc_false,
             } => ExecInstr::Br {
+                true_copies: VRegSlice { start: 0, len: 0 },
+                false_copies: VRegSlice { start: 0, len: 0 },
                 cond: map_bool(*cond)?,
                 true_ix: map_pc_to_ix(pc, *pc_true)?,
                 false_ix: map_pc_to_ix(pc, *pc_false)?,
             },
             Instr::Jmp { pc_target } => ExecInstr::Jmp {
+                copies: VRegSlice { start: 0, len: 0 },
                 target_ix: map_pc_to_ix(pc, *pc_target)?,
             },
 
+            Instr::JmpArgs { pc_target, args } => {
+                let params =
+                    blocks::declaration(decoded, *pc_target).map_or(&[][..], |(params, _)| params);
+                copy_schedule.clear();
+                for (&dst, &src) in params.iter().zip(args) {
+                    copy_schedule.push(map(dst)?, map(src)?);
+                }
+                let copies =
+                    copy_schedule.lower(&mut operands, &mut reg_layout.counts, &mut scratch_regs);
+                ExecInstr::Jmp {
+                    target_ix: map_pc_to_ix(pc, *pc_target)?,
+                    copies,
+                }
+            }
+            Instr::BrArgs {
+                cond,
+                pc_true,
+                pc_false,
+                true_arg_count,
+                args,
+            } => {
+                let (t, f) = args.split_at(*true_arg_count as usize);
+                let mut lower_edge = |target, args: &[u32]| -> Result<VRegSlice, VerifyError> {
+                    let params =
+                        blocks::declaration(decoded, target).map_or(&[][..], |(params, _)| params);
+                    copy_schedule.clear();
+                    for (&dst, &src) in params.iter().zip(args) {
+                        copy_schedule.push(map(dst)?, map(src)?);
+                    }
+                    Ok(copy_schedule.lower(
+                        &mut operands,
+                        &mut reg_layout.counts,
+                        &mut scratch_regs,
+                    ))
+                };
+                ExecInstr::Br {
+                    cond: map_bool(*cond)?,
+                    true_ix: map_pc_to_ix(pc, *pc_true)?,
+                    false_ix: map_pc_to_ix(pc, *pc_false)?,
+                    true_copies: lower_edge(*pc_true, t)?,
+                    false_copies: lower_edge(*pc_false, f)?,
+                }
+            }
             Instr::Call {
                 eff_out,
                 func_id: callee,
@@ -2737,7 +2858,9 @@ fn verify_function_bytecode(
 
         execution_instrs.push(ExecDecoded {
             offset: di.offset,
-            opcode: di.opcode,
+            end: decoded
+                .get(source_ix + 1)
+                .map_or(byte_len, |next| next.offset),
             instr: vi,
         });
     }
@@ -2754,7 +2877,7 @@ fn verify_function_bytecode(
         })
         .collect();
     drop(reg_map);
-    let span_by_instr_ix = build_span_by_instr_ix(decoded, spans);
+    let span_by_instr_ix = build_span_by_instr_ix(decoded, spans, execution_count);
 
     Ok(ExecFuncContainer {
         exec: ExecFunc {
@@ -3282,8 +3405,20 @@ fn transfer_types(program: &Program, instr: &Instr, state: &mut TypeState) {
         Instr::Nop
         | Instr::Trap { .. }
         | Instr::Jmp { .. }
+        | Instr::JmpArgs { .. }
+        | Instr::BrArgs { .. }
         | Instr::Br { .. }
         | Instr::Ret { .. } => {}
+        Instr::Block { params, types } => {
+            for (&reg, &ty) in params.iter().zip(types) {
+                if let Some(slot) = state.values.get_mut(reg as usize) {
+                    *slot = Some(RegType::Concrete(ty));
+                }
+                if ty != ValueType::Agg {
+                    clear_agg(state, reg);
+                }
+            }
+        }
         Instr::Mov { dst, src } => copy_reg(state, *dst, *src),
         Instr::ConstUnit { dst } => set_value(state, *dst, ValueType::Unit),
         Instr::ConstBool { dst, .. } => set_value(state, *dst, ValueType::Bool),
@@ -3573,12 +3708,25 @@ fn compute_must_types(
         aggs: Vec::new(),
     };
 
+    let mut edge_scratch: Option<TypeState> = None;
     let (in_sets, out_sets) = dataflow::solve_forward(
         blocks,
         reachable,
         entry_types.clone(),
         bottom,
-        |acc, incoming| {
+        |pred, arm, _, acc, incoming| {
+            let branch = &decoded[blocks[pred].instr_end - 1].instr;
+            let incoming = if let Some((target, args)) =
+                branch.edge(arm).filter(|(_, args)| !args.is_empty())
+            {
+                let (params, _) =
+                    blocks::declaration(decoded, target).expect("validated target declaration");
+                let scratch = edge_scratch.get_or_insert_with(|| incoming.clone());
+                blocks::transfer_edge(incoming, scratch, params, args);
+                &*scratch
+            } else {
+                incoming
+            };
             let mut changed = false;
             for r in 0..reg_count {
                 // Unknown/top is the meet identity for shape facts as well as value types.
@@ -3692,7 +3840,11 @@ fn validate_instr_types(
     let a = |reg: u32| state.agg(reg as usize);
 
     match instr {
-        Instr::Nop | Instr::Trap { .. } | Instr::Jmp { .. } => {}
+        Instr::Nop
+        | Instr::Trap { .. }
+        | Instr::Jmp { .. }
+        | Instr::JmpArgs { .. }
+        | Instr::Block { .. } => {}
         Instr::Mov { .. } => {}
         Instr::ConstUnit { .. }
         | Instr::ConstBool { .. }
@@ -3910,7 +4062,7 @@ fn validate_instr_types(
                 }
             }
         }
-        Instr::Br { cond, .. } => {
+        Instr::Br { cond, .. } | Instr::BrArgs { cond, .. } => {
             check_expected(func_id, pc, *cond, t(*cond), ValueType::Bool)?;
         }
         Instr::Call {
@@ -4327,7 +4479,7 @@ fn compute_must_init(
         reachable,
         entry_init.clone(),
         top,
-        |acc, incoming| acc.intersect_with(incoming),
+        |_, _, _, acc, incoming| acc.intersect_with(incoming),
         |b_idx, _b, state| {
             state.union_with(&writes[b_idx]);
         },

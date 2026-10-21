@@ -1838,6 +1838,10 @@ impl ValueTypeTag {
 }
 
 fn encode_value_type(w: &mut Writer, t: ValueType) {
+    write_value_type(w.bytes_mut(), t);
+}
+
+pub(crate) fn write_value_type(out: &mut Vec<u8>, t: ValueType) {
     let tag = match t {
         ValueType::Unit => ValueTypeTag::Unit,
         ValueType::Bool => ValueTypeTag::Bool,
@@ -1852,13 +1856,13 @@ fn encode_value_type(w: &mut Writer, t: ValueType) {
         ValueType::Func => ValueTypeTag::Func,
         ValueType::Closure => ValueTypeTag::Closure,
     };
-    w.write_u8(tag as u8);
+    out.push(tag as u8);
     if let ValueType::Obj(host_type) = t {
-        w.write_u64_le(host_type.0);
+        out.extend_from_slice(&host_type.0.to_le_bytes());
     }
 }
 
-fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
+pub(crate) fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeError> {
     let tag = ValueTypeTag::from_u8(r.read_u8()?)?;
     Ok(match tag {
         ValueTypeTag::Unit => ValueType::Unit,

@@ -194,6 +194,10 @@ impl Writer {
         &self.bytes
     }
 
+    pub(crate) fn bytes_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.bytes
+    }
+
     /// Consumes the writer and returns the underlying byte buffer.
     #[must_use]
     pub fn into_vec(self) -> Vec<u8> {

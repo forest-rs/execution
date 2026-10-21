@@ -27,7 +27,8 @@ use crate::analysis::cfg::BasicBlock;
 /// The analysis is defined by:
 /// - `entry`: initial state at block 0 (only used if block 0 is reachable)
 /// - `bottom`: initial state for all other blocks (usually "uninitialized" / "top")
-/// - `meet_into`: in-place meet operation: `acc = meet(acc, incoming)`, returning whether it changed
+/// - `meet_into`: source block, arm index, target block, accumulator, and incoming state;
+///   transforms the edge and meets into the accumulator, returning whether it changed
 /// - `transfer_block`: in-place transfer function for a single basic block
 ///
 /// The meet over an empty predecessor set is the current `bottom` value. (For analyses that want
@@ -44,7 +45,7 @@ pub(crate) fn solve_forward<State, MeetInto, TransferBlock>(
 ) -> (Vec<State>, Vec<State>)
 where
     State: Clone + PartialEq,
-    MeetInto: FnMut(&mut State, &State) -> bool,
+    MeetInto: FnMut(usize, usize, usize, &mut State, &State) -> bool,
     TransferBlock: FnMut(usize, &BasicBlock, &mut State),
 {
     // Convention: `in_states[b]` is the fixpoint state at block entry, and `out_states[b]` is the
@@ -81,13 +82,14 @@ where
         }
 
         // Re-propagate this block's OUT to its successors.
-        for succ in blocks[b_idx].succs.iter().copied().flatten() {
+        for (arm, succ) in blocks[b_idx].succs.iter().copied().enumerate() {
+            let Some(succ) = succ else { continue };
             if !reachable.get(succ).copied().unwrap_or(false) {
                 continue;
             }
 
             // IN_succ = meet(IN_succ, OUT_pred) for each predecessor.
-            if meet_into(&mut in_states[succ], &out_states[b_idx]) {
+            if meet_into(b_idx, arm, succ, &mut in_states[succ], &out_states[b_idx]) {
                 // OUT_succ is derived purely from IN_succ via the per-block transfer.
                 scratch.clone_from(&in_states[succ]);
                 transfer_block(succ, &blocks[succ], &mut scratch);
@@ -223,7 +225,7 @@ mod tests {
             &[true, true, true, true, true, false],
             1_u8,
             u8::MAX,
-            |acc, incoming| {
+            |_, _, _, acc, incoming| {
                 let previous = *acc;
                 *acc &= incoming;
                 *acc != previous

@@ -51,6 +51,29 @@
       ]
     },
     {
+      "name": "Block",
+      "mnemonic": "block",
+      "byte": "0x03",
+      "terminator": false,
+      "flags": [],
+      "doc": "Declare typed block parameters; no runtime step.",
+      "operands": [
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "params",
+          "access": "write"
+        },
+        {
+          "kind": "value_type_list",
+          "role": "type",
+          "encoding": "value_type_list",
+          "field": "types"
+        }
+      ]
+    },
+    {
       "name": "ConstUnit",
       "mnemonic": "const.unit",
       "byte": "0x10",
@@ -1378,6 +1401,71 @@
           "role": "pc_target",
           "encoding": "u32_uleb",
           "field": "pc_target"
+        }
+      ]
+    },
+    {
+      "name": "JmpArgs",
+      "mnemonic": "jmp.args",
+      "byte": "0x42",
+      "terminator": true,
+      "flags": [],
+      "doc": "Jump with simultaneous block argument transfer.",
+      "operands": [
+        {
+          "kind": "pc",
+          "role": "pc_target",
+          "encoding": "u32_uleb",
+          "field": "pc_target"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "BrArgs",
+      "mnemonic": "br.args",
+      "byte": "0x43",
+      "terminator": true,
+      "flags": [],
+      "doc": "Branch with simultaneous argument transfer on the selected edge.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "cond",
+          "encoding": "reg_u32_uleb",
+          "field": "cond",
+          "access": "read"
+        },
+        {
+          "kind": "pc",
+          "role": "pc_true",
+          "encoding": "u32_uleb",
+          "field": "pc_true"
+        },
+        {
+          "kind": "pc",
+          "role": "pc_false",
+          "encoding": "u32_uleb",
+          "field": "pc_false"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index",
+          "encoding": "u32_uleb",
+          "field": "true_arg_count"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
         }
       ]
     },

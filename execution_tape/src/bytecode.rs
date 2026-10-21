@@ -93,6 +93,21 @@ pub(crate) struct DecodedInstr {
 pub(crate) enum Instr {
     /// No-op.
     Nop,
+    /// Typed block parameter declaration, erased during preparation.
+    Block {
+        params: Vec<u32>,
+        types: Vec<crate::program::ValueType>,
+    },
+    /// Jump carrying block arguments.
+    JmpArgs { pc_target: u32, args: Vec<u32> },
+    /// Branch carrying a combined argument list split at `true_arg_count`.
+    BrArgs {
+        cond: u32,
+        pc_true: u32,
+        pc_false: u32,
+        true_arg_count: u32,
+        args: Vec<u32>,
+    },
     /// `dst = src`.
     Mov { dst: u32, src: u32 },
     /// Trap unconditionally with a trap code.
@@ -450,6 +465,37 @@ mod bytecode_encode_gen {
 }
 
 use bytecode_encode_gen::encode_instr;
+
+impl Instr {
+    /// Arm 0 is jump/true; arm 1 is false. Distinct arms keep distinct arguments even at equal targets.
+    pub(crate) fn edge(&self, arm: usize) -> Option<(u32, &[u32])> {
+        match (self, arm) {
+            (Self::Jmp { pc_target }, 0) => Some((*pc_target, &[])),
+            (Self::JmpArgs { pc_target, args }, 0) => Some((*pc_target, args)),
+            (Self::Br { pc_true, .. }, 0) => Some((*pc_true, &[])),
+            (Self::Br { pc_false, .. }, 1) => Some((*pc_false, &[])),
+            (
+                Self::BrArgs {
+                    pc_true,
+                    true_arg_count,
+                    args,
+                    ..
+                },
+                0,
+            ) => Some((*pc_true, args.get(..*true_arg_count as usize)?)),
+            (
+                Self::BrArgs {
+                    pc_false,
+                    true_arg_count,
+                    args,
+                    ..
+                },
+                1,
+            ) => Some((*pc_false, args.get(*true_arg_count as usize..)?)),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

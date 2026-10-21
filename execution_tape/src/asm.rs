@@ -36,13 +36,39 @@ use crate::vm::Vm;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Label(u32);
 
-/// A label that has not been placed.
+impl Label {
+    /// Supplies arguments for a typed block target. Values are transferred simultaneously.
+    #[must_use]
+    pub fn with_args(self, args: &[u32]) -> BlockTarget<'_> {
+        BlockTarget { label: self, args }
+    }
+}
+
+/// A control-flow target with borrowed block arguments.
+///
+/// Pass a label directly to [`Asm::jmp`] or [`Asm::br`] for an argument-free edge.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BlockTarget<'a> {
+    label: Label,
+    args: &'a [u32],
+}
+
+impl From<Label> for BlockTarget<'_> {
+    fn from(label: Label) -> Self {
+        Self { label, args: &[] }
+    }
+}
+
+/// A label unavailable for resolution or block placement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnresolvedLabel;
 
 impl fmt::Display for UnresolvedLabel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "label was referenced but never placed")
+        write!(
+            f,
+            "label is unresolved or its declared block was already placed"
+        )
     }
 }
 
@@ -953,6 +979,7 @@ pub struct Asm {
     next_label: u32,
     labels: Vec<Option<u32>>,
     label_names: Vec<Option<String>>,
+    block_params: Vec<Option<Vec<(u32, ValueType)>>>,
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, SpanId)>,
 }
@@ -1001,7 +1028,20 @@ impl Asm {
         self.next_label = self.next_label.wrapping_add(1);
         self.labels.push(None);
         self.label_names.push(None);
+        self.block_params.push(None);
         Label(id)
+    }
+
+    /// Reserves a block with typed parameter registers, for placement with [`Self::place`].
+    ///
+    /// All incoming edges must supply matching arguments. `Agg` declares only the value kind;
+    /// aggregate shape facts are preserved only when all incoming values agree. Parameters may
+    /// not include the effect token `r0`. The entry block uses the function signature instead.
+    #[must_use]
+    pub fn block(&mut self, params: &[(u32, ValueType)]) -> Label {
+        let label = self.label();
+        self.block_params[label.0 as usize] = Some(params.into());
+        label
     }
 
     /// Allocates a new label and assigns it a human-readable name.
@@ -1023,19 +1063,44 @@ impl Asm {
         Ok(())
     }
 
+    fn check_place(&self, label: Label) -> Result<(), UnresolvedLabel> {
+        let slot = self.labels.get(label.0 as usize).ok_or(UnresolvedLabel)?;
+        if self.block_params[label.0 as usize].is_some() && slot.is_some() {
+            return Err(UnresolvedLabel);
+        }
+        Ok(())
+    }
+
     /// Places `label` at the current `pc`.
+    ///
+    /// Fails for unknown labels or repeated placement of a block reserved with [`Self::block`].
     pub fn place(&mut self, label: Label) -> Result<(), UnresolvedLabel> {
+        self.check_place(label)?;
         let pc = self.pc();
         let slot = self
             .labels
             .get_mut(label.0 as usize)
             .ok_or(UnresolvedLabel)?;
         *slot = Some(pc);
+        if let Some(params) = self.block_params[label.0 as usize].take() {
+            self.opcode(Opcode::Block);
+            self.uleb(u32::try_from(params.len()).unwrap_or(u32::MAX));
+            for &(reg, _) in &params {
+                self.reg(reg);
+            }
+            self.uleb(u32::try_from(params.len()).unwrap_or(u32::MAX));
+            for &(_, ty) in &params {
+                crate::program::write_value_type(&mut self.bytes, ty);
+            }
+            // Retain the declaration so repeated placement cannot orphan its original header.
+            self.block_params[label.0 as usize] = Some(params);
+        }
         Ok(())
     }
 
     /// Assigns a name to `label`, then places it at the current `pc`.
     pub fn place_named(&mut self, label: Label, name: &str) -> Result<(), UnresolvedLabel> {
+        self.check_place(label)?;
         self.name_label(label, name)?;
         self.place(label)
     }
@@ -1735,19 +1800,48 @@ impl Asm {
         self
     }
 
-    /// Encodes `br cond, pc_true, pc_false`.
-    pub fn br(&mut self, cond: u32, pc_true: Label, pc_false: Label) -> &mut Self {
-        self.opcode(Opcode::Br);
+    /// Branches to a label or a label with arguments from [`Label::with_args`].
+    ///
+    /// Only the selected edge transfers its arguments. All transfers read the pre-branch values,
+    /// including cycles and fan-out. Both edges are checked during verification.
+    pub fn br<'a>(
+        &mut self,
+        cond: u32,
+        pc_true: impl Into<BlockTarget<'a>>,
+        pc_false: impl Into<BlockTarget<'a>>,
+    ) -> &mut Self {
+        let t = pc_true.into();
+        let f = pc_false.into();
+        let has_args = !t.args.is_empty() || !f.args.is_empty();
+        self.opcode(if has_args { Opcode::BrArgs } else { Opcode::Br });
         self.reg(cond);
-        self.pc_label(pc_true);
-        self.pc_label(pc_false);
+        self.pc_label(t.label);
+        self.pc_label(f.label);
+        if has_args {
+            self.uleb(u32::try_from(t.args.len()).unwrap_or(u32::MAX));
+            self.uleb(u32::try_from(t.args.len().saturating_add(f.args.len())).unwrap_or(u32::MAX));
+            for &arg in t.args.iter().chain(f.args) {
+                self.reg(arg);
+            }
+        }
         self
     }
 
-    /// Encodes `jmp pc_target`.
-    pub fn jmp(&mut self, pc_target: Label) -> &mut Self {
-        self.opcode(Opcode::Jmp);
-        self.pc_label(pc_target);
+    /// Jumps to a label or a label with simultaneous arguments from [`Label::with_args`].
+    pub fn jmp<'a>(&mut self, pc_target: impl Into<BlockTarget<'a>>) -> &mut Self {
+        let target = pc_target.into();
+        self.opcode(if target.args.is_empty() {
+            Opcode::Jmp
+        } else {
+            Opcode::JmpArgs
+        });
+        self.pc_label(target.label);
+        if !target.args.is_empty() {
+            self.uleb(u32::try_from(target.args.len()).unwrap_or(u32::MAX));
+            for &arg in target.args {
+                self.reg(arg);
+            }
+        }
         self
     }
 
@@ -2229,6 +2323,20 @@ fn inferred_reg_count_for_arg_count(inferred_reg_count: u32, arg_count: usize) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn duplicate_declared_block_placement_preserves_name_and_bytes() {
+        let mut asm = Asm::new();
+        let block = asm.block(&[]);
+        asm.place_named(block, "original").unwrap();
+        let bytes = asm.bytes.clone();
+        assert!(asm.place_named(block, "replacement").is_err());
+        assert_eq!(asm.bytes, bytes);
+        assert_eq!(
+            asm.label_names[block.0 as usize].as_deref(),
+            Some("original")
+        );
+    }
+
     use super::*;
     use crate::bytecode::{Instr, decode_instructions};
     use crate::program::StructTypeDef;

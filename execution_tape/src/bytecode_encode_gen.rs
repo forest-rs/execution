@@ -18,6 +18,12 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_u32_uleb(out, *code);
             Ok(())
         },
+        Instr::Block { params, types } => {
+            out.push(Opcode::Block as u8);
+            crate::codec_primitives::write_reg_list(out, params).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_value_type_list(out, types).map_err(|_| EncodeError::OutOfBounds)?;
+            Ok(())
+        },
         Instr::ConstUnit { dst } => {
             out.push(Opcode::ConstUnit as u8);
             crate::codec_primitives::write_reg(out, *dst);
@@ -320,6 +326,21 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
         Instr::Jmp { pc_target } => {
             out.push(Opcode::Jmp as u8);
             crate::codec_primitives::write_u32_uleb(out, *pc_target);
+            Ok(())
+        },
+        Instr::JmpArgs { args, pc_target } => {
+            out.push(Opcode::JmpArgs as u8);
+            crate::codec_primitives::write_u32_uleb(out, *pc_target);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            Ok(())
+        },
+        Instr::BrArgs { args, cond, pc_false, pc_true, true_arg_count } => {
+            out.push(Opcode::BrArgs as u8);
+            crate::codec_primitives::write_reg(out, *cond);
+            crate::codec_primitives::write_u32_uleb(out, *pc_true);
+            crate::codec_primitives::write_u32_uleb(out, *pc_false);
+            crate::codec_primitives::write_u32_uleb(out, *true_arg_count);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
         Instr::Call { args, eff_in, eff_out, func_id, rets } => {

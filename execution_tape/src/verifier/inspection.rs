@@ -138,17 +138,19 @@ impl<'a> VerifiedFunction<'a> {
 
     /// Iterates prepared instruction locations without reparsing source bytecode.
     pub fn instructions(self) -> impl ExactSizeIterator<Item = InstructionInfo> + 'a {
+        let source = self
+            .definition
+            .bytecode(self.program.program())
+            .expect("verified bytecode range");
         self.executable
             .instrs
             .iter()
             .enumerate()
             .map(move |(index, instruction)| InstructionInfo {
                 pc: instruction.offset,
-                next_pc: self
-                    .executable
-                    .pc_at_ix(index + 1)
-                    .unwrap_or(self.executable.byte_len),
-                opcode: Opcode::from_byte(instruction.opcode).expect("verified opcode"),
+                next_pc: instruction.end,
+                opcode: Opcode::from_byte(source[instruction.offset as usize])
+                    .expect("verified opcode"),
                 span: self.executable.span_at_ix(index),
             })
     }

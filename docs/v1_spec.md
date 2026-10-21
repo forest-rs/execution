@@ -145,7 +145,23 @@ Recursion is allowed. Limits enforce max depth.
 ### Control flow invariants
 - All jump targets must point to instruction boundaries.
 - Structured blocks are not required, but all target pcs must be within the current function.
-- IR may use `phi`, but lowering must remove `phi` by inserting edge copies; bytecode has no `phi`.
+- Typed block parameters may represent joins directly; mutable-register control flow remains supported.
+- `block` declares ordered, unique parameter registers and their `ValueType`s. Parameters may not
+  include `r0`. Function-entry arguments still come from the function signature; a declaration at
+  PC zero must have no parameters. A declaration begins a basic block and requires a following
+  executable body ending in an explicit terminator.
+- All entries into a declared block target its header, with matching argument counts. Fallthrough
+  and branches into its body are rejected. Argument types are checked on reachable source edges;
+  declaration, arity, split, and target structure are checked even in unreachable code.
+- Edge transfers read every source before overwriting any destination. Cycles, self transfers,
+  and repeated sources are valid. The two arms of a branch remain distinct even at equal targets.
+- `Agg` parameters specify the value kind only. Equal known incoming shapes survive the join;
+  conflicting or opaque shapes lose that knowledge. Such a parameter alone cannot type a
+  projection. Function/closure kinds likewise do not declare callable signatures.
+- Declarations disappear during preparation. A branch plus its selected parallel transfer costs
+  one fuel and emits one instruction attempt/completion pair. Source header PC, first executable
+  PC, lexical instruction end, and actual successor remain distinct. Existing call trace semantics
+  are unchanged; call-frame entry locations use the first executable PC and its span.
 
 ## Limits and traps
 
@@ -419,6 +435,7 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `nop`
 - `mov r_dst, r_src`
 - `trap trap_code`
+- `block params..., types...` (declaration, no runtime step)
 
 ### Constants
 - `const_unit r_dst`
@@ -468,6 +485,9 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `bool_xor r_dst, r_a, r_b`
 - `br r_cond, pc_true, pc_false`
 - `jmp pc_target`
+- `jmp.args pc_target, args...`
+- `br.args r_cond, pc_true, pc_false, true_arg_count, args...`
+  (`args` stores true arguments followed by false arguments; the split must be within the list)
 
 ### Calls
 - `call r_eff_out, func_id, r_eff_in, args... -> rets...`
@@ -508,6 +528,8 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x00 nop`
 - `0x01 mov dst, src`
 - `0x02 trap code`
+- `0x03 block params, types` (counted ULEB32 registers, then a ULEB32 count followed by the
+  signature `ValueType` encoding for each type; parameter/type counts must match)
 
 - `0x10 const_unit dst`
 - `0x11 const_bool dst, imm_u8` (`0` or `1`)
@@ -578,6 +600,9 @@ All register indices and small integers are ULEB128 unless noted.
 
 - `0x40 br cond, pc_true, pc_false` (PCs are byte offsets)
 - `0x41 jmp pc_target`
+- `0x42 jmp.args pc_target, args` (`args`: ULEB32 count followed by register ULEB32s)
+- `0x43 br.args cond, pc_true, pc_false, true_arg_count, args` (same counted register list;
+  split and PCs are ULEB32s)
 
 - `0x50 call eff_out, func_id, eff_in, argc, args..., retc, rets...`
 - `0x51 ret eff_in, retc, rets...`
