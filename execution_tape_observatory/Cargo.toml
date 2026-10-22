@@ -1,0 +1,22 @@
+[package]
+name = "execution_tape_observatory"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal exploration of Execution Tape recordings."
+readme = "README.md"
+keywords = ["vm", "debugging", "tui"]
+categories = ["development-tools::debugging"]
+
+[dependencies]
+execution_tape.workspace = true
+execution_tape_recording.workspace = true
+ratatui = { version = "0.30.2", default-features = false, features = [
+  "crossterm",
+] }
+
+[lints]
+workspace = true
