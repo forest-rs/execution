@@ -7,6 +7,7 @@ use super::{
     describe,
     model::{Focus, View},
 };
+use super::{palette::*, syntax};
 use execution_tape::disasm::{CallTarget, Operands};
 use execution_tape::vm::Trap;
 use execution_tape_recording::{
@@ -17,13 +18,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
-
-const BG: Color = Color::Rgb(12, 18, 27);
-const FG: Color = Color::Rgb(198, 212, 219);
-const MUTED: Color = Color::Rgb(105, 131, 148);
-const GREEN: Color = Color::Rgb(120, 222, 174);
-const BLUE: Color = Color::Rgb(123, 181, 233);
-const GOLD: Color = Color::Rgb(242, 196, 115);
 
 pub(super) fn trap_text(trap: &Trap) -> String {
     match trap {
@@ -355,7 +349,7 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
         List::new(items)
             .block(panel(" EVENTS ", view.focus == Focus::Events))
             .highlight_symbol("▸ ")
-            .highlight_style(Style::default().fg(GREEN).bg(Color::Rgb(23, 44, 43))),
+            .highlight_style(Style::default().fg(GREEN).bg(Color::Indexed(23))),
         area,
         &mut state,
     );
@@ -406,7 +400,7 @@ fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             .highlight_symbol("▸ ")
             .highlight_style(
                 Style::default()
-                    .bg(Color::Rgb(23, 44, 43))
+                    .bg(Color::Indexed(23))
                     .add_modifier(Modifier::BOLD),
             ),
         area,
@@ -447,13 +441,12 @@ fn value_section(frame: &mut Frame<'_>, view: &View<'_>, area: Rect, section: Va
         .skip(start)
         .take(height)
         .map(|(index, value)| {
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{}[{index}]  ", section.label),
-                    Style::default().fg(MUTED),
-                ),
-                Span::raw(describe::value(view.record, value)),
-            ]))
+            let mut spans = vec![Span::styled(
+                format!("{}[{index}]  ", section.label),
+                Style::default().fg(BLUE),
+            )];
+            spans.extend(syntax::value(view.record, value));
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let mut state = ListState::default().with_selected(selected.map(|index| index - start));
@@ -593,13 +586,12 @@ fn call_values(
                 GREEN
             };
             let spans = if let Some(value) = value {
-                vec![
-                    Span::styled(
-                        format!("{direction} {label}[{index}]  "),
-                        Style::default().fg(color),
-                    ),
-                    Span::raw(describe::value(view.record, value)),
-                ]
+                let mut spans = vec![Span::styled(
+                    format!("{direction} {label}[{index}]  "),
+                    Style::default().fg(color),
+                )];
+                spans.extend(syntax::value(view.record, value));
+                spans
             } else {
                 let message = if sent {
                     "No arguments sent"
@@ -628,7 +620,7 @@ fn call_values(
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .bg(Color::Rgb(23, 44, 43)),
+                    .bg(Color::Indexed(23)),
             ),
         area,
         &mut state,
@@ -672,17 +664,23 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                     _ => (" ", FG),
                 }
             };
-            Line::styled(
+            let mut spans = vec![Span::styled(
                 format!(
-                    "{} {:06}  {}  {cue}",
+                    "{} {:06}  ",
                     if current { "▸" } else { " " },
-                    instruction.pc(),
-                    describe::instruction(view.record, instruction)
+                    instruction.pc()
                 ),
+                Style::default().fg(if current { GOLD } else { MUTED }),
+            )];
+            spans.extend(syntax::source(&describe::instruction(view.record, instruction)).spans);
+            spans.push(Span::styled(format!("  {cue}"), Style::default().fg(color)));
+            Line::from(spans).style(if current {
                 Style::default()
-                    .fg(if current { GOLD } else { color })
-                    .bg(if current { Color::Rgb(43, 35, 24) } else { BG }),
-            )
+                    .bg(Color::Indexed(237))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            })
         })
         .collect();
     frame.render_widget(

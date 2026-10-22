@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add syntax/value colors to the Observatory using an indexed 256-color palette, without
+  requiring 24-bit RGB support. The demo accepts `--color=always` to explicitly override `NO_COLOR`.
+
+
 - Inspect recorded guest callers in the Observatory stack pane. Cycle keyboard focus with
   Tab/Shift+Tab and select a frame to move source to its captured call-site instruction.
   Show the application-to-guest invocation separately from guest frames, using captured inputs.

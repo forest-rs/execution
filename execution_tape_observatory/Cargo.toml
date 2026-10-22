@@ -14,9 +14,7 @@ categories = ["development-tools::debugging"]
 [dependencies]
 execution_tape.workspace = true
 execution_tape_recording.workspace = true
-ratatui = { version = "0.30.2", default-features = false, features = [
-  "crossterm",
-] }
+ratatui.workspace = true
 
 [lints]
 workspace = true

@@ -57,6 +57,6 @@ construction are excluded from the ordinary execution and capture windows.
 Explore a read/compute/store recording with named calls, values, source context and checked replay:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --color=always
 cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
