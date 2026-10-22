@@ -17,6 +17,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Query `VerifyError::function` and `pc` to locate rejected instructions or function contracts
+  without parsing diagnostic text. Program-wide errors have no function location. ([#150][] by [@waywardmonkeys][])
+
 - Draw static source control flow in the Observatory with independent colored edge lanes,
   conditional-arm labels and target arrows. Count excess edges explicitly. ([#149][] by [@waywardmonkeys][])
 
@@ -235,5 +238,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#148]: https://github.com/forest-rs/execution/pull/148
 
 [#149]: https://github.com/forest-rs/execution/pull/149
+
+[#150]: https://github.com/forest-rs/execution/pull/150
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

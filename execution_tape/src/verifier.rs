@@ -8,6 +8,7 @@
 //! execution artifacts. The `_with_lints` entry points additionally run liveness-based diagnostics.
 
 mod blocks;
+mod diagnostic;
 mod inspection;
 mod metadata;
 pub use blocks::{BlockDeclarationError, BlockEdgeError};
