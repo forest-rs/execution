@@ -13,6 +13,8 @@ Crates:
 - `execution_tape_profiling/`: optional profiling adapters; kept separate from the core crate.
 - `execution_tape_recording/`: owned boundary recordings and checked replay in a fresh VM,
   with capture budgets and recording-local aggregate identities (`no_std + alloc`).
+- `execution_tape_observatory/`: optional terminal exploration of recordings, graph values,
+  source instructions and checked replay (`std`, Ratatui).
 - `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks and
   runnable inspection/comparison tools.
 
@@ -45,6 +47,8 @@ Record real host calls, drop the live VM/host, and check a fresh replay:
 ```sh
 cargo run -p execution_tape_wind_tunnel --bin record_replay -- 1000 256 65536
 cargo bench -p execution_tape_wind_tunnel --bench recording
+cargo run -p execution_tape_wind_tunnel --bin observatory
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
 
 The arguments select host-call count, graph depth and byte-payload size. The recording benchmark

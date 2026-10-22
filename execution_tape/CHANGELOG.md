@@ -60,8 +60,13 @@ This release has an [MSRV][] of 1.88.
   function-local buffer sizes. No bytecode decoding or allocation is needed. The wind-tunnel
   `inspect_prepared` tool prints a summary and optional instruction detail from an encoded file.
 
+- Explore recordings through the optional Ratatui `execution_tape_observatory` crate:
+  navigate invocation/host-call/outcome boundaries, open immediate aggregate fields, inspect
+  source instruction registers and request checked replay. The wind-tunnel `observatory` tool
+  captures evolving guest graphs and supports headless text rendering. ([#147][] by [@waywardmonkeys][])
+
 - Expose the final return/trap PC through `Recording::outcome_location`, including the VM
-  location of rejected invocations. Return locations precede aggregate-handle compaction.
+  location of rejected invocations. Return locations precede aggregate-handle compaction. ([#147][] by [@waywardmonkeys][])
 
 ### Changed
 
@@ -194,5 +199,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#145]: https://github.com/forest-rs/execution/pull/145
 
 [#146]: https://github.com/forest-rs/execution/pull/146
+
+[#147]: https://github.com/forest-rs/execution/pull/147
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv
