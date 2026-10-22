@@ -3,6 +3,7 @@
 
 use crate::{
     Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, RecordLimits, Recording,
+    frames::{Frame, FrameId},
     values::Builder,
 };
 use alloc::sync::Arc;
@@ -11,7 +12,7 @@ use core::ops::Range;
 use execution_tape::host::ValueRef;
 use execution_tape::program::Program;
 use execution_tape::trace::{
-    HostCallOutcome, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
+    HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use execution_tape::value::FuncId;
 use execution_tape::verifier::VerifiedProgram;
@@ -28,6 +29,9 @@ pub struct Recorder {
     builder: Builder,
     entry: Option<Entry>,
     calls: Vec<Call>,
+    frames: Vec<Frame>,
+    top: Option<FrameId>,
+    outcome_frame: Option<FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
     end: Option<End>,
     fault: Option<CaptureFault>,
@@ -43,6 +47,9 @@ impl Recorder {
             builder: Builder::new(limits),
             entry: None,
             calls: Vec::new(),
+            frames: Vec::new(),
+            top: None,
+            outcome_frame: None,
             candidate: None,
             end: None,
             fault: None,
@@ -68,6 +75,12 @@ impl Recorder {
             initial,
             entry: self.entry,
             calls: self.calls,
+            frames: self.frames,
+            outcome_frame: if self.fault.is_none() {
+                self.outcome_frame
+            } else {
+                None
+            },
             candidate: self.candidate,
             end: self.end,
             fault: self.fault,
@@ -81,6 +94,8 @@ impl Recorder {
     fn fail_at(&mut self, error: CaptureFault, location: Option<TraceLocation>) {
         if self.fault.is_none() {
             self.fault = Some(error);
+            self.top = None;
+            self.outcome_frame = None;
             self.fault_location = location;
         }
     }
@@ -89,6 +104,17 @@ impl Recorder {
             self.fail(CaptureFault::ProgramMismatch);
         }
         self.fault.is_none()
+    }
+
+    fn check_location(&self, location: TraceLocation) -> Result<(), CaptureFault> {
+        if self
+            .top
+            .is_some_and(|index| self.frames[index.index()].func != location.func)
+        {
+            Err(CaptureFault::InvalidSequence)
+        } else {
+            Ok(())
+        }
     }
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
@@ -138,7 +164,9 @@ impl Recorder {
                     },
                     HostCallOutcome::Failed(error) => CallOutcome::Failed(error.clone()),
                 };
+                self.check_location(location)?;
                 self.calls.push(Call {
+                    frame: self.top,
                     location,
                     import: host_sig,
                     args,
@@ -156,6 +184,8 @@ impl Recorder {
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
+                self.check_location(location)?;
+                self.outcome_frame = self.top;
                 self.candidate = Some((location, values));
             }
         }
@@ -174,7 +204,7 @@ impl core::fmt::Debug for Recorder {
 
 impl TraceSink for Recorder {
     fn mask(&self) -> TraceMask {
-        TraceMask::RUN | TraceMask::VALUES
+        TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL
     }
 
     fn run_start(&mut self, program: &Program, _: FuncId, _: usize) {
@@ -198,6 +228,109 @@ impl TraceSink for Recorder {
         }
     }
 
+    fn scope_enter(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        _: Option<u64>,
+    ) {
+        let ScopeKind::CallFrame {
+            func: callee,
+            caller,
+        } = kind
+        else {
+            return;
+        };
+        if !self.check(program) {
+            return;
+        }
+        let location = Some(TraceLocation { func, pc });
+        let expected_depth = self
+            .top
+            .map_or(1, |top| self.frames[top.index()].depth.saturating_add(1));
+        let valid_parent = match (self.top, caller) {
+            (None, None) => {
+                self.frames.is_empty()
+                    && self
+                        .entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.func == callee)
+            }
+            (Some(parent), Some(site)) => self.frames[parent.index()].func == site.func,
+            _ => false,
+        };
+        if self.end.is_some()
+            || self.candidate.is_some()
+            || u32::try_from(depth).ok() != Some(expected_depth)
+            || callee != func
+            || !valid_parent
+        {
+            self.fail_at(CaptureFault::InvalidSequence, location);
+        } else if self.frames.len() >= self.builder.limits.call_frames.min(u32::MAX as usize) {
+            self.fail_at(
+                CaptureFault::Budget {
+                    resource: CaptureResource::CallFrames,
+                    limit: self.builder.limits.call_frames.min(u32::MAX as usize),
+                },
+                location,
+            );
+        } else {
+            let top = FrameId::new(self.frames.len()).expect("bounded activation count");
+            self.frames.push(Frame {
+                func: callee,
+                caller,
+                parent: self.top,
+                depth: expected_depth,
+            });
+            self.top = Some(top);
+        }
+    }
+
+    fn scope_exit(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        _: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        let ScopeKind::CallFrame {
+            func: callee,
+            caller,
+        } = kind
+        else {
+            return;
+        };
+        if !self.check(program) {
+            return;
+        }
+        let Some(top) = self.top else {
+            self.fail_at(
+                CaptureFault::InvalidSequence,
+                Some(TraceLocation { func, pc }),
+            );
+            return;
+        };
+        let frame = self.frames[top.index()];
+        if (frame.func, frame.caller, frame.depth as usize) != (callee, caller, depth) {
+            self.fail_at(
+                CaptureFault::InvalidSequence,
+                Some(TraceLocation { func, pc }),
+            );
+            return;
+        }
+        if matches!(outcome, TraceOutcome::Trap(_)) && self.outcome_frame.is_none() {
+            // The first exit still has the entire leaf-to-root ancestry. Later exits are unwind.
+            self.outcome_frame = Some(top);
+        }
+        self.top = frame.parent;
+    }
+
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         if !core::ptr::eq(program, self.program.program()) {
             self.fail(CaptureFault::ProgramMismatch);
@@ -206,6 +339,9 @@ impl TraceSink for Recorder {
         if self.end.is_some() {
             self.fail(CaptureFault::MultipleRuns);
             return;
+        }
+        if self.top.is_some() {
+            self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
             TraceOutcome::Ok => {

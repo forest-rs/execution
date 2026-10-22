@@ -15,12 +15,21 @@ references stay shared and distinct equal nodes stay distinct. `aggregate(id)` b
 node's immediate contents. Equal string/byte payloads share owned contents. The recorder
 retains only observed graph nodes and shares the immutable prepared program.
 
+The recommended mask also captures guest activations through `CALL`, including exact caller
+instruction locations. Each host observation and final outcome borrows an innermost-to-root
+`CallStack`; suspended callers point at the instruction that entered their child. A parent-linked
+arena shares ancestry across observations without copying a stack per call. It retains every
+entered activation, including ones with no host calls, up to `RecordLimits::call_frames`.
+`RecordStats::call_frames` counts this storage. Trap ancestry is pinned before VM unwinding.
+Missing call callbacks, rejected entry and failed capture leave stack data explicitly unavailable.
+Replay checks captured activation order, caller locations and boundary ancestry as well as values.
+
 Replay restores observed initial nodes before execution. Guest-created nodes are matched
 through boundary values and allocation ordinals relative to the initial heap. VM heaps append
 immutable nodes until root commit; this lets replay resolve a host return even when that node
 was never an entry argument. Final heap compaction does not change recording identities.
 
-Capture limits bound value/node/call counts and copied payload bytes. They do not measure
+Capture limits bound value/node/host-call/activation counts and copied payload bytes. They do not measure
 vector capacity, allocator overhead, the shared program or opaque custom-error payload sizes.
 Exceeding a budget stops value/graph retention while live execution continues. The final VM
 trap is still retained when its payload budget permits. Missing entry/completion,

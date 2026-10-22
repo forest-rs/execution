@@ -10,7 +10,9 @@ use core::cell::RefCell;
 use execution_tape::aggregates::{AggError, AggHeap, ValueSnapshot};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{HostSigId, Program};
-use execution_tape::trace::{TraceLocation, TraceMask, TraceSink, ValueEvent};
+use execution_tape::trace::{
+    ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
+};
 use execution_tape::value::{AggHandle, AggType, Closure, FuncId, Value};
 use execution_tape::vm::{Trap, TrapInfo, Vm};
 
@@ -64,6 +66,8 @@ pub enum Divergence {
     },
     /// Final return/trap or return-candidate presence differs.
     Outcome,
+    /// Guest activation ancestry, call site or observed stack differs.
+    CallStack,
 }
 
 /// Boundary being checked when replay diverged.
@@ -134,6 +138,9 @@ struct State {
     calls: usize,
     location: Option<TraceLocation>,
     candidate: bool,
+    frames: usize,
+    top: Option<crate::frames::FrameId>,
+    final_top: Option<crate::frames::FrameId>,
     error: Option<ReplayError>,
 }
 
@@ -346,6 +353,9 @@ impl RecordedHost<'_> {
         ctx: HostContext<'_, '_>,
     ) -> Result<u64, ReplayError> {
         let mut state = self.state.borrow_mut();
+        if let Some(error) = &state.error {
+            return Err(error.clone());
+        }
         let index = state.calls;
         state.boundary = ReplayBoundary::HostCall { index };
         let call = self.record.calls.get(index).ok_or_else(|| {
@@ -359,6 +369,9 @@ impl RecordedHost<'_> {
                 expected: call.location,
                 actual: state.location,
             }));
+        }
+        if !self.record.frames.is_empty() && call.frame != state.top {
+            return Err(state.mismatch(Divergence::CallStack));
         }
         if ctx.host_sig_id() != call.import {
             return Err(state.mismatch(Divergence::Import {
@@ -418,6 +431,65 @@ struct Check<'a> {
     state: Rc<RefCell<State>>,
 }
 impl TraceSink for Check<'_> {
+    fn scope_enter(
+        &mut self,
+        _: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        _: Option<u64>,
+    ) {
+        let ScopeKind::CallFrame {
+            func: callee,
+            caller,
+        } = kind
+        else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        if state.error.is_some() {
+            return;
+        }
+        let expected = self.record.frames.get(state.frames);
+        if !expected.is_some_and(|frame| {
+            (frame.func, frame.caller, frame.parent, frame.depth as usize)
+                == (callee, caller, state.top, depth)
+        }) {
+            state.boundary = ReplayBoundary::Completion;
+            state.location = caller.or(Some(TraceLocation { func, pc }));
+            state.error = Some(state.mismatch(Divergence::CallStack));
+            return;
+        }
+        state.top = crate::frames::FrameId::new(state.frames);
+        state.frames += 1;
+    }
+
+    fn scope_exit(
+        &mut self,
+        _: &Program,
+        kind: ScopeKind,
+        _: usize,
+        _: FuncId,
+        _: u32,
+        _: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        if !matches!(kind, ScopeKind::CallFrame { .. }) {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        if state.error.is_some() {
+            return;
+        }
+        if matches!(outcome, TraceOutcome::Trap(_)) && state.final_top.is_none() {
+            state.final_top = state.top;
+        }
+        state.top = state
+            .top
+            .and_then(|top| self.record.frames[top.index()].parent);
+    }
+
     fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, _: u8) {
         self.state.borrow_mut().location = Some(TraceLocation { func, pc });
     }
@@ -433,6 +505,7 @@ impl TraceSink for Check<'_> {
                 return;
             }
             state.candidate = true;
+            state.final_top = state.top;
             state.boundary = ReplayBoundary::ReturnCandidate;
             let result = match &self.record.candidate {
                 Some((expected, roots)) if *expected == location => state.matches(
@@ -498,7 +571,13 @@ impl Recording {
             &self.program,
             entry.func,
             &args,
-            TraceMask::INSTR | TraceMask::VALUES,
+            TraceMask::INSTR
+                | TraceMask::VALUES
+                | if self.frames.is_empty() {
+                    TraceMask::NONE
+                } else {
+                    TraceMask::CALL
+                },
             Some(&mut check),
         );
         let mut state = state.borrow_mut();
@@ -511,6 +590,11 @@ impl Recording {
                 expected: self.calls.len(),
                 actual: state.calls,
             }));
+        }
+        if state.frames != self.frames.len()
+            || (!self.frames.is_empty() && self.outcome_frame != state.final_top)
+        {
+            return Err(state.mismatch(Divergence::CallStack));
         }
         match (
             self.end.as_ref().expect("complete recording outcome"),
@@ -778,6 +862,7 @@ mod tests {
         let mut changed = record(true, false);
         let call = changed.calls.pop().unwrap();
         changed.calls.push(Call {
+            frame: call.frame,
             location: call.location,
             import: call.import,
             args: call.args.clone(),
@@ -851,6 +936,22 @@ mod tests {
             location: Some(actual),
             reason: Divergence::Value { aggregate: None, index: 0 },
         }) if actual == location));
+    }
+
+    #[test]
+    fn changed_or_missing_activation_provenance_is_rejected() {
+        let mut changed = record(true, false);
+        changed.frames[0].caller = Some(changed.calls[0].location);
+        assert_eq!(reason(&changed), Divergence::CallStack);
+        let mut changed = record(true, false);
+        changed.calls[0].frame = None;
+        assert_eq!(reason(&changed), Divergence::CallStack);
+        let mut changed = record(true, false);
+        changed.outcome_frame = None;
+        assert_eq!(reason(&changed), Divergence::CallStack);
+        let mut changed = record(true, false);
+        changed.frames.push(changed.frames[0]);
+        assert_eq!(reason(&changed), Divergence::CallStack);
     }
 
     #[test]

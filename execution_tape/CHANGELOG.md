@@ -17,6 +17,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Capture bounded guest activation ancestry in `execution_tape_recording`, with exact caller
+  PCs, shared parent links and borrowed innermost-to-root `CallStack` iteration. Inspect
+  `HostCall::stack` and `Recording::outcome_stack`; trap ancestry survives VM unwinding.
+  Replay checks captured activation order, caller locations and boundary ancestry.
+
+
 - Add a runnable block-argument comparison and Criterion benchmark in `execution_tape_wind_tunnel`.
   Compare equivalent transfer-heavy loops by cold preparation, reused execution, prepared
   storage, and frame requirements, checking output equality before timing. ([#137][] by [@waywardmonkeys][])
@@ -70,6 +76,11 @@ This release has an [MSRV][] of 1.88.
   location of rejected invocations. Return locations precede aggregate-handle compaction. ([#147][] by [@waywardmonkeys][])
 
 ### Changed
+
+- `Recorder::mask` now includes `CALL`. Add `call_frames` to exhaustive `RecordLimits`
+  initializers (or use `..Default::default()`); this budget counts all entered activations.
+  Explicit masks that omit `CALL` retain value-only capture with unavailable stacks. Update
+  exhaustive `CaptureResource` and `Divergence` matches for the new stack cases.
 
 - Include the actual caller instruction in `ScopeKind::CallFrame::caller`, with `None` for
   the root activation. Entry metadata is preserved on normal and trapping exits. Update
