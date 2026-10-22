@@ -60,6 +60,9 @@ This release has an [MSRV][] of 1.88.
   function-local buffer sizes. No bytecode decoding or allocation is needed. The wind-tunnel
   `inspect_prepared` tool prints a summary and optional instruction detail from an encoded file.
 
+- Expose the final return/trap PC through `Recording::outcome_location`, including the VM
+  location of rejected invocations. Return locations precede aggregate-handle compaction.
+
 ### Changed
 
 - Declare every function register by transferring its kind `Vec` to `Asm::set_register_types`,

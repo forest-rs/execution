@@ -121,6 +121,61 @@ fn returned(record: &Recording) -> execution_tape::aggregates::ValueSnapshot {
 }
 
 #[test]
+fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
+    let p = program(
+        &[],
+        &[ValueType::I64],
+        vec![ValueType::Unit, ValueType::I64],
+        |body, _| {
+            body.const_i64(1, 7).ret(0, &[1]);
+        },
+    );
+    let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
+    let record = capture(&mut vm, &p, &[]);
+    let expected = p
+        .function(FuncId(0))
+        .unwrap()
+        .instructions()
+        .last()
+        .unwrap()
+        .pc;
+    assert_eq!(
+        record.outcome_location(),
+        Some(execution_tape::trace::TraceLocation {
+            func: FuncId(0),
+            pc: expected
+        })
+    );
+    assert!(matches!(record.outcome(), Some(Outcome::Returned(_))));
+    let unfinished = Recorder::new(Arc::clone(&p), RecordLimits::default()).finish();
+    assert!(unfinished.outcome_location().is_none());
+
+    let p = program(
+        &[],
+        &[],
+        vec![ValueType::Unit, ValueType::I64],
+        |body, _| {
+            body.const_i64(1, 7).trap(42);
+        },
+    );
+    let record = capture(&mut vm, &p, &[]);
+    let Some(Outcome::Trapped(trap)) = record.outcome() else {
+        panic!("expected guest trap")
+    };
+    assert_eq!(
+        record.outcome_location(),
+        Some(execution_tape::trace::TraceLocation {
+            func: trap.func,
+            pc: trap.pc
+        })
+    );
+    assert_ne!(
+        trap.pc, 0,
+        "trap provenance is the executed trap instruction"
+    );
+}
+
+#[test]
 fn deep_graphs_are_walked_iteratively_and_repeated_host_boundaries_keep_one_copy() {
     const DEPTH: usize = 10_000;
     const CALLS: usize = 128;
