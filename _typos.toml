@@ -1,0 +1,3 @@
+[default.extend-words]
+# Correct name of the terminal UI crate.
+Ratatui = "Ratatui"
