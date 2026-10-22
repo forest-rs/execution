@@ -71,8 +71,14 @@ pub(super) fn signature(program: &Program, id: HostSigId) -> String {
     format!(
         "{}{} → {}",
         host(program, id),
-        types(program.host_sig_args(entry).unwrap_or(&[])),
-        types(program.host_sig_rets(entry).unwrap_or(&[]))
+        program
+            .host_sig_args(entry)
+            .map(types)
+            .unwrap_or_else(|_| "(<malformed argument types>)".into()),
+        program
+            .host_sig_rets(entry)
+            .map(types)
+            .unwrap_or_else(|_| "(<malformed return types>)".into())
     )
 }
 
@@ -323,4 +329,33 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
             }
         }
     }
+}
+
+/// Format a diagnostic without allocating an arbitrarily large aggregate-shape description.
+pub(super) fn diagnostic(value: &impl std::fmt::Display) -> String {
+    use std::fmt::Write;
+    struct Bounded {
+        text: String,
+        remaining: usize,
+    }
+    impl Write for Bounded {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            for ch in text.chars() {
+                if self.remaining == 0 {
+                    return Err(std::fmt::Error);
+                }
+                self.text.push(ch);
+                self.remaining -= 1;
+            }
+            Ok(())
+        }
+    }
+    let mut output = Bounded {
+        text: String::new(),
+        remaining: 600,
+    };
+    if write!(output, "{value}").is_err() {
+        output.text.push('…');
+    }
+    preview(&output.text, 601)
 }

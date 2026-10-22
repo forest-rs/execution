@@ -1,7 +1,12 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Explore a borrowed in-memory VM recording in a terminal.
+//! Browse a compiled program or explore a borrowed in-memory VM recording in a terminal.
+//!
+//! [`browse`] opens functions, instructions, imports, constants and aggregate types without a VM
+//! or host. Verification runs once on opening; rejected programs remain navigable. [`render_program`]
+//! provides the same initial view without terminal modes. Span IDs remain opaque until a frontend
+//! provides source-file mappings; static register declarations are not runtime values.
 //!
 //! [`explore`] connects invocation/host-call/outcome navigation, immediate aggregate inspection,
 //! source instruction context, captured guest callers and checked replay. [`render_text`] renders the same initial view
@@ -16,6 +21,7 @@
 //! Replay uses the recording's ordinary checked replay and invokes no live host. Opaque typed
 //! error payloads are never formatted. Text/payload previews and graph expansion are bounded.
 
+mod browser;
 mod describe;
 mod flow;
 mod model;
@@ -26,6 +32,7 @@ mod syntax;
 #[cfg(test)]
 mod tests;
 
+use execution_tape::program::Program;
 use execution_tape_recording::Recording;
 use model::View;
 use ratatui::Terminal;
@@ -42,6 +49,15 @@ use std::io;
 /// add work and memory beyond guest fuel; a long replay pauses the UI.
 pub fn explore(record: &Recording) -> io::Result<()> {
     interact(View::new(record))
+}
+
+/// Opens a compiled program browser without executing guest code or invoking a host.
+///
+/// Verifies once on opening; rejected programs remain inspectable with the first diagnostic.
+/// Function names, types, instructions and span identifiers come from the program. Source files
+/// and runtime register values are not reconstructed. Uses the terminal lifecycle of [`explore`].
+pub fn browse(program: &Program) -> io::Result<()> {
+    interact(browser::Browser::new(program))
 }
 
 trait Screen {
@@ -95,16 +111,29 @@ impl Drop for TerminalGuard {
 /// Useful for headless inspection and reproducible review artifacts. The replay status remains
 /// "not checked". Dimensions must be within 40..=240 columns and 12..=100 rows.
 pub fn render_text(record: &Recording, width: u16, height: u16) -> io::Result<String> {
-    render_screen(View::new(record), width, height)
+    render_screen(|| View::new(record), width, height)
 }
 
-fn render_screen(mut screen: impl Screen, width: u16, height: u16) -> io::Result<String> {
+/// Renders the compiled program browser's initial view as plain text without terminal modes.
+///
+/// Performs the same verification as [`browse`], including navigation to a located diagnostic.
+/// Dimensions have the same bounds as [`render_text`]. Does not execute guest code.
+pub fn render_program(program: &Program, width: u16, height: u16) -> io::Result<String> {
+    render_screen(|| browser::Browser::new(program), width, height)
+}
+
+fn render_screen<S: Screen>(
+    screen: impl FnOnce() -> S,
+    width: u16,
+    height: u16,
+) -> io::Result<String> {
     if !(40..=240).contains(&width) || !(12..=100).contains(&height) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "view dimensions outside 40..=240 by 12..=100",
         ));
     }
+    let mut screen = screen();
     let mut terminal =
         Terminal::new(TestBackend::new(width, height)).unwrap_or_else(|never| match never {});
     terminal
