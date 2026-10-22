@@ -244,11 +244,11 @@ fn partial_captures_and_small_screens_do_not_claim_success() {
     assert!(shown.contains("PARTIAL"));
     assert!(shown.contains("replay unavailable"));
     assert!(!shown.contains("MATCHED"));
-    assert!(
-        render_text(&record, 40, 12)
-            .unwrap()
-            .contains("resize to at least")
-    );
+    for (width, height) in [(40, 12), (79, 24), (100, 19)] {
+        let shown = render_text(&record, width, height).unwrap();
+        assert!(shown.contains("resize to at least 80 × 20"));
+        assert!(shown.contains(&format!("current size: {width} × {height}")));
+    }
     assert!(render_text(&record, 0, 0).is_err());
     assert!(render_text(&record, u16::MAX, u16::MAX).is_err());
 }
