@@ -8,7 +8,6 @@ use super::{
     model::{Focus, View},
 };
 use super::{palette::*, syntax};
-use execution_tape::disasm::{CallTarget, Operands};
 use execution_tape::vm::Trap;
 use execution_tape_recording::{
     Divergence, HostOutcome, Outcome, RecordedValue, ReplayBoundary, ReplayError,
@@ -638,32 +637,22 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     };
     let height = usize::from(area.height.saturating_sub(2));
     let start = view.source_index.saturating_sub(height / 2);
+    let first = source
+        .instrs()
+        .nth(start)
+        .map_or(0, |instruction| instruction.pc());
+    let last = source
+        .instrs()
+        .skip(start)
+        .take(height)
+        .last()
+        .map_or(first, |instruction| instruction.pc());
     let lines: Vec<_> = source
         .instrs()
         .skip(start)
         .take(height)
         .map(|instruction| {
             let current = Some(instruction.pc()) == location.map(|loc| loc.pc);
-            let (cue, color) = if let Some(edge) = instruction.edge(0) {
-                let backwards = edge.target <= instruction.pc()
-                    || instruction
-                        .edge(1)
-                        .is_some_and(|edge| edge.target <= instruction.pc());
-                (if backwards { "↰" } else { "↳" }, BLUE)
-            } else {
-                match instruction.operands() {
-                    Operands::Call(call) => (
-                        "⇢",
-                        match call.callee {
-                            CallTarget::HostSig(..) => GREEN,
-                            _ => BLUE,
-                        },
-                    ),
-                    Operands::Ret { .. } => ("↵", GOLD),
-                    Operands::Block { .. } => ("◆", BLUE),
-                    _ => (" ", FG),
-                }
-            };
             let mut spans = vec![Span::styled(
                 format!(
                     "{} {:06}  ",
@@ -672,8 +661,9 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 ),
                 Style::default().fg(if current { GOLD } else { MUTED }),
             )];
+            spans.extend(view.flow.gutter(instruction.pc(), first, last));
+            spans.push(Span::raw(" "));
             spans.extend(syntax::source(&describe::instruction(view.record, instruction)).spans);
-            spans.push(Span::styled(format!("  {cue}"), Style::default().fg(color)));
             Line::from(spans).style(if current {
                 Style::default()
                     .bg(Color::Indexed(237))
@@ -699,7 +689,11 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 ),
                 false,
             )
-            .title_bottom("↰ back / ↳ forward edge · static code"),
+            .title_bottom(if view.flow.omitted() == 0 {
+                "T/F arms · ▶ target · static flow".into()
+            } else {
+                format!("static flow · +{} edges hidden", view.flow.omitted())
+            }),
         ),
         area,
     );

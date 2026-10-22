@@ -17,6 +17,7 @@
 //! error payloads are never formatted. Text/payload previews and graph expansion are bounded.
 
 mod describe;
+mod flow;
 mod model;
 mod palette;
 mod render;

@@ -1,6 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
 use execution_tape::trace::TraceLocation;
 use execution_tape_recording::{
@@ -26,6 +27,7 @@ pub(super) struct View<'a> {
     pub(super) replay: String,
     pub(super) source: Option<FunctionDisassembly<'a>>,
     pub(super) source_index: usize,
+    pub(super) flow: Flow,
     pub(super) page_rows: usize,
 }
 
@@ -42,6 +44,7 @@ impl<'a> View<'a> {
             replay: "not checked · r to replay".into(),
             source: None,
             source_index: 0,
+            flow: Flow::default(),
             page_rows: 10,
         };
         view.select(if view.calls.is_empty() { 0 } else { 1 });
@@ -92,6 +95,7 @@ impl<'a> View<'a> {
             self.source = location.and_then(|loc| {
                 disassemble_function(self.record.program().program(), loc.func).ok()
             });
+            self.flow = self.source.as_ref().map_or_else(Flow::default, Flow::new);
         }
         if location != previous {
             self.source_index = self
