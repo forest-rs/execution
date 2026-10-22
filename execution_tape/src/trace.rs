@@ -87,6 +87,9 @@ pub enum ScopeKind {
     CallFrame {
         /// Function id for the frame being entered/exited.
         func: FuncId,
+        /// Caller instruction that entered this activation; `None` for the root frame.
+        /// Preserved unchanged when this scope exits, including trap unwinding.
+        caller: Option<TraceLocation>,
     },
     /// A VM host call.
     HostCall {

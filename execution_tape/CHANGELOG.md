@@ -71,6 +71,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Include the actual caller instruction in `ScopeKind::CallFrame::caller`, with `None` for
+  the root activation. Entry metadata is preserved on normal and trapping exits. Update
+  exhaustive patterns to bind `caller` or use `..`, and supply it when constructing this variant.
+
 - Declare every function register by transferring its kind `Vec` to `Asm::set_register_types`,
   including r0 (`Unit`), arguments and temporaries. Raw `FunctionDef` inputs now own `register_types` in place of `reg_count`.
   Preserve the complete `AsmParts` when assembling raw definitions. `Asm::block` now takes only

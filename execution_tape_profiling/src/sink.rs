@@ -75,7 +75,7 @@ impl<R: LabelResolver> ProfilingTraceSink<R> {
 
     fn resolve_label(&mut self, program: &Program, kind: ScopeKind) -> String {
         match kind {
-            ScopeKind::CallFrame { func } => self
+            ScopeKind::CallFrame { func, .. } => self
                 .resolver
                 .call_frame_label(func, program)
                 .unwrap_or_else(|| default_call_frame_label(func)),
@@ -165,6 +165,13 @@ mod tests {
     #[test]
     fn start_scope_without_tracy_client_does_not_panic() {
         let sink = ProfilingTraceSink::new();
-        let _guard = sink.start_scope(ScopeKind::CallFrame { func: FuncId(0) }, "test", 0);
+        let _guard = sink.start_scope(
+            ScopeKind::CallFrame {
+                func: FuncId(0),
+                caller: None,
+            },
+            "test",
+            0,
+        );
     }
 }

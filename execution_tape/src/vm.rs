@@ -450,15 +450,17 @@ impl<'a> TraceCtx<'a> {
         func: FuncId,
         pc: u32,
         span_id: Option<u64>,
+        caller: Option<TraceLocation>,
     ) {
         if self.enabled(TraceMask::CALL)
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
-            self.scopes.push((ScopeKind::CallFrame { func }, depth));
+            self.scopes
+                .push((ScopeKind::CallFrame { func, caller }, depth));
             t.scope_enter(
                 program,
-                ScopeKind::CallFrame { func },
+                ScopeKind::CallFrame { func, caller },
                 depth,
                 func,
                 pc,
@@ -480,16 +482,8 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
-            self.scopes.pop();
-            t.scope_exit(
-                program,
-                ScopeKind::CallFrame { func },
-                depth,
-                func,
-                pc,
-                span_id,
-                TraceOutcome::Ok,
-            );
+            let (kind, _) = self.scopes.pop().expect("entered call frame");
+            t.scope_exit(program, kind, depth, func, pc, span_id, TraceOutcome::Ok);
         }
     }
 
@@ -646,6 +640,7 @@ trait TracePolicy {
         func: FuncId,
         pc: u32,
         span_id: Option<u64>,
+        caller: Option<TraceLocation>,
     );
 
     fn call_scope_exit(
@@ -706,6 +701,7 @@ impl TracePolicy for NoTracePolicy {
         _func: FuncId,
         _pc: u32,
         _span_id: Option<u64>,
+        _caller: Option<TraceLocation>,
     ) {
     }
 
@@ -785,8 +781,9 @@ impl TracePolicy for WithTracePolicy {
         func: FuncId,
         pc: u32,
         span_id: Option<u64>,
+        caller: Option<TraceLocation>,
     ) {
-        trace.call_scope_enter_if_enabled(program, depth, func, pc, span_id);
+        trace.call_scope_enter_if_enabled(program, depth, func, pc, span_id, caller);
     }
 
     #[inline(always)]
@@ -1004,6 +1001,7 @@ impl<H: Host> Vm<H> {
             entry,
             entry_vf.pc_at_ix(0).unwrap_or(0),
             entry_vf.span_at_ix(0).map(|id| id.get()),
+            None,
         );
 
         loop {
@@ -1792,6 +1790,7 @@ impl<H: Host> Vm<H> {
                         *callee,
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
+                        Some(TraceLocation { func: func_id, pc }),
                     );
 
                     debug_assert_eq!(
@@ -2106,6 +2105,7 @@ impl<H: Host> Vm<H> {
                         callee_func,
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
+                        Some(TraceLocation { func: func_id, pc }),
                     );
 
                     debug_assert_eq!(
@@ -2187,6 +2187,7 @@ impl<H: Host> Vm<H> {
                         callee.func,
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
+                        Some(TraceLocation { func: func_id, pc }),
                     );
 
                     debug_assert_eq!(
