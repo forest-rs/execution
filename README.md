@@ -47,11 +47,16 @@ Record real host calls, drop the live VM/host, and check a fresh replay:
 ```sh
 cargo run -p execution_tape_wind_tunnel --bin record_replay -- 1000 256 65536
 cargo bench -p execution_tape_wind_tunnel --bench recording
-cargo run -p execution_tape_wind_tunnel --bin observatory
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
 
 The arguments select host-call count, graph depth and byte-payload size. The recording benchmark
 compares ordinary execution, capture/freeze/drop, and fresh replay/drop of the same guest workload.
 It checks output equality and graph/payload counts before timing; preparation and initial VM
 construction are excluded from the ordinary execution and capture windows.
+
+Explore a read/compute/store recording with named calls, values, source context and checked replay:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin observatory
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
+```

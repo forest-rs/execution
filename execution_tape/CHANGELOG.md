@@ -62,8 +62,9 @@ This release has an [MSRV][] of 1.88.
 
 - Explore recordings through the optional Ratatui `execution_tape_observatory` crate:
   navigate invocation/host-call/outcome boundaries, open immediate aggregate fields, inspect
-  source instruction registers and request checked replay. The wind-tunnel `observatory` tool
-  captures evolving guest graphs and supports headless text rendering. ([#147][] by [@waywardmonkeys][])
+  named source calls and static control-flow cues, and request checked replay. Clearly mark
+  keyboard focus and distinguish sent arguments from returned values. The wind-tunnel
+  `observatory` tool captures a read/compute/store workflow and supports headless text rendering. ([#147][] by [@waywardmonkeys][])
 
 - Expose the final return/trap PC through `Recording::outcome_location`, including the VM
   location of rejected invocations. Return locations precede aggregate-handle compaction. ([#147][] by [@waywardmonkeys][])
