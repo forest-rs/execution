@@ -119,6 +119,7 @@ fn text(view: &mut View<'_>, width: u16, height: u16) -> String {
 fn timeline_values_and_source_follow_real_boundary_ordinals() {
     let (record, effects) = recording(RecordLimits::default(), None);
     let mut view = View::new(&record);
+    view.select(0);
     assert_eq!(view.calls.len(), 3);
     let location = view.calls[0].location;
     assert!(view.calls.iter().all(|call| call.location == location));
@@ -130,7 +131,7 @@ fn timeline_values_and_source_follow_real_boundary_ordinals() {
         view.values().next().unwrap().2,
         RecordedValue::I64(0)
     ));
-    assert!(text(&mut view, 120, 36).contains("guest-created"));
+    assert!(text(&mut view, 120, 36).contains("created during run"));
     press(&mut view, KeyCode::Tab); // timeline focus again
     press(&mut view, KeyCode::Down);
     assert_eq!(view.selected, 2);
@@ -141,12 +142,12 @@ fn timeline_values_and_source_follow_real_boundary_ordinals() {
     ));
     let shown = text(&mut view, 120, 36);
     assert!(shown.contains("#0001  echo"));
-    assert!(shown.contains(&format!("▸ {:06}  HostCall", location.pc)));
+    assert!(shown.contains(&format!("▸ {:06}  r2 = host echo(r2)", location.pc)));
     press(&mut view, KeyCode::Tab);
     press(&mut view, KeyCode::End);
     let final_location = record.outcome_location().unwrap();
     assert_eq!(view.location(), Some(final_location));
-    assert!(text(&mut view, 120, 36).contains(&format!("▸ {:06}  Ret", final_location.pc)));
+    assert!(text(&mut view, 120, 36).contains(&format!("▸ {:06}  return r2", final_location.pc)));
     press(&mut view, KeyCode::Char('r'));
     assert!(view.replay.starts_with("MATCHED"));
     assert_eq!(
@@ -160,9 +161,10 @@ fn timeline_values_and_source_follow_real_boundary_ordinals() {
 fn aggregate_navigation_escapes_control_text_and_clamps_selection() {
     let (record, _) = recording(RecordLimits::default(), None);
     let mut view = View::new(&record);
+    view.select(0);
     press(&mut view, KeyCode::Enter);
     let shown = text(&mut view, 120, 36);
-    assert!(shown.contains("initial"));
+    assert!(shown.contains("present at start"));
     assert!(shown.contains("line\\n\\u{1b}[2J"));
     assert!(!shown.contains('\u{1b}'));
     for _ in 0..10 {
@@ -287,11 +289,11 @@ fn wide_nodes_render_only_the_selected_viewport() {
     press(&mut view, KeyCode::Enter);
     assert_eq!(view.values().size_hint(), (20_000, Some(20_000)));
     let first = text(&mut view, 120, 36);
-    assert!(first.contains("field[0]"));
-    assert!(!first.contains("field[19999]"));
+    assert!(first.contains("Item[0]"));
+    assert!(!first.contains("Item[19999]"));
     press(&mut view, KeyCode::End);
     let last = text(&mut view, 120, 36);
-    assert!(last.contains("field[19999]  I64(19999)"));
+    assert!(last.contains("Item[19999]  19999 · i64"));
     assert!(last.len() < 120 * 36 * 4);
     press(&mut view, KeyCode::Down);
     assert_eq!(view.value_selected, 19_999);
@@ -307,6 +309,7 @@ fn wide_nodes_render_only_the_selected_viewport() {
 fn returning_to_parent_restores_selected_return_slot() {
     let (record, _) = recording(RecordLimits::default(), None);
     let mut view = View::new(&record);
+    view.select(0);
     press(&mut view, KeyCode::Down);
     press(&mut view, KeyCode::Tab);
     press(&mut view, KeyCode::Down); // raw return slot
@@ -324,6 +327,7 @@ fn compact_failures_keep_boundary_location_and_reason_visible() {
     use execution_tape_recording::{Divergence, ReplayBoundary, ReplayError};
     let (record, _) = recording(RecordLimits::default(), None);
     let mut view = View::new(&record);
+    view.select(0);
     view.replay = render::replay_error(&ReplayError::Diverged {
         boundary: ReplayBoundary::HostCall { index: 123 },
         location: Some(TraceLocation {
@@ -391,5 +395,85 @@ fn source_register_previews_report_omissions() {
     )
     .unwrap();
     let shown = render_text(&recorder.finish(), 180, 36).unwrap();
-    assert!(shown.contains("[1, 2, 3, 4, 5, 6, 7, 8] +4 more"));
+    assert!(shown.contains("r1, r2, r3, r4, r5, r6, r7, r8, … +4 more"));
+}
+
+#[test]
+fn scalar_previews_keep_exact_bits_lengths_and_argument_arity() {
+    let (record, _) = recording(RecordLimits::default(), None);
+    let arguments = [RecordedValue::I64(1), RecordedValue::I64(2)];
+    assert_eq!(
+        describe::arguments(&record, &arguments),
+        "1, 2",
+        "two scalar arguments must not be presented as one tuple argument"
+    );
+    let bits = 0x7ff8_0000_0000_0042;
+    assert!(describe::value(&record, &RecordedValue::F64(bits)).contains("7ff8000000000042"));
+    assert!(describe::value(&record, &RecordedValue::F64((-0.0_f64).to_bits())).contains("-0.0"));
+    let text = RecordedValue::Str("\n".repeat(1000).into());
+    let preview = describe::value(&record, &text);
+    assert!(preview.contains("1000 bytes"));
+    assert!(preview.contains('…'));
+    assert!(!preview.contains('\n'));
+    assert!(preview.len() < 200);
+}
+
+#[test]
+fn successful_void_return_is_not_presented_as_missing_capture() {
+    let mut builder = ProgramBuilder::new();
+    let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit]);
+    body.ret(0, &[]);
+    builder
+        .push_function_checked(
+            body,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+    let program = Arc::new(builder.build_verified().unwrap());
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    Vm::new(
+        Echo {
+            effects: Arc::new(AtomicUsize::new(0)),
+            error: None,
+        },
+        Limits::default(),
+    )
+    .run(
+        &program,
+        FuncId(0),
+        &[],
+        recorder.mask(),
+        Some(&mut recorder),
+    )
+    .unwrap();
+    let record = recorder.finish();
+    let initial = render_text(&record, 80, 24).unwrap();
+    assert!(initial.contains("End selects the guest outcome"));
+    assert!(!initial.contains("Select a host call"));
+    let mut view = View::new(&record);
+    press(&mut view, KeyCode::End);
+    assert!(text(&mut view, 80, 24).contains("returned successfully without values"));
+}
+
+#[test]
+fn keyboard_focus_has_a_double_border_and_explicit_target_at_compact_width() {
+    let (record, _) = recording(RecordLimits::default(), None);
+    let mut view = View::new(&record);
+    let events = text(&mut view, 80, 24);
+    assert!(events.contains("ACTIVE · EVENTS"));
+    assert_eq!(events.lines().nth(4).unwrap().chars().next(), Some('╔'));
+    assert!(events.contains("CALL VALUES · echo"));
+    assert!(events.contains("→ Argument[0]"));
+    assert!(events.contains("← Return[0]"));
+    press(&mut view, KeyCode::Tab);
+    let values = text(&mut view, 80, 24);
+    assert!(values.contains("ACTIVE · CALL VALUES"));
+    assert_eq!(values.lines().nth(4).unwrap().chars().next(), Some('┌'));
+    assert_eq!(values.lines().nth(7).unwrap().chars().nth(24), Some('╔'));
+    press(&mut view, KeyCode::BackTab);
+    assert!(text(&mut view, 80, 24).contains("ACTIVE · EVENTS"));
 }

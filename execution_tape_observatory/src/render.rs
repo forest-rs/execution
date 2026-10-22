@@ -1,8 +1,10 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use super::model::View;
-use execution_tape::host::HostError;
+use super::describe::host_error;
+pub(super) use super::describe::preview;
+use super::{describe, model::View};
+use execution_tape::disasm::{CallTarget, Operands};
 use execution_tape::vm::Trap;
 use execution_tape_recording::{
     Divergence, HostOutcome, Outcome, RecordedValue, ReplayBoundary, ReplayError,
@@ -11,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 const BG: Color = Color::Rgb(12, 18, 27);
 const FG: Color = Color::Rgb(198, 212, 219);
@@ -19,52 +21,6 @@ const MUTED: Color = Color::Rgb(105, 131, 148);
 const GREEN: Color = Color::Rgb(120, 222, 174);
 const BLUE: Color = Color::Rgb(123, 181, 233);
 const GOLD: Color = Color::Rgb(242, 196, 115);
-
-pub(super) fn preview(text: &str, limit: usize) -> String {
-    let mut output: String = text
-        .chars()
-        .take(limit)
-        .flat_map(char::escape_debug)
-        .collect();
-    if text.chars().nth(limit).is_some() {
-        output.push('…');
-    }
-    output
-}
-
-fn value_text(value: &RecordedValue) -> String {
-    match value {
-        RecordedValue::Str(value) => format!("str[{}] \"{}\"", value.len(), preview(value, 60)),
-        RecordedValue::Bytes(value) => {
-            let bytes: String = value
-                .iter()
-                .take(16)
-                .map(|byte| format!("{byte:02x} "))
-                .collect();
-            format!(
-                "bytes[{}] {bytes}{}",
-                value.len(),
-                if value.len() > 16 { "…" } else { "" }
-            )
-        }
-        RecordedValue::Agg(id) => format!("@{}  aggregate  ↵ open", id.get()),
-        RecordedValue::Closure { func, env } => {
-            format!("closure f{}  env @{}  ↵ open", func.0, env.get())
-        }
-        RecordedValue::F64(bits) => format!("f64 {:?}  bits {bits:016x}", f64::from_bits(*bits)),
-        _ => format!("{value:?}"),
-    }
-}
-
-fn host_error(error: &HostError) -> &'static str {
-    match error {
-        HostError::UnknownSymbol => "unknown symbol",
-        HostError::SignatureMismatch => "signature mismatch",
-        HostError::ProgramMismatch => "program mismatch",
-        HostError::Failed => "host failed",
-        HostError::Custom(_) => "typed host failure (payload retained)",
-    }
-}
 
 pub(super) fn trap_text(trap: &Trap) -> String {
     match trap {
@@ -128,46 +84,56 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
     }
 }
 
-fn registers(mut values: impl Iterator<Item = u32>) -> String {
-    let visible: Vec<_> = values.by_ref().take(8).collect();
-    let omitted = values.count();
-    if omitted == 0 {
-        format!("{visible:?}")
-    } else {
-        format!("{visible:?} +{omitted} more")
-    }
-}
-
 fn import_name(view: &View<'_>, index: usize) -> String {
-    let program = view.record.program().program();
-    program
-        .host_sig(view.calls[index].import)
-        .and_then(|entry| program.symbol_str(entry.symbol).ok())
-        .map_or_else(|| "<unknown import>".into(), |name| preview(name, 32))
+    describe::host(view.record, view.calls[index].import)
 }
 
 fn title(view: &View<'_>, index: usize) -> String {
     if index == 0 {
         return view.record.invocation().map_or_else(
-            || "ENTRY · missing".into(),
-            |entry| format!("ENTRY · f{} · {} args", entry.entry.0, entry.args.len()),
+            || "Start · not captured".into(),
+            |entry| format!("Start {}", describe::function(view.record, entry.entry)),
         );
     }
     if index <= view.calls.len() {
         return format!("#{:04}  {}", index - 1, import_name(view, index - 1));
     }
     match view.record.outcome() {
-        Some(Outcome::Returned(values)) => format!("RETURN · {} values", values.len()),
+        Some(Outcome::Returned(values)) => {
+            format!("Result: {}", describe::values(view.record, values))
+        }
         Some(Outcome::Trapped(_)) => "TRAP".into(),
         None => "OUTCOME · missing".into(),
     }
 }
 
 fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
+    let mut title = title.into();
+    if focused {
+        title.spans.insert(0, Span::raw(" ACTIVE ·"));
+    }
     Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(if focused { GREEN } else { MUTED }))
+        .border_type(if focused {
+            BorderType::Double
+        } else {
+            BorderType::Plain
+        })
+        .border_style(
+            Style::default()
+                .fg(if focused { GREEN } else { MUTED })
+                .add_modifier(if focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )
+        .title_style(
+            Style::default()
+                .fg(if focused { GREEN } else { BLUE })
+                .add_modifier(Modifier::BOLD),
+        )
 }
 
 pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
@@ -182,12 +148,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         return;
     }
     let rows = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Min(10),
         Constraint::Length(3),
     ])
     .split(area);
-    let stats = view.record.stats();
     let complete = view.record.status().is_ok();
     let header = vec![
         Line::from(vec![
@@ -196,16 +161,44 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                if complete { " COMPLETE " } else { " PARTIAL " },
+                if complete {
+                    " CAPTURE COMPLETE "
+                } else {
+                    " PARTIAL CAPTURE "
+                },
                 Style::default()
                     .fg(BG)
                     .bg(if complete { GREEN } else { GOLD }),
             ),
         ]),
         Line::from(format!(
-            " {} calls  ·  {} graph nodes  ·  {} values  ·  {} payload bytes",
-            stats.host_calls, stats.aggregates, stats.values, stats.payload_bytes
+            " {} · {}",
+            view.record.program().program().name().map_or_else(
+                || view.record.invocation().map_or_else(
+                    || "Unknown invocation".into(),
+                    |entry| describe::function(view.record, entry.entry)
+                ),
+                |name| preview(name, 44)
+            ),
+            match view.record.outcome() {
+                Some(Outcome::Returned(values)) =>
+                    format!("returned {}", describe::values(view.record, values)),
+                Some(Outcome::Trapped(_)) => "run trapped".into(),
+                None => "outcome not captured".into(),
+            }
         )),
+        Line::styled(
+            format!(
+                " Events: start → {} host calls → {}. Guest code runs between events.",
+                view.calls.len(),
+                match view.record.outcome() {
+                    Some(Outcome::Trapped(_)) => "trap",
+                    Some(Outcome::Returned(_)) => "result",
+                    None => "unknown outcome",
+                }
+            ),
+            Style::default().fg(MUTED),
+        ),
     ];
     frame.render_widget(Paragraph::new(header), rows[0]);
     let columns =
@@ -213,7 +206,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     timeline(frame, view, columns[0]);
     let right = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Percentage(50),
+        Constraint::Percentage(40),
         Constraint::Min(4),
     ])
     .split(columns[1]);
@@ -229,19 +222,25 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         .checked_sub(1)
         .and_then(|index| view.calls.get(index))
     {
-        let outcome = match call.outcome {
-            HostOutcome::Returned { values, extra_fuel } => {
-                format!("{} raw returns · extra fuel {extra_fuel}", values.len())
+        let name = import_name(view, view.selected - 1);
+        let response = match call.outcome {
+            HostOutcome::Returned { values, .. } => {
+                format!("returned {}", describe::values(view.record, values))
             }
-            HostOutcome::Failed(error) => host_error(error).into(),
+            HostOutcome::Failed(error) => format!("failed: {}", host_error(error)),
         };
-        format!(
-            "{} · f{} pc {:06} · import {}\n{outcome}",
-            title(view, view.selected),
-            call.location.func.0,
-            call.location.pc,
-            call.import.0
-        )
+        let mut detail = format!(
+            "Call #{}: {name}({}) {response}\nSignature: {}",
+            view.selected - 1,
+            describe::arguments(view.record, call.args),
+            describe::signature(view.record, call.import)
+        );
+        if let HostOutcome::Returned { extra_fuel, .. } = call.outcome
+            && extra_fuel != 0
+        {
+            detail.push_str(&format!("\nExtra fuel requested: {extra_fuel}"));
+        }
+        detail
     } else if let Some(Outcome::Trapped(trap)) = view
         .record
         .outcome()
@@ -285,10 +284,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         footer[0],
     );
     frame.render_widget(
-        Paragraph::new(
-            "↑↓/jk move  Tab focus  Enter open  Backspace up  PgUp/Dn Home/End  r replay  q quit",
-        )
-        .style(Style::default().fg(MUTED)),
+        Paragraph::new("↑↓/jk move  Tab pane  ↵ open  ⌫ up  PgUp/Dn Home/End  r replay  q quit")
+            .style(Style::default().fg(MUTED)),
         footer[1],
     );
 }
@@ -299,22 +296,22 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     let items: Vec<_> = (start..view.calls.len() + 2)
         .take(height)
         .map(|index| {
-            let position = index
-                .checked_sub(1)
-                .and_then(|index| view.calls.get(index))
-                .map_or_else(String::new, |call| {
-                    format!("   f{}:{:06}", call.location.func.0, call.location.pc)
-                });
-            ListItem::new(Line::from(vec![
-                Span::raw(title(view, index)),
-                Span::styled(position, Style::default().fg(MUTED)),
-            ]))
+            ListItem::new(Line::styled(
+                title(view, index),
+                Style::default().fg(if index == 0 {
+                    BLUE
+                } else if index <= view.calls.len() {
+                    FG
+                } else {
+                    GOLD
+                }),
+            ))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(view.selected - start));
     frame.render_stateful_widget(
         List::new(items)
-            .block(panel(" BOUNDARIES ", !view.values_focused))
+            .block(panel(" EVENTS ", !view.values_focused))
             .highlight_symbol("▸ ")
             .highlight_style(Style::default().fg(GREEN).bg(Color::Rgb(23, 44, 43))),
         area,
@@ -322,49 +319,222 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     );
 }
 
-fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
-    let height = usize::from(area.height.saturating_sub(2));
-    let start = view.value_selected.saturating_sub(height / 2);
-    let path = view
-        .path
-        .last()
-        .and_then(|&(id, _)| view.record.aggregate(id))
-        .map_or_else(
-            || " VALUES · roots ".into(),
-            |node| {
-                format!(
-                    " VALUES · @{} · {:?} · {} ",
-                    node.id.get(),
-                    node.kind,
-                    if node.initial {
-                        "initial"
-                    } else {
-                        "guest-created"
-                    }
-                )
-            },
+struct ValueSection<'a> {
+    title: String,
+    note: String,
+    label: &'static str,
+    values: &'a [RecordedValue],
+    base: usize,
+    empty: String,
+}
+
+fn value_section(frame: &mut Frame<'_>, view: &View<'_>, area: Rect, section: ValueSection<'_>) {
+    let selected = view
+        .value_selected
+        .checked_sub(section.base)
+        .filter(|&index| index < section.values.len());
+    let block = panel(section.title, view.values_focused).title_bottom(section.note);
+    if section.values.is_empty() {
+        frame.render_widget(
+            Paragraph::new(section.empty)
+                .wrap(Wrap { trim: false })
+                .block(block),
+            area,
         );
-    let items: Vec<_> = view
-        .values()
+        return;
+    }
+    let height = usize::from(area.height.saturating_sub(2));
+    let start = selected.unwrap_or(0).saturating_sub(height / 2);
+    let items: Vec<_> = section
+        .values
+        .iter()
+        .enumerate()
         .skip(start)
         .take(height)
-        .map(|(label, index, value)| {
+        .map(|(index, value)| {
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{label}[{index}]  "), Style::default().fg(BLUE)),
-                Span::raw(value_text(value)),
+                Span::styled(
+                    format!("{}[{index}]  ", section.label),
+                    Style::default().fg(MUTED),
+                ),
+                Span::raw(describe::value(view.record, value)),
             ]))
         })
         .collect();
-    let mut state = ListState::default().with_selected(if items.is_empty() {
-        None
-    } else {
-        Some(view.value_selected - start)
-    });
+    let mut state = ListState::default().with_selected(selected.map(|index| index - start));
     frame.render_stateful_widget(
         List::new(items)
-            .block(panel(path, view.values_focused))
+            .block(block)
             .highlight_symbol("▸ ")
             .highlight_style(Style::default().fg(GREEN)),
+        area,
+        &mut state,
+    );
+}
+
+fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
+    if let Some(node) = view
+        .path
+        .last()
+        .and_then(|&(id, _)| view.record.aggregate(id))
+    {
+        value_section(
+            frame,
+            view,
+            area,
+            ValueSection {
+                title: format!(
+                    " {} ITEMS · {} ",
+                    describe::aggregate_kind(node.kind).to_uppercase(),
+                    node.values.len()
+                ),
+                note: format!(
+                    "id @{} · {} · Backspace up",
+                    node.id.get(),
+                    if node.initial {
+                        "present at start"
+                    } else {
+                        "created during run"
+                    }
+                ),
+                label: "Item",
+                values: node.values,
+                base: 0,
+                empty: "This aggregate has no items.".into(),
+            },
+        );
+    } else if view.selected == 0 {
+        value_section(
+            frame,
+            view,
+            area,
+            ValueSection {
+                title: format!(
+                    " INPUTS TO {} ",
+                    view.record.invocation().map_or_else(
+                        || "GUEST".into(),
+                        |entry| describe::function(view.record, entry.entry)
+                    )
+                ),
+                note: "Values supplied when execution started".into(),
+                label: "Input",
+                values: view.record.invocation().map_or(&[], |entry| entry.args),
+                base: 0,
+                empty: if view.calls.is_empty() {
+                    "No entry arguments.\nEnd selects the guest outcome."
+                } else {
+                    "No entry arguments.\nSelect a host call to inspect what was sent and returned."
+                }
+                .into(),
+            },
+        );
+    } else if let Some(call) = view.calls.get(view.selected - 1) {
+        call_values(frame, view, area, call);
+    } else {
+        let returned = match view.record.outcome() {
+            Some(Outcome::Returned(values)) => values,
+            _ => &[],
+        };
+        value_section(
+            frame,
+            view,
+            area,
+            ValueSection {
+                title: " FINAL GUEST RESULT ".into(),
+                note: "Committed execution outcome".into(),
+                label: "Output",
+                values: returned,
+                base: 0,
+                empty: match view.record.outcome() {
+                    Some(Outcome::Returned(_)) => "Execution returned successfully without values.",
+                    Some(Outcome::Trapped(_)) => "Execution trapped; no successful return values.",
+                    None => "Final outcome not captured.",
+                }
+                .into(),
+            },
+        );
+    }
+}
+
+fn call_values(
+    frame: &mut Frame<'_>,
+    view: &View<'_>,
+    area: Rect,
+    call: &execution_tape_recording::HostCall<'_>,
+) {
+    let (returns, failure) = match call.outcome {
+        HostOutcome::Returned { values, .. } => (values, None),
+        HostOutcome::Failed(error) => (&[][..], Some(host_error(error))),
+    };
+    // Empty groups still get a descriptive row, but keyboard selection only visits values.
+    let sent_rows = call.args.len().max(1);
+    let row_count = sent_rows + returns.len().max(1);
+    let selected = if view.value_selected < call.args.len() {
+        Some(view.value_selected)
+    } else if view.value_selected - call.args.len() < returns.len() {
+        Some(sent_rows + view.value_selected - call.args.len())
+    } else {
+        None
+    };
+    let height = usize::from(area.height.saturating_sub(2));
+    let start = selected.unwrap_or(0).saturating_sub(height / 2);
+    let items: Vec<_> = (start..row_count)
+        .take(height)
+        .map(|row| {
+            let sent = row < sent_rows;
+            let index = if sent { row } else { row - sent_rows };
+            let value = if sent {
+                call.args.get(index)
+            } else {
+                returns.get(index)
+            };
+            let direction = if sent { "→" } else { "←" };
+            let label = if sent { "Argument" } else { "Return" };
+            let color = if sent {
+                BLUE
+            } else if failure.is_some() {
+                GOLD
+            } else {
+                GREEN
+            };
+            let spans = if let Some(value) = value {
+                vec![
+                    Span::styled(
+                        format!("{direction} {label}[{index}]  "),
+                        Style::default().fg(color),
+                    ),
+                    Span::raw(describe::value(view.record, value)),
+                ]
+            } else {
+                let message = if sent {
+                    "No arguments sent"
+                } else {
+                    failure.unwrap_or("Host returned no values")
+                };
+                vec![Span::styled(
+                    format!("{direction} {message}"),
+                    Style::default().fg(color),
+                )]
+            };
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(selected.map(|index| index - start));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(
+                panel(
+                    format!(" CALL VALUES · {} ", import_name(view, view.selected - 1)),
+                    view.values_focused,
+                )
+                .title_bottom("→ sent · ← returned before checks"),
+            )
+            .highlight_symbol("▸ ")
+            .highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .bg(Color::Rgb(23, 44, 43)),
+            ),
         area,
         &mut state,
     );
@@ -387,32 +557,55 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
         .take(height)
         .map(|instruction| {
             let current = Some(instruction.pc()) == location.map(|loc| loc.pc);
-            let reads = registers(instruction.reads());
-            let writes = registers(instruction.writes());
+            let (cue, color) = if let Some(edge) = instruction.edge(0) {
+                let backwards = edge.target <= instruction.pc()
+                    || instruction
+                        .edge(1)
+                        .is_some_and(|edge| edge.target <= instruction.pc());
+                (if backwards { "↰" } else { "↳" }, BLUE)
+            } else {
+                match instruction.operands() {
+                    Operands::Call(call) => (
+                        "⇢",
+                        match call.callee {
+                            CallTarget::HostSig(..) => GREEN,
+                            _ => BLUE,
+                        },
+                    ),
+                    Operands::Ret { .. } => ("↵", GOLD),
+                    Operands::Block { .. } => ("◆", BLUE),
+                    _ => (" ", FG),
+                }
+            };
             Line::styled(
                 format!(
-                    "{} {:06}  {:?}  read {reads} → write {writes}",
+                    "{} {:06}  {}  {cue}",
                     if current { "▸" } else { " " },
                     instruction.pc(),
-                    instruction.opcode()
+                    describe::instruction(view.record, instruction)
                 ),
-                Style::default().fg(if current { GOLD } else { MUTED }),
+                Style::default()
+                    .fg(if current { GOLD } else { color })
+                    .bg(if current { Color::Rgb(43, 35, 24) } else { BG }),
             )
         })
         .collect();
     frame.render_widget(
-        Paragraph::new(lines).block(panel(
-            format!(
-                " SOURCE · f{} · {} ",
-                source.func().0,
-                if view.selected == 0 {
-                    "entry context"
-                } else {
-                    "register IDs"
-                }
-            ),
-            false,
-        )),
+        Paragraph::new(lines).block(
+            panel(
+                format!(
+                    " SOURCE · {} · {} ",
+                    describe::function(view.record, source.func()),
+                    if view.selected == 0 {
+                        "entry context"
+                    } else {
+                        "rN = guest register"
+                    }
+                ),
+                false,
+            )
+            .title_bottom("↰ back / ↳ forward edge · static code"),
+        ),
         area,
     );
 }

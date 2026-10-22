@@ -183,5 +183,17 @@ mod tests {
             panic!("expected independent replay sum")
         };
         assert_eq!(output.values(), [Value::I64(42)]);
+        let screen = execution_tape_observatory::render_text(&record, 80, 24).unwrap();
+        assert!(screen.contains("Double and sum three samples"));
+        assert!(screen.contains("returned 42"));
+        assert!(screen.contains("6 host calls"));
+        assert!(screen.contains("read_sample(0) returned 7"));
+        assert!(screen.contains("read_sample(i64) → (i64)"));
+        assert!(screen.contains("CALL VALUES · read_sample"));
+        assert!(screen.contains("→ Argument[0]"));
+        assert!(screen.contains("← Return[0]"));
+        assert!(screen.contains("0 · i64"));
+        assert!(screen.contains("7 · i64"));
+        assert!(screen.contains("host read_sample(r1)"));
     }
 }

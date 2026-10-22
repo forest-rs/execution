@@ -8,11 +8,14 @@
 //! without taking over a terminal. Incomplete captures remain visible; replay reports their fault.
 //! This optional `std` adapter does not add dependencies to the VM or recording crates.
 //!
+//! The initial view selects the first host call, when present, with sent/returned values.
+//! The active keyboard pane has a double border and explicit title.
 //! The timeline contains boundary observations, not per-instruction or register history. Values
 //! use recording-local graph identities; object tokens do not reconstruct external objects.
 //! Replay uses the recording's ordinary checked replay and invokes no live host. Opaque typed
 //! error payloads are never formatted. Text/payload previews and graph expansion are bounded.
 
+mod describe;
 mod model;
 mod render;
 

@@ -35,7 +35,7 @@ impl<'a> View<'a> {
             source_index: 0,
             page_rows: 10,
         };
-        view.select(0);
+        view.select(if view.calls.is_empty() { 0 } else { 1 });
         view
     }
 
@@ -144,7 +144,7 @@ impl<'a> View<'a> {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
-            KeyCode::Tab => self.values_focused = !self.values_focused,
+            KeyCode::Tab | KeyCode::BackTab => self.values_focused = !self.values_focused,
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1, true),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(1, false),
             KeyCode::PageDown => self.move_by(self.page_rows, true),
@@ -172,9 +172,9 @@ impl<'a> View<'a> {
             KeyCode::Char('r') => {
                 self.replay = match self.record.replay() {
                     Ok(ReplayOutcome::Returned(values)) => format!(
-                        "MATCHED · {} roots · {} nodes",
+                        "MATCHED · guest result verified ({} value{})",
                         values.values().len(),
-                        values.aggregates().len_u32()
+                        if values.values().len() == 1 { "" } else { "s" }
                     ),
                     Ok(ReplayOutcome::Trapped(trap)) => format!(
                         "MATCHED trap · f{}:{:06} · {}",
