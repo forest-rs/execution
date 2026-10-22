@@ -35,6 +35,14 @@ impl Host for Echo {
 }
 
 fn recording(limits: RecordLimits, error: Option<HostError>) -> (Recording, Arc<AtomicUsize>) {
+    recording_with_calls(limits, error, true)
+}
+
+fn recording_with_calls(
+    limits: RecordLimits,
+    error: Option<HostError>,
+    calls: bool,
+) -> (Recording, Arc<AtomicUsize>) {
     let mut builder = ProgramBuilder::new();
     let import = builder.host_sig_for(
         "echo",
@@ -92,7 +100,11 @@ fn recording(limits: RecordLimits, error: Option<HostError>) -> (Recording, Arc<
         &program,
         FuncId(0),
         &[Value::Agg(root)],
-        recorder.mask(),
+        if calls {
+            recorder.mask()
+        } else {
+            execution_tape::trace::TraceMask::RUN | execution_tape::trace::TraceMask::VALUES
+        },
         Some(&mut recorder),
     );
     (recorder.finish(), effects)
@@ -132,7 +144,7 @@ fn timeline_values_and_source_follow_real_boundary_ordinals() {
         RecordedValue::I64(0)
     ));
     assert!(text(&mut view, 120, 36).contains("created during run"));
-    press(&mut view, KeyCode::Tab); // timeline focus again
+    press(&mut view, KeyCode::BackTab); // event focus again
     press(&mut view, KeyCode::Down);
     assert_eq!(view.selected, 2);
     press(&mut view, KeyCode::Enter);
@@ -143,7 +155,7 @@ fn timeline_values_and_source_follow_real_boundary_ordinals() {
     let shown = text(&mut view, 120, 36);
     assert!(shown.contains("#0001  echo"));
     assert!(shown.contains(&format!("▸ {:06}  r2 = host echo(r2)", location.pc)));
-    press(&mut view, KeyCode::Tab);
+    press(&mut view, KeyCode::BackTab);
     press(&mut view, KeyCode::End);
     let final_location = record.outcome_location().unwrap();
     assert_eq!(view.location(), Some(final_location));
@@ -476,4 +488,101 @@ fn keyboard_focus_has_a_double_border_and_explicit_target_at_compact_width() {
     assert_eq!(values.lines().nth(7).unwrap().chars().nth(24), Some('╔'));
     press(&mut view, KeyCode::BackTab);
     assert!(text(&mut view, 80, 24).contains("ACTIVE · EVENTS"));
+}
+
+#[test]
+fn selecting_a_caller_frame_moves_source_to_its_recorded_call_site() {
+    let mut b = ProgramBuilder::new();
+    let import = b.host_sig_for(
+        "echo",
+        HostSig {
+            args: vec![ValueType::I64],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let mut worker = Asm::new();
+    worker.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
+    worker
+        .host_call_sig_id(0, import, 0, &[1], &[2])
+        .ret(0, &[2]);
+    let worker = b
+        .push_function_checked(
+            worker,
+            FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+    b.set_function_name(worker, "worker").unwrap();
+    let mut caller = Asm::new();
+    caller.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
+    caller
+        .const_i64(1, 7)
+        .call(0, worker, 0, &[1], &[2])
+        .ret(0, &[2]);
+    let caller = b
+        .push_function_checked(
+            caller,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+    b.set_function_name(caller, "caller").unwrap();
+    let p = Arc::new(b.build_verified().unwrap());
+    let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
+    Vm::new(
+        Echo {
+            effects: Arc::new(AtomicUsize::new(0)),
+            error: None,
+        },
+        Limits::default(),
+    )
+    .run(&p, caller, &[], recorder.mask(), Some(&mut recorder))
+    .unwrap();
+    let record = recorder.finish();
+    let mut view = View::new(&record);
+    let locations: Vec<_> = view.stack().unwrap().collect();
+    assert_eq!(locations.len(), 2);
+    assert_eq!(view.location(), Some(locations[0]));
+    press(&mut view, KeyCode::Tab);
+    press(&mut view, KeyCode::Tab);
+    assert_eq!(view.focus, model::Focus::Stack);
+    press(&mut view, KeyCode::Down);
+    assert_eq!(view.location(), Some(locations[1]));
+    assert_eq!(view.source.as_ref().unwrap().func(), caller);
+    let shown = text(&mut view, 80, 24);
+    assert!(shown.contains("ACTIVE · STACK"));
+    assert!(shown.contains("call worker(r1)"));
+    assert!(shown.contains("suspended caller"));
+    assert!(shown.contains("7 · i64"));
+    press(&mut view, KeyCode::Up);
+    assert_eq!(view.location(), Some(locations[0]));
+    press(&mut view, KeyCode::Tab); // events
+    press(&mut view, KeyCode::End);
+    assert_eq!(view.frame_selected, 0);
+    assert_eq!(view.location(), record.outcome_location());
+    assert_eq!(view.stack().unwrap().len(), 1);
+}
+
+#[test]
+fn complete_value_only_capture_has_source_but_explicitly_unavailable_stack() {
+    let (record, _) = recording_with_calls(RecordLimits::default(), None, false);
+    record.status().unwrap();
+    let mut view = View::new(&record);
+    let location = view.calls[0].location;
+    assert!(view.stack().is_none());
+    press(&mut view, KeyCode::Tab);
+    press(&mut view, KeyCode::Tab);
+    let shown = text(&mut view, 80, 24);
+    assert!(shown.contains("CAPTURE COMPLETE"));
+    assert!(shown.contains("ACTIVE · STACK"));
+    assert!(shown.contains("No guest stack"));
+    assert!(shown.contains("observed at this"));
+    assert!(shown.contains("host echo(r2)"));
+    press(&mut view, KeyCode::Down);
+    assert_eq!(view.location(), Some(location));
+    assert_eq!(view.frame_selected, 0);
 }

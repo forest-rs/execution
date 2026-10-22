@@ -17,10 +17,15 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Inspect recorded guest callers in the Observatory stack pane. Cycle keyboard focus with
+  Tab/Shift+Tab and select a frame to move source to its captured call-site instruction.
+  The read/compute/store demo now includes a guest helper and compact call-value rows. ([#148][] by [@waywardmonkeys][])
+
+
 - Capture bounded guest activation ancestry in `execution_tape_recording`, with exact caller
   PCs, shared parent links and borrowed innermost-to-root `CallStack` iteration. Inspect
   `HostCall::stack` and `Recording::outcome_stack`; trap ancestry survives VM unwinding.
-  Replay checks captured activation order, caller locations and boundary ancestry.
+  Replay checks captured activation order, caller locations and boundary ancestry. ([#148][] by [@waywardmonkeys][])
 
 
 - Add a runnable block-argument comparison and Criterion benchmark in `execution_tape_wind_tunnel`.
@@ -80,11 +85,11 @@ This release has an [MSRV][] of 1.88.
 - `Recorder::mask` now includes `CALL`. Add `call_frames` to exhaustive `RecordLimits`
   initializers (or use `..Default::default()`); this budget counts all entered activations.
   Explicit masks that omit `CALL` retain value-only capture with unavailable stacks. Update
-  exhaustive `CaptureResource` and `Divergence` matches for the new stack cases.
+  exhaustive `CaptureResource` and `Divergence` matches for the new stack cases. ([#148][] by [@waywardmonkeys][])
 
 - Include the actual caller instruction in `ScopeKind::CallFrame::caller`, with `None` for
   the root activation. Entry metadata is preserved on normal and trapping exits. Update
-  exhaustive patterns to bind `caller` or use `..`, and supply it when constructing this variant.
+  exhaustive patterns to bind `caller` or use `..`, and supply it when constructing this variant. ([#148][] by [@waywardmonkeys][])
 
 - Declare every function register by transferring its kind `Vec` to `Asm::set_register_types`,
   including r0 (`Unit`), arguments and temporaries. Raw `FunctionDef` inputs now own `register_types` in place of `reg_count`.
@@ -217,5 +222,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#146]: https://github.com/forest-rs/execution/pull/146
 
 [#147]: https://github.com/forest-rs/execution/pull/147
+
+[#148]: https://github.com/forest-rs/execution/pull/148
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

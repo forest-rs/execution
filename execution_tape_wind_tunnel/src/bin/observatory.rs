@@ -8,7 +8,7 @@ use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
 use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceSink;
-use execution_tape::value::{FuncId, Value};
+use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
 use execution_tape_recording::{RecordLimits, Recorder, Recording};
 use std::sync::Arc;
@@ -77,10 +77,27 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
     builder.set_program_name("Double and sum three samples");
     let read = builder.host_sig_for("read_sample", read);
     let store = builder.host_sig_for("store_result", store);
+    let mut sample = Asm::new();
+    sample.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
+    sample.host_call_sig_id(0, read, 0, &[1], &[2]);
+    sample.const_i64(3, 2).i64_mul(4, 2, 3).ret(0, &[2, 4]);
+    let sample = builder.push_function_checked(
+        sample,
+        FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64, ValueType::I64],
+        },
+    )?;
+    builder.set_function_name(sample, "read_and_double")?;
     let mut body = Asm::new();
     body.set_register_types(vec![
         ValueType::Unit,
-        ValueType::I64,
         ValueType::I64,
         ValueType::I64,
         ValueType::I64,
@@ -97,24 +114,23 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
     let done = body.label();
     body.const_i64(1, 0)
         .const_i64(2, 3)
-        .const_i64(5, 2)
-        .const_i64(8, 0)
-        .const_i64(10, 1)
+        .const_i64(7, 0)
+        .const_i64(9, 1)
         .jmp(head);
     body.place(head)?;
-    body.host_call_sig_id(0, read, 0, &[1], &[3]);
-    body.i64_mul(4, 3, 5).tuple_new(6, &[1, 3, 4]);
-    body.host_call_sig_id(0, store, 0, &[6], &[7]);
-    body.br(7, accepted, rejected);
+    body.call(0, sample, 0, &[1], &[3, 4])
+        .tuple_new(5, &[1, 3, 4]);
+    body.host_call_sig_id(0, store, 0, &[5], &[6])
+        .br(6, accepted, rejected);
     body.place(accepted)?;
-    body.i64_add(8, 8, 4)
-        .i64_add(1, 1, 10)
-        .i64_lt(9, 1, 2)
-        .br(9, head, done);
+    body.i64_add(7, 7, 4)
+        .i64_add(1, 1, 9)
+        .i64_lt(8, 1, 2)
+        .br(8, head, done);
     body.place(rejected)?;
     body.trap(1);
     body.place(done)?;
-    body.ret(0, &[8]);
+    body.ret(0, &[7]);
     let entry = builder.push_function_checked(
         body,
         FunctionSig {
@@ -127,13 +143,7 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
     let bindings = functions.bind(&program)?;
     let mut vm = Vm::new(bindings.with_state(Stored::new()), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-    let output = vm.run(
-        &program,
-        FuncId(0),
-        &[],
-        recorder.mask(),
-        Some(&mut recorder),
-    )?;
+    let output = vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))?;
     if output != [Value::I64(42)] || vm.host().state() != &[[0, 7, 14], [1, 5, 10], [2, 9, 18]] {
         return Err("demo did not produce the expected stored samples and sum".into());
     }
@@ -170,6 +180,9 @@ mod tests {
         let record = demo_recording().unwrap();
         let calls: Vec<_> = record.host_calls().collect();
         assert_eq!(calls.len(), 6);
+        assert_eq!(record.stats().call_frames, 4);
+        assert_eq!(calls[0].stack.as_ref().unwrap().len(), 2);
+        assert_eq!(calls[1].stack.as_ref().unwrap().len(), 1);
         assert_ne!(calls[0].import, calls[1].import);
         assert_ne!(calls[0].location, calls[1].location);
         assert_eq!(calls[0].location, calls[2].location);
@@ -195,5 +208,8 @@ mod tests {
         assert!(screen.contains("0 · i64"));
         assert!(screen.contains("7 · i64"));
         assert!(screen.contains("host read_sample(r1)"));
+        assert!(screen.contains("STACK · 2"));
+        assert!(screen.contains("read_and_double"));
+        assert!(screen.contains("double_and_sum"));
     }
 }

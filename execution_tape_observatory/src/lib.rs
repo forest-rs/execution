@@ -4,12 +4,13 @@
 //! Explore a borrowed in-memory VM recording in a terminal.
 //!
 //! [`explore`] connects invocation/host-call/outcome navigation, immediate aggregate inspection,
-//! source instruction context and checked replay. [`render_text`] renders the same initial view
+//! source instruction context, captured guest callers and checked replay. [`render_text`] renders the same initial view
 //! without taking over a terminal. Incomplete captures remain visible; replay reports their fault.
 //! This optional `std` adapter does not add dependencies to the VM or recording crates.
 //!
 //! The initial view selects the first host call, when present, with sent/returned values.
-//! The active keyboard pane has a double border and explicit title.
+//! Tab cycles events, values and guest stack; the active pane has a double border and title.
+//! Selecting a caller frame moves source to its actual suspended call instruction.
 //! The timeline contains boundary observations, not per-instruction or register history. Values
 //! use recording-local graph identities; object tokens do not reconstruct external objects.
 //! Replay uses the recording's ordinary checked replay and invokes no live host. Opaque typed

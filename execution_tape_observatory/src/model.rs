@@ -4,16 +4,24 @@
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
 use execution_tape::trace::TraceLocation;
 use execution_tape_recording::{
-    AggregateId, HostCall, HostOutcome, Outcome, RecordedValue, Recording, ReplayOutcome,
+    AggregateId, CallStack, HostCall, HostOutcome, Outcome, RecordedValue, Recording, ReplayOutcome,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Focus {
+    Events,
+    Values,
+    Stack,
+}
 
 pub(super) struct View<'a> {
     pub(super) record: &'a Recording,
     pub(super) calls: Vec<HostCall<'a>>,
     pub(super) selected: usize,
     pub(super) value_selected: usize,
-    pub(super) values_focused: bool,
+    pub(super) focus: Focus,
+    pub(super) frame_selected: usize,
     pub(super) path: Vec<(AggregateId, usize)>,
     pub(super) replay: String,
     pub(super) source: Option<FunctionDisassembly<'a>>,
@@ -28,7 +36,8 @@ impl<'a> View<'a> {
             calls: record.host_calls().collect(),
             selected: 0,
             value_selected: 0,
-            values_focused: false,
+            focus: Focus::Events,
+            frame_selected: 0,
             path: Vec::new(),
             replay: "not checked · r to replay".into(),
             source: None,
@@ -39,7 +48,23 @@ impl<'a> View<'a> {
         view
     }
 
+    pub(super) fn stack(&self) -> Option<CallStack<'a>> {
+        if self.selected == 0 {
+            None
+        } else if let Some(call) = self.calls.get(self.selected - 1) {
+            call.stack.clone()
+        } else {
+            self.record.outcome_stack()
+        }
+    }
+
     pub(super) fn location(&self) -> Option<TraceLocation> {
+        if let Some(location) = self
+            .stack()
+            .and_then(|mut stack| stack.nth(self.frame_selected))
+        {
+            return Some(location);
+        }
         if self.selected == 0 {
             return self.record.invocation().map(|entry| TraceLocation {
                 func: entry.entry,
@@ -57,6 +82,11 @@ impl<'a> View<'a> {
         self.selected = selected.min(self.calls.len() + 1);
         self.path.clear();
         self.value_selected = 0;
+        self.frame_selected = 0;
+        self.update_source(previous);
+    }
+
+    fn update_source(&mut self, previous: Option<TraceLocation>) {
         let location = self.location();
         if self.source.as_ref().map(FunctionDisassembly::func) != location.map(|loc| loc.func) {
             self.source = location.and_then(|loc| {
@@ -122,21 +152,31 @@ impl<'a> View<'a> {
     }
 
     fn move_by(&mut self, amount: usize, forward: bool) {
-        let current = if self.values_focused {
-            self.value_selected
-        } else {
-            self.selected
+        let current = match self.focus {
+            Focus::Values => self.value_selected,
+            Focus::Events => self.selected,
+            Focus::Stack => self.frame_selected,
         };
         let next = if forward {
             current.saturating_add(amount)
         } else {
             current.saturating_sub(amount)
         };
-        if self.values_focused {
-            let count = self.values().size_hint().0;
-            self.value_selected = next.min(count.saturating_sub(1));
-        } else {
-            self.select(next);
+        match self.focus {
+            Focus::Events => self.select(next),
+            Focus::Values => {
+                let count = self.values().size_hint().0;
+                self.value_selected = next.min(count.saturating_sub(1));
+            }
+            Focus::Stack => {
+                let previous = self.location();
+                self.frame_selected = next.min(
+                    self.stack()
+                        .map_or(0, |stack| stack.len())
+                        .saturating_sub(1),
+                );
+                self.update_source(previous);
+            }
         }
     }
 
@@ -144,14 +184,27 @@ impl<'a> View<'a> {
         match key.code {
             KeyCode::Char('q') => return false,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
-            KeyCode::Tab | KeyCode::BackTab => self.values_focused = !self.values_focused,
+            KeyCode::Tab => {
+                self.focus = match self.focus {
+                    Focus::Events => Focus::Values,
+                    Focus::Values => Focus::Stack,
+                    Focus::Stack => Focus::Events,
+                }
+            }
+            KeyCode::BackTab => {
+                self.focus = match self.focus {
+                    Focus::Events => Focus::Stack,
+                    Focus::Stack => Focus::Values,
+                    Focus::Values => Focus::Events,
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1, true),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(1, false),
             KeyCode::PageDown => self.move_by(self.page_rows, true),
             KeyCode::PageUp => self.move_by(self.page_rows, false),
             KeyCode::Home => self.move_by(usize::MAX, false),
             KeyCode::End => self.move_by(usize::MAX, true),
-            KeyCode::Enter => {
+            KeyCode::Enter if self.focus != Focus::Stack => {
                 let id =
                     self.values()
                         .nth(self.value_selected)
@@ -163,7 +216,7 @@ impl<'a> View<'a> {
                 if let Some(id) = id {
                     self.path.push((id, self.value_selected));
                     self.value_selected = 0;
-                    self.values_focused = true;
+                    self.focus = Focus::Values;
                 }
             }
             KeyCode::Backspace | KeyCode::Esc => {

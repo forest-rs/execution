@@ -12,7 +12,7 @@ cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
 
 The example reads three fixed samples (7, 5, 9) through `read_sample`, doubles each in guest
-code, and passes each `(index, sample, doubled)` tuple to `store_result`. It returns their sum,
+code through the guest function `read_and_double`, and passes each `(index, sample, doubled)` tuple to `store_result`. It returns their sum,
 42. The six real host calls are captured before the original VM and host state are dropped.
 The initial view selects the first host call and shows the final guest result above it.
 Recorded events are the invocation, host calls and completion; guest instructions execute between
@@ -21,11 +21,16 @@ blue `→ Argument` rows sent to the host and green `← Return` rows received b
 checks. Values start with their contents; aggregate IDs are secondary. Open a tuple, array, struct
 or closure environment to inspect its immediate fields.
 
+The guest stack pane shows actual recorded activations, innermost first. A read call has
+`read_and_double` above `double_and_sum`; a store call has only `double_and_sum` after the helper
+has returned. Focus the stack and select a caller to move source to its suspended call instruction.
+Stacks contain guest frames; missing observations are shown explicitly.
+
 The source pane shows named call operands and guest registers. Colored call/return instructions
 and backward/forward edge arrows help read static control flow; they do not identify every taken
 branch. Source registers are operands, not captured register-value history.
 
-Use arrows or `j`/`k` to navigate. `Tab` switches between events and values; a bold green
+Use arrows or `j`/`k` to navigate. `Tab` cycles events, values and stack (`Shift+Tab` reverses); a bold green
 double border and `ACTIVE` title mark the keyboard target. Use `Enter` to open an aggregate/closure
 environment, and `Backspace` to return to the previous field. `PageUp`/`PageDown` move by a screen;
 `Home`/`End` jump to the first/last item in the focused pane. `r` runs
