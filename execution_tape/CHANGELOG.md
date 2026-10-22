@@ -17,8 +17,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Draw static source control flow in the Observatory with independent colored edge lanes,
+  conditional-arm labels and target arrows. Count excess edges explicitly. ([#149][] by [@waywardmonkeys][])
+
+
 - Add syntax/value colors to the Observatory using an indexed 256-color palette, without
-  requiring 24-bit RGB support. The demo accepts `--color=always` to explicitly override `NO_COLOR`.
+  requiring 24-bit RGB support. The demo accepts `--color=always` to explicitly override `NO_COLOR`. ([#149][] by [@waywardmonkeys][])
 
 
 - Inspect recorded guest callers in the Observatory stack pane. Cycle keyboard focus with
@@ -229,5 +233,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#147]: https://github.com/forest-rs/execution/pull/147
 
 [#148]: https://github.com/forest-rs/execution/pull/148
+
+[#149]: https://github.com/forest-rs/execution/pull/149
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

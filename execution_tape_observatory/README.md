@@ -31,8 +31,10 @@ The guest stack pane shows actual recorded activations, innermost first. A read 
 has returned. Focus the stack and select a caller to move source to its suspended call instruction.
 Stacks contain guest frames; missing observations are shown explicitly.
 
-The source pane shows named call operands and guest registers. Colored call/return instructions and backward/forward markers show static code structure;
-they do not identify every taken branch. Source registers are operands, not captured register-value history. Syntax colors distinguish
+The source pane shows named call operands and guest registers. A colored gutter connects static branch sources and targets in independent lanes. `T` and `F`
+label conditional arms; `▶` marks a target, and `↑`/`↓` indicate lines continuing outside the
+viewport. Self-loops use `↺`. Four lanes keep the display bounded; excess edges are explicitly
+counted as hidden. These lines show possible control flow, not every taken branch. Source registers are operands, not captured register-value history. Syntax colors distinguish
 registers, literals, operations and callees; value contents stand out from secondary type labels.
 The palette uses indexed xterm-256 colors without requiring 24-bit RGB support. The demo honors
 `NO_COLOR` by default; `--color=always` explicitly overrides it for the interactive viewer.

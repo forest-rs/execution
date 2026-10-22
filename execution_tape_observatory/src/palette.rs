@@ -14,3 +14,4 @@ pub(super) const GOLD: Color = Color::Indexed(221);
 pub(super) const PURPLE: Color = Color::Indexed(177);
 pub(super) const CYAN: Color = Color::Indexed(87);
 pub(super) const ROSE: Color = Color::Indexed(211);
+pub(super) const LANES: [Color; 4] = [PURPLE, GOLD, CYAN, ROSE];
