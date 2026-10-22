@@ -30,6 +30,11 @@ execution_graph = { path = "execution_graph", version = "0.0.1" }
 execution_tape_recording = { path = "execution_tape_recording", version = "0.0.1" }
 execution_tape_observatory = { path = "execution_tape_observatory", version = "0.0.1" }
 
+# Shared by the optional terminal adapter and its executable demo.
+ratatui = { version = "0.30.2", default-features = false, features = [
+  "crossterm",
+] }
+
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7
 rust.unsafe_code = "deny"

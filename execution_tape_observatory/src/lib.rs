@@ -18,7 +18,9 @@
 
 mod describe;
 mod model;
+mod palette;
 mod render;
+mod syntax;
 
 #[cfg(test)]
 mod tests;

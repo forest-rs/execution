@@ -7,7 +7,7 @@ recording; capture, immutable value ownership, completeness and replay remain in
 From the workspace, run:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --color=always
 cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
 
@@ -31,9 +31,11 @@ The guest stack pane shows actual recorded activations, innermost first. A read 
 has returned. Focus the stack and select a caller to move source to its suspended call instruction.
 Stacks contain guest frames; missing observations are shown explicitly.
 
-The source pane shows named call operands and guest registers. Colored call/return instructions
-and backward/forward edge arrows help read static control flow; they do not identify every taken
-branch. Source registers are operands, not captured register-value history.
+The source pane shows named call operands and guest registers. Colored call/return instructions and backward/forward markers show static code structure;
+they do not identify every taken branch. Source registers are operands, not captured register-value history. Syntax colors distinguish
+registers, literals, operations and callees; value contents stand out from secondary type labels.
+The palette uses indexed xterm-256 colors without requiring 24-bit RGB support. The demo honors
+`NO_COLOR` by default; `--color=always` explicitly overrides it for the interactive viewer.
 
 Use arrows or `j`/`k` to navigate. `Tab` cycles events, values and stack (`Shift+Tab` reverses); a bold green
 double border and `ACTIVE` title mark the keyboard target. Use `Enter` to open an aggregate/closure

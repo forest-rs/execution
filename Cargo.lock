@@ -439,6 +439,7 @@ dependencies = [
  "execution_tape",
  "execution_tape_observatory",
  "execution_tape_recording",
+ "ratatui",
 ]
 
 [[package]]

@@ -154,12 +154,20 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    if !args.is_empty() && args != ["--snapshot"] {
-        return Err("usage: observatory [--snapshot]".into());
+    let mut snapshot = false;
+    let mut force_colors = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--snapshot" => snapshot = true,
+            "--color=always" => force_colors = true,
+            _ => return Err("usage: observatory [--snapshot] [--color=always]".into()),
+        }
     }
     let record = demo_recording()?;
-    if args.is_empty() {
+    if !snapshot {
+        if force_colors {
+            ratatui::crossterm::style::force_color_output(true);
+        }
         execution_tape_observatory::explore(&record)?;
     } else {
         print!(

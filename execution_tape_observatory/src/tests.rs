@@ -154,12 +154,21 @@ fn timeline_values_and_source_follow_real_boundary_ordinals() {
     ));
     let shown = text(&mut view, 120, 36);
     assert!(shown.contains("#0001  echo"));
-    assert!(shown.contains(&format!("▸ {:06}  r2 = host echo(r2)", location.pc)));
+    let source_row = shown
+        .lines()
+        .find(|line| line.contains(&format!("▸ {:06}", location.pc)))
+        .unwrap();
+    assert!(source_row.contains("r2 = host echo(r2)"));
     press(&mut view, KeyCode::BackTab);
     press(&mut view, KeyCode::End);
     let final_location = record.outcome_location().unwrap();
     assert_eq!(view.location(), Some(final_location));
-    assert!(text(&mut view, 120, 36).contains(&format!("▸ {:06}  return r2", final_location.pc)));
+    let shown = text(&mut view, 120, 36);
+    let source_row = shown
+        .lines()
+        .find(|line| line.contains(&format!("▸ {:06}", final_location.pc)))
+        .unwrap();
+    assert!(source_row.contains("return r2"));
     press(&mut view, KeyCode::Char('r'));
     assert!(view.replay.starts_with("MATCHED"));
     assert_eq!(
@@ -608,4 +617,41 @@ fn application_entry_is_separate_from_guest_frames_and_uses_captured_inputs() {
     let shown = render_text(&partial, 80, 24).unwrap();
     assert!(shown.contains("Invocation inputs unavailable"));
     assert!(!shown.contains("Application →"));
+}
+
+#[test]
+fn actual_source_and_values_use_distinct_indexed_colors() {
+    let (record, _) = recording(RecordLimits::default(), None);
+    let mut view = View::new(&record);
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut view))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut found = false;
+    for y in 0..36 {
+        let symbols: Vec<_> = (0..120).map(|x| buffer[(x, y)].symbol()).collect();
+        if symbols.concat().contains("host echo(r2)") {
+            let reg = symbols
+                .windows(2)
+                .position(|word| word == ["r", "2"])
+                .unwrap();
+            let host = symbols
+                .windows(4)
+                .position(|word| word == ["h", "o", "s", "t"])
+                .unwrap();
+            assert_eq!(buffer[(u16::try_from(reg).unwrap(), y)].fg, palette::CYAN);
+            assert_eq!(buffer[(u16::try_from(host).unwrap(), y)].fg, palette::GREEN);
+            found = true;
+        }
+    }
+    assert!(found, "source must retain the actual host-call instruction");
+    let colors: std::collections::HashSet<_> = buffer.content.iter().map(|cell| cell.fg).collect();
+    assert!(colors.contains(&palette::GOLD));
+    assert!(colors.contains(&palette::BLUE));
+    assert!(
+        colors
+            .iter()
+            .all(|color| !matches!(color, ratatui::style::Color::Rgb(..)))
+    );
 }
