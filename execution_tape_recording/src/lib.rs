@@ -279,6 +279,20 @@ impl Recording {
         }
     }
 
+    /// Returns the final return/trap instruction when the VM outcome was captured.
+    ///
+    /// Rejected invocations can report the VM's synthetic entry location. A root return's
+    /// location refers to its precommit candidate, before aggregate handles are compacted.
+    pub fn outcome_location(&self) -> Option<TraceLocation> {
+        match self.end.as_ref()? {
+            End::Returned => self.candidate.as_ref().map(|(location, _)| *location),
+            End::Trapped(trap) => Some(TraceLocation {
+                func: trap.func,
+                pc: trap.pc,
+            }),
+        }
+    }
+
     /// Returns used storage counts, not allocator traffic, capacity or RSS.
     pub fn stats(&self) -> RecordStats {
         RecordStats {
