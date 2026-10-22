@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Browse compiled programs with Observatory `browse` / `render_program`. Search functions,
+  inspect imports/constants/aggregate types, follow calls and control-flow edges, and navigate
+  rejected-program diagnostics without execution. Existing recording views remain available.
+
 - Query `VerifyError::function` and `pc` to locate rejected instructions or function contracts
   without parsing diagnostic text. Program-wide errors have no function location. ([#150][] by [@waywardmonkeys][])
 

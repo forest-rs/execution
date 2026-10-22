@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Terminal exploration of Execution Tape recordings."
+description = "Terminal exploration of Execution Tape programs and recordings."
 readme = "README.md"
 keywords = ["vm", "debugging", "tui"]
 categories = ["development-tools::debugging"]
@@ -14,7 +14,8 @@ categories = ["development-tools::debugging"]
 [dependencies]
 execution_tape.workspace = true
 execution_tape_recording.workspace = true
-ratatui.workspace = true
+# Used to bound scrolling by the actual wrapped paragraph height.
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 
 [lints]
 workspace = true

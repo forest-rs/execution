@@ -1,6 +1,6 @@
 # Execution Tape Observatory
 
-A terminal explorer for real, owned Execution Tape recordings. The optional `std` UI borrows a
+A terminal browser for compiled Execution Tape programs and real, owned recordings. The optional `std` UI borrows a
 recording; capture, immutable value ownership, completeness and replay remain in
 `execution_tape_recording`. The core VM and recorder have no terminal dependencies.
 
@@ -10,6 +10,29 @@ From the workspace, run:
 cargo run -p execution_tape_wind_tunnel --bin observatory -- --color=always
 cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
+
+Browse a decoded program with `browse(&program)`, or render the same initial view headlessly
+with `render_program(&program, width, height)`. Program browsing does not create a VM or recording,
+or invoke any host. Existing recording entry points keep their behavior.
+
+The program browser verifies once on opening. Rejected programs remain inspectable and open at
+the reported function/instruction when one is available; `d` returns to that diagnostic.
+Program-wide failures do not invent an instruction location. Malformed instructions and signatures
+are shown explicitly, while other functions and tables remain navigable.
+
+Use `[` and `]` to switch between functions, imports, constants and aggregate types. `/` searches
+visible labels (case sensitive); `Enter` applies the filter, and `Esc` clears it. Select a function,
+then `Enter` focuses its instructions. In the instruction pane, `Enter` follows a direct guest call,
+host import, jump or true branch arm; `f` follows the false arm. `Backspace` returns to the exact
+previous instruction. Indirect runtime callees are explicitly unknown. The last 256 followed
+locations are retained. `Tab`/`Shift+Tab` cycle the navigator, instructions and scrollable details;
+arrows, page keys and `Home`/`End` operate on the focused pane. `q` quits.
+
+Details show signatures, selected operand register declarations, constant previews and aggregate
+layouts, distinguishing static types from runtime values. Span identifiers are displayed when
+present; they are **not yet source-file links**. Previews and large operand/field lists have
+explicit bounds. The adapter enables Ratatui's `unstable-rendered-line-info` feature to scroll
+details by their actual wrapped height; no terminal dependency enters the VM.
 
 The example reads three fixed samples (7, 5, 9) through `read_sample`, doubles each in guest
 code through the guest function `read_and_double`, and passes each `(index, sample, doubled)` tuple to `store_result`. It returns their sum,
