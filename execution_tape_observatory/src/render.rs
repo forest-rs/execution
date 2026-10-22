@@ -3,7 +3,10 @@
 
 use super::describe::host_error;
 pub(super) use super::describe::preview;
-use super::{describe, model::View};
+use super::{
+    describe,
+    model::{Focus, View},
+};
 use execution_tape::disasm::{CallTarget, Operands};
 use execution_tape::vm::Trap;
 use execution_tape_recording::{
@@ -204,17 +207,42 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     frame.render_widget(Paragraph::new(header), rows[0]);
     let columns =
         Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(rows[1]);
-    timeline(frame, view, columns[0]);
+    let left = Layout::vertical([Constraint::Percentage(60), Constraint::Min(4)]).split(columns[0]);
+    timeline(frame, view, left[0]);
+    stack(frame, view, left[1]);
+    let value_count = view.values().size_hint().0;
+    let value_rows = if view.path.is_empty()
+        && let Some(call) = view
+            .selected
+            .checked_sub(1)
+            .and_then(|index| view.calls.get(index))
+    {
+        let returns = match call.outcome {
+            HostOutcome::Returned { values, .. } => values.len(),
+            HostOutcome::Failed(_) => 0,
+        };
+        call.args
+            .len()
+            .max(1)
+            .saturating_add(returns.max(1))
+            .saturating_add(2)
+    } else if value_count == 0 {
+        6
+    } else {
+        value_count.saturating_add(2)
+    };
+    // Keep small calls compact; large aggregates get a viewport without crowding source.
+    let value_height = value_rows.clamp(4, (usize::from(rows[1].height) * 40 / 100).max(4));
     let right = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Percentage(40),
+        Constraint::Length(u16::try_from(value_height).expect("bounded by terminal height")),
         Constraint::Min(4),
     ])
     .split(columns[1]);
-    view.page_rows = usize::from(if view.values_focused {
-        right[1].height
-    } else {
-        columns[0].height
+    view.page_rows = usize::from(match view.focus {
+        Focus::Values => right[1].height,
+        Focus::Events => left[0].height,
+        Focus::Stack => left[1].height,
     })
     .saturating_sub(2)
     .max(1);
@@ -312,9 +340,55 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     let mut state = ListState::default().with_selected(Some(view.selected - start));
     frame.render_stateful_widget(
         List::new(items)
-            .block(panel(" EVENTS ", !view.values_focused))
+            .block(panel(" EVENTS ", view.focus == Focus::Events))
             .highlight_symbol("▸ ")
             .highlight_style(Style::default().fg(GREEN).bg(Color::Rgb(23, 44, 43))),
+        area,
+        &mut state,
+    );
+}
+
+fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
+    let title = view.stack().map_or_else(
+        || " STACK ".into(),
+        |stack| format!(" STACK · {} ", stack.len()),
+    );
+    let block = panel(title, view.focus == Focus::Stack).title_bottom("guest · leaf → root");
+    let Some(stack) = view.stack() else {
+        frame.render_widget(
+            Paragraph::new("No guest stack observed at this event.")
+                .wrap(Wrap { trim: false })
+                .block(block),
+            area,
+        );
+        return;
+    };
+    let height = usize::from(area.height.saturating_sub(2));
+    let start = view.frame_selected.saturating_sub(height / 2);
+    let items: Vec<_> = stack
+        .enumerate()
+        .skip(start)
+        .take(height)
+        .map(|(index, location)| {
+            ListItem::new(Line::styled(
+                format!(
+                    "#{index} {}",
+                    describe::function(view.record, location.func)
+                ),
+                Style::default().fg(if index == 0 { GREEN } else { BLUE }),
+            ))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(view.frame_selected - start));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(block)
+            .highlight_symbol("▸ ")
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Rgb(23, 44, 43))
+                    .add_modifier(Modifier::BOLD),
+            ),
         area,
         &mut state,
     );
@@ -334,7 +408,7 @@ fn value_section(frame: &mut Frame<'_>, view: &View<'_>, area: Rect, section: Va
         .value_selected
         .checked_sub(section.base)
         .filter(|&index| index < section.values.len());
-    let block = panel(section.title, view.values_focused).title_bottom(section.note);
+    let block = panel(section.title, view.focus == Focus::Values).title_bottom(section.note);
     if section.values.is_empty() {
         frame.render_widget(
             Paragraph::new(section.empty)
@@ -526,7 +600,7 @@ fn call_values(
             .block(
                 panel(
                     format!(" CALL VALUES · {} ", import_name(view, view.selected - 1)),
-                    view.values_focused,
+                    view.focus == Focus::Values,
                 )
                 .title_bottom("→ sent · ← returned before checks"),
             )
@@ -597,7 +671,9 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 format!(
                     " SOURCE · {} · {} ",
                     describe::function(view.record, source.func()),
-                    if view.selected == 0 {
+                    if view.frame_selected > 0 {
+                        "suspended caller"
+                    } else if view.selected == 0 {
                         "entry context"
                     } else {
                         "rN = guest register"
