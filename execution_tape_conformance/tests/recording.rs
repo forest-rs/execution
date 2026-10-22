@@ -169,6 +169,7 @@ fn deep_graphs_are_walked_iteratively_and_repeated_host_boundaries_keep_one_copy
 }
 
 #[test]
+#[cfg_attr(panic = "abort", ignore = "requires an unwinding panic runtime")]
 fn unwinding_host_leaves_an_explicitly_incomplete_recording() {
     struct Panics;
     impl Host for Panics {
