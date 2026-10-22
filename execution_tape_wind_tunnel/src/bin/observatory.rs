@@ -208,6 +208,9 @@ mod tests {
         assert!(screen.contains("0 · i64"));
         assert!(screen.contains("7 · i64"));
         assert!(screen.contains("host read_sample(r1)"));
+        assert!(screen.contains("Application → double_and_sum() · VM invocation"));
+        assert!(screen.contains("App → double_and_sum"));
+        assert!(screen.contains("root ← Application"));
         assert!(screen.contains("STACK · 2"));
         assert!(screen.contains("read_and_double"));
         assert!(screen.contains("double_and_sum"));
