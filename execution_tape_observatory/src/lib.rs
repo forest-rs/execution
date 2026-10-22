@@ -41,16 +41,34 @@ use std::io;
 /// synchronously with the recorded guest limits. Heap reconstruction and output retention
 /// add work and memory beyond guest fuel; a long replay pauses the UI.
 pub fn explore(record: &Recording) -> io::Result<()> {
+    interact(View::new(record))
+}
+
+trait Screen {
+    fn draw(&mut self, frame: &mut ratatui::Frame<'_>);
+    fn key(&mut self, key: event::KeyEvent) -> bool;
+}
+
+impl Screen for View<'_> {
+    fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
+        render::draw(frame, self);
+    }
+
+    fn key(&mut self, key: event::KeyEvent) -> bool {
+        View::key(self, key)
+    }
+}
+
+fn interact(mut screen: impl Screen) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let guard = TerminalGuard;
     execute!(io::stdout(), terminal::EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut view = View::new(record);
     loop {
-        terminal.draw(|frame| render::draw(frame, &mut view))?;
+        terminal.draw(|frame| screen.draw(frame))?;
         if let event::Event::Key(key) = event::read()?
             && key.is_press()
-            && !view.key(key)
+            && !screen.key(key)
         {
             break;
         }
@@ -77,6 +95,10 @@ impl Drop for TerminalGuard {
 /// Useful for headless inspection and reproducible review artifacts. The replay status remains
 /// "not checked". Dimensions must be within 40..=240 columns and 12..=100 rows.
 pub fn render_text(record: &Recording, width: u16, height: u16) -> io::Result<String> {
+    render_screen(View::new(record), width, height)
+}
+
+fn render_screen(mut screen: impl Screen, width: u16, height: u16) -> io::Result<String> {
     if !(40..=240).contains(&width) || !(12..=100).contains(&height) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -85,9 +107,8 @@ pub fn render_text(record: &Recording, width: u16, height: u16) -> io::Result<St
     }
     let mut terminal =
         Terminal::new(TestBackend::new(width, height)).unwrap_or_else(|never| match never {});
-    let mut view = View::new(record);
     terminal
-        .draw(|frame| render::draw(frame, &mut view))
+        .draw(|frame| screen.draw(frame))
         .unwrap_or_else(|never| match never {});
     let buffer = terminal.backend().buffer();
     let mut output = String::new();
