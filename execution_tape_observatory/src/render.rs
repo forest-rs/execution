@@ -78,6 +78,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                     format!("calls expected {expected}, got {actual}")
                 }
                 Divergence::Outcome => "outcome mismatch".into(),
+                Divergence::CallStack => "guest call stack mismatch".into(),
             };
             format!("FAILED · {boundary}{location} · {reason}")
         }

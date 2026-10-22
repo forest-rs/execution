@@ -14,6 +14,12 @@
 //! byte/string payloads. Check [`Recording::status`]: missing completion, invalid graphs and
 //! exhausted budgets are capture failures, separate from recorded guest traps.
 //!
+//! The recommended mask includes guest call frames. [`HostCall::stack`] and
+//! [`Recording::outcome_stack`] borrow actual guest ancestry, including suspended caller PCs.
+//! A bounded parent-linked arena shares prefixes; it retains all entered activations, rather
+//! than only frames present at host calls. Explicitly omitting call callbacks leaves stacks
+//! unavailable. Replay verifies captured activation ancestry alongside boundary values.
+//!
 //! This crate is `no_std + alloc`. Recordings are in-memory artifacts, not a portable archive.
 //! Typed custom errors retain their original owned payloads. Object handles remain tokens in
 //! their original host domain; replay does not restore external objects, repeat host effects,
@@ -24,6 +30,7 @@
 extern crate alloc;
 
 mod capture;
+mod frames;
 mod replay;
 mod values;
 
@@ -38,6 +45,7 @@ use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, TrapInfo};
 
 pub use capture::Recorder;
+pub use frames::CallStack;
 pub use replay::{Divergence, ReplayBoundary, ReplayError, ReplayOutcome};
 pub use values::{Aggregate, AggregateId, RecordedValue};
 
@@ -56,6 +64,9 @@ pub struct RecordLimits {
     pub aggregates: usize,
     /// Maximum host-call observations.
     pub host_calls: usize,
+    /// Maximum entered guest activations, including ones with no host observations.
+    /// The effective limit is capped at `u32::MAX` for compact recording-local identities.
+    pub call_frames: usize,
     /// Maximum copied bytes in distinct byte/string contents and trap symbol text.
     pub payload_bytes: usize,
 }
@@ -66,6 +77,7 @@ impl Default for RecordLimits {
             values: 1_000_000,
             aggregates: 100_000,
             host_calls: 10_000,
+            call_frames: 100_000,
             payload_bytes: 64 * 1024 * 1024,
         }
     }
@@ -80,6 +92,8 @@ pub enum CaptureResource {
     Aggregates,
     /// Host-call observations.
     HostCalls,
+    /// Entered guest activations.
+    CallFrames,
     /// Copied byte/string contents and trap symbol text.
     PayloadBytes,
 }
@@ -154,6 +168,9 @@ pub struct HostCall<'a> {
     pub args: &'a [RecordedValue],
     /// Raw host outcome, before VM validation.
     pub outcome: HostOutcome<'a>,
+    /// Actual guest callers, innermost first, when call-frame callbacks were captured.
+    /// `None` means unavailable, rather than an empty or inferred stack.
+    pub stack: Option<CallStack<'a>>,
 }
 
 /// Authoritative final VM outcome of the original invocation.
@@ -174,6 +191,8 @@ pub struct RecordStats {
     pub aggregates: usize,
     /// Retained host-call observations.
     pub host_calls: usize,
+    /// Retained entered guest activations, shared by boundary stacks.
+    pub call_frames: usize,
     /// Copied byte/string contents and trap symbol text, counted once per retained allocation.
     pub payload_bytes: usize,
 }
@@ -186,6 +205,7 @@ struct Entry {
 }
 #[derive(Debug)]
 struct Call {
+    frame: Option<frames::FrameId>,
     location: TraceLocation,
     import: HostSigId,
     args: Range<usize>,
@@ -213,6 +233,8 @@ pub struct Recording {
     initial: Vec<AggregateId>,
     entry: Option<Entry>,
     calls: Vec<Call>,
+    frames: Vec<frames::Frame>,
+    outcome_frame: Option<frames::FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
     end: Option<End>,
     fault: Option<CaptureFault>,
@@ -249,6 +271,9 @@ impl Recording {
     pub fn host_calls(&self) -> impl ExactSizeIterator<Item = HostCall<'_>> {
         self.calls.iter().map(|call| HostCall {
             location: call.location,
+            stack: call
+                .frame
+                .map(|top| CallStack::new(&self.frames, top, call.location)),
             import: call.import,
             args: self.arena.slice(&call.args),
             outcome: match &call.outcome {
@@ -293,12 +318,27 @@ impl Recording {
         }
     }
 
+    /// Borrows the guest call stack at the captured final return or trap, innermost first.
+    ///
+    /// `None` means no stack was observed: call callbacks may have been omitted, invocation
+    /// validation may have rejected entry, completion may be missing, or capture may have failed.
+    /// Trap stacks are retained before VM unwinding removes activations. No inactive callee
+    /// is synthesized for a rejected call. This contains guest frames only.
+    pub fn outcome_stack(&self) -> Option<CallStack<'_>> {
+        Some(CallStack::new(
+            &self.frames,
+            self.outcome_frame?,
+            self.outcome_location()?,
+        ))
+    }
+
     /// Returns used storage counts, not allocator traffic, capacity or RSS.
     pub fn stats(&self) -> RecordStats {
         RecordStats {
             values: self.arena.values.len(),
             aggregates: self.arena.nodes.len(),
             host_calls: self.calls.len(),
+            call_frames: self.frames.len(),
             payload_bytes: self.arena.payload_bytes,
         }
     }
