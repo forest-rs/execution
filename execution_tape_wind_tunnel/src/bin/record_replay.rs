@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "usage: record_replay [calls:1..10000] [depth:1..100000] [payload-bytes]".into(),
         );
     }
-    let program = workload::program(calls, false);
+    let program = workload::program(calls);
     let (mut vm, args) = workload::fixture(depth, payload);
     let expected = vm.run(&program, FuncId(0), &args, TraceMask::NONE, None)?;
     let before = vm.host().calls;

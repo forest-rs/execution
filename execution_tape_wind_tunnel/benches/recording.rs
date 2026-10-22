@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 fn recording(c: &mut Criterion) {
     for calls in [1, 1000] {
-        let program = workload::program(calls, false);
+        let program = workload::program(calls);
         let (mut vm, args) = workload::fixture(256, 65_536);
         let expected = vm
             .run(&program, FuncId(0), &args, TraceMask::NONE, None)
