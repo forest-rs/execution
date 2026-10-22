@@ -5,7 +5,7 @@
 
 use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands};
 use execution_tape::host::HostError;
-use execution_tape::program::{HostSigId, ValueType};
+use execution_tape::program::{HostSigId, Program, ValueType};
 use execution_tape::value::{AggType, FuncId};
 use execution_tape_recording::{AggregateId, RecordedValue, Recording};
 
@@ -21,23 +21,20 @@ pub(super) fn preview(text: &str, limit: usize) -> String {
     output
 }
 
-pub(super) fn function(record: &Recording, id: FuncId) -> String {
-    record
-        .program()
-        .program()
+pub(super) fn function(program: &Program, id: FuncId) -> String {
+    program
         .function_name(id.0)
         .map_or_else(|| format!("function #{}", id.0), |name| preview(name, 28))
 }
 
-pub(super) fn host(record: &Recording, id: HostSigId) -> String {
-    let program = record.program().program();
+pub(super) fn host(program: &Program, id: HostSigId) -> String {
     program
         .host_sig(id)
         .and_then(|entry| program.symbol_str(entry.symbol).ok())
         .map_or_else(|| format!("host #{}", id.0), |name| preview(name, 28))
 }
 
-fn type_name(kind: ValueType) -> String {
+pub(super) fn type_name(kind: ValueType) -> String {
     match kind {
         ValueType::Unit => "unit".into(),
         ValueType::Bool => "bool".into(),
@@ -54,7 +51,7 @@ fn type_name(kind: ValueType) -> String {
     }
 }
 
-fn types(values: &[ValueType]) -> String {
+pub(super) fn types(values: &[ValueType]) -> String {
     let mut output = values
         .iter()
         .take(4)
@@ -67,14 +64,13 @@ fn types(values: &[ValueType]) -> String {
     format!("({output})")
 }
 
-pub(super) fn signature(record: &Recording, id: HostSigId) -> String {
-    let program = record.program().program();
+pub(super) fn signature(program: &Program, id: HostSigId) -> String {
     let Some(entry) = program.host_sig(id) else {
         return "signature unavailable".into();
     };
     format!(
         "{}{} → {}",
-        host(record, id),
+        host(program, id),
         types(program.host_sig_args(entry).unwrap_or(&[])),
         types(program.host_sig_rets(entry).unwrap_or(&[]))
     )
@@ -127,9 +123,13 @@ fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
         RecordedValue::Obj(value) => {
             format!("object #{} token {}", value.host_type.0, value.handle.0)
         }
-        RecordedValue::Func(id) => function(record, *id),
+        RecordedValue::Func(id) => function(record.program().program(), *id),
         RecordedValue::Closure { func, env } => {
-            format!("{} [environment @{}]", function(record, *func), env.get())
+            format!(
+                "{} [environment @{}]",
+                function(record.program().program(), *func),
+                env.get()
+            )
         }
         RecordedValue::Agg(id) => format!(
             "{} @{}",
@@ -244,12 +244,12 @@ fn assignment(registers: &[u32], expression: String) -> String {
     }
 }
 
-pub(super) fn instruction(record: &Recording, instruction: InstrView<'_>) -> String {
+pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> String {
     match instruction.operands() {
         Operands::Call(call) => {
             let callee = match call.callee {
-                CallTarget::HostSig(id, _) => format!("host {}", host(record, id)),
-                CallTarget::Func(id) => format!("call {}", function(record, id)),
+                CallTarget::HostSig(id, _) => format!("host {}", host(program, id)),
+                CallTarget::Func(id) => format!("call {}", function(program, id)),
                 CallTarget::Indirect { callee, call_sig } => {
                     format!("call r{callee} [signature #{}]", call_sig.0)
                 }

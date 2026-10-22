@@ -82,14 +82,19 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
 }
 
 fn import_name(view: &View<'_>, index: usize) -> String {
-    describe::host(view.record, view.calls[index].import)
+    describe::host(view.record.program().program(), view.calls[index].import)
 }
 
 fn title(view: &View<'_>, index: usize) -> String {
     if index == 0 {
         return view.record.invocation().map_or_else(
             || "Invocation · missing".into(),
-            |entry| format!("App → {}", describe::function(view.record, entry.entry)),
+            |entry| {
+                format!(
+                    "App → {}",
+                    describe::function(view.record.program().program(), entry.entry)
+                )
+            },
         );
     }
     if index <= view.calls.len() {
@@ -104,7 +109,7 @@ fn title(view: &View<'_>, index: usize) -> String {
     }
 }
 
-fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
+pub(super) fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
     let mut title = title.into();
     if focused {
         title.spans.insert(0, Span::raw(" ACTIVE ·"));
@@ -133,9 +138,8 @@ fn panel(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
         )
 }
 
-pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
+pub(super) fn too_small(frame: &mut Frame<'_>) -> bool {
     let area = frame.area();
-    frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     if area.width < 80 || area.height < 20 {
         frame.render_widget(
             Paragraph::new(format!(
@@ -145,6 +149,15 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             .style(Style::default().fg(GREEN)),
             area,
         );
+        return true;
+    }
+    false
+}
+
+pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
+    let area = frame.area();
+    frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
+    if too_small(frame) {
         return;
     }
     let rows = Layout::vertical([
@@ -176,7 +189,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             view.record.program().program().name().map_or_else(
                 || view.record.invocation().map_or_else(
                     || "Unknown invocation".into(),
-                    |entry| describe::function(view.record, entry.entry)
+                    |entry| describe::function(view.record.program().program(), entry.entry)
                 ),
                 |name| preview(name, 44)
             ),
@@ -205,7 +218,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 |entry| {
                     format!(
                         " Application → {}({}) · VM invocation",
-                        describe::function(view.record, entry.entry),
+                        describe::function(view.record.program().program(), entry.entry),
                         describe::arguments(view.record, entry.args),
                     )
                 },
@@ -271,7 +284,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             "Call #{}: {name}({}) {response}\nSignature: {}",
             view.selected - 1,
             describe::arguments(view.record, call.args),
-            describe::signature(view.record, call.import)
+            describe::signature(view.record.program().program(), call.import)
         );
         if let HostOutcome::Returned { extra_fuel, .. } = call.outcome
             && extra_fuel != 0
@@ -389,7 +402,7 @@ fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             ListItem::new(Line::styled(
                 format!(
                     "#{index} {}",
-                    describe::function(view.record, location.func)
+                    describe::function(view.record.program().program(), location.func)
                 ),
                 Style::default().fg(if index == 0 { GREEN } else { BLUE }),
             ))
@@ -503,7 +516,7 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                     " INPUTS TO {} ",
                     view.record.invocation().map_or_else(
                         || "GUEST".into(),
-                        |entry| describe::function(view.record, entry.entry)
+                        |entry| describe::function(view.record.program().program(), entry.entry)
                     )
                 ),
                 note: "Values supplied when execution started".into(),
@@ -666,7 +679,13 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             )];
             spans.extend(view.flow.gutter(instruction.pc(), first, last));
             spans.push(Span::raw(" "));
-            spans.extend(syntax::source(&describe::instruction(view.record, instruction)).spans);
+            spans.extend(
+                syntax::source(&describe::instruction(
+                    view.record.program().program(),
+                    instruction,
+                ))
+                .spans,
+            );
             Line::from(spans).style(if current {
                 Style::default()
                     .bg(Color::Indexed(237))
@@ -681,7 +700,7 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             panel(
                 format!(
                     " SOURCE · {} · {} ",
-                    describe::function(view.record, source.func()),
+                    describe::function(view.record.program().program(), source.func()),
                     if view.frame_selected > 0 {
                         "suspended caller"
                     } else if view.selected == 0 {
