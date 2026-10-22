@@ -1,7 +1,10 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Record a read/compute/store workflow, then explore it after dropping the live VM and host.
+//! Browse a compiled tape, or record and explore a read/compute/store demonstration.
+
+#[path = "observatory/cli.rs"]
+mod cli;
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
@@ -154,26 +157,47 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut snapshot = false;
-    let mut force_colors = false;
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--snapshot" => snapshot = true,
-            "--color=always" => force_colors = true,
-            _ => return Err("usage: observatory [--snapshot] [--color=always]".into()),
-        }
+    use cli::{Action, Options};
+    use std::io::Write;
+    let options = Options::parse(std::env::args_os().skip(1))?;
+    if options.force_colors && !options.snapshot {
+        ratatui::crossterm::style::force_color_output(true);
     }
-    let record = demo_recording()?;
-    if !snapshot {
-        if force_colors {
-            ratatui::crossterm::style::force_color_output(true);
+    match options.action {
+        Action::Help => print!("{}", cli::HELP),
+        Action::Program(path) => {
+            let program = cli::load_program(&path)?;
+            if options.snapshot {
+                print!(
+                    "{}",
+                    execution_tape_observatory::render_program(&program, 120, 36)?
+                );
+            } else {
+                execution_tape_observatory::browse(&program)?;
+            }
         }
-        execution_tape_observatory::explore(&record)?;
-    } else {
-        print!(
-            "{}",
-            execution_tape_observatory::render_text(&record, 120, 36)?
-        );
+        Action::WriteDemo(path) => {
+            let record = demo_recording()?;
+            let bytes = record.program().program().encode();
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|error| format!("cannot create demo tape {path:?}: {error}"))?;
+            file.write_all(&bytes)?;
+            println!("Wrote {} bytes to {path:?}", bytes.len());
+        }
+        Action::Demo => {
+            let record = demo_recording()?;
+            if options.snapshot {
+                print!(
+                    "{}",
+                    execution_tape_observatory::render_text(&record, 120, 36)?
+                );
+            } else {
+                execution_tape_observatory::explore(&record)?;
+            }
+        }
     }
     Ok(())
 }

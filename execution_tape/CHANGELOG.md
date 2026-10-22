@@ -17,9 +17,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Open compiled tapes with `observatory --program PATH`, using the same browser interactively
+  or with `--snapshot`. Decode errors identify the file; rejected programs remain inspectable.
+  `--write-demo PATH` creates a compiled sample without overwriting an existing file. ([#151][] by [@waywardmonkeys][])
+
 - Browse compiled programs with Observatory `browse` / `render_program`. Search functions,
   inspect imports/constants/aggregate types, follow calls and control-flow edges, and navigate
-  rejected-program diagnostics without execution. Existing recording views remain available.
+  rejected-program diagnostics without execution. Existing recording views remain available. ([#151][] by [@waywardmonkeys][])
 
 - Query `VerifyError::function` and `pc` to locate rejected instructions or function contracts
   without parsing diagnostic text. Program-wide errors have no function location. ([#150][] by [@waywardmonkeys][])
@@ -244,5 +248,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#149]: https://github.com/forest-rs/execution/pull/149
 
 [#150]: https://github.com/forest-rs/execution/pull/150
+
+[#151]: https://github.com/forest-rs/execution/pull/151
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

@@ -11,14 +11,27 @@ cargo run -p execution_tape_wind_tunnel --bin observatory -- --color=always
 cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
 
-Browse a decoded program with `browse(&program)`, or render the same initial view headlessly
-with `render_program(&program, width, height)`. Program browsing does not create a VM or recording,
-or invoke any host. Existing recording entry points keep their behavior.
+Open a compiled tape without executing it or loading a host:
 
-The program browser verifies once on opening. Rejected programs remain inspectable and open at
-the reported function/instruction when one is available; `d` returns to that diagnostic.
-Program-wide failures do not invent an instruction location. Malformed instructions and signatures
-are shown explicitly, while other functions and tables remain navigable.
+```sh
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program path/to/program.tape --color=always
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program path/to/program.tape --snapshot
+```
+
+To try the file browser with a self-contained artifact, write the demo program to a **new** file:
+
+```sh
+mkdir -p .local
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --write-demo .local/demo.tape
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/demo.tape --color=always
+```
+
+The file browser verifies the decoded program once. Rejected programs remain inspectable and
+open at the reported function/instruction when one is available; `d` returns to that diagnostic.
+Program-wide failures do not invent an instruction location. A file that cannot be decoded reports
+an error before terminal mode starts. Files are limited to 64 MiB of encoded input; decoded data and
+verification use additional memory. Successfully displaying a rejected program is a successful
+browser invocation; the header explicitly says `REJECTED`.
 
 Use `[` and `]` to switch between functions, imports, constants and aggregate types. `/` searches
 visible labels (case sensitive); `Enter` applies the filter, and `Esc` clears it. Select a function,
@@ -28,11 +41,14 @@ previous instruction. Indirect runtime callees are explicitly unknown. The last 
 locations are retained. `Tab`/`Shift+Tab` cycle the navigator, instructions and scrollable details;
 arrows, page keys and `Home`/`End` operate on the focused pane. `q` quits.
 
-Details show signatures, selected operand register declarations, constant previews and aggregate
-layouts, distinguishing static types from runtime values. Span identifiers are displayed when
-present; they are **not yet source-file links**. Previews and large operand/field lists have
-explicit bounds. The adapter enables Ratatui's `unstable-rendered-line-info` feature to scroll
-details by their actual wrapped height; no terminal dependency enters the VM.
+The details pane shows signatures, selected operand register declarations, constant previews and
+aggregate layouts. It explicitly distinguishes static types from runtime values. Span identifiers
+are displayed when present; they are **not yet source-file links**. Previews and large operand/field
+lists have explicit bounds. The terminal adapter enables Ratatui's `unstable-rendered-line-info`
+feature to scroll details using their actual wrapped height; no terminal dependency enters the VM.
+
+Embed program browsing with `browse(&program)` or render it headlessly with
+`render_program(&program, width, height)`. Existing recording entry points keep their behavior.
 
 The example reads three fixed samples (7, 5, 9) through `read_sample`, doubles each in guest
 code through the guest function `read_and_double`, and passes each `(index, sample, doubled)` tuple to `store_result`. It returns their sum,
