@@ -11,8 +11,10 @@ cargo run -p execution_tape_wind_tunnel --bin observatory
 cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
 ```
 
-The example captures twelve real host calls over evolving guest tuples and one shared initial
-graph, then drops the original VM and host. The timeline connects each call ordinal to its import,
+The example reads three fixed samples (7, 5, 9) through `read_sample`, doubles each in guest
+code, and passes each `(index, sample, doubled)` tuple to `store_result`. It returns their sum,
+42. The six real host calls are captured before the original VM and host state are dropped.
+The timeline connects each call ordinal to its import,
 instruction and arguments/returns. Open aggregates to inspect immediate fields and their stable
 recording-local identities. The source pane displays opcodes and source register IDs. It does
 not claim instruction/register value history.

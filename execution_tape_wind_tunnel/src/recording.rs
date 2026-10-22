@@ -32,7 +32,7 @@ impl Host for Echo {
 }
 
 /// A guest loop repeatedly passes the same graph through a host call.
-pub(super) fn program(calls: i64, evolving: bool) -> Arc<VerifiedProgram> {
+pub(super) fn program(calls: i64) -> Arc<VerifiedProgram> {
     assert!(calls > 0, "calls must be positive");
     let mut builder = ProgramBuilder::new();
     let import = builder.host_sig_for(
@@ -57,10 +57,7 @@ pub(super) fn program(calls: i64, evolving: bool) -> Arc<VerifiedProgram> {
     body.const_i64(3, 0).const_i64(4, calls).const_i64(5, 1);
     body.jmp(head);
     body.place(head).unwrap();
-    if evolving {
-        body.tuple_new(2, &[3, 1]);
-    }
-    body.host_call_sig_id(0, import, 0, &[if evolving { 2 } else { 1 }], &[2]);
+    body.host_call_sig_id(0, import, 0, &[1], &[2]);
     body.i64_add(3, 3, 5).i64_lt(6, 3, 4).br(6, head, exit);
     body.place(exit).unwrap();
     body.ret(0, &[2]);
