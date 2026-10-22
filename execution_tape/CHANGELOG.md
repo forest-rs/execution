@@ -19,6 +19,7 @@ This release has an [MSRV][] of 1.88.
 
 - Inspect recorded guest callers in the Observatory stack pane. Cycle keyboard focus with
   Tab/Shift+Tab and select a frame to move source to its captured call-site instruction.
+  Show the application-to-guest invocation separately from guest frames, using captured inputs.
   The read/compute/store demo now includes a guest helper and compact call-value rows. ([#148][] by [@waywardmonkeys][])
 
 

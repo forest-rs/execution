@@ -95,8 +95,8 @@ fn import_name(view: &View<'_>, index: usize) -> String {
 fn title(view: &View<'_>, index: usize) -> String {
     if index == 0 {
         return view.record.invocation().map_or_else(
-            || "Start · not captured".into(),
-            |entry| format!("Start {}", describe::function(view.record, entry.entry)),
+            || "Invocation · missing".into(),
+            |entry| format!("App → {}", describe::function(view.record, entry.entry)),
         );
     }
     if index <= view.calls.len() {
@@ -202,6 +202,19 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 }
             ),
             Style::default().fg(MUTED),
+        ),
+        Line::styled(
+            view.record.invocation().map_or_else(
+                || " Invocation inputs unavailable".into(),
+                |entry| {
+                    format!(
+                        " Application → {}({}) · VM invocation",
+                        describe::function(view.record, entry.entry),
+                        describe::arguments(view.record, entry.args),
+                    )
+                },
+            ),
+            Style::default().fg(BLUE),
         ),
     ];
     frame.render_widget(Paragraph::new(header), rows[0]);
@@ -353,7 +366,14 @@ fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
         || " STACK ".into(),
         |stack| format!(" STACK · {} ", stack.len()),
     );
-    let block = panel(title, view.focus == Focus::Stack).title_bottom("guest · leaf → root");
+    let block = panel(title, view.focus == Focus::Stack).title_bottom(Span::styled(
+        if view.stack().is_some() {
+            "root ← Application"
+        } else {
+            "guest frames"
+        },
+        Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
+    ));
     let Some(stack) = view.stack() else {
         frame.render_widget(
             Paragraph::new("No guest stack observed at this event.")

@@ -586,3 +586,26 @@ fn complete_value_only_capture_has_source_but_explicitly_unavailable_stack() {
     assert_eq!(view.location(), Some(location));
     assert_eq!(view.frame_selected, 0);
 }
+
+#[test]
+fn application_entry_is_separate_from_guest_frames_and_uses_captured_inputs() {
+    let (record, _) = recording(RecordLimits::default(), None);
+    let shown = render_text(&record, 120, 36).unwrap();
+    let entry_line = shown.lines().nth(3).unwrap();
+    assert!(entry_line.contains("Application → function #0(("));
+    assert!(entry_line.contains("42"));
+    assert!(entry_line.contains("VM invocation"));
+    assert!(shown.contains("root ← Application"));
+    assert_eq!(record.host_calls().next().unwrap().stack.unwrap().len(), 1);
+    let (partial, _) = recording(
+        RecordLimits {
+            values: 0,
+            ..RecordLimits::default()
+        },
+        None,
+    );
+    assert!(partial.invocation().is_none());
+    let shown = render_text(&partial, 80, 24).unwrap();
+    assert!(shown.contains("Invocation inputs unavailable"));
+    assert!(!shown.contains("Application →"));
+}

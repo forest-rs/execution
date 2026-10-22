@@ -21,6 +21,11 @@ blue `→ Argument` rows sent to the host and green `← Return` rows received b
 checks. Values start with their contents; aggregate IDs are secondary. Open a tuple, array, struct
 or closure environment to inspect its immediate fields.
 
+The application enters `double_and_sum` through the VM; in this demo the Rust `demo_recording`
+function calls `Vm::run`. The header and first event show the application-to-guest invocation with
+its captured inputs. This boundary sits outside the guest stack; the application's native Rust
+call stack is not captured.
+
 The guest stack pane shows actual recorded activations, innermost first. A read call has
 `read_and_double` above `double_and_sum`; a store call has only `double_and_sum` after the helper
 has returned. Focus the stack and select a caller to move source to its suspended call instruction.
