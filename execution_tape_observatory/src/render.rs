@@ -138,8 +138,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     if area.width < 80 || area.height < 20 {
         frame.render_widget(
-            Paragraph::new("Execution Observatory\nresize to at least 80 × 20\nq to quit")
-                .style(Style::default().fg(GREEN)),
+            Paragraph::new(format!(
+                "Execution Observatory\nresize to at least 80 × 20\ncurrent size: {} × {}\nq to quit",
+                area.width, area.height
+            ))
+            .style(Style::default().fg(GREEN)),
             area,
         );
         return;
