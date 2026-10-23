@@ -187,6 +187,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Keep Footfall scopes balanced when the capture level drops during a VM run, by updating
+  the pinned runtime to preserve completion of previously admitted scopes.
+
 - Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
   Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
 

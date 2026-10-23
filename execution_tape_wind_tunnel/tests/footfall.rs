@@ -307,6 +307,56 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
         .unwrap();
     assert!(runtime.snapshot_since(start).events().is_empty());
+    runtime.set_level(InstrumentationLevel::Scoped);
+
+    // A level drop inside a host call must still close every scope opened at run entry.
+    struct DisableDuringCall {
+        runtime: &'static Runtime,
+        inner: DemoHost,
+    }
+    impl Host for DisableDuringCall {
+        fn call(
+            &mut self,
+            symbol: &str,
+            hash: SigHash,
+            args: &[ValueRef<'_>],
+            rets: &mut [Value],
+            ctx: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            self.runtime.set_level(InstrumentationLevel::Off);
+            self.inner.call(symbol, hash, args, rets, ctx)
+        }
+    }
+    let mut disabling_vm = Vm::new(
+        DisableDuringCall {
+            runtime,
+            inner: DemoHost {
+                context: context.handle(),
+                behavior: Behavior::Success,
+            },
+        },
+        Limits::default(),
+    );
+    let start = runtime.snapshot().next_cursor();
+    let mask_at_entry = sink.mask();
+    assert_eq!(
+        disabling_vm
+            .run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
+            .unwrap(),
+        [Value::I64(42)]
+    );
+    let lowered = runtime.snapshot_since(start);
+    assert!(count(&lowered, "execution_tape.host") > 0);
+    balanced(&lowered);
+
+    runtime.set_level(InstrumentationLevel::Scoped);
+    let start = runtime.snapshot().next_cursor();
+    let mask_at_entry = sink.mask();
+    vm.run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
+        .unwrap();
+    let resumed = runtime.snapshot_since(start);
+    assert_eq!(count(&resumed, "execution_tape.run"), 1);
+    balanced(&resumed);
     runtime.set_level(InstrumentationLevel::Trace);
 
     let start = runtime.snapshot().next_cursor();

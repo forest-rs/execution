@@ -38,7 +38,7 @@ ratatui = { version = "0.30.2", default-features = false, features = [
 ] }
 
 # Footfall is not published yet; keep adapters on one reproducible public revision.
-footfall = { git = "https://github.com/forest-rs/footfall", rev = "bbe52283c3f398d16dd3ebb25ad8300babfef557", default-features = false }
+footfall = { git = "https://github.com/forest-rs/footfall", rev = "b497577c3c8740322bb93dce4105ad19946f975b", default-features = false }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7
