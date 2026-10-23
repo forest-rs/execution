@@ -190,6 +190,10 @@ This release has an [MSRV][] of 1.88.
 - Keep Footfall scopes balanced when the capture level drops during a VM run, by updating
   the pinned runtime to preserve completion of previously admitted scopes.
 
+- Skip default Footfall VM callbacks when the current capture level disables scopes. Recompute
+  `FootfallSink::mask()` before each run when changing levels; explicit masks remain supported,
+  and scopes opened before a mid-run level drop still close normally.
+
 - Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
   Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
 

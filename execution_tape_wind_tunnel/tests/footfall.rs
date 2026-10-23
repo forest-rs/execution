@@ -303,6 +303,15 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     balanced(&runtime.snapshot_since(start));
 
     runtime.set_level(InstrumentationLevel::Off);
+    assert_eq!(sink.mask(), TraceMask::NONE);
+    runtime.set_level(InstrumentationLevel::Counters);
+    assert_eq!(sink.mask(), TraceMask::NONE);
+    runtime.set_level(InstrumentationLevel::Scoped);
+    assert_eq!(
+        sink.mask(),
+        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST
+    );
+    runtime.set_level(InstrumentationLevel::Off);
     let start = runtime.snapshot().next_cursor();
     vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
         .unwrap();
@@ -324,6 +333,10 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
             ctx: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
             self.runtime.set_level(InstrumentationLevel::Off);
+            assert_eq!(
+                FootfallSink::new(self.inner.context).mask(),
+                TraceMask::NONE
+            );
             self.inner.call(symbol, hash, args, rets, ctx)
         }
     }
@@ -348,6 +361,7 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let lowered = runtime.snapshot_since(start);
     assert!(count(&lowered, "execution_tape.host") > 0);
     balanced(&lowered);
+    assert_eq!(sink.mask(), TraceMask::NONE);
 
     runtime.set_level(InstrumentationLevel::Scoped);
     let start = runtime.snapshot().next_cursor();
