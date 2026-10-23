@@ -135,7 +135,9 @@ impl TraceSink for FootfallSink {
 
     fn run_end(&mut self, _program: &Program, outcome: TraceOutcome<'_>) {
         let mut args = Args::none();
-        if let Some(run) = &self.run {
+        if let Some(run) = &self.run
+            && run.token().is_valid()
+        {
             args = args.with("scope_token", run.token().get());
         }
         if let TraceOutcome::Trap(error) = outcome {
@@ -215,7 +217,9 @@ impl TraceSink for FootfallSink {
             .with("func", func.0)
             .with("pc", pc)
             .with("depth", depth as u64);
-        if let Some(scope) = self.scopes.last() {
+        if let Some(scope) = self.scopes.last()
+            && scope.token().is_valid()
+        {
             args = args.with("scope_token", scope.token().get());
         }
         self.outcome(&SCOPE_END, &SCOPE_TRAP, &args, outcome);

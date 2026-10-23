@@ -325,12 +325,15 @@ This release has an [MSRV][] of 1.88.
 - Observatory distinguishes fixed register storage kinds from nested call-result contracts and
   required return contracts. Rejected contracts name the function and explain the member path,
   including named struct fields, without exposing Rust debug syntax. ([#159][] by [@waywardmonkeys][])
+- Omit Footfall scope-token fields when a VM scope began while capture was disabled.
+  Enabling capture mid-run can report its outcome without inventing an observed scope. ([#154][] by [@waywardmonkeys][])
+
 - Use published Footfall 0.2. Scopes admitted before a capture-level reduction still close,
-  keeping VM scope observations balanced across level changes.
+  keeping VM scope observations balanced across level changes. ([#154][] by [@waywardmonkeys][])
 
 - Skip default Footfall VM callbacks when the current capture level disables scopes. Recompute
   `FootfallSink::mask()` before each run when changing levels; explicit masks remain supported,
-  and scopes opened before a mid-run level drop still close normally.
+  and scopes opened before a mid-run level drop still close normally. ([#154][] by [@waywardmonkeys][])
 
 - Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
   Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
@@ -422,6 +425,8 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#151]: https://github.com/forest-rs/execution/pull/151
 
 [#143]: https://github.com/forest-rs/execution/pull/143
+
+[#154]: https://github.com/forest-rs/execution/pull/154
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv
 
