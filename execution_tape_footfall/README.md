@@ -2,7 +2,7 @@
 
 `FootfallSink` implements the VM's existing `TraceSink`, keeping Footfall out of the core VM.
 The adapter requires only `no_std + alloc`; applications choose their capture/export backend.
-Footfall is currently pinned to a public Git revision until it is published.
+The workspace uses published Footfall 0.2 with default features disabled.
 
 Install the backend, register an application context, then create
 `FootfallSink::new(context.handle())`. Pass `sink.mask()` to `Vm::run` for run, call and host

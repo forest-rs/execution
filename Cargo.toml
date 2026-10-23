@@ -38,8 +38,8 @@ ratatui = { version = "0.30.2", default-features = false, features = [
   "crossterm",
 ] }
 
-# Footfall is not published yet; keep adapters on one reproducible public revision.
-footfall = { git = "https://github.com/forest-rs/footfall", rev = "bbe52283c3f398d16dd3ebb25ad8300babfef557", default-features = false }
+# Applications opt into runtime capture and export; the adapter only requires alloc.
+footfall = { version = "0.2.0", default-features = false }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v7

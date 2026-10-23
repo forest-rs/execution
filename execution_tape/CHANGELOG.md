@@ -325,6 +325,8 @@ This release has an [MSRV][] of 1.88.
 - Observatory distinguishes fixed register storage kinds from nested call-result contracts and
   required return contracts. Rejected contracts name the function and explain the member path,
   including named struct fields, without exposing Rust debug syntax. ([#159][] by [@waywardmonkeys][])
+- Use published Footfall 0.2. Scopes admitted before a capture-level reduction still close,
+  keeping VM scope observations balanced across level changes.
 
 - Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
   Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
