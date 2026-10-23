@@ -328,6 +328,10 @@ This release has an [MSRV][] of 1.88.
 - Use published Footfall 0.2. Scopes admitted before a capture-level reduction still close,
   keeping VM scope observations balanced across level changes.
 
+- Skip default Footfall VM callbacks when the current capture level disables scopes. Recompute
+  `FootfallSink::mask()` before each run when changing levels; explicit masks remain supported,
+  and scopes opened before a mid-run level drop still close normally.
+
 - Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
   Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
 
