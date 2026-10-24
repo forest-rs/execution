@@ -41,7 +41,7 @@ previous instruction. Indirect runtime callees are explicitly unknown. The last 
 locations are retained. `Tab`/`Shift+Tab` cycle the navigator, instructions and scrollable details;
 arrows, page keys and `Home`/`End` operate on the focused pane. `q` quits.
 
-The details pane shows signatures, selected operand register declarations, constant previews and
+The details pane shows compositional guest signatures (with bounded nested contract previews), selected operand register declarations, constant previews and
 aggregate layouts. It explicitly distinguishes static types from runtime values. Span identifiers
 are displayed when present; they are **not yet source-file links**. Previews and large operand/field
 lists have explicit bounds. The terminal adapter enables Ratatui's `unstable-rendered-line-info`
@@ -90,5 +90,15 @@ Embed the UI with `execution_tape_observatory::explore(&recording)`. This owns r
 alternate screen until return/unwind and restores both without changing the global panic hook.
 `render_text(&recording, width, height)` renders the same initial view for headless review; it
 does not perform replay. The interactive view needs at least 80 columns and 20 rows.
+
+To browse nested guest results through the ordinary pipeline, create a new example tape:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin nested_contracts -- .local/nested.tape
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/nested.tape
+```
+
+The producer returns `((42), true)`; the caller projects the inner integer. Guest signatures
+show those nested contracts, while register declarations continue to show storage kinds.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.

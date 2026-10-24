@@ -67,6 +67,64 @@ pub(super) fn types<'a>(
     format!("({output})")
 }
 
+pub(super) fn contracts(program: &Program, ids: &[execution_tape::contract::ContractId]) -> String {
+    fn summary(program: &Program, id: execution_tape::contract::ContractId, depth: u8) -> String {
+        use execution_tape::contract::Contract;
+        let Some(contract) = program.contracts.get(id) else {
+            return format!("<invalid contract #{}>", id.0);
+        };
+        if let Contract::Kind(kind) = contract {
+            return type_name(kind);
+        }
+        if depth == 0 {
+            return format!("aggregate #{}", id.0);
+        }
+        let members = |ids: &[Option<execution_tape::contract::ContractId>]| {
+            let mut text = ids
+                .iter()
+                .take(4)
+                .map(|id| id.map_or_else(|| "?".into(), |id| summary(program, id, depth - 1)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if ids.len() > 4 {
+                text.push_str(&format!(", … +{}", ids.len() - 4));
+            }
+            text
+        };
+        match contract {
+            Contract::Kind(_) => unreachable!(),
+            Contract::Tuple(ids) => format!("tuple({})", members(ids)),
+            Contract::Struct { type_id, fields } => {
+                let hidden = fields.len().saturating_sub(4);
+                let fields: Vec<_> = fields.iter().take(4).copied().map(Some).collect();
+                let mut preview = members(&fields);
+                if hidden > 0 {
+                    preview.push_str(&format!(", … +{hidden}"));
+                }
+                format!("struct #{}({preview})", type_id.0)
+            }
+            Contract::Array {
+                elem_type_id,
+                element,
+            } => format!(
+                "array #{}<{}>",
+                elem_type_id.0,
+                summary(program, element, depth - 1)
+            ),
+        }
+    }
+    let mut values = ids
+        .iter()
+        .take(4)
+        .map(|&id| summary(program, id, 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ids.len() > 4 {
+        values.push_str(&format!(", … +{}", ids.len() - 4));
+    }
+    format!("({values})")
+}
+
 pub(super) fn signature(program: &Program, id: HostSigId) -> String {
     let Some(entry) = program.host_sig(id) else {
         return "signature unavailable".into();

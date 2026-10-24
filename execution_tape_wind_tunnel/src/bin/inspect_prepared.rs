@@ -42,6 +42,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Some(id) = selected {
         let function = program.function(FuncId(id)).ok_or("unknown function id")?;
+        println!("contract_id\tdefinition");
+        for (id, contract) in program.program().contracts.iter() {
+            println!("{}\t{contract:?}", id.0);
+        }
         println!("arguments\t{:?}", function.arg_types());
         println!("returns\t{:?}", function.ret_types());
         for (direction, contracts) in [
@@ -49,11 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ("result", function.ret_contracts()),
         ] {
             for (index, &contract) in contracts.iter().enumerate() {
-                println!(
-                    "{direction}_contract\t{index}\t{}\t{:?}",
-                    contract.0,
-                    program.program().contracts.get(contract)
-                );
+                println!("{direction}_contract\t{index}\t{}", contract.0);
             }
         }
         println!("pc\tnext_pc\topcode\tspan");

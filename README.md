@@ -43,6 +43,16 @@ cargo bench -p execution_tape_wind_tunnel
 cargo bench -p execution_graph_wind_tunnel
 ```
 
+Measure contract enforcement on shared input graphs:
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench contracts
+```
+
+The checked and kind-only cases use the same guest body and data at depths 1, 16 and 256.
+This measures the cost of a structural obligation, rather than an optimization speedup. Each case
+checks the returned root, reachable leaf and heap size before timing reused execution.
+
 Record real host calls, drop the live VM/host, and check a fresh replay:
 
 ```sh

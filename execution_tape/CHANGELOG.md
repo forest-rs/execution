@@ -17,6 +17,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Run `nested_contracts [OUTPUT.tape]` to execute and optionally save a nested-result example.
+  Observatory previews nested guest signatures with bounded depth/member counts and caches the
+  selected summary. `inspect_prepared` prints contract definitions once in child-before-parent
+  order and maps argument/result positions to their IDs. The `contracts` benchmark measures the
+  runtime cost of enforcing shared-graph contracts against kind-only signatures. ([#157][] by [@waywardmonkeys][])
+
 - Intern and inspect compositional value contracts with `ContractTableBuilder`. Definitions
   share flat immutable storage, preserve unknown tuple members, and reject missing/forward
   references. Contract IDs belong to one table; nominal schema validation belongs to its owner. ([#155][] by [@waywardmonkeys][])
@@ -294,6 +300,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#157]: https://github.com/forest-rs/execution/pull/157
 [#156]: https://github.com/forest-rs/execution/pull/156
 [#155]: https://github.com/forest-rs/execution/pull/155
 [#151]: https://github.com/forest-rs/execution/pull/151
