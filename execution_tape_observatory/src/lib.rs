@@ -5,8 +5,9 @@
 //!
 //! [`browse`] opens functions, instructions, imports, constants and aggregate types without a VM
 //! or host. Verification runs once on opening; rejected programs remain navigable. [`render_program`]
-//! provides the same initial view without terminal modes. Span IDs remain opaque until a frontend
-//! provides source-file mappings; static register declarations are not runtime values.
+//! provides the same initial view without terminal modes. [`ProgramBrowser`] attaches optional
+//! frontend source snapshots through [`sources::SourceMap`]. Span IDs remain opaque; static
+//! register declarations are not runtime values.
 //!
 //! [`explore`] connects invocation/host-call/outcome navigation, immediate aggregate inspection,
 //! source instruction context, captured guest callers and checked replay. [`render_text`] renders the same initial view
@@ -55,10 +56,59 @@ pub fn explore(record: &Recording) -> io::Result<()> {
 /// Opens a compiled program browser without executing guest code or invoking a host.
 ///
 /// Verifies once on opening; rejected programs remain inspectable with the first diagnostic.
-/// Function names, types, instructions and span identifiers come from the program. Source files
-/// and runtime register values are not reconstructed. Uses the terminal lifecycle of [`explore`].
+/// Function names, types, instructions and span identifiers come from the program. This convenience
+/// opens without source snapshots; use [`ProgramBrowser::sources`] to attach explicit frontend
+/// mappings. Runtime register values are not reconstructed. Uses [`explore`] terminal lifecycle.
 pub fn browse(program: &Program) -> io::Result<()> {
-    interact(browser::Browser::new(program))
+    ProgramBrowser::new(program).run()
+}
+
+/// Configured compiled-program browser. Source snapshots are optional, frontend-owned sidecars.
+///
+/// Existing [`browse`] and [`render_program`] are conveniences for a browser without sources.
+/// Use this builder to attach sources once, then choose interactive or headless presentation.
+pub struct ProgramBrowser<'a> {
+    program: &'a Program,
+    sources: Option<sources::BoundSources<'a>>,
+}
+impl std::fmt::Debug for ProgramBrowser<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProgramBrowser")
+            .field("functions", &self.program.functions.len())
+            .field("sources_attached", &self.sources.is_some())
+            .finish_non_exhaustive()
+    }
+}
+impl<'a> ProgramBrowser<'a> {
+    /// Selects a compiled program. It is verified when the view is opened or rendered.
+    #[must_use]
+    pub fn new(program: &'a Program) -> Self {
+        Self {
+            program,
+            sources: None,
+        }
+    }
+
+    /// Attaches frontend source snapshots after comparing the full encoded program identity.
+    /// A stale map is rejected before terminal modes are entered.
+    pub fn sources(mut self, map: &'a sources::SourceMap) -> Result<Self, sources::SourceError> {
+        self.sources = Some(map.bind(self.program)?);
+        Ok(self)
+    }
+
+    /// Opens this browser using the terminal lifecycle documented by [`browse`].
+    pub fn run(self) -> io::Result<()> {
+        interact(browser::Browser::with_sources(self.program, self.sources))
+    }
+
+    /// Renders this browser without terminal modes. Dimensions follow [`render_program`].
+    pub fn render_text(self, width: u16, height: u16) -> io::Result<String> {
+        render_screen(
+            || browser::Browser::with_sources(self.program, self.sources),
+            width,
+            height,
+        )
+    }
 }
 
 trait Screen {
@@ -120,7 +170,7 @@ pub fn render_text(record: &Recording, width: u16, height: u16) -> io::Result<St
 /// Performs the same verification as [`browse`], including navigation to a located diagnostic.
 /// Dimensions have the same bounds as [`render_text`]. Does not execute guest code.
 pub fn render_program(program: &Program, width: u16, height: u16) -> io::Result<String> {
-    render_screen(|| browser::Browser::new(program), width, height)
+    ProgramBrowser::new(program).render_text(width, height)
 }
 
 fn render_screen<S: Screen>(

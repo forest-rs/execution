@@ -7,7 +7,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-use super::{Screen, describe, flow::Flow};
+use super::{Screen, describe, flow::Flow, sources::BoundSources};
 use execution_tape::disasm::{
     CallTarget, DisasmError, FunctionDisassembly, Operands, disassemble_function,
 };
@@ -16,7 +16,8 @@ use execution_tape::value::FuncId;
 use execution_tape::verifier::{FunctionAnalysis, ProgramAnalysis, VerifyConfig, VerifyError};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-const CONTEXT: &str = "Static program · no execution · span IDs are not source-file links";
+const CONTEXT: &str =
+    "Static program · no execution · source snapshots require explicit frontend mappings";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Section {
@@ -48,6 +49,7 @@ enum Focus {
 
 pub(super) struct Browser<'a> {
     program: &'a Program,
+    source_map: Option<BoundSources<'a>>,
     names: Vec<Option<&'a str>>,
     details_code: bool,
     error: Option<VerifyError>,
@@ -55,6 +57,7 @@ pub(super) struct Browser<'a> {
     function_facts: Option<FunctionAnalysis<'a>>,
     facts_pc: Option<u32>,
     fact_lines: Vec<String>,
+    source_lines: Vec<String>,
     rejection: Option<describe::VerificationDiagnostic>,
     section: Section,
     focus: Focus,
@@ -77,7 +80,12 @@ pub(super) struct Browser<'a> {
 }
 
 impl<'a> Browser<'a> {
+    #[cfg(test)]
     pub(super) fn new(program: &'a Program) -> Self {
+        Self::with_sources(program, None)
+    }
+
+    pub(super) fn with_sources(program: &'a Program, source_map: Option<BoundSources<'a>>) -> Self {
         let mut names = vec![None; program.functions.len()];
         for entry in &program.function_names {
             if let Some(slot) = names.get_mut(entry.func as usize)
@@ -95,6 +103,7 @@ impl<'a> Browser<'a> {
             .map(|error| describe::verification(program, error));
         let mut view = Self {
             program,
+            source_map,
             names,
             details_code: false,
             error,
@@ -102,6 +111,7 @@ impl<'a> Browser<'a> {
             function_facts: None,
             facts_pc: None,
             fact_lines: Vec::new(),
+            source_lines: Vec::new(),
             rejection,
             section: Section::Functions,
             focus: Focus::Navigator,
@@ -217,6 +227,7 @@ impl<'a> Browser<'a> {
                 self.function_facts = None;
                 self.facts_pc = None;
                 self.fact_lines.clear();
+                self.source_lines.clear();
                 self.decode_error = None;
                 self.source = None;
                 self.flow = Flow::default();
@@ -277,6 +288,7 @@ impl<'a> Browser<'a> {
             .and_then(|source| source.instrs().nth(self.instruction));
         let Some(instruction) = instruction else {
             self.fact_lines.clear();
+            self.source_lines.clear();
             self.facts_pc = None;
             return;
         };
@@ -285,6 +297,16 @@ impl<'a> Browser<'a> {
             return;
         }
         self.fact_lines.clear();
+        self.source_lines = self.source_map.map_or_else(Vec::new, |sources| {
+            sources.context_lines(
+                execution_tape::trace::TraceLocation {
+                    func: self.function.expect("selected function"),
+                    pc,
+                },
+                2,
+                48,
+            )
+        });
         self.facts_pc = Some(pc);
         let Some(function) = self.function_facts.as_mut() else {
             self.fact_lines

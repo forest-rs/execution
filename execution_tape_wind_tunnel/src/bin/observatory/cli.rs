@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use execution_tape::program::Program;
+use execution_tape_observatory::sources::{SourceLimits, SourceMap};
 use std::{
     ffi::OsString,
     io::{self, Read},
@@ -11,14 +12,14 @@ use std::{
 pub(super) const HELP: &str = "Execution Observatory
 
 Usage: observatory [--snapshot] [--color=always]
-       observatory --program PATH [--snapshot] [--color=always]
+       observatory --program PATH [--sources MAP] [--snapshot] [--color=always]
        observatory --write-demo PATH
 
 Without a path, capture and explore the built-in read/compute/store demo.
 --program PATH   Browse a compiled tape without executing code or loading a host.
                  Rejected programs remain inspectable; undecodable files report an error.
                  Input files are limited to 64 MiB (decoded storage is additional).
---snapshot       Print the initial 120-column by 36-row view without terminal modes.
+--sources MAP    Attach frontend snapshots/ranges; rejects stale program identity.\n                 Sidecars are limited to 128 MiB; documents to 16 MiB plus program identity.\n--snapshot       Print the initial 120-column by 36-row view without terminal modes.
 --color=always   Force terminal colors, including when NO_COLOR is set.
 --write-demo     Write the demo's compiled program to a new file, then exit.
 --help           Show this help.
@@ -41,6 +42,7 @@ pub(super) struct Options {
     pub(super) action: Action,
     pub(super) snapshot: bool,
     pub(super) force_colors: bool,
+    pub(super) sources: Option<PathBuf>,
 }
 
 impl Options {
@@ -48,6 +50,7 @@ impl Options {
         let mut action = None;
         let mut snapshot = false;
         let mut force_colors = false;
+        let mut sources = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             if arg == "--help" {
@@ -55,12 +58,20 @@ impl Options {
                     action: Action::Help,
                     snapshot: false,
                     force_colors: false,
+                    sources: None,
                 });
             }
             if arg == "--snapshot" {
                 snapshot = true;
             } else if arg == "--color=always" {
                 force_colors = true;
+            } else if arg == "--sources" {
+                if sources.is_some() {
+                    return Err("--sources may be supplied only once".into());
+                }
+                sources = Some(PathBuf::from(
+                    args.next().ok_or("--sources requires a path")?,
+                ));
             } else if arg == "--program" || arg == "--write-demo" {
                 if action.is_some() {
                     return Err("choose one of --program or --write-demo".into());
@@ -81,7 +92,11 @@ impl Options {
         if matches!(action, Action::WriteDemo(_)) && (snapshot || force_colors) {
             return Err("--write-demo cannot be combined with display options".into());
         }
+        if sources.is_some() && !matches!(action, Action::Program(_)) {
+            return Err("--sources requires --program".into());
+        }
         Ok(Self {
+            sources,
             action,
             snapshot,
             force_colors,
@@ -97,7 +112,7 @@ fn read_bounded(reader: impl Read, limit: u64) -> io::Result<Vec<u8>> {
     if bytes.len() as u64 > limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("compiled tape exceeds the {limit}-byte input limit"),
+            format!("input exceeds the {limit}-byte limit"),
         ));
     }
     Ok(bytes)
@@ -109,6 +124,15 @@ pub(super) fn load_program(path: &Path) -> Result<Program, Box<dyn std::error::E
         .map_err(|error| format!("cannot read compiled tape {path:?}: {error}"))?;
     Program::decode(&bytes)
         .map_err(|error| format!("cannot decode compiled tape {path:?}: {error}").into())
+}
+
+/// Source snapshots are explicit sidecars. Registry validation performs no filesystem reads.
+pub(super) fn load_sources(path: &Path) -> Result<SourceMap, Box<dyn std::error::Error>> {
+    let bytes = std::fs::File::open(path)
+        .and_then(|file| read_bounded(file, 128 * 1024 * 1024))
+        .map_err(|error| format!("cannot read source sidecar {path:?}: {error}"))?;
+    SourceMap::decode(&bytes, SourceLimits::default())
+        .map_err(|error| format!("cannot decode source sidecar {path:?}: {error}").into())
 }
 
 #[cfg(test)]
@@ -129,6 +153,15 @@ mod tests {
         assert!(parse(&["--program", "a", "--program", "b"]).is_err());
         assert!(parse(&["--write-demo", "a", "--snapshot"]).is_err());
         assert!(parse(&["--unknown"]).is_err());
+        assert!(parse(&["--sources"]).is_err());
+        assert!(parse(&["--sources", "map"]).is_err());
+        assert!(parse(&["--program", "tape", "--sources", "a", "--sources", "b"]).is_err());
+        assert_eq!(
+            parse(&["--sources", "map", "--program", "tape"])
+                .unwrap()
+                .sources,
+            Some("map".into())
+        );
     }
 
     #[test]

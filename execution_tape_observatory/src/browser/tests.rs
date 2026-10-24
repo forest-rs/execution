@@ -805,3 +805,59 @@ fn entry_loops_disclose_invocation_seeds_separately_from_cfg_arms() {
         "{text}"
     );
 }
+
+#[test]
+fn frontend_snapshot_is_visible_on_compact_screens_and_follows_diagnostics() {
+    use crate::{
+        ProgramBrowser,
+        sources::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
+    };
+    use execution_tape::trace::TraceLocation;
+    let (mut program, make, wrong) = nested_fixture(false);
+    let offset = program.functions[make.0 as usize].ret_types.offset as usize;
+    program.contract_ids[offset] = wrong;
+    let mut mappings = Vec::new();
+    for index in 0..program.functions.len() {
+        let func = FuncId(u32::try_from(index).unwrap());
+        let code = disassemble_function(&program, func).unwrap();
+        mappings.extend(code.instrs().map(|instruction| SourceMapping {
+            location: TraceLocation {
+                func,
+                pc: instruction.pc(),
+            },
+            document: SourceId(0),
+            range: 0..10,
+        }));
+    }
+    let sources = SourceMap::new(
+        &program,
+        vec![SourceDocument {
+            name: "frontend.expr".into(),
+            text: "return 42;".into(),
+        }],
+        mappings,
+        SourceLimits::default(),
+    )
+    .unwrap();
+    let text = ProgramBrowser::new(&program)
+        .sources(&sources)
+        .unwrap()
+        .render_text(80, 24)
+        .unwrap();
+    assert!(text.contains("FRONTEND SOURCE"), "{text}");
+    assert!(text.contains("frontend.expr"), "{text}");
+    assert!(text.contains("return 42;"), "{text}");
+    assert!(!text.contains("Verifier facts · before"), "{text}");
+    let mut view = Browser::with_sources(&program, Some(sources.bind(&program).unwrap()));
+    assert!(
+        view.source_lines
+            .iter()
+            .any(|line| line.contains("return 42;"))
+    );
+    view.navigate(FuncId(0), 0);
+    assert!(
+        view.source_lines
+            .iter()
+            .any(|line| line.contains("return 42;"))
+    );
+}

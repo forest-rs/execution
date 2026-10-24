@@ -192,15 +192,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Action::Help => print!("{}", cli::HELP),
         Action::Program(path) => {
             let program = cli::load_program(&path)?;
-            if options.snapshot {
-                print!(
-                    "{}",
-                    execution_tape_observatory::render_program(&program, 120, 36)?
-                );
+            let sources = options
+                .sources
+                .as_deref()
+                .map(cli::load_sources)
+                .transpose()?;
+            let browser = execution_tape_observatory::ProgramBrowser::new(&program);
+            let browser = if let Some(sources) = sources.as_ref() {
+                browser
+                    .sources(sources)
+                    .map_err(|error| format!("cannot attach source sidecar: {error}"))?
             } else {
-                execution_tape_observatory::browse(&program)?;
+                browser
+            };
+            if options.snapshot {
+                print!("{}", browser.render_text(120, 36)?);
+            } else {
+                browser.run()?;
             }
         }
+
         Action::WriteDemo(path) => {
             let record = demo_recording()?;
             let bytes = record.program().program().encode();
