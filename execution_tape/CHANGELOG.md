@@ -30,6 +30,10 @@ This release has an [MSRV][] of 1.88.
   evidence; instruction truncation remains separate from boundary completeness. The `observations`
   benchmark separates live execution, boundary recording, history and watched operand costs. ([#166][] by [@waywardmonkeys][])
 
+- Navigate retained instruction attempts with Observatory's `i` key. Show actual successors,
+  selected observed registers, guest ancestry and separate static verifier guarantees; keep
+  instruction-history completeness distinct from boundary capture. ([#166][] by [@waywardmonkeys][])
+
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
   selected body, including closures received through guest boundaries. ([#163][] by [@waywardmonkeys][])

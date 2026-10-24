@@ -136,3 +136,12 @@ one parameter: one supplies `tuple(i64)`, the other `tuple(bool)`. The header sh
 executes both conditions and checks that each returns one.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+
+Press `i` in the recording explorer to switch between boundary events and actual instruction
+attempts. Arrow keys navigate retained execution order; the source and guest stack follow the
+selected attempt. The detail row shows its actual successor and outcome. Watched registers show
+**before** inputs and **after** successful local writes; Enter opens observed aggregates.
+A separate verifier panel shows static before/after guarantees when screen space permits.
+Its call-output facts assume a successful return and are distinct from dispatch-time observations.
+History completeness is labelled separately from boundary capture, including truncated prefixes.
+The built-in recording demo enables a bounded history and explicit operand watches.
