@@ -464,6 +464,13 @@ pub fn sig_hash(sig: &HostSig) -> SigHash {
 /// Computes a stable signature hash from argument/return type slices.
 #[must_use]
 pub fn sig_hash_slices(args: &[ValueType], rets: &[ValueType]) -> SigHash {
+    sig_hash_iter(args.iter(), rets.iter())
+}
+
+pub(crate) fn sig_hash_iter<'a>(
+    args: impl ExactSizeIterator<Item = &'a ValueType>,
+    rets: impl ExactSizeIterator<Item = &'a ValueType>,
+) -> SigHash {
     const PREFIX: &[u8] = b"execution_tape:v1\0";
     let mut h = Fnv1a64::new();
     h.update(PREFIX);
