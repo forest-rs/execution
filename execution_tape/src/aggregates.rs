@@ -6,6 +6,9 @@
 //! v1 aggregates are immutable, acyclic, and structural.
 //! They are stored out-of-line in an arena owned by the VM/runtime.
 
+mod contract_check;
+pub(crate) use contract_check::{CheckError, ContractScratch};
+
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
@@ -13,7 +16,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::program::{AggShape, ElemTypeId, Program, TypeId, ValueType};
+use crate::program::{ElemTypeId, Program, TypeId};
 use crate::value::{AggHandle, AggType, Value};
 
 /// An aggregate heap error.
@@ -47,65 +50,6 @@ impl fmt::Display for AggError {
 }
 
 impl core::error::Error for AggError {}
-
-/// A concrete aggregate does not satisfy a declared argument shape.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AggShapeError {
-    /// The aggregate handle could not be resolved.
-    Heap(AggError),
-    /// The aggregate kind, nominal type, or tuple length differs.
-    Shape {
-        /// Required aggregate descriptor.
-        expected: AggType,
-        /// Actual aggregate descriptor.
-        actual: AggType,
-    },
-    /// A struct has the wrong number of fields.
-    Arity {
-        /// Required field count.
-        expected: usize,
-        /// Actual field count.
-        actual: usize,
-    },
-    /// An element or field has an incompatible value type.
-    Element {
-        /// Zero-based element or field index.
-        index: usize,
-        /// Required value type.
-        expected: ValueType,
-        /// Actual value type.
-        actual: ValueType,
-    },
-    /// The declared shape references an absent or malformed program schema.
-    InvalidSchema,
-}
-
-impl fmt::Display for AggShapeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Heap(e) => e.fmt(f),
-            Self::Shape { expected, actual } => write!(f, "expected {expected:?}, got {actual:?}"),
-            Self::Arity { expected, actual } => {
-                write!(f, "expected {expected} fields, got {actual}")
-            }
-            Self::Element {
-                index,
-                expected,
-                actual,
-            } => write!(f, "element {index}: expected {expected:?}, got {actual:?}"),
-            Self::InvalidSchema => write!(f, "invalid aggregate shape schema"),
-        }
-    }
-}
-
-impl core::error::Error for AggShapeError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Heap(e) => Some(e),
-            _ => None,
-        }
-    }
-}
 
 pub(crate) fn aggregate_handle(value: &Value) -> Option<AggHandle> {
     match value {
@@ -677,85 +621,6 @@ impl AggHeap {
         remap.remap_values_in_place(roots)
     }
 
-    /// Checks a concrete aggregate against a program's argument shape.
-    ///
-    /// Validates nominal IDs, lengths, and immediate field/element value types. Tuple `None`
-    /// elements impose no type restriction. Nested aggregates are checked as `ValueType::Agg`;
-    /// this does not recursively impose shapes or validate nested handles.
-    /// No allocation is needed on either success or failure.
-    pub fn check_shape(
-        &self,
-        program: &Program,
-        handle: AggHandle,
-        shape: &AggShape,
-    ) -> Result<(), AggShapeError> {
-        let node = self.node(handle).map_err(AggShapeError::Heap)?;
-        let expected = match shape {
-            AggShape::Tuple { elems } => AggType::Tuple {
-                arity: u32::try_from(elems.len()).map_err(|_| AggShapeError::InvalidSchema)?,
-            },
-            AggShape::Struct(id) => AggType::Struct { type_id: *id },
-            AggShape::Array(id) => AggType::Array { elem_type_id: *id },
-        };
-        let actual = self.agg_type(handle).map_err(AggShapeError::Heap)?;
-        if actual != expected {
-            return Err(AggShapeError::Shape { expected, actual });
-        }
-        let values = node.values();
-        let check = |index: usize, expected: ValueType| {
-            let actual = values[index].value_type();
-            if actual == expected {
-                Ok(())
-            } else {
-                Err(AggShapeError::Element {
-                    index,
-                    expected,
-                    actual,
-                })
-            }
-        };
-        match shape {
-            AggShape::Tuple { elems } => {
-                for (index, expected) in elems.iter().enumerate() {
-                    if let Some(expected) = expected {
-                        check(index, *expected)?;
-                    }
-                }
-            }
-            AggShape::Struct(id) => {
-                let st = program
-                    .types
-                    .structs
-                    .get(id.0 as usize)
-                    .ok_or(AggShapeError::InvalidSchema)?;
-                let types = program
-                    .types
-                    .struct_field_types(st)
-                    .map_err(|_| AggShapeError::InvalidSchema)?;
-                if values.len() != types.len() {
-                    return Err(AggShapeError::Arity {
-                        expected: types.len(),
-                        actual: values.len(),
-                    });
-                }
-                for (index, expected) in types.iter().enumerate() {
-                    check(index, *expected)?;
-                }
-            }
-            AggShape::Array(id) => {
-                let expected = *program
-                    .types
-                    .array_elems
-                    .get(id.0 as usize)
-                    .ok_or(AggShapeError::InvalidSchema)?;
-                for index in 0..values.len() {
-                    check(index, expected)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Returns the aggregate type for `handle`.
     pub fn agg_type(&self, handle: AggHandle) -> Result<AggType, AggError> {
         match self.node(handle)? {
@@ -1076,61 +941,70 @@ mod tests {
     }
 
     #[test]
-    fn shape_checks_validate_contents_and_nominal_ids() {
-        use crate::program::{StructTypeDef, TypeTableDef};
-        let p = Program::new(
-            vec![],
-            vec![],
-            vec![],
-            TypeTableDef {
-                structs: vec![StructTypeDef {
-                    field_names: vec!["x".into()],
-                    field_types: vec![ValueType::I64],
-                }],
-                array_elems: vec![ValueType::I64],
-            },
-            vec![],
-        );
+    fn contract_checks_validate_contents_and_nominal_ids() {
+        use crate::asm::ProgramBuilder;
+        use crate::contract::{Contract, ContractMismatch};
+        use crate::program::{StructTypeDef, ValueType};
+        let mut b = ProgramBuilder::new();
+        let st_type = b.struct_type(StructTypeDef {
+            field_names: vec!["x".into()],
+            field_types: vec![ValueType::I64],
+        });
+        let elem_type = b.array_elem(ValueType::I64);
+        let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let st_contract = b
+            .contract(Contract::Struct {
+                type_id: st_type,
+                fields: &[integer],
+            })
+            .unwrap();
+        let arr_contract = b
+            .contract(Contract::Array {
+                elem_type_id: elem_type,
+                element: integer,
+            })
+            .unwrap();
+        let any_tuple = b.contract(Contract::Tuple(&[None])).unwrap();
+        let empty_tuple = b.contract(Contract::Tuple(&[])).unwrap();
+        let p = b.build_checked().unwrap();
         let mut heap = AggHeap::new();
-        let st = heap.struct_new(TypeId(0), vec![Value::Bool(true)]).unwrap();
+        let mut scratch = ContractScratch::default();
+        let st = heap.struct_new(st_type, vec![Value::Bool(true)]).unwrap();
         assert!(matches!(
-            heap.check_shape(&p, st, &AggShape::Struct(TypeId(0))),
-            Err(AggShapeError::Element { index: 0, .. })
+            scratch.check(&p, &heap, st, st_contract, 100),
+            Err(CheckError::Mismatch(crate::contract::ContractViolation {
+                mismatch: ContractMismatch::Kind { .. },
+                ..
+            }))
         ));
-        let short = heap.struct_new(TypeId(0), vec![]).unwrap();
+        let short = heap.struct_new(st_type, vec![]).unwrap();
         assert!(matches!(
-            heap.check_shape(&p, short, &AggShape::Struct(TypeId(0))),
-            Err(AggShapeError::Arity { .. })
+            scratch.check(&p, &heap, short, st_contract, 100),
+            Err(CheckError::Mismatch(crate::contract::ContractViolation {
+                mismatch: ContractMismatch::Arity { .. },
+                ..
+            }))
         ));
         let array = heap
-            .array_new(ElemTypeId(0), vec![Value::I64(1), Value::Bool(false)])
+            .array_new(elem_type, vec![Value::I64(1), Value::Bool(false)])
             .unwrap();
+        let Err(CheckError::Mismatch(failure)) = scratch.check(&p, &heap, array, arr_contract, 100)
+        else {
+            panic!("expected wrong array element");
+        };
+        assert_eq!(failure.path, vec![1]);
         assert!(matches!(
-            heap.check_shape(&p, array, &AggShape::Array(ElemTypeId(0))),
-            Err(AggShapeError::Element { index: 1, .. })
+            scratch.check(&p, &heap, array, st_contract, 100),
+            Err(CheckError::Mismatch(crate::contract::ContractViolation {
+                mismatch: ContractMismatch::Aggregate { .. },
+                ..
+            }))
         ));
-        assert!(matches!(
-            heap.check_shape(&p, array, &AggShape::Struct(TypeId(0))),
-            Err(AggShapeError::Shape { .. })
-        ));
-        let wrong_id = heap.array_new(ElemTypeId(1), vec![]).unwrap();
-        assert!(matches!(
-            heap.check_shape(&p, wrong_id, &AggShape::Array(ElemTypeId(0))),
-            Err(AggShapeError::Shape { .. })
-        ));
-        assert_eq!(
-            heap.check_shape(&p, wrong_id, &AggShape::Array(ElemTypeId(1))),
-            Err(AggShapeError::InvalidSchema)
-        );
+        let wrong = heap.array_new(ElemTypeId(1), vec![]).unwrap();
+        assert!(scratch.check(&p, &heap, wrong, arr_contract, 100).is_err());
         let tuple = heap.tuple_new(vec![Value::Bool(false)]).unwrap();
-        assert_eq!(
-            heap.check_shape(&p, tuple, &AggShape::tuple(vec![None])),
-            Ok(())
-        );
-        assert!(matches!(
-            heap.check_shape(&p, tuple, &AggShape::tuple(vec![])),
-            Err(AggShapeError::Shape { .. })
-        ));
+        assert!(scratch.check(&p, &heap, tuple, any_tuple, 100).is_ok());
+        assert!(scratch.check(&p, &heap, tuple, empty_tuple, 100).is_err());
     }
 
     #[test]

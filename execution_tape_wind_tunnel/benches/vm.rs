@@ -693,14 +693,18 @@ fn build_str_const_len(n: usize) -> execution_tape::verifier::VerifiedProgram {
 
 fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
     let mut pb = ProgramBuilder::new();
-    let f0 = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
-    let f1 = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
+    let f0 = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let f1 = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
 
     let mut a1 = Asm::new();
     a1.set_register_types(vec![
@@ -726,14 +730,18 @@ fn build_call_overhead() -> execution_tape::verifier::VerifiedProgram {
 
 fn build_call_loop(iters: u64) -> execution_tape::verifier::VerifiedProgram {
     let mut pb = ProgramBuilder::new();
-    let f0 = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
-    let f1 = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
+    let f0 = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let f1 = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
 
     let mut a1 = Asm::new();
     a1.set_register_types(vec![
@@ -794,18 +802,22 @@ fn build_call_indirect_loop(
     let mut pb = ProgramBuilder::new();
     let call_sig = pb.call_sig(&[], &[]);
 
-    let f0 = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::U64],
-    });
-    let f1 = pb.declare_function(FunctionSig {
-        arg_types: if closure_target {
-            vec![ValueType::Agg]
-        } else {
-            vec![]
-        },
-        ret_types: vec![],
-    });
+    let f0 = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::U64],
+        })
+        .unwrap();
+    let f1 = pb
+        .declare_function(FunctionSig {
+            arg_types: if closure_target {
+                vec![ValueType::Agg]
+            } else {
+                vec![]
+            },
+            ret_types: vec![],
+        })
+        .unwrap();
 
     let mut callee = Asm::new();
     let callee_kinds = if closure_target {
@@ -1023,6 +1035,7 @@ fn wide_open_limits() -> Limits {
         fuel: u64::MAX,
         max_call_depth: 1024,
         max_host_calls: u64::MAX,
+        max_contract_work: u64::MAX,
     }
 }
 

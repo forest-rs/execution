@@ -133,7 +133,7 @@ fn decoder_rejects_impossible_section_counts() {
     use execution_tape::format::{DecodeError, Writer};
 
     let encoded = ProgramBuilder::new().build().encode();
-    for tag in 1..=11 {
+    for tag in (1..=12).filter(|&tag| tag != 11) {
         let mut payload = Writer::new();
         if tag == 9 {
             payload.write_u8(0); // no program name
@@ -164,7 +164,7 @@ fn decoder_rejects_impossible_nested_counts() {
         (8, &[1, 1, 0, 0, 0, 0, 0, 0, 0, 0][..]),
         (9, &[0, 0][..]),
         (10, &[1][..]),
-        (11, &[1, 0, 0, 1][..]),
+        (12, &[1, 1][..]),
     ] {
         let mut payload = Writer::new();
         payload.write_bytes(prefix);
@@ -450,7 +450,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
 }
 
 #[test]
-fn golden_program_bytes_v0_2() {
+fn golden_program_bytes_v0_3() {
     let mut p = Program::new(
         vec![],
         vec![],
@@ -494,10 +494,10 @@ fn golden_program_bytes_v0_2() {
         0x45,
         0x00,
         0x00,
-        // version_major=0, version_minor=2
+        // version_major=0, version_minor=3
         0x00,
         0x00,
-        0x02,
+        0x03,
         0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
         0x02,
@@ -534,6 +534,10 @@ fn golden_program_bytes_v0_2() {
         0x00,
         0x00,
         0x00, // additional Unit declaration
+        // compositional contracts: tag=12, len=1, count=0
+        0x0c,
+        0x01,
+        0x00,
         // function_sigs: tag=7, len=5, payload=[n=1, argc=0, has_arg_names=0, retc=0, has_ret_names=0]
         0x07,
         0x05,
@@ -1313,14 +1317,18 @@ fn roundtrip_verify_run_host_call_with_aggregate_arg() {
 #[test]
 fn roundtrip_verify_run_call_indirect_via_func_value() {
     let mut pb = ProgramBuilder::new();
-    let caller = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
-    let callee = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    });
+    let caller = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let callee = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
     let mut callee_asm = Asm::new();
@@ -1354,14 +1362,18 @@ fn roundtrip_verify_run_call_indirect_via_func_value() {
 #[test]
 fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
     let mut pb = ProgramBuilder::new();
-    let caller = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::U64],
-    });
-    let callee = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::Agg, ValueType::U64],
-        ret_types: vec![ValueType::U64],
-    });
+    let caller = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::U64],
+        })
+        .unwrap();
+    let callee = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::Agg, ValueType::U64],
+            ret_types: vec![ValueType::U64],
+        })
+        .unwrap();
     let call_sig = pb.call_sig(&[ValueType::U64], &[ValueType::U64]);
 
     let mut callee_asm = Asm::new();
@@ -1405,14 +1417,18 @@ fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
 #[test]
 fn vm_traps_call_indirect_on_signature_mismatch() {
     let mut pb = ProgramBuilder::new();
-    let caller = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
-    let callee = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::U64],
-        ret_types: vec![ValueType::I64],
-    });
+    let caller = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let callee = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::U64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
     let mut callee_asm = Asm::new();
@@ -1469,10 +1485,12 @@ fn verifier_rejects_unknown_opcode() {
 fn vm_traps_call_depth_on_unbounded_recursion() {
     // A function that calls itself unconditionally.
     let mut pb = ProgramBuilder::new();
-    let f = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![],
-    });
+    let f = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![],
+        })
+        .unwrap();
 
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit]);
@@ -1485,6 +1503,7 @@ fn vm_traps_call_depth_on_unbounded_recursion() {
         fuel: 1_000_000,
         max_call_depth: 8,
         max_host_calls: 1_000_000,
+        ..Limits::default()
     };
     let mut vm = Vm::new(TestHost, limits);
     let err = vm.run(&p, f, &[], TraceMask::NONE, None).unwrap_err();

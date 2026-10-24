@@ -21,6 +21,10 @@ pub enum MetadataTable {
     Structs,
     /// Required function register kind ranges and type IDs.
     RegisterTypes,
+    /// Guest signature ranges and contract IDs.
+    GuestContracts,
+    /// Compositional value contracts and nominal schema refinements.
+    Contracts,
     /// Packed optional function value names.
     ValueNames,
     /// Optional program name (entry zero).
@@ -115,6 +119,12 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
             return Err(invalid(T::RegisterTypes, index, DecodeError::OutOfBounds));
         }
     }
+    for (index, &id) in program.contract_ids.iter().enumerate() {
+        if program.contracts.get(id).is_none() {
+            return Err(invalid(T::GuestContracts, index, DecodeError::OutOfBounds));
+        }
+    }
+    super::contracts::verify_definitions(program)?;
     let valid_name = |id: u32| id == 0 || (id as usize) < program.symbols.len();
     for (index, &name) in program.value_name_ids.iter().enumerate() {
         if !valid_name(name) {

@@ -21,12 +21,6 @@ impl VerifyError {
             | Self::FunctionArgTypesOutOfBounds { func, .. }
             | Self::FunctionRetTypesOutOfBounds { func, .. }
             | Self::FunctionSigCountMismatch { func, .. }
-            | Self::FunctionArgAggShapeFuncOutOfBounds { func, .. }
-            | Self::FunctionArgAggShapeArgOutOfBounds { func, .. }
-            | Self::FunctionArgAggShapeDuplicate { func, .. }
-            | Self::FunctionArgAggShapeOnNonAggArg { func, .. }
-            | Self::FunctionArgAggShapeStructTypeOutOfBounds { func, .. }
-            | Self::FunctionArgAggShapeArrayElemTypeOutOfBounds { func, .. }
             | Self::UnsupportedValueType { func, .. }
             | Self::FunctionInputNameArgOutOfBounds { func, .. }
             | Self::FunctionInputNameEmpty { func, .. }
@@ -45,7 +39,7 @@ impl VerifyError {
             | Self::RegOutOfBounds { func, .. }
             | Self::UninitializedRead { func, .. }
             | Self::CallArityMismatch { func, .. }
-            | Self::CallArgShapeMismatch { func, .. }
+            | Self::ContractMismatch { func, .. }
             | Self::ReturnArityMismatch { func, .. }
             | Self::HostCallArityMismatch { func, .. }
             | Self::FuncIdOutOfBounds { func, .. }
@@ -69,7 +63,8 @@ impl VerifyError {
             | Self::MissingTerminator { func, .. }
             | Self::InternalBlockInconsistent { func, .. }
             | Self::BytecodeDecode { func, .. } => Some(FuncId(*func)),
-            Self::InvalidMetadata { .. }
+            Self::InvalidContract { .. }
+            | Self::InvalidMetadata { .. }
             | Self::Decode(..)
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
@@ -94,7 +89,7 @@ impl VerifyError {
             | Self::RegOutOfBounds { pc, .. }
             | Self::UninitializedRead { pc, .. }
             | Self::CallArityMismatch { pc, .. }
-            | Self::CallArgShapeMismatch { pc, .. }
+            | Self::ContractMismatch { pc, .. }
             | Self::ReturnArityMismatch { pc, .. }
             | Self::HostCallArityMismatch { pc, .. }
             | Self::FuncIdOutOfBounds { pc, .. }
@@ -116,19 +111,14 @@ impl VerifyError {
             | Self::MissingTerminator { pc, .. }
             | Self::InternalBlockInconsistent { pc, .. } => Some(*pc),
             Self::RegisterTypeMismatch { pc, .. } => *pc,
-            Self::InvalidMetadata { .. }
+            Self::InvalidContract { .. }
+            | Self::InvalidMetadata { .. }
             | Self::Decode(..)
             | Self::FunctionBytecodeOutOfBounds { .. }
             | Self::FunctionSpansOutOfBounds { .. }
             | Self::FunctionArgTypesOutOfBounds { .. }
             | Self::FunctionRetTypesOutOfBounds { .. }
             | Self::FunctionSigCountMismatch { .. }
-            | Self::FunctionArgAggShapeFuncOutOfBounds { .. }
-            | Self::FunctionArgAggShapeArgOutOfBounds { .. }
-            | Self::FunctionArgAggShapeDuplicate { .. }
-            | Self::FunctionArgAggShapeOnNonAggArg { .. }
-            | Self::FunctionArgAggShapeStructTypeOutOfBounds { .. }
-            | Self::FunctionArgAggShapeArrayElemTypeOutOfBounds { .. }
             | Self::UnsupportedValueType { .. }
             | Self::FunctionInputNameArgOutOfBounds { .. }
             | Self::FunctionInputNameEmpty { .. }

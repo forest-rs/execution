@@ -3,13 +3,14 @@
 
 //! Borrowed inspection of the exact artifact used by the interpreter.
 
+use crate::contract::{ContractId, ContractKinds};
 use core::fmt;
 use core::mem::size_of;
 
 use super::VerifiedProgram;
 use crate::arena::{BytesHandle, StrHandle};
 use crate::opcode::Opcode;
-use crate::program::{AggShape, Function, RegisterTypes, SpanId, ValueType};
+use crate::program::{Function, RegisterTypes, SpanId, ValueType};
 use crate::typed::{ExecFunc, RegCounts};
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj};
 
@@ -92,7 +93,7 @@ impl<'a> VerifiedFunction<'a> {
 
     /// Returns value argument types, excluding the implicit effect token.
     #[must_use]
-    pub fn arg_types(self) -> &'a [ValueType] {
+    pub fn arg_types(self) -> ContractKinds<'a> {
         self.definition
             .arg_types(self.program.program())
             .expect("verified argument range")
@@ -100,24 +101,26 @@ impl<'a> VerifiedFunction<'a> {
 
     /// Returns return-value types.
     #[must_use]
-    pub fn ret_types(self) -> &'a [ValueType] {
+    pub fn ret_types(self) -> ContractKinds<'a> {
         self.definition
             .ret_types(self.program.program())
             .expect("verified return range")
     }
 
-    /// Iterates this function's aggregate argument contracts in source metadata order.
-    ///
-    /// Each item is a zero-based value argument index and its required shape. Only this
-    /// function's prepared checks are visited; unannotated arguments have no entry.
-    pub fn arg_shapes(self) -> impl ExactSizeIterator<Item = (u32, &'a AggShape)> + 'a {
-        self.executable
-            .arg_shape_checks
-            .iter()
-            .map(move |&(_, index)| {
-                let contract = &self.program.program().function_arg_agg_shapes[index];
-                (contract.arg, &contract.shape)
-            })
+    /// Borrows this function's authoritative argument contracts.
+    #[must_use]
+    pub fn arg_contracts(self) -> &'a [ContractId] {
+        self.definition
+            .arg_contracts(self.program.program())
+            .expect("verified contracts")
+    }
+
+    /// Borrows this function's authoritative result contracts.
+    #[must_use]
+    pub fn ret_contracts(self) -> &'a [ContractId] {
+        self.definition
+            .ret_contracts(self.program.program())
+            .expect("verified contracts")
     }
 
     /// Returns the number of slots in the register bank used by `value_type` for one frame.
@@ -167,7 +170,7 @@ impl<'a> VerifiedFunction<'a> {
     pub fn stats(self) -> FunctionStats {
         let executable = self.executable;
         let buffers = [
-            buffer_bytes(&executable.arg_shape_checks),
+            buffer_bytes(&executable.contract_checks),
             buffer_bytes(&executable.reg_layout.arg_regs),
             buffer_bytes(&executable.operands),
             buffer_bytes(&executable.instrs),
@@ -327,8 +330,14 @@ mod tests {
     }
 
     #[test]
-    fn contract_views_visit_only_the_selected_functions_checks() {
+    fn contract_views_borrow_only_the_selected_signature() {
+        use crate::asm::FunctionAbi;
+        use crate::contract::Contract;
         let mut pb = ProgramBuilder::new();
+        let integer = pb.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let opaque = pb.contract(Contract::Kind(ValueType::Agg)).unwrap();
+        let first = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+        let last = pb.contract(Contract::Tuple(&[])).unwrap();
         let mut body = Asm::new();
         body.set_register_types(vec![
             ValueType::Unit,
@@ -340,31 +349,31 @@ mod tests {
         let id = pb
             .push_function_checked(
                 body,
-                FunctionSig {
-                    arg_types: vec![ValueType::Agg; 3],
-                    ret_types: vec![ValueType::Agg],
+                FunctionAbi {
+                    args: vec![first.into(), opaque.into(), last.into()],
+                    rets: vec![first.into()],
                 },
             )
             .unwrap();
-        let first = AggShape::tuple(vec![Some(ValueType::I64)]);
-        let last = AggShape::tuple(vec![]);
-        pb.set_function_arg_agg_shape(id, 2, last.clone()).unwrap();
-        pb.set_function_arg_agg_shape(id, 0, first.clone()).unwrap();
         let mut unrelated = Asm::new();
-        unrelated.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+        unrelated.set_register_types(vec![ValueType::Unit]);
         unrelated.ret(0, &[]);
         pb.push_function_checked(
             unrelated,
             FunctionSig {
-                arg_types: vec![ValueType::Agg],
+                arg_types: vec![],
                 ret_types: vec![],
-            }
-            .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::Bool)])),
+            },
         )
         .unwrap();
         let p = pb.build_verified().unwrap();
-        let contracts: Vec<_> = p.function(id).unwrap().arg_shapes().collect();
-        assert_eq!(contracts, [(2, &last), (0, &first)]);
+        let function = p.function(id).unwrap();
+        assert_eq!(function.arg_contracts(), &[first, opaque, last]);
+        assert_eq!(function.ret_contracts(), &[first]);
+        assert_eq!(
+            p.program().contracts.get(first),
+            Some(Contract::Tuple(&[Some(integer)]))
+        );
     }
 
     #[test]

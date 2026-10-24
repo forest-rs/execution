@@ -8,6 +8,8 @@
 //! execution artifacts. The `_with_lints` entry points additionally run liveness-based diagnostics.
 
 mod blocks;
+mod contracts;
+use contracts::ShapeState;
 mod diagnostic;
 mod inspection;
 mod metadata;
@@ -24,13 +26,14 @@ use crate::analysis::cfg::BasicBlock;
 use crate::analysis::dataflow;
 use crate::analysis::liveness;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
+use crate::contract::{Contract, ContractKinds, ContractPosition, ContractViolation};
 use crate::format::DecodeError;
 use crate::host::{SigHash, sig_hash_slices};
 use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
-    AggShape, CallSigId, ConstEntry, ElemTypeId, Function, Program, RegisterTypes, SpanEntry,
-    SpanId, SymbolId, TypeId, ValueType,
+    CallSigId, ConstEntry, ElemTypeId, Function, Program, RegisterTypes, SpanEntry, SpanId,
+    SymbolId, TypeId, ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
@@ -198,6 +201,26 @@ impl VerifiedProgram {
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
+    /// A compositional contract contradicts its nominal schema, even if it is unused.
+    InvalidContract {
+        /// Program-local contract definition.
+        contract: crate::contract::ContractId,
+        /// Invalid nominal identity, field count or member kind.
+        error: crate::contract::ContractDefinitionError,
+    },
+
+    /// A statically known argument or result contradicts its compositional contract.
+    ContractMismatch {
+        /// Function containing the call or return instruction.
+        func: u32,
+        /// Source instruction byte offset.
+        pc: u32,
+        /// Argument/result obligation.
+        position: ContractPosition,
+        /// Nested disagreement with the originating program's contract.
+        error: ContractViolation,
+    },
+
     /// A typed block declaration is invalid.
     BlockDeclaration {
         /// Function index.
@@ -276,52 +299,6 @@ pub enum VerifyError {
     FunctionSigCountMismatch {
         /// Function index within the program.
         func: u32,
-    },
-    /// Function argument aggregate-shape metadata references an unknown function.
-    FunctionArgAggShapeFuncOutOfBounds {
-        /// Function index referenced by the metadata entry.
-        func: u32,
-    },
-    /// Function argument aggregate-shape metadata references an invalid argument index.
-    FunctionArgAggShapeArgOutOfBounds {
-        /// Function index within the program.
-        func: u32,
-        /// Argument index within the function signature.
-        arg: u32,
-    },
-    /// Function argument aggregate-shape metadata was duplicated for the same argument.
-    FunctionArgAggShapeDuplicate {
-        /// Function index within the program.
-        func: u32,
-        /// Argument index within the function signature.
-        arg: u32,
-    },
-    /// Function argument aggregate-shape metadata was attached to a non-aggregate argument.
-    FunctionArgAggShapeOnNonAggArg {
-        /// Function index within the program.
-        func: u32,
-        /// Argument index within the function signature.
-        arg: u32,
-        /// Actual declared argument type.
-        actual: ValueType,
-    },
-    /// Function argument aggregate-shape metadata references an unknown struct type.
-    FunctionArgAggShapeStructTypeOutOfBounds {
-        /// Function index within the program.
-        func: u32,
-        /// Argument index within the function signature.
-        arg: u32,
-        /// Struct type id.
-        type_id: u32,
-    },
-    /// Function argument aggregate-shape metadata references an unknown array element type.
-    FunctionArgAggShapeArrayElemTypeOutOfBounds {
-        /// Function index within the program.
-        func: u32,
-        /// Argument index within the function signature.
-        arg: u32,
-        /// Element type id.
-        elem_type_id: u32,
     },
     /// A function uses a value type not yet supported by the verifier/runtime register model.
     UnsupportedValueType {
@@ -459,21 +436,6 @@ pub enum VerifyError {
         func: u32,
         /// Byte offset of the instruction.
         pc: u32,
-    },
-    /// A direct call supplies an aggregate shape incompatible with the callee's argument contract.
-    CallArgShapeMismatch {
-        /// Calling function index.
-        func: u32,
-        /// Byte offset of the call.
-        pc: u32,
-        /// Called function index.
-        callee: u32,
-        /// Zero-based value argument index.
-        arg: u32,
-        /// Shape required by the callee.
-        expected: AggShape,
-        /// Shape known at the call site.
-        actual: AggShape,
     },
     /// A `ret` instruction does not match the function's return type count.
     ReturnArityMismatch {
@@ -712,6 +674,19 @@ pub enum InvalidJumpTargetReason {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidContract { contract, error } => {
+                write!(f, "invalid contract {}: {error:?}", contract.0)
+            }
+            Self::ContractMismatch {
+                func,
+                pc,
+                position,
+                error,
+            } => write!(
+                f,
+                "contract mismatch at f{func} pc={pc} {position:?}: {error}"
+            ),
+
             Self::BlockDeclaration { func, pc, error } => {
                 write!(f, "invalid block: function {func} pc={pc}: {error:?}")
             }
@@ -753,46 +728,6 @@ impl fmt::Display for VerifyError {
             }
             Self::FunctionSigCountMismatch { func } => {
                 write!(f, "function {func} signature count mismatch")
-            }
-            Self::FunctionArgAggShapeFuncOutOfBounds { func } => {
-                write!(
-                    f,
-                    "function argument aggregate shape references unknown function {func}"
-                )
-            }
-            Self::FunctionArgAggShapeArgOutOfBounds { func, arg } => {
-                write!(
-                    f,
-                    "function {func} aggregate shape arg index out of bounds: {arg}"
-                )
-            }
-            Self::FunctionArgAggShapeDuplicate { func, arg } => {
-                write!(
-                    f,
-                    "function {func} aggregate shape is duplicated for arg {arg}"
-                )
-            }
-            Self::FunctionArgAggShapeOnNonAggArg { func, arg, actual } => {
-                write!(
-                    f,
-                    "function {func} aggregate shape on non-Agg arg {arg} (got {actual:?})"
-                )
-            }
-            Self::FunctionArgAggShapeStructTypeOutOfBounds { func, arg, type_id } => {
-                write!(
-                    f,
-                    "function {func} aggregate shape for arg {arg} references unknown struct type_id {type_id}"
-                )
-            }
-            Self::FunctionArgAggShapeArrayElemTypeOutOfBounds {
-                func,
-                arg,
-                elem_type_id,
-            } => {
-                write!(
-                    f,
-                    "function {func} aggregate shape for arg {arg} references unknown array elem_type_id {elem_type_id}"
-                )
             }
             Self::UnsupportedValueType { func, value_type } => {
                 write!(
@@ -882,19 +817,6 @@ impl fmt::Display for VerifyError {
             }
             Self::CallArityMismatch { func, pc } => {
                 write!(f, "function {func} pc={pc} call arity mismatch")
-            }
-            Self::CallArgShapeMismatch {
-                func,
-                pc,
-                callee,
-                arg,
-                expected,
-                actual,
-            } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} call to function {callee} argument {arg} shape mismatch: expected {expected:?}, got {actual:?}"
-                )
             }
             Self::ReturnArityMismatch { func, pc } => {
                 write!(f, "function {func} pc={pc} return arity mismatch")
@@ -1084,7 +1006,6 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     verify_function_value_names(program)?;
-    verify_function_arg_agg_shapes(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
@@ -1102,7 +1023,6 @@ pub fn verify_program_with_lints(
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     verify_function_value_names(program)?;
-    verify_function_arg_agg_shapes(program)?;
 
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
@@ -1122,7 +1042,6 @@ pub fn verify_program_owned(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
-    verify_function_arg_agg_shapes(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
@@ -1148,7 +1067,6 @@ pub fn verify_program_owned_with_lints(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     verify_function_value_names(&program)?;
-    verify_function_arg_agg_shapes(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
@@ -1316,71 +1234,6 @@ fn verify_function_value_names(program: &Program) -> Result<(), VerifyError> {
                             core::num::NonZeroU32::new(a)
                                 .ok_or(VerifyError::Decode(DecodeError::OutOfBounds))?,
                         ),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn verify_function_arg_agg_shapes(program: &Program) -> Result<(), VerifyError> {
-    let mut seen: Vec<(u32, u32)> = Vec::new();
-
-    for e in &program.function_arg_agg_shapes {
-        let Some(func) = program.functions.get(e.func as usize) else {
-            return Err(VerifyError::FunctionArgAggShapeFuncOutOfBounds { func: e.func });
-        };
-        let arg_types = func
-            .arg_types(program)
-            .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: e.func })?;
-        let Some(actual) = arg_types.get(e.arg as usize).copied() else {
-            return Err(VerifyError::FunctionArgAggShapeArgOutOfBounds {
-                func: e.func,
-                arg: e.arg,
-            });
-        };
-        if !seen
-            .iter()
-            .any(|&(func, arg)| func == e.func && arg == e.arg)
-        {
-            seen.push((e.func, e.arg));
-        } else {
-            return Err(VerifyError::FunctionArgAggShapeDuplicate {
-                func: e.func,
-                arg: e.arg,
-            });
-        }
-        if actual != ValueType::Agg {
-            return Err(VerifyError::FunctionArgAggShapeOnNonAggArg {
-                func: e.func,
-                arg: e.arg,
-                actual,
-            });
-        }
-        match &e.shape {
-            AggShape::Tuple { .. } => {}
-            AggShape::Struct(type_id) => {
-                if program.types.structs.get(type_id.0 as usize).is_none() {
-                    return Err(VerifyError::FunctionArgAggShapeStructTypeOutOfBounds {
-                        func: e.func,
-                        arg: e.arg,
-                        type_id: type_id.0,
-                    });
-                }
-            }
-            AggShape::Array(elem_type_id) => {
-                if program
-                    .types
-                    .array_elems
-                    .get(elem_type_id.0 as usize)
-                    .is_none()
-                {
-                    return Err(VerifyError::FunctionArgAggShapeArrayElemTypeOutOfBounds {
-                        func: e.func,
-                        arg: e.arg,
-                        elem_type_id: elem_type_id.0,
                     });
                 }
             }
@@ -1666,8 +1519,8 @@ fn verify_function_bytecode(
     func: &Function,
     bytecode: &[u8],
     spans: &[SpanEntry],
-    arg_types: &[ValueType],
-    ret_types: &[ValueType],
+    arg_types: ContractKinds<'_>,
+    ret_types: ContractKinds<'_>,
     decoded: &[DecodedInstr],
     collect_lints: bool,
 ) -> Result<ExecFuncContainer, VerifyError> {
@@ -2780,49 +2633,49 @@ fn verify_function_bytecode(
             instr: vi,
         });
     }
-    // Declared kinds have now been checked at every definition and use, including inactive code.
-    // Only reachable aggregate proofs need a fixpoint; scalar-only functions skip this pass.
-    if register_types.iter().any(|ty| ty == ValueType::Agg) {
-        let arg_agg_metas = initial_arg_agg_metas(program, func_id, arg_types);
-        let entry = initial_shapes(&arg_agg_metas);
-        let (inputs, outputs) =
-            compute_must_shapes(&blocks, &reachable, register_types, &entry, decoded);
-        for (b_idx, (block, mut shape)) in blocks.iter().zip(inputs).enumerate() {
-            if !reachable[b_idx] {
-                continue;
-            }
-            for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
-                validate_instr_shapes(
-                    program,
-                    func_id,
-                    di.offset,
-                    &di.instr,
-                    register_types,
-                    &shape,
-                )?;
-                transfer_shapes(&di.instr, register_types, &mut shape);
-            }
-            debug_assert_eq!(shape, outputs[b_idx], "shape OUT mismatch");
-        }
-    }
-    let arg_shape_checks = program
-        .function_arg_agg_shapes
+    contracts::verify_flow(
+        program,
+        func_id,
+        &blocks,
+        &reachable,
+        register_types,
+        decoded,
+    )?;
+    let mut contract_checks = Vec::new();
+    for (index, &contract) in func
+        .arg_contracts(program)
+        .expect("verified signature")
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.func == func_id)
-        .map(|(index, e)| {
-            let VReg::Agg(reg) = reg_layout.arg_regs[e.arg as usize] else {
-                unreachable!("validated aggregate argument")
-            };
-            (reg, index)
-        })
-        .collect();
+    {
+        if !matches!(program.contracts.get(contract), Some(Contract::Kind(_))) {
+            contract_checks.push(crate::typed::ContractCheck {
+                index: u32::try_from(index).expect("verified signature arity"),
+                contract,
+            });
+        }
+    }
+    let arg_check_count = u32::try_from(contract_checks.len()).expect("verified argument arity");
+    for (index, &contract) in func
+        .ret_contracts(program)
+        .expect("verified signature")
+        .iter()
+        .enumerate()
+    {
+        if !matches!(program.contracts.get(contract), Some(Contract::Kind(_))) {
+            contract_checks.push(crate::typed::ContractCheck {
+                index: u32::try_from(index).expect("verified signature arity"),
+                contract,
+            });
+        }
+    }
     drop(reg_map);
     let span_by_instr_ix = build_span_by_instr_ix(decoded, spans, execution_count);
 
     Ok(ExecFuncContainer {
         exec: ExecFunc {
-            arg_shape_checks,
+            contract_checks,
+            arg_check_count,
             byte_len,
             reg_layout,
             operands,
@@ -3100,151 +2953,6 @@ fn initial_init(reg_count: usize, arg_count: usize) -> BitSet {
     s
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum AggMeta {
-    Tuple(Vec<Option<ValueType>>),
-    Struct(TypeId),
-    Array(ElemTypeId),
-}
-
-impl Clone for AggMeta {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Tuple(elems) => Self::Tuple(elems.clone()),
-            Self::Struct(id) => Self::Struct(*id),
-            Self::Array(id) => Self::Array(*id),
-        }
-    }
-
-    fn clone_from(&mut self, source: &Self) {
-        match (self, source) {
-            (Self::Tuple(elems), Self::Tuple(source)) => elems.clone_from(source),
-            (target, source) => *target = source.clone(),
-        }
-    }
-}
-
-impl From<&AggShape> for AggMeta {
-    fn from(shape: &AggShape) -> Self {
-        match shape {
-            AggShape::Tuple { elems } => Self::Tuple(elems.clone()),
-            AggShape::Struct(type_id) => Self::Struct(*type_id),
-            AggShape::Array(elem_type_id) => Self::Array(*elem_type_id),
-        }
-    }
-}
-
-impl AggMeta {
-    // Unknown tuple element types are unresolved obligations, not contradictions.
-    fn contradicts(&self, expected: &AggShape) -> bool {
-        match (self, expected) {
-            (Self::Tuple(actual), AggShape::Tuple { elems }) => {
-                actual.len() != elems.len()
-                    || actual
-                        .iter()
-                        .zip(elems)
-                        .any(|(a, e)| matches!((a, e), (Some(a), Some(e)) if a != e))
-            }
-            (Self::Struct(a), AggShape::Struct(e)) => a != e,
-            (Self::Array(a), AggShape::Array(e)) => a != e,
-            _ => true,
-        }
-    }
-
-    fn to_shape(&self) -> AggShape {
-        match self {
-            Self::Tuple(elems) => AggShape::tuple(elems.clone()),
-            Self::Struct(id) => AggShape::Struct(*id),
-            Self::Array(id) => AggShape::Array(*id),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ShapeState {
-    // Unvisited top is the meet identity, distinct from a reachable unknown shape.
-    top: bool,
-    // Only proven aggregate shapes, sorted by register.
-    aggs: Vec<(usize, AggMeta)>,
-}
-
-impl ShapeState {
-    fn agg(&self, reg: usize) -> Option<&AggMeta> {
-        match self.aggs.last() {
-            Some((last, meta)) if *last == reg => Some(meta),
-            Some((last, _)) if *last > reg => self
-                .aggs
-                .binary_search_by_key(&reg, |(reg, _)| *reg)
-                .ok()
-                .map(|index| &self.aggs[index].1),
-            _ => None,
-        }
-    }
-
-    fn set_agg(&mut self, reg: usize, meta: Option<AggMeta>) {
-        if self.aggs.last().is_none_or(|(last, _)| *last < reg) {
-            if let Some(meta) = meta {
-                self.aggs.push((reg, meta));
-            }
-            return;
-        }
-        match (self.aggs.binary_search_by_key(&reg, |(reg, _)| *reg), meta) {
-            (Ok(index), Some(meta)) => self.aggs[index].1 = meta,
-            (Ok(index), None) => {
-                self.aggs.remove(index);
-            }
-            (Err(index), Some(meta)) => self.aggs.insert(index, (reg, meta)),
-            (Err(_), None) => {}
-        }
-    }
-}
-
-impl ShapeState {
-    fn unknown() -> Self {
-        Self {
-            top: false,
-            aggs: Vec::new(),
-        }
-    }
-}
-impl Clone for ShapeState {
-    fn clone(&self) -> Self {
-        Self {
-            top: self.top,
-            aggs: self.aggs.clone(),
-        }
-    }
-    fn clone_from(&mut self, source: &Self) {
-        self.top = source.top;
-        self.aggs.clone_from(&source.aggs);
-    }
-}
-fn initial_shapes(arg_agg_metas: &[Option<AggMeta>]) -> ShapeState {
-    let mut state = ShapeState::unknown();
-    for (i, meta) in arg_agg_metas.iter().enumerate() {
-        state.set_agg(1 + i, meta.clone());
-    }
-    state
-}
-
-fn initial_arg_agg_metas(
-    program: &Program,
-    func_id: u32,
-    arg_types: &[ValueType],
-) -> Vec<Option<AggMeta>> {
-    let mut out = vec![None; arg_types.len()];
-    for e in program
-        .function_arg_agg_shapes
-        .iter()
-        .filter(|e| e.func == func_id)
-    {
-        if let Some(slot) = out.get_mut(e.arg as usize) {
-            *slot = Some(AggMeta::from(&e.shape));
-        }
-    }
-    out
-}
-
 fn const_value_type(c: &ConstEntry) -> ValueType {
     match c {
         ConstEntry::Unit => ValueType::Unit,
@@ -3256,99 +2964,6 @@ fn const_value_type(c: &ConstEntry) -> ValueType {
         ConstEntry::Bytes(_) => ValueType::Bytes,
         ConstEntry::Str(_) => ValueType::Str,
     }
-}
-
-fn transfer_shapes(instr: &Instr, types: RegisterTypes<'_>, state: &mut ShapeState) {
-    if state.top {
-        return;
-    }
-    // Capture source facts before invalidating aliased destinations.
-    let replacement = match instr {
-        Instr::Mov { dst, src } => Some((*dst, state.agg(*src as usize).cloned())),
-        Instr::Select { dst, a, b, .. } => Some((
-            *dst,
-            state
-                .agg(*a as usize)
-                .filter(|meta| Some(*meta) == state.agg(*b as usize))
-                .cloned(),
-        )),
-        Instr::TupleNew { dst, values } => Some((
-            *dst,
-            Some(AggMeta::Tuple(
-                values.iter().map(|&reg| types.get(reg)).collect(),
-            )),
-        )),
-        Instr::StructNew { dst, type_id, .. } => Some((*dst, Some(AggMeta::Struct(*type_id)))),
-        Instr::ArrayNew {
-            dst, elem_type_id, ..
-        } => Some((*dst, Some(AggMeta::Array(*elem_type_id)))),
-        Instr::Block { .. } => return, // facts arrive simultaneously along incoming edges
-        _ => None,
-    };
-    // Opaque results and nested aggregate projections carry no shape proof.
-    for reg in instr.writes() {
-        if types.get(reg) == Some(ValueType::Agg) {
-            state.set_agg(reg as usize, None);
-        }
-    }
-    if let Some((reg, meta)) = replacement
-        && types.get(reg) == Some(ValueType::Agg)
-    {
-        state.set_agg(reg as usize, meta);
-    }
-}
-
-fn compute_must_shapes(
-    blocks: &[BasicBlock],
-    reachable: &[bool],
-    types: RegisterTypes<'_>,
-    entry: &ShapeState,
-    decoded: &[DecodedInstr],
-) -> (Vec<ShapeState>, Vec<ShapeState>) {
-    let top = ShapeState {
-        top: true,
-        aggs: Vec::new(),
-    };
-    let mut edge_scratch: Option<ShapeState> = None;
-    dataflow::solve_forward(
-        blocks,
-        reachable,
-        entry.clone(),
-        top,
-        |pred, arm, _, acc, incoming| {
-            let branch = &decoded[blocks[pred].instr_end - 1].instr;
-            let incoming = if let Some((target, args)) =
-                branch.edge(arm).filter(|(_, args)| !args.is_empty())
-            {
-                let params =
-                    blocks::declaration(decoded, target).expect("validated target declaration");
-                let scratch = edge_scratch.get_or_insert_with(|| incoming.clone());
-                blocks::transfer_edge(incoming, scratch, params, args);
-                &*scratch
-            } else {
-                incoming
-            };
-            if incoming.top {
-                return false;
-            }
-            if acc.top {
-                acc.clone_from(incoming);
-                return true;
-            }
-            let mut changed = false;
-            acc.aggs.retain(|(reg, meta)| {
-                let keep = Some(meta) == incoming.agg(*reg);
-                changed |= !keep;
-                keep
-            });
-            changed
-        },
-        |_, block, state| {
-            for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
-                transfer_shapes(&di.instr, types, state);
-            }
-        },
-    )
 }
 
 fn check_expected(
@@ -3377,7 +2992,7 @@ fn validate_instr_types(
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
-    func_ret_types: &[ValueType],
+    func_ret_types: ContractKinds<'_>,
 ) -> Result<(), VerifyError> {
     let t = |reg: u32| types.get(reg);
 
@@ -3760,262 +3375,6 @@ fn validate_instr_types(
     Ok(())
 }
 
-// Shape proofs depend on control flow. All static kind contracts have already been checked.
-fn validate_instr_shapes(
-    program: &Program,
-    func_id: u32,
-    pc: u32,
-    instr: &Instr,
-    types: RegisterTypes<'_>,
-    state: &ShapeState,
-) -> Result<(), VerifyError> {
-    let a = |reg: u32| state.agg(reg as usize);
-    let t = |reg: u32| types.get(reg);
-    match instr {
-        Instr::TupleGet { tuple, index, .. } => {
-            if let Some(meta) = a(*tuple) {
-                match meta {
-                    AggMeta::Tuple(elems) => {
-                        let arity = u32::try_from(elems.len()).unwrap_or(u32::MAX);
-                        if *index >= arity {
-                            return Err(VerifyError::TupleIndexOutOfBounds {
-                                func: func_id,
-                                pc,
-                                arity,
-                                index: *index,
-                            });
-                        }
-                    }
-                    AggMeta::Struct(_) => {
-                        return Err(VerifyError::AggKindMismatch {
-                            func: func_id,
-                            pc,
-                            expected: AggKind::Tuple,
-                            actual: AggKind::Struct,
-                        });
-                    }
-                    AggMeta::Array(_) => {
-                        return Err(VerifyError::AggKindMismatch {
-                            func: func_id,
-                            pc,
-                            expected: AggKind::Tuple,
-                            actual: AggKind::Array,
-                        });
-                    }
-                }
-            }
-        }
-        Instr::TupleLen { tuple, .. } => {
-            if let Some(meta) = a(*tuple)
-                && !matches!(meta, AggMeta::Tuple(_))
-            {
-                let actual = match meta {
-                    AggMeta::Tuple(_) => AggKind::Tuple,
-                    AggMeta::Struct(_) => AggKind::Struct,
-                    AggMeta::Array(_) => AggKind::Array,
-                };
-                return Err(VerifyError::AggKindMismatch {
-                    func: func_id,
-                    pc,
-                    expected: AggKind::Tuple,
-                    actual,
-                });
-            }
-        }
-        Instr::StructGet {
-            st, field_index, ..
-        } => {
-            if let Some(meta) = a(*st) {
-                match meta {
-                    AggMeta::Struct(type_id) => {
-                        let st = program.types.structs.get(type_id.0 as usize).ok_or(
-                            VerifyError::StructTypeOutOfBounds {
-                                func: func_id,
-                                pc,
-                                type_id: type_id.0,
-                            },
-                        )?;
-                        let field_types = program.types.struct_field_types(st).map_err(|_| {
-                            VerifyError::StructTypeOutOfBounds {
-                                func: func_id,
-                                pc,
-                                type_id: type_id.0,
-                            }
-                        })?;
-                        let fields = u32::try_from(field_types.len()).unwrap_or(u32::MAX);
-                        if *field_index >= fields {
-                            return Err(VerifyError::StructFieldIndexOutOfBounds {
-                                func: func_id,
-                                pc,
-                                type_id: type_id.0,
-                                field_index: *field_index,
-                            });
-                        }
-                    }
-                    AggMeta::Tuple(_) => {
-                        return Err(VerifyError::AggKindMismatch {
-                            func: func_id,
-                            pc,
-                            expected: AggKind::Struct,
-                            actual: AggKind::Tuple,
-                        });
-                    }
-                    AggMeta::Array(_) => {
-                        return Err(VerifyError::AggKindMismatch {
-                            func: func_id,
-                            pc,
-                            expected: AggKind::Struct,
-                            actual: AggKind::Array,
-                        });
-                    }
-                }
-            }
-        }
-        Instr::StructFieldCount { st, .. } => {
-            if let Some(meta) = a(*st)
-                && !matches!(meta, AggMeta::Struct(_))
-            {
-                let actual = match meta {
-                    AggMeta::Tuple(_) => AggKind::Tuple,
-                    AggMeta::Struct(_) => AggKind::Struct,
-                    AggMeta::Array(_) => AggKind::Array,
-                };
-                return Err(VerifyError::AggKindMismatch {
-                    func: func_id,
-                    pc,
-                    expected: AggKind::Struct,
-                    actual,
-                });
-            }
-        }
-        Instr::ArrayLen { arr, .. } => {
-            if let Some(meta) = a(*arr)
-                && !matches!(meta, AggMeta::Array(_))
-            {
-                let actual = match meta {
-                    AggMeta::Tuple(_) => AggKind::Tuple,
-                    AggMeta::Struct(_) => AggKind::Struct,
-                    AggMeta::Array(_) => AggKind::Array,
-                };
-                return Err(VerifyError::AggKindMismatch {
-                    func: func_id,
-                    pc,
-                    expected: AggKind::Array,
-                    actual,
-                });
-            }
-        }
-        Instr::ArrayGet { arr, .. } => {
-            if let Some(meta) = a(*arr)
-                && !matches!(meta, AggMeta::Array(_))
-            {
-                let actual = match meta {
-                    AggMeta::Tuple(_) => AggKind::Tuple,
-                    AggMeta::Struct(_) => AggKind::Struct,
-                    AggMeta::Array(_) => AggKind::Array,
-                };
-                return Err(VerifyError::AggKindMismatch {
-                    func: func_id,
-                    pc,
-                    expected: AggKind::Array,
-                    actual,
-                });
-            }
-        }
-        Instr::ArrayGetImm { arr, .. } => {
-            if let Some(meta) = a(*arr)
-                && !matches!(meta, AggMeta::Array(_))
-            {
-                let actual = match meta {
-                    AggMeta::Tuple(_) => AggKind::Tuple,
-                    AggMeta::Struct(_) => AggKind::Struct,
-                    AggMeta::Array(_) => AggKind::Array,
-                };
-                return Err(VerifyError::AggKindMismatch {
-                    func: func_id,
-                    pc,
-                    expected: AggKind::Array,
-                    actual,
-                });
-            }
-        }
-        Instr::Call {
-            func_id: callee,
-            args,
-            ..
-        } => {
-            for contract in program
-                .function_arg_agg_shapes
-                .iter()
-                .filter(|e| e.func == callee.0)
-            {
-                let reg = args[contract.arg as usize];
-                if let Some(actual) = a(reg)
-                    && actual.contradicts(&contract.shape)
-                {
-                    return Err(VerifyError::CallArgShapeMismatch {
-                        func: func_id,
-                        pc,
-                        callee: callee.0,
-                        arg: contract.arg,
-                        expected: contract.shape.clone(),
-                        actual: actual.to_shape(),
-                    });
-                }
-            }
-        }
-        _ => {}
-    }
-
-    let projection = match instr {
-        Instr::TupleGet { dst, tuple, index } => Some((
-            *dst,
-            *tuple,
-            a(*tuple).and_then(|meta| match meta {
-                AggMeta::Tuple(elems) => elems.get(*index as usize).copied().flatten(),
-                _ => None,
-            }),
-        )),
-        Instr::StructGet {
-            dst,
-            st,
-            field_index,
-        } => Some((
-            *dst,
-            *st,
-            a(*st).and_then(|meta| match meta {
-                AggMeta::Struct(id) => program
-                    .types
-                    .structs
-                    .get(id.0 as usize)
-                    .and_then(|st| program.types.struct_field_types(st).ok())
-                    .and_then(|fields| fields.get(*field_index as usize))
-                    .copied(),
-                _ => None,
-            }),
-        )),
-        Instr::ArrayGet { dst, arr, .. } | Instr::ArrayGetImm { dst, arr, .. } => Some((
-            *dst,
-            *arr,
-            a(*arr).and_then(|meta| match meta {
-                AggMeta::Array(id) => program.types.array_elems.get(id.0 as usize).copied(),
-                _ => None,
-            }),
-        )),
-        _ => None,
-    };
-    if let Some((dst, reg, required)) = projection {
-        let required = required.ok_or(VerifyError::UnknownAggregateShape {
-            func: func_id,
-            pc,
-            reg,
-        })?;
-        check_expected(func_id, pc, dst, t(dst), required)?;
-    }
-
-    Ok(())
-}
-
 fn compute_must_init(
     blocks: &[BasicBlock],
     reachable: &[bool],
@@ -4073,11 +3432,22 @@ mod tests {
     use crate::asm::{BuildError, FunctionSig, ProgramBuilder};
     use crate::opcode::Opcode;
     use crate::program::{
-        AggShape, ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, SpanId,
-        StructTypeDef, TypeTableDef, ValueType,
+        ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, SpanId, StructTypeDef,
+        TypeTableDef, ValueType,
     };
     use crate::value::FuncId;
     use alloc::vec;
+
+    fn tuple_contract(
+        pb: &mut ProgramBuilder,
+        kinds: &[Option<ValueType>],
+    ) -> crate::contract::ContractId {
+        let members: Vec<_> = kinds
+            .iter()
+            .map(|kind| kind.map(|kind| pb.contract(Contract::Kind(kind)).unwrap()))
+            .collect();
+        pb.contract(Contract::Tuple(&members)).unwrap()
+    }
 
     fn sid(v: u64) -> SpanId {
         SpanId::try_from(v).unwrap()
@@ -4123,238 +3493,6 @@ mod tests {
             }],
         );
         verify_program(&p, &VerifyConfig::default()).unwrap();
-    }
-
-    fn shape_program(kinds: &[ValueType]) -> Program {
-        let mut asm = Asm::new();
-        asm.set_register_types(kinds.to_vec()).ret(0, &[]);
-        let mut builder = ProgramBuilder::new();
-        builder
-            .push_function_checked(
-                asm,
-                FunctionSig {
-                    arg_types: vec![],
-                    ret_types: vec![],
-                },
-            )
-            .unwrap();
-        builder.build()
-    }
-
-    #[test]
-    fn shape_state_clone_from_reuses_metadata_and_preserves_top() {
-        let mut state = ShapeState::unknown();
-        state.set_agg(4, Some(AggMeta::Tuple(vec![Some(ValueType::I64)])));
-        let aggs = state.aggs.as_ptr();
-        let mut incoming = ShapeState::unknown();
-        incoming.set_agg(3, Some(AggMeta::Tuple(vec![Some(ValueType::Bool)])));
-        state.clone_from(&incoming);
-        assert_eq!(state, incoming);
-        assert_eq!(state.aggs.as_ptr(), aggs);
-        incoming.top = true;
-        incoming.aggs.clear();
-        state.clone_from(&incoming);
-        assert!(state.top);
-        assert!(state.aggs.is_empty());
-    }
-
-    #[test]
-    fn aggregate_metadata_tracks_only_proven_shapes_and_handles_aliases() {
-        let mut kinds = vec![ValueType::Agg; 256];
-        kinds[0] = ValueType::Unit;
-        kinds[1] = ValueType::I64;
-        let program = shape_program(&kinds);
-        let types = program.functions[0].register_types(&program).unwrap();
-        let mut state = ShapeState::unknown();
-        assert_eq!(state.aggs.capacity(), 0);
-        transfer_shapes(&Instr::ConstI64 { dst: 1, imm: 7 }, types, &mut state);
-        assert_eq!(state.aggs.capacity(), 0);
-        transfer_shapes(
-            &Instr::TupleNew {
-                dst: 255,
-                values: vec![1],
-            },
-            types,
-            &mut state,
-        );
-        transfer_shapes(&Instr::Mov { dst: 200, src: 255 }, types, &mut state);
-        transfer_shapes(&Instr::Mov { dst: 255, src: 255 }, types, &mut state);
-        assert_eq!(state.agg(200), state.agg(255));
-        assert_eq!(state.aggs.len(), 2);
-        // A nested projection may overwrite its source but cannot keep its outer shape.
-        transfer_shapes(
-            &Instr::TupleNew {
-                dst: 255,
-                values: vec![200],
-            },
-            types,
-            &mut state,
-        );
-        transfer_shapes(
-            &Instr::TupleGet {
-                dst: 255,
-                tuple: 255,
-                index: 0,
-            },
-            types,
-            &mut state,
-        );
-        assert!(state.agg(255).is_none());
-        assert!(state.agg(200).is_some());
-    }
-
-    #[test]
-    fn aggregate_results_without_shape_contracts_clear_old_facts() {
-        let mut builder = ProgramBuilder::new();
-        let callee = builder.declare_function(FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![ValueType::Agg],
-        });
-        let mut body = Asm::new();
-        body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-        body.tuple_new(1, &[]).ret(0, &[1]);
-        builder.define_function(callee, body).unwrap();
-        let host_sig = builder.host_sig_for(
-            "make",
-            crate::host::HostSig {
-                args: vec![],
-                rets: vec![ValueType::Agg],
-            },
-        );
-        let call_sig = builder.call_sig(&[], &[ValueType::Agg]);
-        let struct_id = builder.struct_type(StructTypeDef {
-            field_names: vec!["child".into()],
-            field_types: vec![ValueType::Agg],
-        });
-        let elem_id = builder.array_elem(ValueType::Agg);
-        let _program = builder.build();
-        let program = shape_program(&[
-            ValueType::Unit,
-            ValueType::Agg,
-            ValueType::Func,
-            ValueType::Agg,
-            ValueType::Agg,
-            ValueType::Agg,
-            ValueType::U64,
-        ]);
-        let types = program.functions[0].register_types(&program).unwrap();
-        let writes = [
-            Instr::Call {
-                eff_out: 0,
-                func_id: callee,
-                eff_in: 0,
-                args: vec![],
-                rets: vec![3],
-            },
-            Instr::HostCall {
-                eff_out: 0,
-                host_sig,
-                eff_in: 0,
-                args: vec![],
-                rets: vec![3],
-            },
-            Instr::CallIndirect {
-                eff_out: 0,
-                call_sig: call_sig.0,
-                callee: 2,
-                eff_in: 0,
-                args: vec![],
-                rets: vec![3],
-            },
-            Instr::TupleGet {
-                dst: 3,
-                tuple: 1,
-                index: 0,
-            },
-            Instr::StructGet {
-                dst: 3,
-                st: 4,
-                field_index: 0,
-            },
-            Instr::ArrayGet {
-                dst: 3,
-                arr: 5,
-                index: 6,
-            },
-            Instr::ArrayGetImm {
-                dst: 3,
-                arr: 5,
-                index: 0,
-            },
-            // Nested projections may overwrite their own source, whose outer shape is obsolete.
-            Instr::TupleGet {
-                dst: 1,
-                tuple: 1,
-                index: 0,
-            },
-            Instr::StructGet {
-                dst: 4,
-                st: 4,
-                field_index: 0,
-            },
-            Instr::ArrayGetImm {
-                dst: 5,
-                arr: 5,
-                index: 0,
-            },
-        ];
-        for write in writes {
-            let mut state = ShapeState::unknown();
-            state.set_agg(1, Some(AggMeta::Tuple(vec![Some(ValueType::Agg)])));
-
-            state.set_agg(3, Some(AggMeta::Tuple(vec![Some(ValueType::I64)])));
-
-            state.set_agg(4, Some(AggMeta::Struct(struct_id)));
-
-            state.set_agg(5, Some(AggMeta::Array(elem_id)));
-
-            let destination = write.writes().last().unwrap() as usize;
-            transfer_shapes(&write, types, &mut state);
-            assert_eq!(state.agg(destination), None, "{write:?}");
-        }
-    }
-
-    #[test]
-    fn select_keeps_only_common_shape_facts_and_handles_source_aliases() {
-        let program = shape_program(&[
-            ValueType::Unit,
-            ValueType::Agg,
-            ValueType::Agg,
-            ValueType::Agg,
-            ValueType::Bool,
-        ]);
-        let types = program.functions[0].register_types(&program).unwrap();
-        for right in [
-            Some(AggMeta::Tuple(vec![Some(ValueType::I64)])),
-            Some(AggMeta::Tuple(vec![Some(ValueType::Bool)])),
-            None,
-        ] {
-            for dst in [1, 2, 3] {
-                let left = AggMeta::Tuple(vec![Some(ValueType::I64)]);
-                let expected = (right.as_ref() == Some(&left)).then_some(left.clone());
-                let mut state = ShapeState::unknown();
-                state.set_agg(1, Some(left));
-                state.set_agg(2, right.clone());
-
-                state.set_agg(3, Some(AggMeta::Tuple(vec![Some(ValueType::Str)])));
-
-                transfer_shapes(
-                    &Instr::Select {
-                        dst,
-                        cond: 4,
-                        a: 1,
-                        b: 2,
-                    },
-                    types,
-                    &mut state,
-                );
-                assert_eq!(
-                    state.agg(dst as usize),
-                    expected.as_ref(),
-                    "dst={dst}, right={right:?}"
-                );
-            }
-        }
     }
 
     #[test]
@@ -5496,7 +4634,9 @@ mod tests {
     }
 
     #[test]
-    fn verifier_types_tuple_get_from_abi_arg_shape() {
+    fn verifier_types_tuple_get_from_argument_contract() {
+        let mut pb = ProgramBuilder::new();
+        let tuple = tuple_contract(&mut pb, &[Some(ValueType::I64)]);
         let mut a = Asm::new();
         a.set_register_types(vec![
             ValueType::Unit,
@@ -5504,79 +4644,66 @@ mod tests {
             ValueType::I64,
             ValueType::I64,
         ]);
-        a.tuple_get(2, 1, 0);
-        a.i64_add(3, 2, 2);
-        a.ret(0, &[3]);
-
-        let mut pb = ProgramBuilder::new();
+        a.tuple_get(2, 1, 0).i64_add(3, 2, 2).ret(0, &[3]);
         pb.push_function_checked(
             a,
-            FunctionSig {
-                arg_types: vec![ValueType::Agg],
-                ret_types: vec![ValueType::I64],
-            }
-            .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+            crate::asm::FunctionAbi {
+                args: vec![tuple.into()],
+                rets: vec![ValueType::I64.into()],
+            },
         )
         .unwrap();
         pb.build_checked().unwrap();
     }
 
     #[test]
-    fn direct_calls_check_known_shapes_but_allow_unresolved_obligations() {
+    fn direct_calls_check_known_contracts_but_allow_unresolved_obligations() {
         for (actual, expected, accepted) in [
             (
-                Some(AggShape::tuple(vec![Some(ValueType::Bool)])),
-                AggShape::tuple(vec![Some(ValueType::I64)]),
+                Some(vec![Some(ValueType::Bool)]),
+                vec![Some(ValueType::I64)],
                 false,
             ),
+            (Some(vec![]), vec![None], false),
             (
-                Some(AggShape::tuple(vec![])),
-                AggShape::tuple(vec![None]),
-                false,
-            ),
-            (
-                Some(AggShape::tuple(vec![Some(ValueType::I64)])),
-                AggShape::tuple(vec![Some(ValueType::I64)]),
+                Some(vec![Some(ValueType::I64)]),
+                vec![Some(ValueType::I64)],
                 true,
             ),
-            (
-                Some(AggShape::tuple(vec![Some(ValueType::Bool)])),
-                AggShape::tuple(vec![None]),
-                true,
-            ),
-            (
-                Some(AggShape::tuple(vec![None])),
-                AggShape::tuple(vec![Some(ValueType::I64)]),
-                true,
-            ),
-            (None, AggShape::tuple(vec![Some(ValueType::I64)]), true),
+            (Some(vec![Some(ValueType::Bool)]), vec![None], true),
+            (Some(vec![None]), vec![Some(ValueType::I64)], true),
+            (None, vec![Some(ValueType::I64)], true),
         ] {
             let mut pb = ProgramBuilder::new();
+            let required = tuple_contract(&mut pb, &expected);
             let mut callee = Asm::new();
             callee.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
             callee.ret(0, &[]);
             let target = pb
                 .push_function_checked(
                     callee,
-                    FunctionSig {
-                        arg_types: vec![ValueType::Agg],
-                        ret_types: vec![],
-                    }
-                    .with_arg_agg_shape(0, expected.clone()),
+                    crate::asm::FunctionAbi {
+                        args: vec![required.into()],
+                        rets: vec![],
+                    },
                 )
                 .unwrap();
+            let actual = actual.as_ref().map(|kinds| tuple_contract(&mut pb, kinds));
             let mut caller = Asm::new();
             caller.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
-            caller.call(0, target, 0, &[1], &[]);
-            caller.ret(0, &[]);
-            let mut abi = crate::asm::FunctionAbi::from(FunctionSig {
-                arg_types: vec![ValueType::Agg],
-                ret_types: vec![],
-            });
-            if let Some(shape) = actual.clone() {
-                abi.set_arg_agg_shape(0, shape);
-            }
-            pb.push_function_checked(caller, abi).unwrap();
+            caller.call(0, target, 0, &[1], &[]).ret(0, &[]);
+            let arg = actual.map_or(
+                crate::asm::ContractRef::Kind(ValueType::Agg),
+                crate::asm::ContractRef::Id,
+            );
+            pb.push_function_checked(
+                caller,
+                crate::asm::FunctionAbi {
+                    args: vec![arg],
+                    rets: vec![],
+                },
+            )
+            .unwrap();
             let result = verify_program_owned(pb.build(), &VerifyConfig::default());
             if accepted {
                 result.unwrap();
@@ -5584,45 +4711,42 @@ mod tests {
                 assert!(
                     matches!(
                         result,
-                        Err(VerifyError::CallArgShapeMismatch {
+                        Err(VerifyError::ContractMismatch {
                             func: 1,
-                            callee: 0,
-                            arg: 0,
+                            position: ContractPosition::Argument { index: 0, .. },
                             ..
                         })
                     ),
-                    "expected a shape mismatch: {result:?}"
+                    "{result:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn verifier_rejects_abi_arg_shape_on_non_agg_arg() {
-        let mut a = Asm::new();
-        a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Bool]);
-        a.ret(0, &[]);
-
+    fn verifier_rejects_contract_kind_disagreeing_with_argument_ledger() {
         let mut pb = ProgramBuilder::new();
+        let tuple = tuple_contract(&mut pb, &[]);
+        let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
+        a.ret(0, &[]);
         pb.push_function_checked(
             a,
-            FunctionSig {
-                arg_types: vec![ValueType::I64],
-                ret_types: vec![],
-            }
-            .with_arg_agg_shape(0, AggShape::tuple(vec![])),
+            crate::asm::FunctionAbi {
+                args: vec![tuple.into()],
+                rets: vec![],
+            },
         )
         .unwrap();
-        let p = pb.build();
-
-        assert_eq!(
-            verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::FunctionArgAggShapeOnNonAggArg {
-                func: 0,
-                arg: 0,
-                actual: ValueType::I64,
-            })
-        );
+        assert!(matches!(
+            pb.build_verified(),
+            Err(BuildError::Verify(VerifyError::RegisterTypeMismatch {
+                pc: None,
+                declared: ValueType::I64,
+                required: ValueType::Agg,
+                ..
+            }))
+        ));
     }
 
     #[test]

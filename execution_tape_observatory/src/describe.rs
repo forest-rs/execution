@@ -51,15 +51,18 @@ pub(super) fn type_name(kind: ValueType) -> String {
     }
 }
 
-pub(super) fn types(values: &[ValueType]) -> String {
+pub(super) fn types<'a>(
+    values: impl IntoIterator<Item = &'a ValueType, IntoIter: ExactSizeIterator>,
+) -> String {
+    let values = values.into_iter();
+    let count = values.len();
     let mut output = values
-        .iter()
         .take(4)
         .map(|&kind| type_name(kind))
         .collect::<Vec<_>>()
         .join(", ");
-    if values.len() > 4 {
-        output.push_str(&format!(", … +{}", values.len() - 4));
+    if count > 4 {
+        output.push_str(&format!(", … +{}", count - 4));
     }
     format!("({output})")
 }

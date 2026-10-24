@@ -1,21 +1,42 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Interned, compositional value-contract storage.
+//! Compositional value contracts owned by a program.
 //!
-//! Definitions share flat immutable member buffers. Child IDs belong to the same table and must
-//! precede their parents. Construction validates references and topology; the owner must validate
-//! nominal schema refinements before trusting them. Contracts do not establish value ownership.
+//! Contracts refine storage and host ABI kinds without changing their representation. References
+//! are local to one table and point only to earlier entries; contract graphs are finite DAGs.
+//!
+//! Most frontends use [`crate::asm::ProgramBuilder::contract`]. Low-level authors can construct
+//! the same table explicitly, then install it in a raw program before ordinary verification:
 //!
 //! ```
+//! extern crate alloc;
+//! use alloc::vec;
+//! use execution_tape::asm::Asm;
 //! use execution_tape::contract::{Contract, ContractTableBuilder};
-//! use execution_tape::program::ValueType;
-//! let mut builder = ContractTableBuilder::new();
-//! let integer = builder.intern(Contract::Kind(ValueType::I64)).unwrap();
-//! let tuple = builder.intern(Contract::Tuple(&[Some(integer)])).unwrap();
-//! let table = builder.finish();
-//! assert_eq!(table.get(tuple), Some(Contract::Tuple(&[Some(integer)])));
+//! use execution_tape::program::{ByteRange, FunctionDef, Program, TypeTableDef, ValueType};
+//! use execution_tape::verifier::{VerifyConfig, verify_program_owned};
+//!
+//! let mut contracts = ContractTableBuilder::new();
+//! let integer = contracts.intern(Contract::Kind(ValueType::I64)).unwrap();
+//! let tuple = contracts.intern(Contract::Tuple(&[Some(integer)])).unwrap();
+//! let mut body = Asm::new();
+//! body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+//! body.ret(0, &[1]);
+//! let parts = body.finish_parts().unwrap();
+//! let mut program = Program::new(vec![], vec![], vec![], TypeTableDef::default(), vec![FunctionDef {
+//!     arg_types: vec![ValueType::Agg], ret_types: vec![ValueType::Agg],
+//!     register_types: parts.register_types, bytecode: parts.bytecode, spans: parts.spans,
+//! }]);
+//! program.contracts = contracts.finish();
+//! program.contract_ids = vec![tuple, tuple];
+//! program.functions[0].arg_types = ByteRange { offset: 0, len: 1 };
+//! program.functions[0].ret_types = ByteRange { offset: 1, len: 1 };
+//! verify_program_owned(program, &VerifyConfig::default()).unwrap();
 //! ```
+//!
+//! A contract proves neither heap ownership nor host object validity. Result validation can fail
+//! after host work has occurred; it does not roll back external effects.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -145,6 +166,10 @@ impl ContractTable {
             (id, self.get(id).expect("stored contract"))
         })
     }
+
+    pub(crate) fn kinds<'a>(&'a self, ids: &'a [ContractId]) -> ContractKinds<'a> {
+        ContractKinds { ids, table: self }
+    }
 }
 
 /// Why a contract could not be constructed. Failed insertion leaves the table unchanged.
@@ -169,7 +194,7 @@ impl core::error::Error for ContractBuildError {}
 /// Constructs one shared contract table and discards its lookup indexes when frozen.
 ///
 /// This validates references and topology. Nominal struct/array schema obligations require the
-/// owning program to validate its schema. This builder validates the graph itself.
+/// owning program's ordinary verifier. [`crate::asm::ProgramBuilder::contract`] uses this builder.
 #[derive(Clone, Debug, Default)]
 pub struct ContractTableBuilder {
     table: ContractTable,
@@ -302,9 +327,227 @@ impl Hasher for ContractHasher {
     }
 }
 
+/// Borrowed ABI kinds projected from a guest signature's authoritative contract IDs.
+#[derive(Clone, Copy)]
+pub struct ContractKinds<'a> {
+    ids: &'a [ContractId],
+    table: &'a ContractTable,
+}
+
+impl<'a> ContractKinds<'a> {
+    /// Number of signature positions.
+    #[must_use]
+    pub fn len(self) -> usize {
+        self.ids.len()
+    }
+    /// Whether the signature is empty.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.ids.is_empty()
+    }
+    /// Returns the kind at one position.
+    #[must_use]
+    pub fn get(self, index: usize) -> Option<&'a ValueType> {
+        let id = self.ids.get(index)?;
+        self.table.nodes.get(id.0 as usize).map(Node::kind_ref)
+    }
+    /// Iterates kinds without allocating or expanding the contract graph.
+    pub fn iter(self) -> ContractKindIter<'a> {
+        ContractKindIter {
+            ids: self.ids.iter(),
+            table: self.table,
+        }
+    }
+    /// Splits off the first ABI kind without expanding contracts.
+    #[must_use]
+    pub fn split_first(self) -> Option<(&'a ValueType, Self)> {
+        let (first, rest) = self.ids.split_first()?;
+        Some((
+            self.table.nodes[first.0 as usize].kind_ref(),
+            Self {
+                ids: rest,
+                table: self.table,
+            },
+        ))
+    }
+}
+impl core::ops::Index<usize> for ContractKinds<'_> {
+    type Output = ValueType;
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("signature index")
+    }
+}
+impl fmt::Debug for ContractKinds<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+impl PartialEq for ContractKinds<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+impl Eq for ContractKinds<'_> {}
+impl Hash for ContractKinds<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len().hash(state);
+        for kind in self.iter() {
+            kind.hash(state);
+        }
+    }
+}
+
+/// Iterator over a guest signature's projected ABI kinds.
+#[derive(Clone, Debug)]
+pub struct ContractKindIter<'a> {
+    ids: core::slice::Iter<'a, ContractId>,
+    table: &'a ContractTable,
+}
+impl<'a> Iterator for ContractKindIter<'a> {
+    type Item = &'a ValueType;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.ids
+            .next()
+            .map(|id| self.table.nodes[id.0 as usize].kind_ref())
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.ids.size_hint()
+    }
+}
+impl DoubleEndedIterator for ContractKindIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.ids
+            .next_back()
+            .map(|id| self.table.nodes[id.0 as usize].kind_ref())
+    }
+}
+impl ExactSizeIterator for ContractKindIter<'_> {}
+impl<'a> IntoIterator for ContractKinds<'a> {
+    type Item = &'a ValueType;
+    type IntoIter = ContractKindIter<'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+impl PartialEq<&[ValueType]> for ContractKinds<'_> {
+    fn eq(&self, other: &&[ValueType]) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+impl<const N: usize> PartialEq<&[ValueType; N]> for ContractKinds<'_> {
+    fn eq(&self, other: &&[ValueType; N]) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+/// Concrete disagreement with a compositional contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContractMismatch {
+    /// The storage kind differs, including nominal host object types.
+    Kind {
+        /// Required ABI kind.
+        expected: ValueType,
+        /// Observed ABI kind.
+        actual: ValueType,
+    },
+    /// The aggregate kind, nominal identity, or tuple length differs.
+    Aggregate {
+        /// Required descriptor.
+        expected: crate::value::AggType,
+        /// Observed descriptor.
+        actual: crate::value::AggType,
+    },
+    /// A fixed-length aggregate has an invalid member count.
+    Arity {
+        /// Required field count.
+        expected: usize,
+        /// Observed field count.
+        actual: usize,
+    },
+    /// An aggregate handle does not resolve.
+    Heap(crate::aggregates::AggError),
+}
+
+/// A contract failure at a specific nested member, without copying its contract graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractViolation {
+    /// Expected contract at the failing position, local to the originating program.
+    pub contract: ContractId,
+    /// Field/tuple/array indices from the checked root to the failure; empty for the root.
+    pub path: Vec<usize>,
+    /// Expected versus observed kind, shape, or handle failure.
+    pub mismatch: ContractMismatch,
+}
+impl fmt::Display for ContractViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "contract {} at {:?}: {:?}",
+            self.contract.0, self.path, self.mismatch
+        )
+    }
+}
+impl core::error::Error for ContractViolation {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match &self.mismatch {
+            ContractMismatch::Heap(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Guest boundary whose contract is being checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContractPosition {
+    /// Argument admission, including a closure's injected environment at index zero.
+    Argument {
+        /// Function being entered.
+        callee: crate::value::FuncId,
+        /// Zero-based value argument.
+        index: u32,
+    },
+    /// Result before copying to the caller or committing top-level outputs.
+    Result {
+        /// Zero-based return position.
+        index: u32,
+    },
+}
+
+/// An invalid nominal refinement in a program contract definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContractDefinitionError {
+    /// Struct identity is absent from the program schema.
+    UnknownStruct(TypeId),
+    /// Array element identity is absent from the program schema.
+    UnknownArray(ElemTypeId),
+    /// A struct refinement does not describe exactly its declared fields.
+    FieldCount {
+        /// Schema field count.
+        expected: usize,
+        /// Contract field count.
+        actual: usize,
+    },
+    /// A refined member contradicts the nominal schema's ABI kind.
+    MemberKind {
+        /// Zero-based field index, or zero for an array element.
+        index: u32,
+        /// Schema kind.
+        expected: ValueType,
+        /// Contract kind.
+        actual: ValueType,
+    },
+}
+
+impl PartialEq<Vec<ValueType>> for ContractKinds<'_> {
+    fn eq(&self, other: &Vec<ValueType>) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn shares_exact_contracts_and_preserves_unknown_members() {
@@ -337,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_graph_is_flat_and_has_a_coarse_root_kind() {
+    fn deep_graph_is_flat_and_kind_view_is_local() {
         let mut b = ContractTableBuilder::default();
         let integer = b.intern(Contract::Kind(ValueType::I64)).unwrap();
         let mut root = integer;
@@ -348,7 +591,11 @@ mod tests {
         }
         let table = b.finish();
         assert_eq!(table.len(), 10_001);
-        assert_eq!(table.kind(integer), Some(ValueType::I64));
-        assert_eq!(table.kind(root), Some(ValueType::Agg));
+        let ids = [integer, root];
+        assert_eq!(
+            table.kinds(&ids).iter().copied().collect::<Vec<_>>(),
+            vec![ValueType::I64, ValueType::Agg]
+        );
+        assert_eq!(table.kinds(&ids).get(2), None);
     }
 }

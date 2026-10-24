@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 
 use core::num::{NonZeroU32, NonZeroU64};
 
+use crate::contract::{Contract, ContractId, ContractKinds, ContractTable, ContractTableBuilder};
 use crate::format::{DecodeError, Reader, Writer};
 use crate::host::{HostSig, SigHash, sig_hash, sig_hash_slices};
 
@@ -22,7 +23,7 @@ use crate::verifier;
 /// The `execution_tape` binary format version supported by this crate (draft).
 pub const VERSION_MAJOR: u16 = 0;
 /// The `execution_tape` binary format version supported by this crate (draft).
-pub const VERSION_MINOR: u16 = 2;
+pub const VERSION_MINOR: u16 = 3;
 
 const MAGIC: &[u8; 8] = b"EXTAPE\0\0";
 
@@ -163,9 +164,9 @@ pub struct Function {
     pub bytecode: ByteRange,
     /// Span mapping table range (into [`Program::spans`]).
     pub spans: ByteRange,
-    /// Argument types range (into [`Program::value_types`]).
+    /// Argument contracts range (into [`Program::contract_ids`]).
     pub arg_types: ByteRange,
-    /// Return types range (into [`Program::value_types`]).
+    /// Result contracts range (into [`Program::contract_ids`]).
     pub ret_types: ByteRange,
     /// Optional argument name ids range (into [`Program::value_name_ids`]).
     ///
@@ -244,14 +245,24 @@ impl Function {
 
     /// Returns this function's argument types slice from `program`.
     #[inline]
-    pub fn arg_types<'a>(&self, program: &'a Program) -> Result<&'a [ValueType], DecodeError> {
+    pub fn arg_types<'a>(&self, program: &'a Program) -> Result<ContractKinds<'a>, DecodeError> {
         program.function_arg_types(self)
     }
 
     /// Returns this function's return types slice from `program`.
     #[inline]
-    pub fn ret_types<'a>(&self, program: &'a Program) -> Result<&'a [ValueType], DecodeError> {
+    pub fn ret_types<'a>(&self, program: &'a Program) -> Result<ContractKinds<'a>, DecodeError> {
         program.function_ret_types(self)
+    }
+
+    /// Borrows the authoritative argument contracts, excluding the effect token.
+    pub fn arg_contracts<'a>(&self, program: &'a Program) -> Result<&'a [ContractId], DecodeError> {
+        program.function_contracts(self.arg_types)
+    }
+
+    /// Borrows the authoritative result contracts.
+    pub fn ret_contracts<'a>(&self, program: &'a Program) -> Result<&'a [ContractId], DecodeError> {
+        program.function_contracts(self.ret_types)
     }
 
     /// Returns this function's bytecode stream from `program`.
@@ -345,6 +356,16 @@ pub struct FunctionDef {
     pub spans: Vec<SpanEntry>,
 }
 
+/// Internal function input after shorthand signatures have been resolved once.
+#[derive(Clone, Debug)]
+pub(crate) struct GuestFunctionDef {
+    pub(crate) args: Vec<ContractId>,
+    pub(crate) rets: Vec<ContractId>,
+    pub(crate) register_types: Vec<ValueType>,
+    pub(crate) bytecode: Vec<u8>,
+    pub(crate) spans: Vec<SpanEntry>,
+}
+
 /// An input host signature definition used to construct a [`Program`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSigDef {
@@ -375,7 +396,11 @@ pub struct Program {
     pub host_sigs: Vec<HostSigEntry>,
     /// Type table (struct layouts and well-known ids).
     pub types: TypeTable,
-    /// Packed value-type arena for signatures and shared register kinds.
+    /// Immutable compositional value contracts used by guest signatures.
+    pub contracts: ContractTable,
+    /// Packed guest signature contract IDs. Argument/result ranges index this arena.
+    pub contract_ids: Vec<ContractId>,
+    /// Packed ABI-kind arena for host/call signatures and shared register kinds.
     pub value_types: Vec<ValueType>,
     /// Packed register kind IDs, indexing [`Self::value_types`].
     /// Each function owns a range in register order; equal kinds share a type entry.
@@ -391,12 +416,6 @@ pub struct Program {
     pub spans: Vec<SpanEntry>,
     /// Program functions.
     pub functions: Vec<Function>,
-    /// Optional aggregate shape metadata for function arguments.
-    ///
-    /// Function signatures still use [`ValueType::Agg`] as the runtime ABI kind. These entries add
-    /// verifier-visible shape facts for specific aggregate arguments, such as a closure environment
-    /// argument that is known to be a tuple of captured values.
-    pub function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry>,
     /// Optional program name.
     pub program_name: Option<SymbolId>,
     /// Optional function-name entries.
@@ -429,17 +448,6 @@ pub struct LabelNameEntry {
     pub pc: u32,
     /// Symbol id naming the label.
     pub name: SymbolId,
-}
-
-/// Verifier-visible shape metadata for a function argument whose type is [`ValueType::Agg`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionArgAggShapeEntry {
-    /// Function index within the program.
-    pub func: u32,
-    /// Argument index within the function signature.
-    pub arg: u32,
-    /// Aggregate shape attached to the argument.
-    pub shape: AggShape,
 }
 
 /// A constant-pool entry stored in a compact representation.
@@ -483,11 +491,11 @@ pub struct ElemTypeId(pub u32);
 /// A stable identifier for a host-provided object type.
 ///
 /// The embedder defines the meaning and registry of these ids.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HostTypeId(pub u64);
 
 /// A value kind used in signatures, register declarations and aggregate layouts.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ValueType {
     /// `()`.
     Unit,
@@ -513,37 +521,6 @@ pub enum ValueType {
     Func,
     /// Closure reference.
     Closure,
-}
-
-/// Verifier-visible aggregate shape metadata.
-///
-/// This refines aggregate arguments without changing the runtime ABI kind: signatures still carry
-/// [`ValueType::Agg`], while the shape lets the verifier type-check projections from known tuple,
-/// struct, or array aggregate arguments.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AggShape {
-    /// Tuple aggregate with optional per-element value types.
-    ///
-    /// `None` means the tuple element is known to exist but its value type is not known to the
-    /// verifier.
-    Tuple {
-        /// Element type metadata in tuple index order.
-        elems: Vec<Option<ValueType>>,
-    },
-    /// Struct aggregate with a type-table id.
-    Struct(TypeId),
-    /// Array aggregate with an element-type table id.
-    Array(ElemTypeId),
-}
-
-impl AggShape {
-    /// Creates a tuple aggregate shape from element type metadata.
-    #[must_use]
-    pub fn tuple(elems: impl Into<Vec<Option<ValueType>>>) -> Self {
-        Self::Tuple {
-            elems: elems.into(),
-        }
-    }
 }
 
 /// A host-call signature table entry.
@@ -733,10 +710,44 @@ impl Program {
         const_pool: Vec<Const>,
         host_sigs: Vec<HostSigDef>,
         types: TypeTableDef,
-        mut functions: Vec<FunctionDef>,
+        functions: Vec<FunctionDef>,
     ) -> Self {
-        // Reserve symbol index 0 (encoded as an empty symbol) so `SymbolId` can be non-zero.
-        let mut symbol_data: String = String::new();
+        let mut contracts = ContractTableBuilder::default();
+        let functions = functions
+            .into_iter()
+            .map(|function| {
+                let mut resolve = |kinds: Vec<ValueType>| {
+                    kinds
+                        .into_iter()
+                        .map(|kind| {
+                            contracts
+                                .intern(Contract::Kind(kind))
+                                .expect("contract address space")
+                        })
+                        .collect()
+                };
+                GuestFunctionDef {
+                    args: resolve(function.arg_types),
+                    rets: resolve(function.ret_types),
+                    register_types: function.register_types,
+                    bytecode: function.bytecode,
+                    spans: function.spans,
+                }
+            })
+            .collect();
+        Self::new_with_contracts(symbols, const_pool, host_sigs, types, functions, contracts)
+    }
+
+    pub(crate) fn new_with_contracts(
+        symbols: Vec<HostSymbol>,
+        const_pool: Vec<Const>,
+        host_sigs: Vec<HostSigDef>,
+        types: TypeTableDef,
+        mut functions: Vec<GuestFunctionDef>,
+        contracts: ContractTableBuilder,
+    ) -> Self {
+        // Reserve symbol zero so SymbolId can be non-zero.
+        let mut symbol_data = String::new();
         let mut packed_symbols: Vec<SymbolEntry> = Vec::with_capacity(symbols.len() + 1);
         packed_symbols.push(SymbolEntry {
             bytes: ByteRange { offset: 0, len: 0 },
@@ -784,6 +795,7 @@ impl Program {
         let mut bytecode_data: Vec<u8> = Vec::new();
         let mut spans: Vec<SpanEntry> = Vec::new();
         let mut value_types: Vec<ValueType> = Vec::new();
+        let mut contract_ids = Vec::new();
         let mut packed_functions: Vec<Function> = Vec::with_capacity(functions.len());
         let mut packed_host_sigs: Vec<HostSigEntry> = Vec::with_capacity(host_sigs.len());
 
@@ -818,8 +830,8 @@ impl Program {
             // after signature ranges have been assigned in deterministic function order.
             let source_bytecode = core::mem::take(&mut f.bytecode);
             let source_spans = core::mem::take(&mut f.spans);
-            let source_args = core::mem::take(&mut f.arg_types);
-            let source_rets = core::mem::take(&mut f.ret_types);
+            let source_args = core::mem::take(&mut f.args);
+            let source_rets = core::mem::take(&mut f.rets);
             let byte_off = u32::try_from(bytecode_data.len()).unwrap_or(u32::MAX);
             bytecode_data.extend_from_slice(&source_bytecode);
             let byte_len = u32::try_from(source_bytecode.len()).unwrap_or(u32::MAX);
@@ -828,12 +840,12 @@ impl Program {
             spans.extend_from_slice(&source_spans);
             let span_len = u32::try_from(source_spans.len()).unwrap_or(u32::MAX);
 
-            let arg_off = u32::try_from(value_types.len()).unwrap_or(u32::MAX);
-            value_types.extend_from_slice(&source_args);
+            let arg_off = u32::try_from(contract_ids.len()).unwrap_or(u32::MAX);
             let arg_len = u32::try_from(source_args.len()).unwrap_or(u32::MAX);
-            let ret_off = u32::try_from(value_types.len()).unwrap_or(u32::MAX);
-            value_types.extend_from_slice(&source_rets);
+            contract_ids.extend_from_slice(&source_args);
+            let ret_off = u32::try_from(contract_ids.len()).unwrap_or(u32::MAX);
             let ret_len = u32::try_from(source_rets.len()).unwrap_or(u32::MAX);
+            contract_ids.extend_from_slice(&source_rets);
 
             packed_functions.push(Function {
                 arg_count: u32::try_from(source_args.len()).unwrap_or(u32::MAX),
@@ -888,6 +900,8 @@ impl Program {
             const_str_data,
             call_sigs: Vec::new(),
             host_sigs: packed_host_sigs,
+            contracts: contracts.finish(),
+            contract_ids,
             types,
             value_types,
             register_type_ids,
@@ -895,7 +909,6 @@ impl Program {
             bytecode_data,
             spans,
             functions: packed_functions,
-            function_arg_agg_shapes: Vec::new(),
             program_name: None,
             function_names: Vec::new(),
             labels: Vec::new(),
@@ -924,17 +937,6 @@ impl Program {
             .iter()
             .find(|e| e.func == func && e.pc == pc)
             .and_then(|e| self.symbol_str(e.name).ok())
-    }
-
-    /// Returns aggregate shape metadata for function argument `arg`, if present.
-    ///
-    /// This metadata only refines arguments whose declared type is [`ValueType::Agg`].
-    #[must_use]
-    pub fn function_arg_agg_shape(&self, func: u32, arg: u32) -> Option<&AggShape> {
-        self.function_arg_agg_shapes
-            .iter()
-            .find(|e| e.func == func && e.arg == arg)
-            .map(|e| &e.shape)
     }
 
     /// Returns the function input name for `func` and `arg`, if present.
@@ -1028,22 +1030,29 @@ impl Program {
             .ok_or(DecodeError::InvalidUtf8)
     }
 
-    /// Returns a slice of argument types for `func`.
-    pub fn function_arg_types(&self, func: &Function) -> Result<&[ValueType], DecodeError> {
-        let start = func.arg_types.offset as usize;
-        let end = func.arg_types.end()? as usize;
-        self.value_types
-            .get(start..end)
-            .ok_or(DecodeError::OutOfBounds)
+    /// Projects guest argument contracts to their ABI kinds without allocation.
+    pub fn function_arg_types(&self, func: &Function) -> Result<ContractKinds<'_>, DecodeError> {
+        Ok(self
+            .contracts
+            .kinds(self.function_contracts(func.arg_types)?))
     }
 
-    /// Returns a slice of return types for `func`.
-    pub fn function_ret_types(&self, func: &Function) -> Result<&[ValueType], DecodeError> {
-        let start = func.ret_types.offset as usize;
-        let end = func.ret_types.end()? as usize;
-        self.value_types
-            .get(start..end)
-            .ok_or(DecodeError::OutOfBounds)
+    /// Projects guest result contracts to their ABI kinds without allocation.
+    pub fn function_ret_types(&self, func: &Function) -> Result<ContractKinds<'_>, DecodeError> {
+        Ok(self
+            .contracts
+            .kinds(self.function_contracts(func.ret_types)?))
+    }
+
+    pub(crate) fn function_contracts(
+        &self,
+        range: ByteRange,
+    ) -> Result<&[ContractId], DecodeError> {
+        let ids = slice_range(&self.contract_ids, range)?;
+        if ids.iter().any(|&id| self.contracts.get(id).is_none()) {
+            return Err(DecodeError::OutOfBounds);
+        }
+        Ok(ids)
     }
 
     /// Returns the host signature entry for `id`.
@@ -1144,7 +1153,7 @@ impl Program {
         // 7 = function_sigs
         // 8 = host_sigs
         // 10 = call_sigs (optional)
-        // 11 = function_arg_agg_shapes (optional)
+        // 11 = retired argument-shape metadata; 12 = compositional contracts (mandatory)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1230,15 +1239,23 @@ impl Program {
             write_section(&mut w, SectionTag::FunctionTable, payload.as_slice());
         }
 
+        {
+            let mut payload = Writer::new();
+            encode_contracts(&mut payload, &self.contracts);
+            write_section(&mut w, SectionTag::Contracts, payload.as_slice());
+        }
+
         // function signatures section (typed, mandatory)
         {
             let mut payload = Writer::new();
             payload.write_uleb128_u64(self.functions.len() as u64);
             for f in &self.functions {
-                let arg_types = self.function_arg_types(f).unwrap_or(&[]);
+                let arg_types = f
+                    .arg_contracts(self)
+                    .expect("cannot encode malformed argument contracts");
                 payload.write_uleb128_u64(arg_types.len() as u64);
                 for &t in arg_types {
-                    encode_value_type(&mut payload, t);
+                    payload.write_uleb128_u32(t.0);
                 }
                 let arg_names = self.function_arg_name_ids(f).unwrap_or(&[]);
                 if arg_names.is_empty() || arg_names.len() != arg_types.len() {
@@ -1249,10 +1266,12 @@ impl Program {
                         payload.write_uleb128_u32(name);
                     }
                 }
-                let ret_types = self.function_ret_types(f).unwrap_or(&[]);
+                let ret_types = f
+                    .ret_contracts(self)
+                    .expect("cannot encode malformed result contracts");
                 payload.write_uleb128_u64(ret_types.len() as u64);
                 for &t in ret_types {
-                    encode_value_type(&mut payload, t);
+                    payload.write_uleb128_u32(t.0);
                 }
                 let ret_names = self.function_ret_name_ids(f).unwrap_or(&[]);
                 if ret_names.is_empty() || ret_names.len() != ret_types.len() {
@@ -1305,18 +1324,6 @@ impl Program {
                 }
             }
             write_section(&mut w, SectionTag::CallSigs, payload.as_slice());
-        }
-
-        // function argument aggregate shape metadata section (optional)
-        if !self.function_arg_agg_shapes.is_empty() {
-            let mut payload = Writer::new();
-            payload.write_uleb128_u64(self.function_arg_agg_shapes.len() as u64);
-            for e in &self.function_arg_agg_shapes {
-                payload.write_uleb128_u32(e.func);
-                payload.write_uleb128_u32(e.arg);
-                encode_agg_shape(&mut payload, &e.shape);
-            }
-            write_section(&mut w, SectionTag::FunctionArgAggShapes, payload.as_slice());
         }
 
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
@@ -1396,7 +1403,7 @@ enum SectionTag {
     HostSigs = 8,
     Names = 9,
     CallSigs = 10,
-    FunctionArgAggShapes = 11,
+    Contracts = 12,
 }
 
 impl SectionTag {
@@ -1412,7 +1419,7 @@ impl SectionTag {
             8 => Some(Self::HostSigs),
             9 => Some(Self::Names),
             10 => Some(Self::CallSigs),
-            11 => Some(Self::FunctionArgAggShapes),
+            12 => Some(Self::Contracts),
             _ => None,
         }
     }
@@ -1511,11 +1518,11 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry<'_>> = Vec::new();
     let mut function_sig_defs: Vec<DecodedFunctionSig> = Vec::new();
+    let mut contract_table: Option<(ContractTable, Vec<ContractId>)> = None;
     let mut bytecode_data = Vec::new();
     let mut bytecode_ranges = Vec::new();
     let mut spans = Vec::new();
     let mut span_ranges = Vec::new();
-    let mut function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry> = Vec::new();
     let mut names: NamesDef = NamesDef::default();
 
     let mut saw_symbols = false;
@@ -1527,7 +1534,6 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_function_sigs = false;
     let mut saw_bytecode_blobs = false;
     let mut saw_span_tables = false;
-    let mut saw_function_arg_agg_shapes = false;
     let mut saw_names = false;
 
     while r.offset() < bytes.len() {
@@ -1599,12 +1605,11 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 saw_call_sigs = true;
                 call_sig_defs = decode_call_sigs(payload)?;
             }
-            Some(SectionTag::FunctionArgAggShapes) => {
-                if saw_function_arg_agg_shapes {
+            Some(SectionTag::Contracts) => {
+                if contract_table.is_some() {
                     return Err(DecodeError::DuplicateSection);
                 }
-                saw_function_arg_agg_shapes = true;
-                function_arg_agg_shapes = decode_function_arg_agg_shapes(payload)?;
+                contract_table = Some(decode_contracts(payload)?);
             }
             Some(SectionTag::Names) => {
                 if saw_names {
@@ -1660,6 +1665,11 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         });
     }
 
+    let (contracts, contract_remap) = contract_table.ok_or(DecodeError::MissingSection {
+        tag: SectionTag::Contracts as u8,
+    })?;
+    let mut contract_ids = Vec::new();
+
     // Pack value types in builder order — host sigs, then functions, then call
     // sigs (appended after the function loop) — so `decode(p.encode()) == p`
     // holds for builder-produced programs. See `ProgramBuilder::build`.
@@ -1701,11 +1711,23 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
             .get(usize::try_from(entry.span_index).map_err(|_| DecodeError::OutOfBounds)?)
             .ok_or(DecodeError::OutOfBounds)?;
 
-        let arg_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        value_types.extend_from_slice(&arg_types);
+        let arg_off = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        for id in &arg_types {
+            contract_ids.push(
+                *contract_remap
+                    .get(id.0 as usize)
+                    .ok_or(DecodeError::OutOfBounds)?,
+            );
+        }
         let arg_len = u32::try_from(arg_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        let ret_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        value_types.extend_from_slice(&ret_types);
+        let ret_off = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        for id in &ret_types {
+            contract_ids.push(
+                *contract_remap
+                    .get(id.0 as usize)
+                    .ok_or(DecodeError::OutOfBounds)?,
+            );
+        }
         let ret_len = u32::try_from(ret_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
 
         let arg_name_range = if arg_names.is_empty() {
@@ -1849,15 +1871,6 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         }
     }
 
-    for e in &function_arg_agg_shapes {
-        let Some(func) = usize::try_from(e.func).ok().and_then(|i| functions.get(i)) else {
-            return Err(DecodeError::OutOfBounds);
-        };
-        if e.arg >= func.arg_count {
-            return Err(DecodeError::OutOfBounds);
-        }
-    }
-
     Ok(Program {
         symbols,
         symbol_data,
@@ -1866,6 +1879,8 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         const_str_data,
         call_sigs,
         host_sigs,
+        contracts,
+        contract_ids,
         types: TypeTable::pack(types),
         value_types,
         register_type_ids,
@@ -1873,7 +1888,6 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         bytecode_data,
         spans,
         functions,
-        function_arg_agg_shapes,
         program_name: names.program_name,
         function_names: names.function_names,
         labels: names.labels,
@@ -2136,73 +2150,6 @@ pub(crate) fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeE
     })
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum AggShapeTag {
-    Tuple = 1,
-    Struct = 2,
-    Array = 3,
-}
-
-impl AggShapeTag {
-    fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match v {
-            1 => Ok(Self::Tuple),
-            2 => Ok(Self::Struct),
-            3 => Ok(Self::Array),
-            _ => Err(DecodeError::OutOfBounds),
-        }
-    }
-}
-
-fn encode_agg_shape(w: &mut Writer, shape: &AggShape) {
-    match shape {
-        AggShape::Tuple { elems } => {
-            w.write_u8(AggShapeTag::Tuple as u8);
-            w.write_uleb128_u64(elems.len() as u64);
-            for elem in elems {
-                match elem {
-                    Some(ty) => {
-                        w.write_u8(1);
-                        encode_value_type(w, *ty);
-                    }
-                    None => w.write_u8(0),
-                }
-            }
-        }
-        AggShape::Struct(type_id) => {
-            w.write_u8(AggShapeTag::Struct as u8);
-            w.write_uleb128_u32(type_id.0);
-        }
-        AggShape::Array(elem_type_id) => {
-            w.write_u8(AggShapeTag::Array as u8);
-            w.write_uleb128_u32(elem_type_id.0);
-        }
-    }
-}
-
-fn decode_agg_shape(r: &mut Reader<'_>) -> Result<AggShape, DecodeError> {
-    Ok(match AggShapeTag::from_u8(r.read_u8()?)? {
-        AggShapeTag::Tuple => {
-            let elem_count = read_count(r)?;
-            let mut elems = Vec::with_capacity(elem_count);
-            for _ in 0..elem_count {
-                let has_type = r.read_u8()?;
-                if has_type == 0 {
-                    elems.push(None);
-                } else if has_type == 1 {
-                    elems.push(Some(decode_value_type(r)?));
-                } else {
-                    return Err(DecodeError::OutOfBounds);
-                }
-            }
-            AggShape::Tuple { elems }
-        }
-        AggShapeTag::Struct => AggShape::Struct(TypeId(r.read_uleb128_u32()?)),
-        AggShapeTag::Array => AggShape::Array(ElemTypeId(r.read_uleb128_u32()?)),
-    })
-}
-
 fn encode_types(w: &mut Writer, t: &TypeTable) {
     w.write_uleb128_u64(t.field_name_ranges.len() as u64);
     for name in &t.field_name_ranges {
@@ -2270,7 +2217,7 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
     })
 }
 
-type DecodedFunctionSig = (Vec<ValueType>, Vec<ValueType>, Vec<u32>, Vec<u32>);
+type DecodedFunctionSig = (Vec<ContractId>, Vec<ContractId>, Vec<u32>, Vec<u32>);
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
 type DecodedCallSig = (Vec<ValueType>, Vec<ValueType>);
 
@@ -2282,7 +2229,7 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
         let argc = read_count(&mut r)?;
         let mut args = Vec::with_capacity(argc);
         for _ in 0..argc {
-            args.push(decode_value_type(&mut r)?);
+            args.push(ContractId(r.read_uleb128_u32()?));
         }
         let has_arg_names = r.read_u8()?;
         let arg_names = if has_arg_names == 0 {
@@ -2299,7 +2246,7 @@ fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, Decod
         let retc = read_count(&mut r)?;
         let mut rets = Vec::with_capacity(retc);
         for _ in 0..retc {
-            rets.push(decode_value_type(&mut r)?);
+            rets.push(ContractId(r.read_uleb128_u32()?));
         }
         let has_ret_names = r.read_u8()?;
         let ret_names = if has_ret_names == 0 {
@@ -2356,25 +2303,6 @@ fn decode_call_sigs(payload: &[u8]) -> Result<Vec<DecodedCallSig>, DecodeError> 
             rets.push(decode_value_type(&mut r)?);
         }
         out.push((args, rets));
-    }
-    Ok(out)
-}
-
-fn decode_function_arg_agg_shapes(
-    payload: &[u8],
-) -> Result<Vec<FunctionArgAggShapeEntry>, DecodeError> {
-    let mut r = Reader::new(payload);
-    let n = read_count(&mut r)?;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        out.push(FunctionArgAggShapeEntry {
-            func: r.read_uleb128_u32()?,
-            arg: r.read_uleb128_u32()?,
-            shape: decode_agg_shape(&mut r)?,
-        });
-    }
-    if r.offset() != payload.len() {
-        return Err(DecodeError::OutOfBounds);
     }
     Ok(out)
 }
@@ -2475,6 +2403,111 @@ fn read_count(r: &mut Reader<'_>) -> Result<usize, DecodeError> {
 fn read_usize(r: &mut Reader<'_>) -> Result<usize, DecodeError> {
     let v = r.read_uleb128_u64()?;
     usize::try_from(v).map_err(|_| DecodeError::OutOfBounds)
+}
+
+fn encode_contracts(w: &mut Writer, table: &ContractTable) {
+    w.write_uleb128_u64(table.len() as u64);
+    for (_, contract) in table.iter() {
+        match contract {
+            Contract::Kind(kind) => {
+                w.write_u8(0);
+                encode_value_type(w, kind);
+            }
+            Contract::Tuple(members) => {
+                w.write_u8(1);
+                w.write_uleb128_u64(members.len() as u64);
+                for member in members {
+                    match member {
+                        None => w.write_u8(0),
+                        Some(id) => {
+                            w.write_u8(1);
+                            w.write_uleb128_u32(id.0);
+                        }
+                    }
+                }
+            }
+            Contract::Struct { type_id, fields } => {
+                w.write_u8(2);
+                w.write_uleb128_u32(type_id.0);
+                w.write_uleb128_u64(fields.len() as u64);
+                for id in fields {
+                    w.write_uleb128_u32(id.0);
+                }
+            }
+            Contract::Array {
+                elem_type_id,
+                element,
+            } => {
+                w.write_u8(3);
+                w.write_uleb128_u32(elem_type_id.0);
+                w.write_uleb128_u32(element.0);
+            }
+        }
+    }
+}
+
+fn decode_contracts(payload: &[u8]) -> Result<(ContractTable, Vec<ContractId>), DecodeError> {
+    let mut r = Reader::new(payload);
+    let count = read_count(&mut r)?;
+    let mut builder = ContractTableBuilder::default();
+    let mut remap = Vec::with_capacity(count);
+    let mut tuples = Vec::new();
+    let mut fields = Vec::new();
+    for _ in 0..count {
+        tuples.clear();
+        fields.clear();
+        let contract = match r.read_u8()? {
+            0 => Contract::Kind(decode_value_type(&mut r)?),
+            1 => {
+                let count = read_count(&mut r)?;
+                tuples.reserve(count);
+                for _ in 0..count {
+                    tuples.push(match r.read_u8()? {
+                        0 => None,
+                        1 => Some(
+                            *remap
+                                .get(r.read_uleb128_u32()? as usize)
+                                .ok_or(DecodeError::OutOfBounds)?,
+                        ),
+                        _ => return Err(DecodeError::OutOfBounds),
+                    });
+                }
+                Contract::Tuple(&tuples)
+            }
+            2 => {
+                let type_id = TypeId(r.read_uleb128_u32()?);
+                let count = read_count(&mut r)?;
+                fields.reserve(count);
+                for _ in 0..count {
+                    fields.push(
+                        *remap
+                            .get(r.read_uleb128_u32()? as usize)
+                            .ok_or(DecodeError::OutOfBounds)?,
+                    );
+                }
+                Contract::Struct {
+                    type_id,
+                    fields: &fields,
+                }
+            }
+            3 => Contract::Array {
+                elem_type_id: ElemTypeId(r.read_uleb128_u32()?),
+                element: *remap
+                    .get(r.read_uleb128_u32()? as usize)
+                    .ok_or(DecodeError::OutOfBounds)?,
+            },
+            _ => return Err(DecodeError::OutOfBounds),
+        };
+        remap.push(
+            builder
+                .intern(contract)
+                .map_err(|_| DecodeError::OutOfBounds)?,
+        );
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok((builder.finish(), remap))
 }
 
 #[cfg(test)]
@@ -2653,58 +2686,32 @@ mod tests {
     }
 
     #[test]
-    fn program_roundtrips_function_arg_agg_shapes() {
-        let mut p = Program::new(
-            vec![],
-            vec![],
-            vec![],
-            TypeTableDef {
-                structs: vec![StructTypeDef {
-                    field_names: vec!["count".into()],
-                    field_types: vec![ValueType::I64],
-                }],
-                array_elems: vec![ValueType::Bool],
-            },
-            vec![FunctionDef {
-                arg_types: vec![ValueType::Agg, ValueType::Agg, ValueType::Agg],
-                ret_types: vec![],
-                register_types: vec![
-                    ValueType::Unit,
-                    ValueType::Agg,
-                    ValueType::Agg,
-                    ValueType::Agg,
-                ],
-                bytecode: vec![],
-                spans: vec![],
-            }],
-        );
-        p.function_arg_agg_shapes = vec![
-            FunctionArgAggShapeEntry {
-                func: 0,
-                arg: 0,
-                shape: AggShape::tuple(vec![Some(ValueType::I64), None]),
-            },
-            FunctionArgAggShapeEntry {
-                func: 0,
-                arg: 1,
-                shape: AggShape::Struct(TypeId(0)),
-            },
-            FunctionArgAggShapeEntry {
-                func: 0,
-                arg: 2,
-                shape: AggShape::Array(ElemTypeId(0)),
-            },
-        ];
-
+    fn program_roundtrips_compositional_guest_contracts() {
+        use crate::asm::{Asm, FunctionAbi, ProgramBuilder};
+        let mut builder = ProgramBuilder::new();
+        let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let tuple = builder
+            .contract(Contract::Tuple(&[Some(integer), None]))
+            .unwrap();
+        let mut asm = Asm::new();
+        asm.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+        asm.ret(0, &[1]);
+        builder
+            .push_function_checked(
+                asm,
+                FunctionAbi {
+                    args: vec![tuple.into()],
+                    rets: vec![tuple.into()],
+                },
+            )
+            .unwrap();
+        let p = builder.build_checked().unwrap();
         let bytes = p.encode();
-        let tags = section_tags(&bytes);
-        assert!(tags.contains(&(SectionTag::FunctionArgAggShapes as u8)));
-
-        let back = Program::decode(&bytes).unwrap();
-        assert_eq!(back, p);
+        let decoded = Program::decode(&bytes).unwrap();
+        assert_eq!(p, decoded);
         assert_eq!(
-            back.function_arg_agg_shape(0, 0),
-            Some(&AggShape::tuple(vec![Some(ValueType::I64), None]))
+            decoded.contracts.get(tuple),
+            Some(Contract::Tuple(&[Some(integer), None]))
         );
     }
 
