@@ -91,7 +91,12 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                     },
                 )
                 .unwrap();
-            let sig = builder.call_sig(&[ValueType::I64], &[ValueType::I64]);
+            let sig = builder
+                .call_sig(FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                })
+                .unwrap();
             let mut caller = Asm::new();
             caller.set_register_types(vec![
                 ValueType::Unit,

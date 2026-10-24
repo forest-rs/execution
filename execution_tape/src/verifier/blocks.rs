@@ -238,14 +238,14 @@ pub(super) fn validate_types(
 
 /// Copies facts from the original predecessor into a reusable scratch state before meeting.
 pub(super) fn transfer_edge(
-    incoming: &ShapeState,
-    scratch: &mut ShapeState,
+    incoming: &RefinementState,
+    scratch: &mut RefinementState,
     params: &[u32],
     args: &[u32],
 ) {
     scratch.clone_from(incoming);
     for (&dst, &src) in params.iter().zip(args) {
-        scratch.set_agg(dst as usize, incoming.agg(src as usize).cloned());
+        scratch.set_refinement(dst as usize, incoming.refinement(src as usize).cloned());
     }
 }
 

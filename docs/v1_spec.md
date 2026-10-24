@@ -170,7 +170,7 @@ Recursion is allowed. Limits enforce max depth.
 
 `max_contract_work` bounds recursive aggregate obligations separately from guest instruction fuel.
 It counts each aggregate/contract pair visit (including cached visits), each scalar member visit,
-and each child edge (including unconstrained slots). Successful proofs are cached by aggregate
+each callable signature position, and each child edge (including unconstrained slots and captured environments). Successful proofs are cached by aggregate
 handle and contract ID until the run ends; they never survive heap compaction or the next run's
 reset. Exceeding the budget traps with the function, argument/result position and configured limit.
 Traversals are iterative; sharing does not cause repeated expansion of proven subgraphs.
@@ -370,7 +370,7 @@ Stores per-function metadata and references into blob sections:
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
 
-The current draft wire version is 0.3. Older versions are rejected; rebuild serialized programs
+The current draft wire version is 0.4. Older versions are rejected; rebuild serialized programs
 from their producer. Each declaration is authoritative for the register's entire function lifetime.
 Every instruction definition and operand must match, including inactive instructions and unused
 results. A declaration does not initialize a register or supply a projection's aggregate shape proof.
@@ -406,7 +406,13 @@ ULEB128 definition count followed by that many nodes:
 - tag `1`: tuple length (ULEB128), then one `u8` presence flag per slot; flag `1` is followed by a
   child contract ID (ULEB128), and flag `0` leaves the slot unconstrained;
 - tag `2`: nominal struct `TypeId` (ULEB128), field count (ULEB128), then field contract IDs;
-- tag `3`: nominal `ElemTypeId` (ULEB128), then one element contract ID.
+- tag `3`: nominal `ElemTypeId` (ULEB128), then one element contract ID;
+- tag `4`: function argument count/IDs, then result count/IDs (all ULEB128);
+- tag `5`: closure user argument count/IDs, then result count/IDs (all ULEB128).
+
+Callable contracts describe exact exposed signatures. A closure's captured environment is hidden
+from this signature and checked against its concrete body's first argument. `Kind(Func)` and
+`Kind(Closure)` remain opaque; they prove no invocation signature.
 
 Child IDs must refer to earlier definitions. Forward/cyclic or missing references are rejected.
 Equivalent duplicate definitions are normalized on decode, including their signature references.
@@ -423,8 +429,9 @@ observable before checking, so a rejected result can be recorded and replayed.
 
 Local construction and projections carry nested facts. Joins/selects retain their common structural
 information, widening incompatible nested facts without inventing a kind. Direct calls introduce
-their declared result contracts. Indirect call signatures remain ABI-kind signatures in this slice;
-selected callees still enforce their own contracts, but their callers gain no rich result facts.
+their declared result contracts. Indirect calls propagate their signature's result contracts after
+exact target-signature matching. Callable joins retain identical exposed signatures; differing
+signatures widen to an opaque callable kind. This slice implements no function variance or subtyping.
 
 ## Host signatures
 Host call targets are keyed by a stable `(symbol_id, sig_hash)` pair, but bytecode references them by index:
@@ -442,16 +449,22 @@ The verifier recomputes `sig_hash` from the canonical encoding of `(arg_types, r
 ## Call signatures (optional)
 Indirect calls (`call_indirect`) reference a program-owned call signature by index. Unlike host
 signatures, a call signature carries no `symbol_id` or `sig_hash` — it only constrains the argument and
-result types checked against the callee value at the call site. A call signature lists the
+result contracts checked against the callee value at the call site. A call signature lists the
 *caller-visible* arguments: for a `Closure` callee the captured environment is injected by the VM as the
 callee's first (`Agg`) argument and is **not** part of the call signature. The section is optional and
 omitted entirely when there are no call signatures:
 - `count: ULEB128`
 - repeated `count` times:
   - `arg_count: ULEB128`
-  - `arg_types[arg_count]: ValueType...`
+  - `arg_contract_ids[arg_count]: ULEB128...`
   - `ret_count: ULEB128`
-  - `ret_types[ret_count]: ValueType...`
+  - `ret_contract_ids[ret_count]: ULEB128...`
+
+Every ID references the shared contract table, with the same duplicate normalization as guest
+function signatures. Exact prepared signature keys provide collision-safe dispatch; an ABI-kind
+hash alone does not prove contract equality. Known contradictions fail verification. Otherwise,
+matching occurs before callee entry, and the callee enforces the same result obligations before
+caller installation.
 
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
@@ -555,7 +568,9 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - Threads `eff` like `call`; traps if the callee's signature does not match.
 - `closure_new r_dst, r_func, r_env`
   - Builds a `Closure` pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
-    When the closure is later invoked via `call_indirect`, `r_env` is passed as the callee's first argument.
+    The target must accept an aggregate environment first; construction checks that concrete
+    contract before producing the closure. Dispatch also checks externally supplied environments,
+    including that an unrefined environment handle resolves. `r_env` is injected as the first argument.
 
 ### Host calls
 - `host_call r_eff_out, host_sig_id, r_eff_in, args... -> rets...`

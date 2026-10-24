@@ -659,6 +659,16 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         ) => ae == be && aa == right_actual,
         (Trap::AggError(a), Trap::AggError(b)) => a == b,
         (
+            Trap::CallableSignatureMismatch {
+                signature: a,
+                function: af,
+            },
+            Trap::CallableSignatureMismatch {
+                signature: b,
+                function: bf,
+            },
+        ) => a == b && af == bf,
+        (
             Trap::ContractWorkExceeded {
                 function: af,
                 position: ap,

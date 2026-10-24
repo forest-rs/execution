@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Function and closure value contracts preserve exact exposed signatures through aggregates,
+  projections, joins and indirect calls. Concrete closure environments are checked against the
+  selected body, including closures received through guest boundaries.
+
+
 - Observatory repeats the verification outcome in the Details title and highlights its
   verdict. Explain unknown member types (`?`) and why tuple length needs no element type,
   so a valid join is distinguishable from a rejected program. ([#161][] by [@waywardmonkeys][])
@@ -145,6 +150,20 @@ This release has an [MSRV][] of 1.88.
   location of rejected invocations. Return locations precede aggregate-handle compaction. ([#147][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Wire version 0.4 encodes indirect signatures with shared compositional contract IDs; regenerate
+  encoded programs. Replace `call_sig(args, rets)` with fallible `call_sig(FunctionSig { ... })`
+  for kind-only signatures or `call_sig(FunctionAbi { ... })` for refinements. The argument/result
+  kind accessors return borrowed `ContractKinds` views; contract accessors expose the same IDs.
+  Indirect target equivalence is exact, including nested contracts; it does not implement variance
+  or subtyping. Coarse signatures do not match richer declarations merely because their ABI kinds
+  agree. Known incompatible targets now fail verification; opaque mismatches trap before dispatch.
+  `closure_new` now requires an environment-bearing target and validates its environment before
+  producing a closure. Signature mismatches precede selected-callee dispatch; validation can still
+  fail after earlier host work, whose external effects are not rolled back.
+  Handle the new callable mismatch diagnostics and `ContractPath::{Member, Environment}` path steps.
+  Contract-work limits additionally count callable signature positions and environment edges.
+
 
 - Contract failures display readable expected/found types and indexed argument/result paths.
   Structured error fields remain unchanged; use them rather than parsing `Display` text. ([#159][] by [@waywardmonkeys][])

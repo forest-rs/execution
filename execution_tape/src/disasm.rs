@@ -1114,9 +1114,12 @@ fn fmt_value_type(w: &mut fmt::Formatter<'_>, ty: ValueType) -> fmt::Result {
     }
 }
 
-fn fmt_value_type_list(w: &mut fmt::Formatter<'_>, types: &[ValueType]) -> fmt::Result {
+fn fmt_value_type_list<'a>(
+    w: &mut fmt::Formatter<'_>,
+    types: impl IntoIterator<Item = &'a ValueType>,
+) -> fmt::Result {
     write!(w, "[")?;
-    for (i, ty) in types.iter().enumerate() {
+    for (i, ty) in types.into_iter().enumerate() {
         if i != 0 {
             write!(w, ", ")?;
         }
@@ -1762,7 +1765,12 @@ mod tests {
             )
             .unwrap();
 
-        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        let call_sig = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
         let mut caller = Asm::new();
         caller.set_register_types(vec![
             ValueType::Unit,

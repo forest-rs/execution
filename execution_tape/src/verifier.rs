@@ -9,7 +9,7 @@
 
 mod blocks;
 mod contracts;
-use contracts::ShapeState;
+use contracts::RefinementState;
 mod diagnostic;
 mod inspection;
 mod metadata;
@@ -86,8 +86,8 @@ struct SignatureCache {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CanonicalSignature {
-    args: Vec<ValueType>,
-    rets: Vec<ValueType>,
+    args: Vec<crate::contract::ContractId>,
+    rets: Vec<crate::contract::ContractId>,
 }
 
 /// A non-fatal verifier lint warning.
@@ -205,6 +205,15 @@ impl VerifiedProgram {
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
+    /// A statically known callable contradicts an indirect call's exact signature.
+    CallIndirectContractMismatch {
+        /// Containing function.
+        func: u32,
+        /// Call instruction byte offset.
+        pc: u32,
+        /// Required indirect signature.
+        call_sig: u32,
+    },
     /// A compositional contract contradicts its nominal schema, even if it is unused.
     InvalidContract {
         /// Program-local contract definition.
@@ -678,6 +687,10 @@ pub enum InvalidJumpTargetReason {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CallIndirectContractMismatch { func, pc, call_sig } => write!(
+                f,
+                "function #{func} at {pc}: callable does not match indirect signature #{call_sig}"
+            ),
             Self::InvalidContract { contract, error } => {
                 write!(f, "invalid contract {}: {error:?}", contract.0)
             }
@@ -1093,75 +1106,70 @@ pub fn verify_program_owned_with_lints(
 }
 
 fn build_signature_cache(program: &Program) -> Result<SignatureCache, VerifyError> {
-    let mut canonical: Vec<CanonicalSignature> = Vec::new();
-    let mut call_sigs: Vec<SigFingerprint> = Vec::with_capacity(program.call_sigs.len());
+    let mut canonical = Vec::new();
+    let mut call_sigs = Vec::with_capacity(program.call_sigs.len());
     for (i, entry) in program.call_sigs.iter().enumerate() {
-        let call_sig = CallSigId(u32::try_from(i).unwrap_or(u32::MAX));
-        let args = program
-            .call_sig_args(entry)
-            .map_err(|_| VerifyError::CallSigMalformed {
-                call_sig: call_sig.0,
-            })?;
-        let rets = program
-            .call_sig_rets(entry)
-            .map_err(|_| VerifyError::CallSigMalformed {
-                call_sig: call_sig.0,
-            })?;
-        let key = intern_signature(&mut canonical, args.iter(), rets.iter());
+        let error = |_| VerifyError::CallSigMalformed {
+            call_sig: u32::try_from(i).expect("verified function/signature count"),
+        };
+        let args = program.call_sig_arg_contracts(entry).map_err(error)?;
+        let rets = program.call_sig_ret_contracts(entry).map_err(error)?;
         call_sigs.push(SigFingerprint {
-            hash: crate::host::sig_hash_iter(args.iter(), rets.iter()),
-            key,
+            key: intern_signature(&mut canonical, args, rets),
+            hash: program.call_sig_hash(entry).map_err(error)?,
         });
     }
-
-    let mut functions: Vec<FunctionSigFingerprints> = Vec::with_capacity(program.functions.len());
+    let mut functions = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let args = program
-            .function_arg_types(func)
-            .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func: func_id })?;
-        let rets = program
-            .function_ret_types(func)
-            .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: func_id })?;
-
+        let args =
+            func.arg_contracts(program)
+                .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds {
+                    func: u32::try_from(i).expect("verified function/signature count"),
+                })?;
+        let rets =
+            func.ret_contracts(program)
+                .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds {
+                    func: u32::try_from(i).expect("verified function/signature count"),
+                })?;
+        let hash = |args: &[crate::contract::ContractId]| {
+            crate::host::sig_hash_iter(
+                program.contracts.kinds(args).iter(),
+                program.contracts.kinds(rets).iter(),
+            )
+        };
         let direct = SigFingerprint {
-            hash: crate::host::sig_hash_iter(args.iter(), rets.iter()),
-            key: intern_signature(&mut canonical, args.iter(), rets.iter()),
+            key: intern_signature(&mut canonical, args, rets),
+            hash: hash(args),
         };
-
-        let closure = match args.split_first() {
-            Some((ValueType::Agg, rest)) => Some(SigFingerprint {
-                hash: crate::host::sig_hash_iter(rest.iter(), rets.iter()),
-                key: intern_signature(&mut canonical, rest.iter(), rets.iter()),
-            }),
-            _ => None,
-        };
-
+        let closure = args
+            .split_first()
+            .filter(|(first, _)| program.contracts.kind(**first) == Some(ValueType::Agg))
+            .map(|(_, rest)| SigFingerprint {
+                key: intern_signature(&mut canonical, rest, rets),
+                hash: hash(rest),
+            });
         functions.push(FunctionSigFingerprints { direct, closure });
     }
-
     Ok(SignatureCache {
         call_sigs,
         functions,
     })
 }
-
-fn intern_signature<'a>(
+fn intern_signature(
     canonical: &mut Vec<CanonicalSignature>,
-    args: impl ExactSizeIterator<Item = &'a ValueType> + Clone,
-    rets: impl ExactSizeIterator<Item = &'a ValueType> + Clone,
+    args: &[crate::contract::ContractId],
+    rets: &[crate::contract::ContractId],
 ) -> u32 {
-    if let Some(i) = canonical
+    if let Some(index) = canonical
         .iter()
-        .position(|sig| sig.args.iter().eq(args.clone()) && sig.rets.iter().eq(rets.clone()))
+        .position(|sig| sig.args == args && sig.rets == rets)
     {
-        return u32::try_from(i).unwrap_or(u32::MAX);
+        return u32::try_from(index).expect("signature capacity");
     }
-
-    let key = u32::try_from(canonical.len()).unwrap_or(u32::MAX);
+    let key = u32::try_from(canonical.len()).expect("signature capacity");
     canonical.push(CanonicalSignature {
-        args: args.copied().collect(),
-        rets: rets.copied().collect(),
+        args: args.to_vec(),
+        rets: rets.to_vec(),
     });
     key
 }
@@ -3458,20 +3466,32 @@ mod tests {
     }
 
     fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> u32 {
-        let args_offset = u32::try_from(p.value_types.len()).unwrap();
-        p.value_types.extend_from_slice(args);
-        let rets_offset = u32::try_from(p.value_types.len()).unwrap();
-        p.value_types.extend_from_slice(rets);
-
-        let id = u32::try_from(p.call_sigs.len()).unwrap();
+        let mut table = crate::contract::ContractTableBuilder::new();
+        for (id, contract) in p.contracts.iter() {
+            assert_eq!(table.intern(contract).unwrap(), id);
+        }
+        let args: Vec<_> = args
+            .iter()
+            .map(|&kind| table.intern(Contract::Kind(kind)).unwrap())
+            .collect();
+        let rets: Vec<_> = rets
+            .iter()
+            .map(|&kind| table.intern(Contract::Kind(kind)).unwrap())
+            .collect();
+        p.contracts = table.finish();
+        let args_off = u32::try_from(p.contract_ids.len()).expect("verified address space");
+        p.contract_ids.extend_from_slice(&args);
+        let rets_off = u32::try_from(p.contract_ids.len()).expect("verified address space");
+        p.contract_ids.extend_from_slice(&rets);
+        let id = u32::try_from(p.call_sigs.len()).expect("verified address space");
         p.call_sigs.push(CallSigEntry {
             args: ByteRange {
-                offset: args_offset,
-                len: u32::try_from(args.len()).unwrap(),
+                offset: args_off,
+                len: u32::try_from(args.len()).expect("verified address space"),
             },
             rets: ByteRange {
-                offset: rets_offset,
-                len: u32::try_from(rets.len()).unwrap(),
+                offset: rets_off,
+                len: u32::try_from(rets.len()).expect("verified address space"),
             },
         });
         id

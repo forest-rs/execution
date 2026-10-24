@@ -346,7 +346,12 @@ fn logical_register_views_ignore_backing_pool_ids_and_unrelated_entries() {
             rets: vec![ValueType::Bytes],
         },
     );
-    builder.call_sig(&[ValueType::Closure], &[ValueType::Agg]);
+    builder
+        .call_sig(FunctionSig {
+            arg_types: vec![ValueType::Closure],
+            ret_types: vec![ValueType::Agg],
+        })
+        .unwrap();
     for _ in 0..2 {
         let mut asm = Asm::new();
         asm.set_register_types(kinds.to_vec()).ret(0, &[]);

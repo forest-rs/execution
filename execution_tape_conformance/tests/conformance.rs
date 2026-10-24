@@ -450,7 +450,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
 }
 
 #[test]
-fn golden_program_bytes_v0_3() {
+fn golden_program_bytes_v0_4() {
     let mut p = Program::new(
         vec![],
         vec![],
@@ -466,11 +466,18 @@ fn golden_program_bytes_v0_3() {
     );
 
     // Append one optional call sig so the golden pins the call_sigs section's bytes, not just roundtrip.
-    let args_off = u32::try_from(p.value_types.len()).unwrap();
-    p.value_types
-        .extend_from_slice(&[ValueType::I64, ValueType::Bool]);
-    let rets_off = u32::try_from(p.value_types.len()).unwrap();
-    p.value_types.push(ValueType::U64);
+    let mut contracts = execution_tape::contract::ContractTableBuilder::new();
+    p.contract_ids = [ValueType::I64, ValueType::Bool, ValueType::U64]
+        .into_iter()
+        .map(|kind| {
+            contracts
+                .intern(execution_tape::contract::Contract::Kind(kind))
+                .unwrap()
+        })
+        .collect();
+    p.contracts = contracts.finish();
+    let args_off = 0;
+    let rets_off = 2;
     p.call_sigs.push(CallSigEntry {
         args: ByteRange {
             offset: args_off,
@@ -494,10 +501,10 @@ fn golden_program_bytes_v0_3() {
         0x45,
         0x00,
         0x00,
-        // version_major=0, version_minor=3
+        // version_major=0, version_minor=4
         0x00,
         0x00,
-        0x03,
+        0x04,
         0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
         0x02,
@@ -534,10 +541,16 @@ fn golden_program_bytes_v0_3() {
         0x00,
         0x00,
         0x00, // additional Unit declaration
-        // compositional contracts: tag=12, len=1, count=0
+        // contracts: count=3, kinds I64/Bool/U64; their IDs are 0/1/2.
         0x0c,
+        0x07,
+        0x03,
+        0x00,
+        0x02,
+        0x00,
         0x01,
         0x00,
+        0x03,
         // function_sigs: tag=7, len=5, payload=[n=1, argc=0, has_arg_names=0, retc=0, has_ret_names=0]
         0x07,
         0x05,
@@ -549,15 +562,15 @@ fn golden_program_bytes_v0_3() {
         0x08,
         0x01,
         0x00,
-        // call_sigs: tag=10, len=6, payload=[count=1, arg_count=2, I64=0x02, Bool=0x01, ret_count=1, U64=0x03]
+        // call_sigs: count=1, args=[contract 0, contract 1], rets=[contract 2].
         0x0a,
         0x06,
         0x01,
         0x02,
+        0x00,
+        0x01,
+        0x01,
         0x02,
-        0x01,
-        0x01,
-        0x03,
     ];
     let bytes = p.encode();
     assert_eq!(bytes, expected);
@@ -1329,7 +1342,12 @@ fn roundtrip_verify_run_call_indirect_via_func_value() {
             ret_types: vec![ValueType::I64],
         })
         .unwrap();
-    let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+    let call_sig = pb
+        .call_sig(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
 
     let mut callee_asm = Asm::new();
     callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
@@ -1374,7 +1392,12 @@ fn roundtrip_verify_run_call_indirect_via_closure_with_env_injection() {
             ret_types: vec![ValueType::U64],
         })
         .unwrap();
-    let call_sig = pb.call_sig(&[ValueType::U64], &[ValueType::U64]);
+    let call_sig = pb
+        .call_sig(FunctionSig {
+            arg_types: vec![ValueType::U64],
+            ret_types: vec![ValueType::U64],
+        })
+        .unwrap();
 
     let mut callee_asm = Asm::new();
     callee_asm.set_register_types(vec![
@@ -1419,7 +1442,7 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
     let mut pb = ProgramBuilder::new();
     let caller = pb
         .declare_function(FunctionSig {
-            arg_types: vec![],
+            arg_types: vec![ValueType::Func],
             ret_types: vec![ValueType::I64],
         })
         .unwrap();
@@ -1429,7 +1452,12 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
             ret_types: vec![ValueType::I64],
         })
         .unwrap();
-    let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+    let call_sig = pb
+        .call_sig(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
 
     let mut callee_asm = Asm::new();
     callee_asm.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::I64]);
@@ -1444,7 +1472,6 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
         ValueType::I64,
         ValueType::I64,
     ]);
-    caller_asm.const_func(1, callee);
     caller_asm.const_i64(2, 7);
     caller_asm.call_indirect(0, call_sig, 1, 0, &[2], &[3]);
     caller_asm.ret(0, &[3]);
@@ -1452,7 +1479,9 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
 
     let p = pb.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm.run(&p, caller, &[], TraceMask::NONE, None).unwrap_err();
+    let err = vm
+        .run(&p, caller, &[Value::Func(callee)], TraceMask::NONE, None)
+        .unwrap_err();
     assert!(matches!(
         err.trap,
         Trap::TypeMismatch {

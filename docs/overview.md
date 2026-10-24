@@ -118,8 +118,11 @@ Checks borrow immutable graphs, traverse iteratively and cache successful `(hand
 proofs for one run. `Limits::max_contract_work` bounds pair/value visits and member edges separately
 from instruction fuel. Errors report the argument/result position and nested member path. Signature
 inspection borrows contract IDs and projected kind views, without expanding a graph into a tree.
-Nominal IDs remain significant, unknown tuple slots remain explicit, and callable refinements and
-recursive type equations are separate future capabilities.
+Nominal IDs remain significant and unknown tuple slots remain explicit. Function and closure
+contracts expose exact argument/result signatures, preserved through projections and indirect calls.
+Closures hide their environment layout while concrete bodies enforce it. Indirect target matching
+uses full contract identity; opaque callable kinds establish no signature. Recursive type equations
+and variance/subtyping are separate capabilities.
 
 ## Host objects
 - `Obj { host_type: HostTypeId, handle: u64 }`

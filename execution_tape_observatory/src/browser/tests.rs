@@ -325,7 +325,7 @@ fn diagnostic_formatting_bounds_large_contract_paths() {
         position: ContractPosition::Result { index: 0 },
         error: ContractViolation {
             contract: ContractId(0),
-            path: vec![0; 20_000],
+            path: vec![execution_tape::contract::ContractPath::Member(0); 20_000],
             mismatch: ContractMismatch::Kind {
                 expected: ValueType::I64,
                 actual: ValueType::Bool,
@@ -551,7 +551,10 @@ fn contract_diagnostics_resolve_named_fields_and_bound_deep_paths() {
             },
         },
     };
-    let named = describe::verification(&program, &error(vec![0]));
+    let named = describe::verification(
+        &program,
+        &error(vec![execution_tape::contract::ContractPath::Member(0)]),
+    );
     assert!(
         named
             .summary
@@ -561,7 +564,13 @@ fn contract_diagnostics_resolve_named_fields_and_bound_deep_paths() {
         named.path.as_deref(),
         Some("Argument 1 to accepts_settings → field enabled")
     );
-    let deep = describe::verification(&program, &error(vec![0; 20_000]));
+    let deep = describe::verification(
+        &program,
+        &error(vec![
+            execution_tape::contract::ContractPath::Member(0);
+            20_000
+        ]),
+    );
     assert!(deep.summary.contains("expected bool, found i64"));
     assert!(deep.summary.len() < 300);
     let path = deep.path.unwrap();
