@@ -124,7 +124,7 @@ This release has an [MSRV][] of 1.88.
 ### Changed
 
 - Contract failures display readable expected/found types and indexed argument/result paths.
-  Structured error fields remain unchanged; use them rather than parsing `Display` text.
+  Structured error fields remain unchanged; use them rather than parsing `Display` text. ([#159][] by [@waywardmonkeys][])
 
 - Guest signatures now store authoritative compositional contract IDs in wire version 0.3;
   regenerate encoded programs. `FunctionSig` remains the kind-only authoring shorthand.
@@ -223,6 +223,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Observatory distinguishes fixed register storage kinds from nested call-result contracts and
+  required return contracts. Rejected contracts name the function and explain the member path,
+  including named struct fields, without exposing Rust debug syntax. ([#159][] by [@waywardmonkeys][])
+
 - Discard obsolete aggregate shape facts when calls or nested projections overwrite a register.
   Aggregate selects retain only the shape shared by both inputs, including aliased destinations. ([#134][] by [@waywardmonkeys][])
 
@@ -303,6 +307,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#159]: https://github.com/forest-rs/execution/pull/159
 [#157]: https://github.com/forest-rs/execution/pull/157
 [#156]: https://github.com/forest-rs/execution/pull/156
 [#155]: https://github.com/forest-rs/execution/pull/155

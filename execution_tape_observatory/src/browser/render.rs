@@ -79,11 +79,11 @@ pub(super) fn function_signature(view: &Browser<'_>) -> Option<String> {
 pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
     let mut lines = Vec::new();
     let program = view.program;
-    if let Some(error) = &view.error {
-        lines.push(format!(
-            "VERIFICATION REJECTED: {}",
-            describe::diagnostic(error)
-        ));
+    if let Some(rejection) = &view.rejection {
+        lines.push(format!("VERIFICATION REJECTED: {}", rejection.summary));
+        if let Some(path) = &rejection.path {
+            lines.push(path.clone());
+        }
         lines.push("d: go to diagnostic · decoded content remains inspectable".into());
     }
     // A focused instruction always describes that instruction, even after browsing another table.
@@ -128,6 +128,15 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                         CallTarget::HostSig(id, _) => lines.push(describe::signature(program, id)),
                         CallTarget::Func(id) => {
                             lines.push(format!("Enter: open {}", describe::function(program, id)));
+                            if let Some(callee) = program.functions.get(id.0 as usize) {
+                                result_contracts(
+                                    &mut lines,
+                                    program,
+                                    call.rets,
+                                    callee.ret_types,
+                                    "Results on successful return:",
+                                );
+                            }
                         }
                         CallTarget::Indirect { call_sig, .. } => lines.push(format!(
                             "Indirect signature #{} · runtime callee unknown",
@@ -135,10 +144,19 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                         )),
                     }
                 }
+                if let Operands::Ret { rets, .. } = instruction.operands() {
+                    result_contracts(
+                        &mut lines,
+                        program,
+                        rets,
+                        function.ret_types,
+                        "Required returned values:",
+                    );
+                }
                 if instruction.edge(0).is_some() {
                     lines.push("Enter: jump / true arm · f: false arm · Backspace: return".into());
                 }
-                lines.push("Register declarations (static types, not runtime values):".into());
+                lines.push("Storage kinds (fixed register declarations):".into());
                 let mut operands = instruction.reads().chain(instruction.writes());
                 let registers: std::collections::BTreeSet<_> = operands.by_ref().take(64).collect();
                 for reg in registers {
@@ -212,6 +230,48 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
     lines
 }
 
+fn result_contracts(
+    lines: &mut Vec<String>,
+    program: &Program,
+    registers: &[u32],
+    range: execution_tape::program::ByteRange,
+    title: &str,
+) {
+    if registers.is_empty() && range.len == 0 {
+        return;
+    }
+    lines.push(title.into());
+    // The verifier diagnoses the whole program once. Read only the bounded visible definitions
+    // here rather than validating every ID in a large callee signature on every redraw.
+    let Some(ids) = range.offset.checked_add(range.len).and_then(|end| {
+        program
+            .contract_ids
+            .get(range.offset as usize..end as usize)
+    }) else {
+        lines.push("  <malformed result contract range>".into());
+        return;
+    };
+    for (&register, &id) in registers.iter().zip(ids).take(4) {
+        lines.push(format!(
+            "  r{register}: {}",
+            describe::contract(program, id)
+        ));
+    }
+    if registers.len() != ids.len() {
+        lines.push(format!(
+            "  Result count mismatch: {} registers, {} contracts",
+            registers.len(),
+            ids.len()
+        ));
+    }
+    if ids.len().min(registers.len()) > 4 {
+        lines.push(format!(
+            "  … {} more results",
+            ids.len().min(registers.len()) - 4
+        ));
+    }
+}
+
 pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     let area = frame.area();
     frame.render_widget(
@@ -232,7 +292,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     } else {
         "VERIFIED"
     };
-    let summary = view.error.as_ref().map_or_else(
+    let summary = view.rejection.as_ref().map_or_else(
         || {
             format!(
                 "{} functions · {} imports · {} constants",
@@ -241,7 +301,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
                 view.program.const_pool.len()
             )
         },
-        describe::diagnostic,
+        |rejection| rejection.summary.clone(),
     );
     frame.render_widget(
         Paragraph::new(vec![

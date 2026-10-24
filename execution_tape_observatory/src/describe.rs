@@ -9,6 +9,103 @@ use execution_tape::program::{HostSigId, Program, ValueType};
 use execution_tape::value::{AggType, FuncId};
 use execution_tape_recording::{AggregateId, RecordedValue, Recording};
 
+#[derive(Debug)]
+pub(super) struct VerificationDiagnostic {
+    pub(super) summary: String,
+    pub(super) path: Option<String>,
+}
+
+pub(super) fn verification(
+    program: &Program,
+    error: &execution_tape::verifier::VerifyError,
+) -> VerificationDiagnostic {
+    use execution_tape::contract::{Contract, ContractPosition};
+    use execution_tape::verifier::VerifyError;
+    let VerifyError::ContractMismatch {
+        func,
+        pc,
+        position,
+        error,
+    } = error
+    else {
+        return VerificationDiagnostic {
+            summary: diagnostic(error),
+            path: None,
+        };
+    };
+    let (subject, root, label, contract) = match *position {
+        ContractPosition::Result { index } => (
+            function(program, FuncId(*func)),
+            format!("result[{index}]"),
+            format!("Return value {}", u64::from(index) + 1),
+            program
+                .functions
+                .get(*func as usize)
+                .and_then(|function| function.ret_contracts(program).ok())
+                .and_then(|ids| ids.get(index as usize))
+                .copied(),
+        ),
+        ContractPosition::Argument { callee, index } => (
+            format!("Call to {}", function(program, callee)),
+            format!("argument[{index}]"),
+            format!(
+                "Argument {} to {}",
+                u64::from(index) + 1,
+                function(program, callee)
+            ),
+            program
+                .functions
+                .get(callee.0 as usize)
+                .and_then(|function| function.arg_contracts(program).ok())
+                .and_then(|ids| ids.get(index as usize))
+                .copied(),
+        ),
+    };
+    let mut indexed = root;
+    let mut trail = label;
+    let mut contract = contract.and_then(|id| program.contracts.get(id));
+    for &index in error.path.iter().take(8) {
+        indexed.push_str(&format!("[{index}]"));
+        let (member, child) = match contract {
+            Some(Contract::Tuple(members)) => (
+                format!("tuple element {}", index.saturating_add(1)),
+                members.get(index).copied().flatten(),
+            ),
+            Some(Contract::Struct { type_id, fields }) => {
+                let name = program
+                    .types
+                    .structs
+                    .get(type_id.0 as usize)
+                    .and_then(|schema| program.types.struct_field_name_ids(schema).ok())
+                    .and_then(|names| names.get(index))
+                    .and_then(|&id| program.types.field_name_str(id));
+                (
+                    name.map_or_else(
+                        || format!("field {}", index.saturating_add(1)),
+                        |name| format!("field {}", preview(name, 40)),
+                    ),
+                    fields.get(index).copied(),
+                )
+            }
+            Some(Contract::Array { element, .. }) => (
+                format!("array element {}", index.saturating_add(1)),
+                Some(element),
+            ),
+            _ => (format!("member {}", index.saturating_add(1)), None),
+        };
+        trail.push_str(&format!(" → {member}"));
+        contract = child.and_then(|id| program.contracts.get(id));
+    }
+    if error.path.len() > 8 {
+        indexed.push_str("[…]");
+        trail.push_str(&format!(" → … {} more members", error.path.len() - 8));
+    }
+    VerificationDiagnostic {
+        summary: format!("{subject}: {} at {indexed} (byte {pc})", error.mismatch),
+        path: Some(trail),
+    }
+}
+
 pub(super) fn preview(text: &str, limit: usize) -> String {
     let mut output: String = text
         .chars()
@@ -67,7 +164,7 @@ pub(super) fn types<'a>(
     format!("({output})")
 }
 
-pub(super) fn contracts(program: &Program, ids: &[execution_tape::contract::ContractId]) -> String {
+pub(super) fn contract(program: &Program, id: execution_tape::contract::ContractId) -> String {
     fn summary(program: &Program, id: execution_tape::contract::ContractId, depth: u8) -> String {
         use execution_tape::contract::Contract;
         let Some(contract) = program.contracts.get(id) else {
@@ -113,10 +210,14 @@ pub(super) fn contracts(program: &Program, ids: &[execution_tape::contract::Cont
             ),
         }
     }
+    summary(program, id, 2)
+}
+
+pub(super) fn contracts(program: &Program, ids: &[execution_tape::contract::ContractId]) -> String {
     let mut values = ids
         .iter()
         .take(4)
-        .map(|&id| summary(program, id, 2))
+        .map(|&id| contract(program, id))
         .collect::<Vec<_>>()
         .join(", ");
     if ids.len() > 4 {
