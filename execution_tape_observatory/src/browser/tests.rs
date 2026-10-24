@@ -313,17 +313,22 @@ fn malformed_import_ranges_never_look_like_empty_signatures() {
 }
 
 #[test]
-fn diagnostic_formatting_bounds_large_shape_descriptions() {
-    use execution_tape::program::AggShape;
-    let error = VerifyError::CallArgShapeMismatch {
+fn diagnostic_formatting_bounds_large_contract_paths() {
+    use execution_tape::contract::{
+        ContractId, ContractMismatch, ContractPosition, ContractViolation,
+    };
+    let error = VerifyError::ContractMismatch {
         func: 0,
         pc: 0,
-        callee: 1,
-        arg: 0,
-        expected: AggShape::Tuple {
-            elems: vec![Some(ValueType::I64); 20_000],
+        position: ContractPosition::Result { index: 0 },
+        error: ContractViolation {
+            contract: ContractId(0),
+            path: vec![0; 20_000],
+            mismatch: ContractMismatch::Kind {
+                expected: ValueType::I64,
+                actual: ValueType::Bool,
+            },
         },
-        actual: AggShape::Tuple { elems: vec![] },
     };
     let text = describe::diagnostic(&error);
     assert!(text.ends_with('…'));

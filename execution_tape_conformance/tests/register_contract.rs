@@ -293,13 +293,12 @@ fn invalid_definition_is_reported_before_dependent_shape_facts() {
 }
 
 #[test]
-fn nested_projection_overwriting_its_source_erases_the_outer_proof() {
+fn nested_projection_overwriting_its_source_keeps_the_inner_proof() {
     let mut asm = Asm::new();
     asm.const_i64(1, 7)
         .tuple_new(2, &[1])
         .tuple_new(3, &[2])
         .tuple_get(3, 3, 0);
-    let projection = asm.pc();
     asm.tuple_get(4, 3, 0).ret(0, &[4]);
     let p = program(
         asm,
@@ -314,13 +313,16 @@ fn nested_projection_overwriting_its_source_erases_the_outer_proof() {
         &[ValueType::I64],
     );
     let decoded = Program::decode(&p.encode()).unwrap();
+    let config = VerifyConfig::default();
+    verify_program(&decoded, &config).unwrap();
+    verify_program_with_lints(&decoded, &config).unwrap();
+    let prepared = verify_program_owned(decoded.clone(), &config).unwrap();
+    verify_program_owned_with_lints(decoded, &config).unwrap();
     assert_eq!(
-        error(&decoded),
-        VerifyError::UnknownAggregateShape {
-            func: 0,
-            pc: projection,
-            reg: 3
-        }
+        Vm::new(NoHost, Limits::default())
+            .run(&prepared, FuncId(0), &[], TraceMask::NONE, None)
+            .unwrap(),
+        vec![Value::I64(7)]
     );
 }
 

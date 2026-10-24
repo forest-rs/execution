@@ -156,8 +156,8 @@ Recursion is allowed. Limits enforce max depth.
   declaration, arity, split, and target structure are checked even in unreachable code.
 - Edge transfers read every source before overwriting any destination. Cycles, self transfers,
   and repeated sources are valid. The two arms of a branch remain distinct even at equal targets.
-- `Agg` parameters specify the value kind only. Equal known incoming shapes survive the join;
-  conflicting or opaque shapes lose that knowledge. Such a parameter alone cannot type a
+- `Agg` parameters specify the value kind only. Common known incoming structure survives the join;
+  conflicting nested facts widen, and opaque shapes grant no structural knowledge. Such a parameter alone cannot type a
   projection. Function/closure kinds likewise do not declare callable signatures.
 - Declarations disappear during preparation. A branch plus its selected parallel transfer costs
   one fuel and emits one instruction attempt/completion pair. Source header PC, first executable
@@ -167,6 +167,14 @@ Recursion is allowed. Limits enforce max depth.
 ## Limits and traps
 
 ### Limits (v1)
+
+`max_contract_work` bounds recursive aggregate obligations separately from guest instruction fuel.
+It counts each aggregate/contract pair visit (including cached visits), each scalar member visit,
+and each child edge (including unconstrained slots). Successful proofs are cached by aggregate
+handle and contract ID until the run ends; they never survive heap compaction or the next run's
+reset. Exceeding the budget traps with the function, argument/result position and configured limit.
+Traversals are iterative; sharing does not cause repeated expansion of proven subgraphs.
+
 - `fuel`: decremented by a per-instruction cost (default 1 unless overridden by opcode).
 - `max_call_depth`: hard stack limit.
 - `max_host_calls`: caps `host_call` count.
@@ -271,8 +279,10 @@ crate) can be built as adapters without adding any dependency to the `execution_
 - `8 = host_sigs`
 - `9 = names` (optional)
 - `10 = call_sigs` (optional)
+- `11` is retired
+- `12 = contracts`
 
-Sections `1..=8` are required in v1; `9 = names` and `10 = call_sigs` are optional (each omitted
+Sections `1..=8` and `12` are required in this draft; `9 = names` and `10 = call_sigs` are optional (each omitted
 entirely when empty). Unknown section tags are skipped for forward compatibility.
 
 ## Symbols
@@ -356,11 +366,11 @@ Stores per-function metadata and references into blob sections:
   - `arg_count: ULEB128` (value args; effect is not counted)
   - `ret_count: ULEB128`
   - `reg_count: ULEB128`
-  - `register_types[reg_count]: ValueType...` (same kind encoding as signatures)
+  - `register_types[reg_count]: ValueType...` (ABI/storage kind encoding)
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
 
-The current draft wire version is 0.2. Older versions are rejected; rebuild serialized programs
+The current draft wire version is 0.3. Older versions are rejected; rebuild serialized programs
 from their producer. Each declaration is authoritative for the register's entire function lifetime.
 Every instruction definition and operand must match, including inactive instructions and unused
 results. A declaration does not initialize a register or supply a projection's aggregate shape proof.
@@ -371,17 +381,50 @@ Typed signatures are mandatory in v1 and stored separately from `function_table`
 - `count: ULEB128` (must match `function_table.count`)
 - repeated `count` times:
   - `arg_count: ULEB128`
-  - `arg_types[arg_count]: ValueType...`
+  - `arg_contract_ids[arg_count]: ULEB128...`
   - `has_arg_names: u8` (`0` or `1`)
   - if `has_arg_names == 1`:
     - `arg_name_symbol_ids[arg_count]: ULEB128...` (`0` means “no name”; otherwise a non-zero `symbol_id`)
   - `ret_count: ULEB128`
-  - `ret_types[ret_count]: ValueType...`
+  - `ret_contract_ids[ret_count]: ULEB128...`
   - `has_ret_names: u8` (`0` or `1`)
   - if `has_ret_names == 1`:
     - `ret_name_symbol_ids[ret_count]: ULEB128...` (`0` means “no name”; otherwise a non-zero `symbol_id`)
 
 The `arg_count`/`ret_count` must match the corresponding `function_table` entry.
+
+Each ID references the program's mandatory compositional contract table. ABI kinds are projected
+from those definitions; they are not a second serialized guest signature. Register declarations
+remain kind-only. Tuple/struct/array contracts all project to `Agg`.
+
+## Compositional contracts
+
+Section tag `12` is mandatory, including for an empty table. Tag `11` is retired. The payload is a
+ULEB128 definition count followed by that many nodes:
+
+- tag `0`: one `ValueType` kind, with no structural refinement;
+- tag `1`: tuple length (ULEB128), then one `u8` presence flag per slot; flag `1` is followed by a
+  child contract ID (ULEB128), and flag `0` leaves the slot unconstrained;
+- tag `2`: nominal struct `TypeId` (ULEB128), field count (ULEB128), then field contract IDs;
+- tag `3`: nominal `ElemTypeId` (ULEB128), then one element contract ID.
+
+Child IDs must refer to earlier definitions. Forward/cyclic or missing references are rejected.
+Equivalent duplicate definitions are normalized on decode, including their signature references.
+Struct refinements must preserve schema field count and each field's kind; array refinements must
+preserve the nominal element kind. These rules apply even to unused definitions. Distinct nominal
+IDs remain distinct when their layouts match. Recursive functions can use finite contract DAGs;
+recursive type equations are not supported.
+
+An unconstrained tuple slot is distinct from a slot with `Kind(Agg)`. Neither proves a nested shape.
+Known contradictions at reachable calls/returns fail verification. Unknown facts remain runtime
+obligations. Every actual argument and successful result satisfies its declared contract: checks
+precede callee entry, caller result copies and root commit. Raw root return candidates remain
+observable before checking, so a rejected result can be recorded and replayed.
+
+Local construction and projections carry nested facts. Joins/selects retain their common structural
+information, widening incompatible nested facts without inventing a kind. Direct calls introduce
+their declared result contracts. Indirect call signatures remain ABI-kind signatures in this slice;
+selected callees still enforce their own contracts, but their callers gain no rich result facts.
 
 ## Host signatures
 Host call targets are keyed by a stable `(symbol_id, sig_hash)` pair, but bytecode references them by index:

@@ -40,10 +40,12 @@ impl Host for Echo {
 
 fn recursive() -> Arc<VerifiedProgram> {
     let mut b = ProgramBuilder::new();
-    let f = b.declare_function(FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    });
+    let f = b
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     let h = b.host_sig_for(
         "echo",
         HostSig {

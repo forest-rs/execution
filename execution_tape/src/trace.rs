@@ -289,6 +289,8 @@ pub trait TraceSink {
     /// instructions that trap. Fuel exhaustion before fetching an instruction creates no attempt.
     /// `next` is the actual execution successor (including call/return transitions); it is `None`
     /// for a terminal return or trap. `outcome` describes this instruction, not the entire run.
+    /// A call completes its dispatch when control enters the callee; the call-frame scope's exit
+    /// reports whether that invocation eventually returned or trapped.
     fn instr_end(
         &mut self,
         _program: &Program,

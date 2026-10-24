@@ -354,7 +354,7 @@ mod memory_tests {
     use super::*;
     use alloc::vec;
     use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-    use execution_tape::program::{AggShape, ValueType};
+    use execution_tape::program::ValueType;
 
     struct NoHost;
     impl Host for NoHost {
@@ -468,14 +468,19 @@ mod memory_tests {
         reader.tuple_new(2, &[1]); // Unreachable wrapper around a retained input.
         reader.tuple_get(3, 1, 0);
         reader.ret(0, &[3]);
+        let integer = pb
+            .contract(execution_tape::contract::Contract::Kind(ValueType::I64))
+            .unwrap();
+        let tuple = pb
+            .contract(execution_tape::contract::Contract::Tuple(&[Some(integer)]))
+            .unwrap();
         let reader = pb
             .push_function_checked(
                 reader,
-                FunctionSig {
-                    arg_types: vec![ValueType::Agg],
-                    ret_types: vec![ValueType::I64],
-                }
-                .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+                execution_tape::asm::FunctionAbi {
+                    args: vec![tuple.into()],
+                    rets: vec![ValueType::I64.into()],
+                },
             )
             .unwrap();
         let program = Arc::new(pb.build_verified().unwrap());

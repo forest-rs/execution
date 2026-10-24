@@ -659,14 +659,27 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         ) => ae == be && aa == right_actual,
         (Trap::AggError(a), Trap::AggError(b)) => a == b,
         (
-            Trap::ArgumentShapeMismatch {
-                callee: ac,
-                arg: aa,
+            Trap::ContractWorkExceeded {
+                function: af,
+                position: ap,
+                limit: al,
+            },
+            Trap::ContractWorkExceeded {
+                function: bf,
+                position: bp,
+                limit: bl,
+            },
+        ) => af == bf && ap == bp && al == bl,
+
+        (
+            Trap::ContractMismatch {
+                function: ac,
+                position: aa,
                 error: ae,
             },
-            Trap::ArgumentShapeMismatch {
-                callee: bc,
-                arg: right_arg,
+            Trap::ContractMismatch {
+                function: bc,
+                position: right_arg,
                 error: be,
             },
         ) => ac == bc && aa == right_arg && ae == be,

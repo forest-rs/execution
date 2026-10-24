@@ -21,6 +21,10 @@ This release has an [MSRV][] of 1.88.
   share flat immutable storage, preserve unknown tuple members, and reject missing/forward
   references. Contract IDs belong to one table; nominal schema validation belongs to its owner. ([#155][] by [@waywardmonkeys][])
 
+- Build and inspect shared compositional value contracts with `ContractTableBuilder` and
+  `ProgramBuilder::contract`. Guest arguments/results can describe nested tuples and nominal
+  structs/arrays. Local construction, projections, direct calls and typed joins preserve nested facts. ([#156][] by [@waywardmonkeys][])
+
 
 - Correlate VM runs, guest calls and host work with the optional `execution_tape_footfall`
   adapter. Instruction details are opt-in; bounded captures preserve loss metadata. The
@@ -112,6 +116,24 @@ This release has an [MSRV][] of 1.88.
   location of rejected invocations. Return locations precede aggregate-handle compaction. ([#147][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Guest signatures now store authoritative compositional contract IDs in wire version 0.3;
+  regenerate encoded programs. `FunctionSig` remains the kind-only authoring shorthand.
+  Replace `FunctionAbi::{sig, arg_agg_shapes}` with `args`/`rets` lists of `ContractRef`, and
+  replace argument-shape helpers with shared contracts. `AggShape`, its argument-only metadata,
+  and `AggHeap::check_shape` are removed. Host and indirect-call signatures retain their ABI kinds. ([#156][] by [@waywardmonkeys][])
+
+- Handle `ProgramBuilder::declare_function`'s `Result`; missing contract IDs fail before mutation.
+  Function argument/result kind accessors now return borrowed `ContractKinds` views rather than
+  slices; use `iter()` or query `arg_contracts`/`ret_contracts` and the program's contract table. ([#156][] by [@waywardmonkeys][])
+
+- Add `Limits::max_contract_work` to exhaustive initializers (or use `..Default::default()`).
+  Aggregate boundary validation is iterative, shares successful proofs within a run, and counts
+  value visits and child edges separately from instruction fuel. Result obligations are checked
+  before caller installation or root commit. `Trap::ContractMismatch` replaces
+  `ArgumentShapeMismatch`; handle `ContractWorkExceeded` and the corresponding verifier contract
+  diagnostics in exhaustive matches. Failures include the boundary position and nested member path. ([#156][] by [@waywardmonkeys][])
+
 
 - `Recorder::mask` now includes `CALL`. Add `call_frames` to exhaustive `RecordLimits`
   initializers (or use `..Default::default()`); this budget counts all entered activations.
@@ -272,6 +294,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#156]: https://github.com/forest-rs/execution/pull/156
 [#155]: https://github.com/forest-rs/execution/pull/155
 [#151]: https://github.com/forest-rs/execution/pull/151
 

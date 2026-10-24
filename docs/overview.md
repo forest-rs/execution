@@ -62,8 +62,8 @@ asm.place(join)?;
 asm.ret(0, &[4, 5]);
 ```
 
-Kinds, register bounds and call/return contracts are checked even in unreachable instructions.
-Initialization and flow-sensitive shape proofs apply to reachable instructions. Both branch arms are
+Kinds, register bounds, and call/return arity are checked even in unreachable instructions.
+Initialization and flow-sensitive structural contracts apply to reachable instructions. Both branch arms are
 checked even when a condition is constant. Transfers read all arguments before
 changing destinations, so loops, cycles, and repeated sources have ordinary simultaneous-copy
 semantics. Bare labels still work. This is a typed block-parameter contract within the existing
@@ -100,7 +100,28 @@ Owned results copy at the return boundary; persistent aggregates own their field
 of the context. Clearing scratch therefore never invalidates a returned byte/string value or
 an aggregate retained in the VM heap. Aggregate handles remain scoped to their VM heap.
 
-### Host objects
+### Compositional guest values
+
+Guest signatures reference a shared program-owned contract DAG. `ValueType` still describes
+storage/host ABI kinds, and the register ledger remains kind-only. A nested tuple and a flat tuple
+both occupy an aggregate bank slot, while their contracts distinguish contents across function
+boundaries. `FunctionSig` is the kind-only shorthand; `FunctionAbi` supplies `ContractRef` lists.
+Use `ProgramBuilder::contract` to intern children before parents, then use their IDs in signatures.
+
+Local construction infers nested facts without annotations. Projections preserve selected child
+facts, including aliased destinations. Typed edges transfer those facts simultaneously; joins and
+selects preserve common structure. Direct calls propagate declared result contracts. The verifier
+rejects known contradictions, and the interpreter checks unresolved boundary data before callee
+entry or result installation. Opaque host results cannot bypass a declared result contract.
+
+Checks borrow immutable graphs, traverse iteratively and cache successful `(handle, contract)`
+proofs for one run. `Limits::max_contract_work` bounds pair/value visits and member edges separately
+from instruction fuel. Errors report the argument/result position and nested member path. Signature
+inspection borrows contract IDs and projected kind views, without expanding a graph into a tree.
+Nominal IDs remain significant, unknown tuple slots remain explicit, and callable refinements and
+recursive type equations are separate future capabilities.
+
+## Host objects
 - `Obj { host_type: HostTypeId, handle: u64 }`
 - Opaque: no VM-level equality/hash/serialization in v1.
 
@@ -159,7 +180,7 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 ## Control flow
 - Loops + conditionals.
 - Recursion via `call` and frames.
-- IR may use `phi`; lowering removes `phi` by inserting edge copies so bytecode has no `phi`.
+- Typed block parameters express joins directly; edge transfers are simultaneous preparation details.
 
 ## Serialization (portable)
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
@@ -170,14 +191,14 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 ## Verifier (must-haves)
 - Control-flow integrity: valid jump targets, well-formed block boundaries.
 - Register discipline: init-before-use; bounded register count per function.
-- Type discipline: builtins + aggregate handles; host call signatures match (argument and return shapes).
+- Type discipline: builtins + aggregate handles; host call signatures match ABI kinds; guest boundaries enforce compositional value contracts.
 - Resource bounds: max call depth and optional max blocks/instructions.
 - Structural constraints: aggregate graphs are acyclic (enforced by construction or validated when deserializing aggregates).
 
 ## Prepared-program inspection
 
 `VerifiedProgram::function(FuncId)` borrows one prepared function; `functions()` visits all
-functions in ID order. These views expose signatures, aggregate argument contracts, instruction
+functions in ID order. These views expose signatures, compositional argument/result contracts, instruction
 locations/spans, register-bank requirements, and buffer sizes without decoding bytecode or
 allocating inspection records. Unknown function IDs return `None`.
 

@@ -13,8 +13,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::aggregates::{AggError, AggHeap, AggShapeError};
+use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
+use crate::contract::{ContractPosition, ContractViolation};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
@@ -38,6 +39,9 @@ pub struct Limits {
     pub max_call_depth: usize,
     /// Maximum host calls.
     pub max_host_calls: u64,
+    /// Maximum aggregate contract work per run: visited value/contract pairs and child edges.
+    /// Separate from guest instruction fuel; shared subgraphs reuse successful proofs.
+    pub max_contract_work: u64,
 }
 
 impl Default for Limits {
@@ -46,6 +50,7 @@ impl Default for Limits {
             fuel: 1_000_000,
             max_call_depth: 256,
             max_host_calls: 1_000_000,
+            max_contract_work: 1_000_000,
         }
     }
 }
@@ -74,14 +79,23 @@ pub enum Trap {
     },
     /// Aggregate heap error.
     AggError(AggError),
-    /// A concrete argument failed the callee's aggregate shape contract.
-    ArgumentShapeMismatch {
-        /// Function whose argument contract was checked.
-        callee: FuncId,
-        /// Zero-based value argument index, including a closure's environment argument.
-        arg: u32,
-        /// Concrete shape validation failure.
-        error: AggShapeError,
+    /// A concrete argument or result violates a compositional guest contract.
+    ContractMismatch {
+        /// Function whose signature is being checked.
+        function: FuncId,
+        /// Argument or result position.
+        position: ContractPosition,
+        /// Nested expected/observed disagreement.
+        error: ContractViolation,
+    },
+    /// The run exhausted its aggregate contract validation work budget.
+    ContractWorkExceeded {
+        /// Function whose boundary was being validated.
+        function: FuncId,
+        /// Argument or result whose validation exhausted the budget.
+        position: ContractPosition,
+        /// Configured work limit for this run.
+        limit: u64,
     },
     /// A type id immediate was out of bounds.
     TypeIdOutOfBounds,
@@ -140,9 +154,24 @@ impl fmt::Display for Trap {
                 write!(f, "type mismatch (expected {expected:?}, got {actual:?})")
             }
             Self::AggError(e) => write!(f, "aggregate error: {e}"),
-            Self::ArgumentShapeMismatch { callee, arg, error } => {
-                write!(f, "function {} argument {arg}: {error}", callee.0)
-            }
+            Self::ContractMismatch {
+                function,
+                position,
+                error,
+            } => write!(
+                f,
+                "contract mismatch in f{} {position:?}: {error}",
+                function.0
+            ),
+            Self::ContractWorkExceeded {
+                function,
+                position,
+                limit,
+            } => write!(
+                f,
+                "aggregate contract work limit {limit} exceeded in f{} {position:?}",
+                function.0
+            ),
             Self::TypeIdOutOfBounds => write!(f, "type id out of bounds"),
             Self::ElemTypeIdOutOfBounds => write!(f, "elem type id out of bounds"),
             Self::ArityMismatch => write!(f, "arity mismatch"),
@@ -180,7 +209,7 @@ impl core::error::Error for Trap {
         match self {
             Self::HostCallFailed { error, .. } => Some(error),
             Self::AggError(error) => Some(error),
-            Self::ArgumentShapeMismatch { error, .. } => Some(error),
+            Self::ContractMismatch { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -288,6 +317,7 @@ pub struct ExecutionContext {
 
     /// Arena backing bytes/strings and other out-of-line temporaries.
     arena: ValueArena,
+    contract_scratch: ContractScratch,
 
     // Split register file by class (SoA).
     /// Unit registers (`()`), stored as a compact `u32` to allow "uninit" tracking.
@@ -344,6 +374,7 @@ impl ExecutionContext {
         self.funcs.clear();
         self.closures.clear();
         self.arena.clear();
+        self.contract_scratch.reset();
 
         self.fuel = fuel;
         self.host_calls = 0;
@@ -936,6 +967,7 @@ impl<H: Host> Vm<H> {
             Err(e) => TraceOutcome::Trap(e),
         };
         if result.is_err() {
+            ctx.contract_scratch.clear_proofs();
             self.memory.rollback(checkpoint);
             outputs.truncate(original_len);
         }
@@ -983,7 +1015,7 @@ impl<H: Host> Vm<H> {
         let entry_base = ctx.alloc_frame(entry_vf);
         ctx.init_args(entry_base, entry_vf, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
-        self.check_arg_shapes(ctx, program_ref, entry, entry_vf, entry_base)
+        self.check_arg_contracts(ctx, program_ref, entry, entry_vf, entry_base)
             .map_err(|t| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), t))?;
         ctx.frames.push(Frame {
             func: entry,
@@ -1769,7 +1801,7 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_shapes(ctx, program_ref, *callee, callee_vf, callee_base)
+                    self.check_arg_contracts(ctx, program_ref, *callee, callee_vf, callee_base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     ctx.frames.push(Frame {
@@ -1814,6 +1846,10 @@ impl<H: Host> Vm<H> {
                             values: &outputs[output_start..],
                             aggregates: self.memory.aggs(),
                         });
+                        self.check_result_contracts(ctx, program_ref, func_id, vf, base, rets)
+                            .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
+                        // Proof keys use precommit handles and must not survive compaction.
+                        ctx.contract_scratch.clear_proofs();
                         self.memory
                             .commit(checkpoint, &mut outputs[output_start..])
                             .map_err(|error| {
@@ -1831,6 +1867,15 @@ impl<H: Host> Vm<H> {
                         return Ok(());
                     }
 
+                    self.check_result_contracts(
+                        ctx,
+                        program_ref,
+                        func_id,
+                        vf,
+                        base,
+                        vf.vregs(*rets),
+                    )
+                    .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
                     let finished = ctx
                         .frames
                         .pop()
@@ -2084,7 +2129,7 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_shapes(ctx, program_ref, callee_func, callee_vf, callee_base)
+                    self.check_arg_contracts(ctx, program_ref, callee_func, callee_vf, callee_base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     ctx.frames.push(Frame {
@@ -2166,7 +2211,7 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_shapes(ctx, program_ref, callee.func, callee_vf, callee_base)
+                    self.check_arg_contracts(ctx, program_ref, callee.func, callee_vf, callee_base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     ctx.frames.push(Frame {
@@ -2725,26 +2770,92 @@ impl<H: Host> Vm<H> {
         }
     }
 
-    fn check_arg_shapes(
+    fn check_arg_contracts(
         &self,
-        ctx: &ExecutionContext,
+        ctx: &mut ExecutionContext,
         program: &Program,
         callee: FuncId,
         vf: &ExecFunc,
         base: RegBase,
     ) -> Result<(), Trap> {
-        for &(reg, index) in &vf.arg_shape_checks {
-            let contract = &program.function_arg_agg_shapes[index];
-            self.memory
-                .aggs()
-                .check_shape(program, ctx.read_agg_handle(base, reg), &contract.shape)
-                .map_err(|error| Trap::ArgumentShapeMismatch {
-                    callee,
-                    arg: contract.arg,
-                    error,
+        for check in &vf.contract_checks[..vf.arg_check_count as usize] {
+            let VReg::Agg(reg) = vf.reg_layout.arg_regs[check.index as usize] else {
+                unreachable!("aggregate contract kind");
+            };
+            let handle = ctx.read_agg_handle(base, reg);
+            ctx.contract_scratch
+                .check(
+                    program,
+                    self.memory.aggs(),
+                    handle,
+                    check.contract,
+                    self.limits.max_contract_work,
+                )
+                .map_err(|error| {
+                    self.contract_trap(
+                        callee,
+                        ContractPosition::Argument {
+                            callee,
+                            index: check.index,
+                        },
+                        error,
+                    )
                 })?;
         }
         Ok(())
+    }
+
+    fn check_result_contracts(
+        &self,
+        ctx: &mut ExecutionContext,
+        program: &Program,
+        function: FuncId,
+        vf: &ExecFunc,
+        base: RegBase,
+        rets: &[VReg],
+    ) -> Result<(), Trap> {
+        for check in &vf.contract_checks[vf.arg_check_count as usize..] {
+            let VReg::Agg(reg) = rets[check.index as usize] else {
+                unreachable!("aggregate contract kind");
+            };
+            let handle = ctx.read_agg_handle(base, reg);
+            ctx.contract_scratch
+                .check(
+                    program,
+                    self.memory.aggs(),
+                    handle,
+                    check.contract,
+                    self.limits.max_contract_work,
+                )
+                .map_err(|error| {
+                    self.contract_trap(
+                        function,
+                        ContractPosition::Result { index: check.index },
+                        error,
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
+    fn contract_trap(
+        &self,
+        function: FuncId,
+        position: ContractPosition,
+        error: CheckError,
+    ) -> Trap {
+        match error {
+            CheckError::Mismatch(error) => Trap::ContractMismatch {
+                function,
+                position,
+                error,
+            },
+            CheckError::Limit => Trap::ContractWorkExceeded {
+                function,
+                position,
+                limit: self.limits.max_contract_work,
+            },
+        }
     }
 
     /// Returns the embedded host, for inspecting state between runs.
@@ -3485,9 +3596,7 @@ mod tests {
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
     use crate::bytecode::Instr;
     use crate::host::{AccessSink, HostContext, HostSig, ResourceKeyRef, SigHash};
-    use crate::program::{
-        AggShape, ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType,
-    };
+    use crate::program::{ByteRange, CallSigEntry, FunctionDef, Program, TypeTableDef, ValueType};
     use crate::trace::{TraceMask, TraceOutcome, TraceSink};
     use crate::value::AggType;
     use crate::verifier::{VerifyConfig, verify_program_owned};
@@ -3499,6 +3608,12 @@ mod tests {
     fn aggregate_contracts_are_checked_before_entry_and_every_call_kind() {
         for mode in 0..4 {
             let mut pb = ProgramBuilder::new();
+            let integer = pb
+                .contract(crate::contract::Contract::Kind(ValueType::I64))
+                .unwrap();
+            let tuple_contract = pb
+                .contract(crate::contract::Contract::Tuple(&[Some(integer)]))
+                .unwrap();
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
             body.tuple_get(2, 1, 0);
@@ -3506,11 +3621,10 @@ mod tests {
             let target = pb
                 .push_function_checked(
                     body,
-                    FunctionSig {
-                        arg_types: vec![ValueType::Agg],
-                        ret_types: vec![ValueType::I64],
-                    }
-                    .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+                    crate::asm::FunctionAbi {
+                        args: vec![tuple_contract.into()],
+                        rets: vec![ValueType::I64.into()],
+                    },
                 )
                 .unwrap();
             let entry = if mode == 0 {
@@ -3574,7 +3688,7 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(e.func, entry);
                 assert!(
-                    matches!(e.trap, Trap::ArgumentShapeMismatch { callee, arg: 0, .. } if callee == target),
+                    matches!(e.trap, Trap::ContractMismatch { position:ContractPosition::Argument{callee,index:0}, .. } if callee == target),
                     "mode={mode}: {e:?}"
                 );
             }
@@ -4043,21 +4157,26 @@ mod tests {
         passthrough.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::Agg]);
         passthrough.tuple_get(2, 1, 0);
         passthrough.ret(0, &[2]);
+        let opaque = pb
+            .contract(crate::contract::Contract::Kind(ValueType::Agg))
+            .unwrap();
+        let closure = pb
+            .contract(crate::contract::Contract::Kind(ValueType::Closure))
+            .unwrap();
+        let read_contract = pb
+            .contract(crate::contract::Contract::Tuple(&[
+                Some(opaque),
+                Some(closure),
+                Some(opaque),
+            ]))
+            .unwrap();
         let read = pb
             .push_function_checked(
                 passthrough,
-                FunctionSig {
-                    arg_types: vec![ValueType::Agg],
-                    ret_types: vec![ValueType::Agg],
-                }
-                .with_arg_agg_shape(
-                    0,
-                    AggShape::tuple(vec![
-                        Some(ValueType::Agg),
-                        Some(ValueType::Closure),
-                        Some(ValueType::Agg),
-                    ]),
-                ),
+                crate::asm::FunctionAbi {
+                    args: vec![read_contract.into()],
+                    rets: vec![ValueType::Agg.into()],
+                },
             )
             .unwrap();
         let program = pb.build_verified().unwrap();
@@ -5437,13 +5556,18 @@ mod tests {
         body.tuple_get(3, 1, 0);
         body.i64_add(4, 3, 2);
         body.ret(0, &[4]);
+        let integer = pb
+            .contract(crate::contract::Contract::Kind(ValueType::I64))
+            .unwrap();
+        let env_contract = pb
+            .contract(crate::contract::Contract::Tuple(&[Some(integer)]))
+            .unwrap();
         pb.push_function_checked(
             body,
-            FunctionSig::closure_body_with_env_shape(
-                &[ValueType::I64],
-                &[ValueType::I64],
-                AggShape::tuple(vec![Some(ValueType::I64)]),
-            ),
+            crate::asm::FunctionAbi {
+                args: vec![env_contract.into(), ValueType::I64.into()],
+                rets: vec![ValueType::I64.into()],
+            },
         )
         .unwrap();
 

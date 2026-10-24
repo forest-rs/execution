@@ -14,14 +14,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::contract::{Contract, ContractBuildError, ContractId, ContractTableBuilder};
 use crate::format::{write_sleb128_i64, write_uleb128_u64};
 use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
-    AggShape, ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId,
-    FunctionArgAggShapeEntry, FunctionDef, FunctionNameEntry, HostSigDef, HostSigId, HostSymbol,
-    LabelNameEntry, Program, SpanEntry, SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef,
-    ValueType,
+    ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
+    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry,
+    SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -30,7 +30,7 @@ use crate::verifier::{
 };
 
 #[cfg(doc)]
-use crate::vm::Vm;
+use crate::{program::FunctionDef, vm::Vm};
 
 /// A label for control-flow targets.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -81,6 +81,10 @@ pub enum AsmError {
     UnresolvedLabel,
     /// The produced bytecode failed verification under the provided function signature.
     Verify(VerifyError),
+    /// Isolated assembly checking cannot resolve program-local contracts; use [`ProgramBuilder`].
+    ProgramContract(ContractId),
+    /// A signature references an absent contract or exceeds the table address space.
+    Contract(ContractBuildError),
 }
 
 impl fmt::Display for AsmError {
@@ -88,6 +92,12 @@ impl fmt::Display for AsmError {
         match self {
             Self::UnresolvedLabel => write!(f, "unresolved label"),
             Self::Verify(e) => write!(f, "verification failed: {e}"),
+            Self::ProgramContract(id) => write!(
+                f,
+                "contract {} needs its ProgramBuilder for verification",
+                id.0
+            ),
+            Self::Contract(error) => error.fmt(f),
         }
     }
 }
@@ -96,6 +106,7 @@ impl core::error::Error for AsmError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Verify(e) => Some(e),
+            Self::Contract(error) => Some(error),
             _ => None,
         }
     }
@@ -132,6 +143,12 @@ impl From<UnresolvedLabel> for AsmError {
     }
 }
 
+impl From<ContractBuildError> for AsmError {
+    fn from(error: ContractBuildError) -> Self {
+        Self::Contract(error)
+    }
+}
+
 impl From<VerifyError> for AsmError {
     fn from(e: VerifyError) -> Self {
         Self::Verify(e)
@@ -141,6 +158,8 @@ impl From<VerifyError> for AsmError {
 /// A [`ProgramBuilder`] error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildError {
+    /// A signature references an absent compositional contract.
+    Contract(ContractBuildError),
     /// A function id was out of range for the builder.
     BadFuncId {
         /// The invalid function id.
@@ -178,6 +197,7 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Contract(error) => error.fmt(f),
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
             Self::BadArgIndex {
                 func,
@@ -226,6 +246,7 @@ impl core::error::Error for BuildError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Verify(e) => Some(e),
+            Self::Contract(error) => Some(error),
             _ => None,
         }
     }
@@ -248,6 +269,8 @@ impl From<AsmError> for BuildError {
         match e {
             AsmError::UnresolvedLabel => Self::UnresolvedLabel,
             AsmError::Verify(e) => Self::Verify(e),
+            AsmError::ProgramContract(id) => Self::Contract(ContractBuildError::UnknownChild(id)),
+            AsmError::Contract(error) => Self::Contract(error),
         }
     }
 }
@@ -294,81 +317,58 @@ impl FunctionSig {
             ret_types: call_ret_types.to_vec(),
         }
     }
+}
 
-    /// Attaches aggregate shape metadata to argument `arg`.
-    ///
-    /// The argument's signature type remains [`ValueType::Agg`]. The shape is verifier metadata
-    /// used to type-check aggregate projections from ABI-provided values.
-    #[must_use]
-    pub fn with_arg_agg_shape(self, arg: u32, shape: AggShape) -> FunctionAbi {
-        let mut abi = FunctionAbi::from(self);
-        abi.set_arg_agg_shape(arg, shape);
-        abi
+/// A guest signature position, supplied as an ABI kind or a program-owned rich contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContractRef {
+    /// Unrefined storage/ABI kind; the builder interns it as a contract.
+    Kind(ValueType),
+    /// A contract previously created in this program builder.
+    Id(ContractId),
+}
+impl From<ValueType> for ContractRef {
+    fn from(kind: ValueType) -> Self {
+        Self::Kind(kind)
     }
-
-    /// Creates a closure body ABI and attaches shape metadata to the injected environment argument.
-    ///
-    /// This is the typed-shape counterpart to [`FunctionSig::closure_body`]. It preserves the
-    /// caller-visible call signature while telling the verifier what shape the hidden closure
-    /// environment argument has inside the body.
-    #[must_use]
-    pub fn closure_body_with_env_shape(
-        call_arg_types: &[ValueType],
-        call_ret_types: &[ValueType],
-        env_shape: AggShape,
-    ) -> FunctionAbi {
-        Self::closure_body(call_arg_types, call_ret_types).with_arg_agg_shape(0, env_shape)
+}
+impl From<ContractId> for ContractRef {
+    fn from(id: ContractId) -> Self {
+        Self::Id(id)
     }
 }
 
-/// Function ABI metadata used by [`ProgramBuilder`].
+/// Authoritative compositional guest signature supplied to the ordinary function builder.
 ///
-/// The signature carries runtime value kinds, while `arg_agg_shapes` carries optional verifier
-/// refinements for arguments whose runtime kind is [`ValueType::Agg`].
+/// [`FunctionSig`] is the kind-only shorthand. Rich contracts use the same argument/result lists
+/// and are local to the program builder that created their IDs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionAbi {
-    /// Runtime function signature.
-    pub sig: FunctionSig,
-    /// Optional aggregate shape metadata by argument index.
-    ///
-    /// Entries beyond the signature arity are preserved so checked builders can report a verifier
-    /// error instead of silently dropping caller intent.
-    pub arg_agg_shapes: Vec<Option<AggShape>>,
+    /// Value arguments, excluding the implicit effect token.
+    pub args: Vec<ContractRef>,
+    /// Results in return-signature order.
+    pub rets: Vec<ContractRef>,
 }
-
 impl FunctionAbi {
-    /// Creates ABI metadata from a runtime function signature with no aggregate shape refinements.
+    /// Converts a kind-only signature to an unrefined contract signature.
     #[must_use]
     pub fn new(sig: FunctionSig) -> Self {
-        let arg_agg_shapes = vec![None; sig.arg_types.len()];
-        Self {
-            sig,
-            arg_agg_shapes,
-        }
-    }
-
-    /// Attaches aggregate shape metadata to argument `arg`.
-    pub fn set_arg_agg_shape(&mut self, arg: u32, shape: AggShape) {
-        let arg = arg as usize;
-        if self.arg_agg_shapes.len() <= arg {
-            self.arg_agg_shapes.resize_with(arg + 1, || None);
-        }
-        self.arg_agg_shapes[arg] = Some(shape);
+        sig.into()
     }
 }
-
 impl From<FunctionSig> for FunctionAbi {
     fn from(sig: FunctionSig) -> Self {
-        Self::new(sig)
+        Self {
+            args: sig.arg_types.into_iter().map(ContractRef::Kind).collect(),
+            rets: sig.ret_types.into_iter().map(ContractRef::Kind).collect(),
+        }
     }
 }
-
 impl From<&FunctionSig> for FunctionAbi {
     fn from(sig: &FunctionSig) -> Self {
-        Self::new(sig.clone())
+        sig.clone().into()
     }
 }
-
 impl From<&Self> for FunctionAbi {
     fn from(abi: &Self) -> Self {
         abi.clone()
@@ -417,8 +417,8 @@ pub struct ProgramBuilder {
     call_sigs: Vec<CallSigDef>,
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
-    functions: Vec<FunctionDef>,
-    function_arg_agg_shapes: Vec<FunctionArgAggShapeEntry>,
+    functions: Vec<GuestFunctionDef>,
+    contracts: ContractTableBuilder,
     program_name: Option<SymbolId>,
     function_names: Vec<FunctionNameEntry>,
     labels: Vec<LabelNameEntry>,
@@ -506,8 +506,8 @@ impl ProgramBuilder {
         let Some(def) = self.functions.get(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
-        if (arg as usize) >= def.arg_types.len() {
-            let arg_count = u32::try_from(def.arg_types.len()).unwrap_or(u32::MAX);
+        if (arg as usize) >= def.args.len() {
+            let arg_count = u32::try_from(def.args.len()).unwrap_or(u32::MAX);
             return Err(BuildError::BadArgIndex {
                 func: func.0,
                 arg,
@@ -542,8 +542,8 @@ impl ProgramBuilder {
         let Some(def) = self.functions.get(func.0 as usize) else {
             return Err(BuildError::BadFuncId { func: func.0 });
         };
-        if (ret as usize) >= def.ret_types.len() {
-            let ret_count = u32::try_from(def.ret_types.len()).unwrap_or(u32::MAX);
+        if (ret as usize) >= def.rets.len() {
+            let ret_count = u32::try_from(def.rets.len()).unwrap_or(u32::MAX);
             return Err(BuildError::BadRetIndex {
                 func: func.0,
                 ret,
@@ -679,78 +679,55 @@ impl ProgramBuilder {
         id
     }
 
-    fn store_function_arg_agg_shapes(
-        &mut self,
-        func: FuncId,
-        arg_agg_shapes: Vec<Option<AggShape>>,
-    ) {
-        self.function_arg_agg_shapes.retain(|e| e.func != func.0);
-        for (arg, shape) in arg_agg_shapes.into_iter().enumerate() {
-            let Some(shape) = shape else {
-                continue;
-            };
-            self.function_arg_agg_shapes.push(FunctionArgAggShapeEntry {
-                func: func.0,
-                arg: u32::try_from(arg).unwrap_or(u32::MAX),
-                shape,
-            });
-        }
+    /// Interns a compositional contract. Create child contracts before their parents.
+    ///
+    /// IDs belong to this builder. Struct and array refinements are checked against the nominal
+    /// schema during program verification, including contracts unused by any function.
+    pub fn contract(&mut self, contract: Contract<'_>) -> Result<ContractId, ContractBuildError> {
+        self.contracts.intern(contract)
     }
 
-    /// Sets aggregate shape metadata for a function argument.
-    ///
-    /// This refines an argument whose declared type is [`ValueType::Agg`] so the verifier can
-    /// type-check aggregate projections from ABI-provided values.
-    pub fn set_function_arg_agg_shape(
+    fn resolve_signature(
         &mut self,
-        func: FuncId,
-        arg: u32,
-        shape: AggShape,
-    ) -> Result<(), BuildError> {
-        let Some(def) = self.functions.get(func.0 as usize) else {
-            return Err(BuildError::BadFuncId { func: func.0 });
+        abi: FunctionAbi,
+    ) -> Result<(Vec<ContractId>, Vec<ContractId>), ContractBuildError> {
+        // Preflight every explicit ID before interning any shorthand kinds.
+        for reference in abi.args.iter().chain(&abi.rets) {
+            if let ContractRef::Id(id) = reference
+                && self.contracts.table().get(*id).is_none()
+            {
+                return Err(ContractBuildError::UnknownChild(*id));
+            }
+        }
+        let mut resolve = |refs: Vec<ContractRef>| -> Result<Vec<ContractId>, ContractBuildError> {
+            refs.into_iter()
+                .map(|reference| match reference {
+                    ContractRef::Kind(kind) => self.contracts.intern(Contract::Kind(kind)),
+                    ContractRef::Id(id) => Ok(id),
+                })
+                .collect()
         };
-        if (arg as usize) >= def.arg_types.len() {
-            let arg_count = u32::try_from(def.arg_types.len()).unwrap_or(u32::MAX);
-            return Err(BuildError::BadArgIndex {
-                func: func.0,
-                arg,
-                arg_count,
-            });
-        }
-        if let Some(entry) = self
-            .function_arg_agg_shapes
-            .iter_mut()
-            .find(|e| e.func == func.0 && e.arg == arg)
-        {
-            entry.shape = shape;
-        } else {
-            self.function_arg_agg_shapes.push(FunctionArgAggShapeEntry {
-                func: func.0,
-                arg,
-                shape,
-            });
-        }
-        Ok(())
+        Ok((resolve(abi.args)?, resolve(abi.rets)?))
     }
 
     /// Declares a function signature and returns its [`FuncId`].
     ///
     /// This is useful when assembling mutually recursive or out-of-order functions: you can
     /// declare all functions up front, then reference them by [`FuncId`] in [`Asm::call`].
-    pub fn declare_function(&mut self, abi: impl Into<FunctionAbi>) -> FuncId {
-        let abi = abi.into();
-        let sig = abi.sig;
+    pub fn declare_function(
+        &mut self,
+        abi: impl Into<FunctionAbi>,
+    ) -> Result<FuncId, ContractBuildError> {
+        let (args, rets) = self.resolve_signature(abi.into())?;
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
-        self.functions.push(FunctionDef {
-            arg_types: sig.arg_types,
-            ret_types: sig.ret_types,
+        self.functions.push(GuestFunctionDef {
+            args,
+            rets,
             register_types: Vec::new(),
             bytecode: Vec::new(),
             spans: Vec::new(),
         });
-        self.store_function_arg_agg_shapes(id, abi.arg_agg_shapes);
-        id
+        Ok(id)
     }
 
     /// Defines the body of a previously declared function.
@@ -807,13 +784,12 @@ impl ProgramBuilder {
         a: Asm,
         abi: impl Into<FunctionAbi>,
     ) -> Result<FuncId, AsmError> {
-        let abi = abi.into();
-        let sig = abi.sig;
         let parts = a.finish_parts()?;
+        let (args, rets) = self.resolve_signature(abi.into())?;
         let id = FuncId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
-        self.functions.push(FunctionDef {
-            arg_types: sig.arg_types,
-            ret_types: sig.ret_types,
+        self.functions.push(GuestFunctionDef {
+            args,
+            rets,
             register_types: parts.register_types,
             bytecode: parts.bytecode,
             spans: parts.spans,
@@ -826,19 +802,19 @@ impl ProgramBuilder {
                 name: sym,
             });
         }
-        self.store_function_arg_agg_shapes(id, abi.arg_agg_shapes);
         Ok(id)
     }
 
     /// Builds the [`Program`].
     #[must_use]
     pub fn build(self) -> Program {
-        let mut p = Program::new(
+        let mut p = Program::new_with_contracts(
             self.symbols,
             self.const_pool,
             self.host_sigs,
             self.types,
             self.functions,
+            self.contracts,
         );
         for cs in self.call_sigs {
             let args_off = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
@@ -863,7 +839,6 @@ impl ProgramBuilder {
         p.program_name = self.program_name;
         p.function_names = self.function_names;
         p.labels = self.labels;
-        p.function_arg_agg_shapes = self.function_arg_agg_shapes;
 
         let func_count = p.functions.len();
         let mut has_arg_names = vec![false; func_count];
@@ -1165,17 +1140,23 @@ impl Asm {
     /// This discards the required declarations; prefer [`Self::finish_checked_parts`].
     ///
     /// This constructs a tiny single-function [`Program`] wrapper and runs the verifier. It is
-    /// intended as a quick sanity check for builder users.
+    /// intended as a quick sanity check for builder users. Only kind references are accepted;
+    /// program-local contract IDs require [`ProgramBuilder::push_function_checked`].
     pub fn finish_checked(self, abi: impl Into<FunctionAbi>) -> Result<Vec<u8>, AsmError> {
         self.finish_checked_with(abi, &VerifyConfig::default())
     }
 
     /// Finalizes, then verifies the resulting bytecode and span table under `sig`.
+    ///
+    /// Only kind references are accepted. Use [`ProgramBuilder::push_function_checked`] for
+    /// signatures containing program-local contract IDs.
     pub fn finish_checked_parts(self, abi: impl Into<FunctionAbi>) -> Result<AsmParts, AsmError> {
         self.finish_checked_parts_with(abi, &VerifyConfig::default())
     }
 
     /// Finalizes, then verifies the resulting bytecode under `sig` with a custom verifier config.
+    ///
+    /// Only kind references are accepted; see [`Self::finish_checked`].
     pub fn finish_checked_with(
         self,
         abi: impl Into<FunctionAbi>,
@@ -1185,38 +1166,35 @@ impl Asm {
     }
 
     /// Finalizes, then verifies the resulting bytecode and span table under `sig` with a custom
-    /// verifier config.
+    /// verifier config. Only kind references are accepted; see [`Self::finish_checked_parts`].
     pub fn finish_checked_parts_with(
         self,
         abi: impl Into<FunctionAbi>,
         cfg: &VerifyConfig,
     ) -> Result<AsmParts, AsmError> {
         let abi = abi.into();
-        let sig = abi.sig;
-        let parts = self.finish_parts()?;
-        let mut p = Program::new(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            TypeTableDef::default(),
-            vec![FunctionDef {
-                arg_types: sig.arg_types.clone(),
-                ret_types: sig.ret_types.clone(),
-                register_types: parts.register_types.clone(),
-                bytecode: parts.bytecode.clone(),
-                spans: parts.spans.clone(),
-            }],
-        );
-        for (arg, shape) in abi.arg_agg_shapes.into_iter().enumerate() {
-            let Some(shape) = shape else {
-                continue;
-            };
-            p.function_arg_agg_shapes.push(FunctionArgAggShapeEntry {
-                func: 0,
-                arg: u32::try_from(arg).unwrap_or(u32::MAX),
-                shape,
-            });
+        if let Some(id) = abi
+            .args
+            .iter()
+            .chain(&abi.rets)
+            .find_map(|reference| match reference {
+                ContractRef::Id(id) => Some(*id),
+                _ => None,
+            })
+        {
+            return Err(AsmError::ProgramContract(id));
         }
+        let parts = self.finish_parts()?;
+        let mut builder = ProgramBuilder::new();
+        let (args, rets) = builder.resolve_signature(abi)?;
+        builder.functions.push(GuestFunctionDef {
+            args,
+            rets,
+            register_types: parts.register_types.clone(),
+            bytecode: parts.bytecode.clone(),
+            spans: parts.spans.clone(),
+        });
+        let p = builder.build();
         verify_program(&p, cfg)?;
         Ok(parts)
     }
@@ -2381,14 +2359,18 @@ mod tests {
     #[test]
     fn program_builder_can_declare_then_define_and_verify_cross_calls() {
         let mut pb = ProgramBuilder::new();
-        let foo = pb.declare_function(FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![ValueType::I64],
-        });
-        let bar = pb.declare_function(FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![ValueType::I64],
-        });
+        let foo = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let bar = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
 
         // Define `foo` first; it calls `bar` by its declared `FuncId`.
         let mut a_foo = Asm::new();
@@ -2410,10 +2392,12 @@ mod tests {
     #[test]
     fn program_builder_preserves_declared_unused_registers() {
         let mut pb = ProgramBuilder::new();
-        let func = pb.declare_function(FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![],
-        });
+        let func = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            })
+            .unwrap();
         let mut a = Asm::new();
         a.set_register_types(vec![
             ValueType::Unit,
@@ -2565,63 +2549,64 @@ mod tests {
     }
 
     #[test]
-    fn function_sig_closure_body_with_env_shape_marks_env_arg() {
-        let abi = FunctionSig::closure_body_with_env_shape(
-            &[ValueType::I64],
-            &[ValueType::I64],
-            AggShape::tuple(vec![Some(ValueType::I64)]),
-        );
-
-        assert_eq!(
-            abi.sig,
-            FunctionSig {
-                arg_types: vec![ValueType::Agg, ValueType::I64],
-                ret_types: vec![ValueType::I64],
-            }
-        );
-        assert_eq!(
-            abi.arg_agg_shapes,
-            vec![Some(AggShape::tuple(vec![Some(ValueType::I64)])), None]
-        );
+    fn function_abi_keeps_compositional_signature_positions() {
+        let mut builder = ProgramBuilder::new();
+        let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let env = builder.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+        let abi = FunctionAbi {
+            args: vec![env.into(), ValueType::I64.into()],
+            rets: vec![ValueType::I64.into()],
+        };
+        assert_eq!(abi.args[0], ContractRef::Id(env));
+        assert_eq!(abi.args[1], ContractRef::Kind(ValueType::I64));
+        assert_eq!(abi.rets, vec![ContractRef::Kind(ValueType::I64)]);
     }
 
     #[test]
-    fn program_builder_preserves_function_arg_agg_shapes() {
+    fn program_builder_preserves_compositional_argument_contracts() {
         let mut pb = ProgramBuilder::new();
+        let integer = pb.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let tuple = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
-        a.tuple_get(2, 1, 0);
-        a.ret(0, &[2]);
-
+        a.tuple_get(2, 1, 0).ret(0, &[2]);
         let func = pb
             .push_function_checked(
                 a,
-                FunctionSig {
-                    arg_types: vec![ValueType::Agg],
-                    ret_types: vec![ValueType::I64],
-                }
-                .with_arg_agg_shape(0, AggShape::tuple(vec![Some(ValueType::I64)])),
+                FunctionAbi {
+                    args: vec![tuple.into()],
+                    rets: vec![ValueType::I64.into()],
+                },
             )
             .unwrap();
-
         let program = pb.build_checked().unwrap();
         assert_eq!(
-            program.function_arg_agg_shape(func.0, 0),
-            Some(&AggShape::tuple(vec![Some(ValueType::I64)]))
+            program.functions[func.0 as usize]
+                .arg_contracts(&program)
+                .unwrap(),
+            &[tuple]
+        );
+        assert_eq!(
+            program.contracts.get(tuple),
+            Some(Contract::Tuple(&[Some(integer)]))
         );
     }
 
     #[test]
     fn program_builder_build_verified_preserves_call_sigs_for_call_indirect() {
         let mut pb = ProgramBuilder::new();
-        let caller = pb.declare_function(FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![ValueType::I64],
-        });
-        let callee = pb.declare_function(FunctionSig {
-            arg_types: vec![ValueType::I64],
-            ret_types: vec![ValueType::I64],
-        });
+        let caller = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let callee = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
 
         let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
@@ -2667,14 +2652,18 @@ mod tests {
 
         let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
 
-        let caller = pb.declare_function(FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![ValueType::I64],
-        });
-        let callee = pb.declare_function(FunctionSig {
-            arg_types: vec![ValueType::I64],
-            ret_types: vec![ValueType::I64],
-        });
+        let caller = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let callee = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
 
         let mut callee_asm = Asm::new();
         callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);

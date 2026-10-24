@@ -80,10 +80,33 @@ Clear the result buffer between runs and call [`Vm::run_with_ctx`](vm::Vm::run_w
 to reuse both allocations. Results append in return-signature order; a trap preserves the
 buffer's original contents. Aggregate results belong to the VM heap and survive context resets.
 
+## Nested Guest Contracts
+
+`ValueType` remains the storage/ABI kind. Intern shared compositional contracts when guest
+arguments/results need richer structure, then use the ordinary function builder and VM:
+
+```rust
+use execution_tape::asm::{FunctionAbi, ProgramBuilder};
+use execution_tape::contract::Contract;
+use execution_tape::program::ValueType;
+let mut builder = ProgramBuilder::new();
+let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+let inner = builder.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+let outer = builder.contract(Contract::Tuple(&[Some(inner)])).unwrap();
+let signature = FunctionAbi { args: vec![], rets: vec![outer.into()] };
+```
+
+Constructors and projections preserve nested facts; direct calls propagate enforced result
+contracts. Joins retain common structure. Opaque boundary values are checked before callee entry
+or result installation, using a separate bounded contract-work budget. Contract inspection
+borrows definitions without expanding shared graphs. Function/closure kinds and indirect-call
+signatures remain coarse; callable refinements are not implied.
+
 ## Core Pieces
 
 - `asm`: ergonomic builders for functions, call signatures, constants, host signatures, and
   bytecode emission.
+- `contract`: shared compositional guest value contracts, authoring and borrowed kind views.
 - `program`: serialized program model, type tables, constants, host signatures, and names.
 - `verifier`: validation and lowering into an execution-ready `VerifiedProgram`.
 - `vm`: bounded interpreter for verified programs.

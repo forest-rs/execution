@@ -53,39 +53,47 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let expected_sig = sig_hash(&host_sig);
     let host_sig_id = pb.host_sig_for("trace.echo", host_sig);
 
-    let leaf = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    });
+    let leaf = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     pb.set_function_name(leaf, "leaf").expect("set leaf name");
     pb.set_function_input_name(leaf, 0, "x")
         .expect("set leaf input name");
     pb.set_function_output_name(leaf, 0, "x")
         .expect("set leaf output name");
-    let stage_one = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    });
+    let stage_one = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     pb.set_function_name(stage_one, "stage_one")
         .expect("set stage_one name");
     pb.set_function_input_name(stage_one, 0, "x")
         .expect("set stage_one input name");
     pb.set_function_output_name(stage_one, 0, "y")
         .expect("set stage_one output name");
-    let stage_two = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    });
+    let stage_two = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     pb.set_function_name(stage_two, "stage_two")
         .expect("set stage_two name");
     pb.set_function_input_name(stage_two, 0, "x")
         .expect("set stage_two input name");
     pb.set_function_output_name(stage_two, 0, "y")
         .expect("set stage_two output name");
-    let main = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
+    let main = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
     pb.set_function_name(main, "main").expect("set main name");
     pb.set_function_output_name(main, 0, "result")
         .expect("set main output name");

@@ -44,8 +44,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         let function = program.function(FuncId(id)).ok_or("unknown function id")?;
         println!("arguments\t{:?}", function.arg_types());
         println!("returns\t{:?}", function.ret_types());
-        for (arg, shape) in function.arg_shapes() {
-            println!("argument_shape\t{arg}\t{shape:?}");
+        for (direction, contracts) in [
+            ("argument", function.arg_contracts()),
+            ("result", function.ret_contracts()),
+        ] {
+            for (index, &contract) in contracts.iter().enumerate() {
+                println!(
+                    "{direction}_contract\t{index}\t{}\t{:?}",
+                    contract.0,
+                    program.program().contracts.get(contract)
+                );
+            }
         }
         println!("pc\tnext_pc\topcode\tspan");
         for instruction in function.instructions() {

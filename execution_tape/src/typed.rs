@@ -843,8 +843,9 @@ pub(crate) enum ExecInstr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExecFunc {
-    /// Aggregate register and source contract index, prepared once for argument checks.
-    pub(crate) arg_shape_checks: Vec<(AggReg, usize)>,
+    /// Function-local boundary checks, arguments first, then results.
+    pub(crate) contract_checks: Vec<ContractCheck>,
+    pub(crate) arg_check_count: u32,
     pub(crate) byte_len: u32,
     pub(crate) reg_layout: RegLayout,
     pub(crate) operands: Vec<VReg>,
@@ -877,4 +878,10 @@ impl ExecFunc {
         let di = self.instrs.get(ix)?;
         Some((&di.instr, di.offset, di.end))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContractCheck {
+    pub(crate) index: u32,
+    pub(crate) contract: crate::contract::ContractId,
 }

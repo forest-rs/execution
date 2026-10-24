@@ -87,14 +87,18 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     let expected_sig = sig_hash(&host_sig);
     let host_sig_id = pb.host_sig_for("trace.echo", host_sig);
 
-    let callee = pb.declare_function(FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    });
-    let main = pb.declare_function(FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    });
+    let callee = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let main = pb
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
 
     let mut a_callee = Asm::new();
     a_callee.set_register_types(vec![ValueType::Unit, ValueType::I64]);
