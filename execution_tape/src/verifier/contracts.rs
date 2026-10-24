@@ -3,6 +3,8 @@
 
 //! Flow-sensitive aggregate proofs. Source contracts stay borrowed; derived facts are interned.
 
+pub(super) mod inspection;
+
 use super::*;
 use crate::contract::{Contract, ContractHasher, ContractId, ContractMismatch, ContractViolation};
 use crate::value::AggType;

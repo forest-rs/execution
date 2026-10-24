@@ -45,7 +45,7 @@ use core::hash::{Hash, Hasher};
 
 use crate::program::{ByteRange, ElemTypeId, TypeId, ValueType};
 
-/// An index in one program's contract table. It has no meaning in another program.
+/// An index in one contract table. It has no meaning in another table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContractId(pub u32);
 
