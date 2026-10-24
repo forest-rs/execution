@@ -158,18 +158,17 @@ impl fmt::Display for Trap {
                 function,
                 position,
                 error,
-            } => write!(
-                f,
-                "contract mismatch in f{} {position:?}: {error}",
-                function.0
-            ),
+            } => {
+                write!(f, "function #{}: ", function.0)?;
+                error.fmt_at(f, *position)
+            }
             Self::ContractWorkExceeded {
                 function,
                 position,
                 limit,
             } => write!(
                 f,
-                "aggregate contract work limit {limit} exceeded in f{} {position:?}",
+                "aggregate contract work limit {limit} exceeded in function #{} at {position}",
                 function.0
             ),
             Self::TypeIdOutOfBounds => write!(f, "type id out of bounds"),

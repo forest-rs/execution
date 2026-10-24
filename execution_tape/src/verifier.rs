@@ -682,10 +682,10 @@ impl fmt::Display for VerifyError {
                 pc,
                 position,
                 error,
-            } => write!(
-                f,
-                "contract mismatch at f{func} pc={pc} {position:?}: {error}"
-            ),
+            } => {
+                write!(f, "function #{func} at byte {pc}: ")?;
+                error.fmt_at(f, *position)
+            }
 
             Self::BlockDeclaration { func, pc, error } => {
                 write!(f, "invalid block: function {func} pc={pc}: {error:?}")

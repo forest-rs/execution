@@ -468,6 +468,63 @@ pub enum ContractMismatch {
     Heap(crate::aggregates::AggError),
 }
 
+impl fmt::Display for ContractMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Kind { expected, actual } => {
+                write!(
+                    f,
+                    "expected {}, found {}",
+                    KindName(*expected),
+                    KindName(*actual)
+                )
+            }
+            Self::Aggregate { expected, actual } => write!(
+                f,
+                "expected {}, found {}",
+                AggregateName(*expected),
+                AggregateName(*actual)
+            ),
+            Self::Arity { expected, actual } => {
+                write!(f, "expected {expected} members, found {actual}")
+            }
+            Self::Heap(error) => write!(f, "cannot inspect aggregate: {error}"),
+        }
+    }
+}
+
+struct KindName(ValueType);
+impl fmt::Display for KindName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            ValueType::Unit => "unit",
+            ValueType::Bool => "bool",
+            ValueType::I64 => "i64",
+            ValueType::U64 => "u64",
+            ValueType::F64 => "f64",
+            ValueType::Decimal => "decimal",
+            ValueType::Str => "text",
+            ValueType::Bytes => "bytes",
+            ValueType::Agg => "aggregate",
+            ValueType::Func => "function",
+            ValueType::Closure => "closure",
+            ValueType::Obj(id) => return write!(f, "object type #{}", id.0),
+        })
+    }
+}
+
+struct AggregateName(crate::value::AggType);
+impl fmt::Display for AggregateName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::value::AggType;
+        match self.0 {
+            AggType::Tuple { arity } => write!(f, "tuple with {arity} elements"),
+            AggType::Struct { type_id } => write!(f, "struct #{}", type_id.0),
+            AggType::Array { elem_type_id } => write!(f, "array type #{}", elem_type_id.0),
+        }
+    }
+}
+
 /// A contract failure at a specific nested member, without copying its contract graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractViolation {
@@ -480,11 +537,30 @@ pub struct ContractViolation {
 }
 impl fmt::Display for ContractViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "contract {} at {:?}: {:?}",
-            self.contract.0, self.path, self.mismatch
-        )
+        f.write_str("value")?;
+        self.fmt_suffix(f)
+    }
+}
+impl ContractViolation {
+    pub(crate) fn fmt_at(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        position: ContractPosition,
+    ) -> fmt::Result {
+        match position {
+            ContractPosition::Argument { callee, index } => {
+                write!(f, "call to function #{}: argument[{index}]", callee.0)?;
+            }
+            ContractPosition::Result { index } => write!(f, "result[{index}]")?,
+        }
+        self.fmt_suffix(f)
+    }
+
+    fn fmt_suffix(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for index in &self.path {
+            write!(f, "[{index}]")?;
+        }
+        write!(f, ": {}", self.mismatch)
     }
 }
 impl core::error::Error for ContractViolation {
@@ -511,6 +587,17 @@ pub enum ContractPosition {
         /// Zero-based return position.
         index: u32,
     },
+}
+
+impl fmt::Display for ContractPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Argument { callee, index } => {
+                write!(f, "argument[{index}] to function #{}", callee.0)
+            }
+            Self::Result { index } => write!(f, "result[{index}]"),
+        }
+    }
 }
 
 /// An invalid nominal refinement in a program contract definition.
@@ -548,6 +635,60 @@ impl PartialEq<Vec<ValueType>> for ContractKinds<'_> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn diagnostics_explain_nested_expected_and_actual_types() {
+        use crate::value::FuncId;
+        use alloc::format;
+        let error = ContractViolation {
+            contract: ContractId(99),
+            path: vec![0, 0],
+            mismatch: ContractMismatch::Kind {
+                expected: ValueType::Bool,
+                actual: ValueType::I64,
+            },
+        };
+        assert_eq!(format!("{error}"), "value[0][0]: expected bool, found i64");
+        let rejected = crate::verifier::VerifyError::ContractMismatch {
+            func: 2,
+            pc: 15,
+            position: ContractPosition::Result { index: 0 },
+            error: error.clone(),
+        };
+        assert_eq!(
+            format!("{rejected}"),
+            "function #2 at byte 15: result[0][0][0]: expected bool, found i64"
+        );
+        let trapped = crate::vm::Trap::ContractMismatch {
+            function: FuncId(2),
+            position: ContractPosition::Argument {
+                callee: FuncId(3),
+                index: 1,
+            },
+            error,
+        };
+        assert_eq!(
+            format!("{trapped}"),
+            "function #2: call to function #3: argument[1][0][0]: expected bool, found i64"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ContractMismatch::Aggregate {
+                    expected: crate::value::AggType::Tuple { arity: 2 },
+                    actual: crate::value::AggType::Struct { type_id: TypeId(3) },
+                }
+            ),
+            "expected tuple with 2 elements, found struct #3"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ContractMismatch::Heap(crate::aggregates::AggError::BadHandle)
+            ),
+            "cannot inspect aggregate: aggregate handle out of bounds"
+        );
+    }
 
     #[test]
     fn shares_exact_contracts_and_preserves_unknown_members() {
