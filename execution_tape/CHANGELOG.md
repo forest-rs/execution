@@ -123,6 +123,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Contract failures display readable expected/found types and indexed argument/result paths.
+  Structured error fields remain unchanged; use them rather than parsing `Display` text.
+
 - Guest signatures now store authoritative compositional contract IDs in wire version 0.3;
   regenerate encoded programs. `FunctionSig` remains the kind-only authoring shorthand.
   Replace `FunctionAbi::{sig, arg_agg_shapes}` with `args`/`rets` lists of `ContractRef`, and
