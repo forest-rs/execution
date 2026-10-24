@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Observatory repeats the verification outcome in the Details title and highlights its
+  verdict. Explain unknown member types (`?`) and why tuple length needs no element type,
+  so a valid join is distinguishable from a rejected program. ([#161][] by [@waywardmonkeys][])
+
 - Run `join_contracts [OUTPUT.tape]` to execute both arms of a typed join and optionally save
   its program. Observatory exposes why `tuple(i64)` and `tuple(bool)` meet at `tuple(?)`, while
   preserving the outer tuple's known length. ([#161][] by [@waywardmonkeys][])
