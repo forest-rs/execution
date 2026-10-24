@@ -30,18 +30,32 @@ pub(super) struct View<'a> {
     pub(super) source_index: usize,
     pub(super) flow: Flow,
     pub(super) fact_lines: Vec<String>,
+    pub(super) source_lines: Vec<String>,
+    pub(super) step_condition: Option<u32>,
+    pub(super) step_successors: Option<[Option<TraceLocation>; 2]>,
+    step_location: Option<TraceLocation>,
+    sources: Option<super::sources::BoundSources<'a>>,
     fact_analysis: Option<execution_tape::verifier::FunctionAnalysis<'a>>,
     fact_function: Option<execution_tape::value::FuncId>,
     pub(super) page_rows: usize,
 }
 
 impl<'a> View<'a> {
+    #[cfg(test)]
     pub(super) fn new(record: &'a Recording) -> Self {
+        Self::with_options(record, None, false)
+    }
+
+    pub(super) fn with_options(
+        record: &'a Recording,
+        sources: Option<super::sources::BoundSources<'a>>,
+        instructions: bool,
+    ) -> Self {
         let mut view = Self {
             record,
             calls: record.host_calls().collect(),
             selected: 0,
-            instruction: None,
+            instruction: (instructions && record.instruction_status().is_some()).then_some(0),
             value_selected: 0,
             focus: Focus::Events,
             frame_selected: 0,
@@ -51,6 +65,11 @@ impl<'a> View<'a> {
             source_index: 0,
             flow: Flow::default(),
             fact_lines: Vec::new(),
+            source_lines: Vec::new(),
+            step_condition: None,
+            step_successors: None,
+            step_location: None,
+            sources,
             fact_analysis: None,
             fact_function: None,
             page_rows: 10,
@@ -105,13 +124,15 @@ impl<'a> View<'a> {
 
     fn update_source(&mut self, previous: Option<TraceLocation>) {
         let location = self.location();
-        if self.source.as_ref().map(FunctionDisassembly::func) != location.map(|loc| loc.func) {
+        let source_changed =
+            self.source.as_ref().map(FunctionDisassembly::func) != location.map(|loc| loc.func);
+        if source_changed {
             self.source = location.and_then(|loc| {
                 disassemble_function(self.record.program().program(), loc.func).ok()
             });
             self.flow = self.source.as_ref().map_or_else(Flow::default, Flow::new);
         }
-        if location != previous {
+        if location != previous || source_changed {
             self.source_index = self
                 .source
                 .as_ref()
@@ -121,6 +142,60 @@ impl<'a> View<'a> {
                     })
                 })
                 .unwrap_or(0);
+        }
+        self.source_lines = self.sources.map_or_else(Vec::new, |sources| {
+            location.map_or_else(
+                || vec!["Source: no captured instruction location".into()],
+                |location| sources.context_lines(location, 2, 48),
+            )
+        });
+        let step_location = self
+            .instruction
+            .and_then(|index| self.record.instruction(index))
+            .map(|step| step.location);
+        if step_location != self.step_location {
+            self.step_location = step_location;
+            let metadata = step_location.and_then(|location| {
+                let extract = |source: &FunctionDisassembly<'_>| {
+                    let instruction = source.instruction(location.pc)?;
+                    let (cond, yes, no) = match instruction.operands() {
+                        execution_tape::disasm::Operands::Br {
+                            cond,
+                            pc_true,
+                            pc_false,
+                        }
+                        | execution_tape::disasm::Operands::BrArgs {
+                            cond,
+                            pc_true,
+                            pc_false,
+                            ..
+                        } => (cond, pc_true, pc_false),
+                        _ => return None,
+                    };
+                    Some((
+                        cond,
+                        [source.executable_pc(yes), source.executable_pc(no)].map(|pc| {
+                            pc.map(|pc| TraceLocation {
+                                func: location.func,
+                                pc,
+                            })
+                        }),
+                    ))
+                };
+                if let Some(source) = self
+                    .source
+                    .as_ref()
+                    .filter(|source| source.func() == location.func)
+                {
+                    extract(source)
+                } else {
+                    disassemble_function(self.record.program().program(), location.func)
+                        .ok()
+                        .and_then(|source| extract(&source))
+                }
+            });
+            self.step_condition = metadata.map(|(cond, _)| cond);
+            self.step_successors = metadata.map(|(_, successors)| successors);
         }
         self.fact_lines.clear();
         if self.instruction.is_none() {

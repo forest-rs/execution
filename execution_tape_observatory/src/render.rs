@@ -122,16 +122,7 @@ fn step_description(
             }
             .into(),
             Some(Opcode::Br | Opcode::BrArgs) => {
-                let condition = view
-                    .source
-                    .as_ref()
-                    .filter(|s| s.func() == step.location.func)
-                    .and_then(|s| s.instruction(step.location.pc))
-                    .and_then(|i| match i.operands() {
-                        execution_tape::disasm::Operands::Br { cond, .. }
-                        | execution_tape::disasm::Operands::BrArgs { cond, .. } => Some(cond),
-                        _ => None,
-                    });
+                let condition = view.step_condition;
                 step.inputs
                     .iter()
                     .find_map(|(reg, value)| match value {
@@ -141,7 +132,19 @@ fn step_description(
                         )),
                         _ => None,
                     })
-                    .unwrap_or_else(|| "branch completed; condition was not watched".into())
+                    .unwrap_or_else(|| {
+                        if let Some([yes, no]) = view.step_successors
+                            && yes != no
+                        {
+                            if step.next == yes {
+                                return "took true arm · observed successor".into();
+                            }
+                            if step.next == no {
+                                return "took false arm · observed successor".into();
+                            }
+                        }
+                        "branch completed; same target arms need a watched condition".into()
+                    })
             }
             _ => "completed".into(),
         },
@@ -800,6 +803,32 @@ fn call_values(
 }
 
 fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
+    if !view.source_lines.is_empty() && area.height >= 8 {
+        let height = (area.height / 2).min(7);
+        let parts = Layout::vertical([Constraint::Length(height), Constraint::Min(4)]).split(area);
+        let lines: Vec<_> = view
+            .source_lines
+            .iter()
+            .map(|text| {
+                Line::styled(
+                    text.as_str(),
+                    Style::default().fg(if text.starts_with("     |") {
+                        GOLD
+                    } else {
+                        CYAN
+                    }),
+                )
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                panel(" FRONTEND SOURCE SNAPSHOT ", false)
+                    .title_bottom("saved source · exact program match"),
+            ),
+            parts[0],
+        );
+        area = parts[1];
+    }
     if !view.fact_lines.is_empty() && area.height >= 10 {
         let parts = Layout::vertical([Constraint::Min(4), Constraint::Length(4)]).split(area);
         frame.render_widget(
@@ -869,6 +898,8 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
                     describe::function(view.record.program().program(), source.func()),
                     if view.frame_selected > 0 {
                         "suspended caller"
+                    } else if view.instruction.is_some() {
+                        "observed instruction"
                     } else if view.selected == 0 {
                         "entry context"
                     } else {

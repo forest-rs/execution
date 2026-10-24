@@ -41,6 +41,10 @@ This release has an [MSRV][] of 1.88.
 - Attach frontend snapshots through `ProgramBrowser` and Observatory's `--sources` option.
   The `source_frontend` tool demonstrates parsed emission and explicit `.tape`/`.sources` exports. ([#167][] by [@waywardmonkeys][])
 
+- Attach source snapshots to recorded execution through `RecordingExplorer`, using the same
+  validated bundle as `ProgramBrowser`. Context follows attempts and suspended callers.
+  `source_frontend --record` shows watched values with source; `--explain` prints replay-checked evidence. ([#167][] by [@waywardmonkeys][])
+
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
   selected body, including closures received through guest boundaries. ([#163][] by [@waywardmonkeys][])

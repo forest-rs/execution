@@ -708,3 +708,147 @@ fn actual_instruction_navigation_shows_local_values_and_preserves_boundary_selec
     assert_eq!(view.selected, boundary);
     assert!(text(&mut view, 120, 40).contains("CALL VALUES"));
 }
+
+#[test]
+fn recorded_instructions_follow_exact_source_snapshots_and_reject_stale_bundles() {
+    use crate::sources::{
+        SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping,
+    };
+    use execution_tape::trace::TraceLocation;
+    let (record, _) = recording_with_options(RecordLimits::default(), None, true, true);
+    let source =
+        execution_tape::disasm::disassemble_function(record.program().program(), FuncId(0))
+            .unwrap();
+    let first = source.instrs().next().unwrap().pc();
+    let last = source.instrs().last().unwrap().pc();
+    let map = SourceMap::new(
+        record.program().program(),
+        vec![SourceDocument {
+            name: "steps.expr".into(),
+            text: "first\nlast\n".into(),
+        }],
+        vec![
+            SourceMapping {
+                location: TraceLocation {
+                    func: FuncId(0),
+                    pc: first,
+                },
+                document: SourceId(0),
+                range: 0..5,
+            },
+            SourceMapping {
+                location: TraceLocation {
+                    func: FuncId(0),
+                    pc: last,
+                },
+                document: SourceId(0),
+                range: 6..10,
+            },
+        ],
+        SourceLimits::default(),
+    )
+    .unwrap();
+    let shown = RecordingExplorer::new(&record)
+        .sources(&map)
+        .unwrap()
+        .instructions()
+        .render_text(160, 60)
+        .unwrap();
+    assert!(shown.contains("FRONTEND SOURCE SNAPSHOT"), "{shown}");
+    assert!(shown.contains("steps.expr"), "{shown}");
+    assert!(shown.contains("bytes 0..5"), "{shown}");
+    assert!(shown.contains("VERIFIER · static"), "{shown}");
+    let mut view = View::with_options(
+        &record,
+        Some(map.bind(record.program().program()).unwrap()),
+        true,
+    );
+    press(&mut view, KeyCode::End);
+    assert!(
+        view.source_lines[0].contains("bytes 6..10"),
+        "{:?}",
+        view.source_lines
+    );
+    press(&mut view, KeyCode::Home);
+    press(&mut view, KeyCode::Down);
+    assert!(view.source_lines[0].contains("no frontend mapping"));
+    let mut other = record.program().program().clone();
+    other.bytecode_data[0] ^= 1;
+    let stale = SourceMap::new(&other, vec![], vec![], SourceLimits::default()).unwrap();
+    assert!(matches!(
+        RecordingExplorer::new(&record).sources(&stale),
+        Err(SourceError::ProgramMismatch)
+    ));
+}
+
+#[test]
+fn branch_explanation_survives_selecting_its_suspended_caller() {
+    let mut b = ProgramBuilder::new();
+    let root = b
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let mut child = Asm::new();
+    child.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
+    let yes = child.label();
+    let no = child.label();
+    child.br(1, yes, no);
+    child.place(yes).unwrap();
+    child.const_i64(2, 42).ret(0, &[2]);
+    child.place(no).unwrap();
+    child.const_i64(2, 7).ret(0, &[2]);
+    let callee = b
+        .push_function_checked(
+            child,
+            FunctionSig {
+                arg_types: vec![ValueType::Bool],
+                ret_types: vec![ValueType::I64],
+            },
+        )
+        .unwrap();
+    let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
+    body.const_bool(1, true)
+        .call(0, callee, 0, &[1], &[2])
+        .ret(0, &[2]);
+    b.define_function(root, body).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+    let source = execution_tape::disasm::disassemble_function(program.program(), callee).unwrap();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default())
+        .with_instructions(execution_tape_recording::InstructionCapture {
+            max_steps: 100,
+            watches: vec![execution_tape_recording::RegisterWatch {
+                location: execution_tape::trace::TraceLocation {
+                    func: callee,
+                    pc: 0,
+                },
+                registers: vec![1],
+            }],
+        });
+    assert_eq!(
+        source.instrs().next().unwrap().opcode(),
+        execution_tape::opcode::Opcode::Br
+    );
+    let effects = Arc::new(AtomicUsize::new(0));
+    let mut vm = Vm::new(
+        Echo {
+            effects,
+            error: None,
+        },
+        Limits::default(),
+    );
+    vm.run(&program, root, &[], recorder.mask(), Some(&mut recorder))
+        .unwrap();
+    let record = recorder.finish();
+    let mut view = View::with_options(&record, None, true);
+    press(&mut view, KeyCode::Down);
+    press(&mut view, KeyCode::Down);
+    assert!(text(&mut view, 160, 50).contains("took true arm · r1 = true"));
+    press(&mut view, KeyCode::Tab);
+    press(&mut view, KeyCode::Tab);
+    press(&mut view, KeyCode::Down);
+    assert_eq!(view.location().unwrap().func, root);
+    assert!(text(&mut view, 160, 50).contains("took true arm · r1 = true"));
+}
