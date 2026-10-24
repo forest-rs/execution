@@ -17,7 +17,8 @@
 //! The initial view selects the first host call, when present, with sent/returned values.
 //! Tab cycles events, values and guest stack; the active pane has a double border and title.
 //! Selecting a caller frame moves source to its actual suspended call instruction.
-//! The timeline contains boundary observations, not per-instruction or register history. Values
+//! The initial timeline contains boundary observations. [`RecordingExplorer`] can open optional
+//! recorded instruction history and attach frontend source snapshots. Values
 //! use recording-local graph identities; object tokens do not reconstruct external objects.
 //! Replay uses the recording's ordinary checked replay and invokes no live host. Opaque typed
 //! error payloads are never formatted. Text/payload previews and graph expansion are bounded.
@@ -27,6 +28,7 @@ mod describe;
 mod flow;
 mod model;
 mod palette;
+mod recording_explorer;
 mod render;
 pub mod sources;
 mod syntax;
@@ -42,6 +44,8 @@ use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::crossterm::{event, execute, terminal};
 use std::io;
 
+pub use recording_explorer::RecordingExplorer;
+
 /// Opens the recording explorer on standard output until the user quits.
 ///
 /// Requires an interactive terminal. Owns raw mode and the alternate screen for this call;
@@ -50,7 +54,7 @@ use std::io;
 /// synchronously with the recorded guest limits. Heap reconstruction and output retention
 /// add work and memory beyond guest fuel; a long replay pauses the UI.
 pub fn explore(record: &Recording) -> io::Result<()> {
-    interact(View::new(record))
+    RecordingExplorer::new(record).run()
 }
 
 /// Opens a compiled program browser without executing guest code or invoking a host.
@@ -162,7 +166,7 @@ impl Drop for TerminalGuard {
 /// Useful for headless inspection and reproducible review artifacts. The replay status remains
 /// "not checked". Dimensions must be within 40..=240 columns and 12..=100 rows.
 pub fn render_text(record: &Recording, width: u16, height: u16) -> io::Result<String> {
-    render_screen(|| View::new(record), width, height)
+    RecordingExplorer::new(record).render_text(width, height)
 }
 
 /// Renders the compiled program browser's initial view as plain text without terminal modes.

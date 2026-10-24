@@ -200,3 +200,17 @@ cargo run -p execution_tape_wind_tunnel --bin observatory -- --program /tmp/expr
 The frontend accepts integer literals, parentheses, `+`, `-` and `*`, validates the emitted program,
 and executes through the ordinary VM. Its built-in expression returns 24. Input is bounded to
 1 MiB and nesting to 128; exports create new files instead of overwriting existing artifacts.
+
+Attach the same source bundle to an owned recording and open directly on captured instructions:
+
+```rust,no_run
+# fn example(record: &execution_tape_recording::Recording, sources: &execution_tape_observatory::sources::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
+use execution_tape_observatory::RecordingExplorer;
+let explorer = RecordingExplorer::new(record).sources(sources)?.instructions();
+let text = explorer.render_text(160, 60)?;
+# Ok(()) }
+```
+
+Frontend context follows the selected attempt or suspended caller. Missing mappings are labelled;
+opening the recording does not infer source ranges or read a source file from disk. Existing
+`explore` and `render_text` functions remain conveniences for the default boundary view.

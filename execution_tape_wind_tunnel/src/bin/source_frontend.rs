@@ -8,13 +8,13 @@ use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{Program, ValueType},
-    trace::{TraceLocation, TraceMask},
+    trace::{TraceLocation, TraceMask, TraceSink},
     value::Value,
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
 };
 use execution_tape_observatory::{
-    ProgramBrowser,
+    ProgramBrowser, RecordingExplorer,
     sources::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
 };
 use std::{
@@ -230,11 +230,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut source_path = None;
     let mut write = None;
     let mut snapshot = false;
+    let mut record = false;
+    let mut explain = false;
+    let mut colors = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "source_frontend [--source PATH] [--write-prefix PREFIX] [--snapshot]\nCompiles integer expressions with +, -, *, parentheses to ordinary tape.\n--write-prefix writes new PREFIX.tape and PREFIX.sources files, including supplied source text.\nWithout --write-prefix, opens the source-linked browser (or --snapshot). Source input limit: 1 MiB."
+                "source_frontend [--source PATH] [--write-prefix PREFIX] [--record | --explain] [--snapshot] [--color=always]\nCompiles integer expressions with +, -, *, parentheses to ordinary tape.\n--write-prefix writes new PREFIX.tape and PREFIX.sources files, including supplied source text.\n--record opens actual execution with watched operands and source snapshots.\n--explain prints the recorded operands/source ranges and checks replay.\nOtherwise opens the source-linked browser, unless exporting. Source input limit: 1 MiB."
             );
             return Ok(());
         } else if arg == "--source" {
@@ -251,6 +254,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             ));
         } else if arg == "--snapshot" {
             snapshot = true;
+        } else if arg == "--record" {
+            record = true;
+        } else if arg == "--explain" {
+            explain = true;
+            record = true;
+        } else if arg == "--color=always" {
+            colors = true;
         } else {
             return Err(format!("unknown argument {arg:?}; use --help").into());
         }
@@ -271,24 +281,100 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("example.expr".into(), EXAMPLE.into())
     };
     let (program, sources) = compile(name, source)?;
-    let prepared = verify_program_owned(program.clone(), &VerifyConfig::default())?;
+    let prepared = std::sync::Arc::new(verify_program_owned(program, &VerifyConfig::default())?);
+    let mut recorder = if record {
+        let source = execution_tape::disasm::disassemble_function(
+            prepared.program(),
+            execution_tape::value::FuncId(0),
+        )
+        .map_err(|error| format!("cannot inspect emitted function: {error:?}"))?;
+        let watches = source
+            .instrs()
+            .map(|i| execution_tape_recording::RegisterWatch {
+                location: TraceLocation {
+                    func: source.func(),
+                    pc: i.pc(),
+                },
+                registers: i.reads().chain(i.writes()).collect(),
+            })
+            .collect();
+        Some(
+            execution_tape_recording::Recorder::new(
+                std::sync::Arc::clone(&prepared),
+                execution_tape_recording::RecordLimits::default(),
+            )
+            .with_instructions(execution_tape_recording::InstructionCapture {
+                max_steps: 1024,
+                watches,
+            }),
+        )
+    } else {
+        None
+    };
     let mut vm = Vm::new(NoHost, Limits::default());
     let result = vm.run(
         &prepared,
         execution_tape::value::FuncId(0),
         &[],
-        TraceMask::NONE,
-        None,
+        recorder.as_ref().map_or(TraceMask::NONE, TraceSink::mask),
+        recorder
+            .as_mut()
+            .map(|recorder| recorder as &mut dyn TraceSink),
     )?;
     eprintln!("Result: {result:?}");
     if let Some(prefix) = write {
         let tape = prefix.with_extension("tape");
         let sidecar = prefix.with_extension("sources");
-        write_new(&tape, &program.encode())?;
+        write_new(&tape, &prepared.program().encode())?;
         write_new(&sidecar, &sources.encode())?;
         println!("Wrote {tape:?} and {sidecar:?}; source snapshots are included explicitly.");
+        if !record {
+            return Ok(());
+        }
+    }
+    if colors && !snapshot {
+        ratatui::crossterm::style::force_color_output(true);
+    }
+    if let Some(recorder) = recorder {
+        let record = recorder.finish();
+        record.status().map_err(Clone::clone)?;
+        if explain {
+            let bound = sources.bind(record.program().program())?;
+            for (index, step) in record.instructions().enumerate() {
+                let source = bound
+                    .lookup(step.location)
+                    .expect("frontend maps every instruction");
+                println!(
+                    "#{index} f{}:{:06} · {:?} · {:?}",
+                    step.location.func.0,
+                    step.location.pc,
+                    execution_tape::opcode::Opcode::from_byte(step.opcode)
+                        .expect("verified opcode"),
+                    &source.document.text[source.range.clone()]
+                );
+                for (label, observations) in [("before", step.inputs), ("after", step.outputs)] {
+                    for (reg, value) in observations.iter() {
+                        println!("  {label} r{reg} = {value:?}");
+                    }
+                }
+            }
+            record.replay()?;
+            println!(
+                "History: {:?}; replay matched recorded path and values.",
+                record.instruction_status().expect("enabled history")
+            );
+            return Ok(());
+        }
+        let explorer = RecordingExplorer::new(&record)
+            .sources(&sources)?
+            .instructions();
+        if snapshot {
+            print!("{}", explorer.render_text(160, 50)?);
+        } else {
+            explorer.run()?;
+        }
     } else {
-        let browser = ProgramBrowser::new(&program).sources(&sources)?;
+        let browser = ProgramBrowser::new(prepared.program()).sources(&sources)?;
         if snapshot {
             print!("{}", browser.render_text(120, 36)?);
         } else {
