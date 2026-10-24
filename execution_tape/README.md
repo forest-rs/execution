@@ -104,6 +104,42 @@ signatures remain coarse; callable refinements are not implied.
 
 Run `cargo run -p execution_tape_wind_tunnel --bin nested_contracts` for a complete example.
 
+## Inspecting Verifier Facts
+
+`ProgramAnalysis::new(&program, &config)` verifies a borrowed source once. When a prepared
+program already exists, `ProgramAnalysis::from(&prepared)` reuses its proof. Request one
+function, then query source PCs without retaining register snapshots at every instruction:
+
+```rust
+use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::program::ValueType;
+use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig};
+let mut body = Asm::new();
+body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::Agg]);
+body.const_i64(1, 42).tuple_new(2, &[1]);
+let pc = body.pc();
+body.tuple_get(1, 2, 0).ret(0, &[1]);
+let mut builder = ProgramBuilder::new();
+let entry = builder.push_function_checked(body, FunctionSig {
+    arg_types: vec![], ret_types: vec![ValueType::I64],
+}).unwrap();
+let program = builder.build_checked().unwrap();
+let proof = ProgramAnalysis::new(&program, &VerifyConfig::default()).unwrap();
+let mut function = proof.function(entry).unwrap();
+let facts = function.instruction(pc).unwrap();
+let aggregate = facts.register(2).unwrap();
+assert_eq!(aggregate.storage_kind, ValueType::Agg);
+assert!(matches!(aggregate.before, ValueFact::Contract(_)));
+```
+
+Facts distinguish unreachable code, uninitialized registers, opaque kinds, and nested
+contracts. IDs belong to the analysis's shared contract table. Origins identify arguments,
+local defining instructions or incoming block facts. Incoming edges expose simultaneous
+parameter bindings before their meet; external invocation seeds are separate from CFG edges.
+“After” means local source dataflow: calls assume successful callee return, while branches
+precede their outgoing edge transfers. These facts are not runtime observations.
+Ordinary verification, preparation and execution retain no inspection data.
+
 ## Core Pieces
 
 - `asm`: ergonomic builders for functions, call signatures, constants, host signatures, and

@@ -216,6 +216,28 @@ for its signature, aggregate contracts, and prepared instruction locations:
 cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et 0
 ```
 
+## Optional instruction facts
+
+`ProgramAnalysis::new(&program, &config)` verifies a borrowed source once; `ProgramAnalysis::from(&prepared)`
+reuses a prepared program's proof. Select a function with `function(FuncId)`, then query an exact
+source boundary with `instruction(pc)`. `register(reg)` returns the fixed storage kind plus
+before/after guarantees and local definition origins. `FunctionDisassembly::instruction(pc)`
+provides an indexed source lookup for following those defining locations.
+
+`ValueFact` distinguishes unreachable, not definitely initialized, and an initialized contract.
+An initialized `Kind(Agg)` means its nested structure is unknown. Contract IDs belong to this
+function analysis's table and remain stable across its queries; they are not source contract IDs.
+Incoming edges keep same-target arms separate and expose predecessor values and simultaneous
+parameter bindings. Header parameters are already admitted before the declaration itself.
+Function entry additionally meets invocation argument/effect seeds, which are not CFG edges.
+
+After facts describe local source transfer: a call assumes successful callee return, while a
+branch precedes the successor edge bindings. They do not imply trace dispatch timing or observed
+runtime values. Rejected programs yield no inferred facts. The optional artifact retains block
+checkpoints and compact aggregate write effects; its cursor replays only the selected block prefix.
+Each register's outgoing fact comes directly from its write effect. There are no full per-instruction
+register-state snapshots, no `Program` clones, and no inspection storage in normal VM artifacts.
+
 ## Borrowed value observations
 
 `TraceMask::VALUES` enables `TraceSink::values` on the ordinary execution path. `ValueEvent::Entry`

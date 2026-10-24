@@ -3,6 +3,8 @@
 
 //! Flow-sensitive aggregate proofs. Source contracts stay borrowed; derived facts are interned.
 
+pub(super) mod inspection;
+
 use super::*;
 use crate::contract::{Contract, ContractHasher, ContractId, ContractMismatch, ContractViolation};
 use crate::value::AggType;
@@ -784,6 +786,29 @@ pub(super) fn verify_flow(
     if !types.iter().any(|kind| kind == ValueType::Agg) {
         return Ok(());
     }
+    let (mut arena, inputs, outputs) =
+        solve_flow(program, func_id, blocks, reachable, types, decoded);
+    for (index, (block, mut state)) in blocks.iter().zip(inputs).enumerate() {
+        if !reachable[index] {
+            continue;
+        }
+        for di in &decoded[block.instr_start..block.instr_end] {
+            validate(&mut arena, func_id, di.offset, &di.instr, types, &state)?;
+            transfer(&mut arena, &di.instr, types, &mut state);
+        }
+        debug_assert_eq!(state, outputs[index], "shape OUT mismatch");
+    }
+    Ok(())
+}
+
+fn solve_flow<'a>(
+    program: &'a Program,
+    func_id: u32,
+    blocks: &[BasicBlock],
+    reachable: &[bool],
+    types: RegisterTypes<'_>,
+    decoded: &[DecodedInstr],
+) -> (Arena<'a>, Vec<ShapeState>, Vec<ShapeState>) {
     let mut arena = Arena::new(program);
     let mut entry = ShapeState::unknown();
     for (index, &id) in program.functions[func_id as usize]
@@ -852,18 +877,7 @@ pub(super) fn verify_flow(
             }
         },
     );
-    let mut arena = arena.into_inner();
-    for (index, (block, mut state)) in blocks.iter().zip(inputs).enumerate() {
-        if !reachable[index] {
-            continue;
-        }
-        for di in &decoded[block.instr_start..block.instr_end] {
-            validate(&mut arena, func_id, di.offset, &di.instr, types, &state)?;
-            transfer(&mut arena, &di.instr, types, &mut state);
-        }
-        debug_assert_eq!(state, outputs[index], "shape OUT mismatch");
-    }
-    Ok(())
+    (arena.into_inner(), inputs, outputs)
 }
 
 pub(super) fn verify_definitions(program: &Program) -> Result<(), VerifyError> {

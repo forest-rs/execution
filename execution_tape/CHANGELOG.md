@@ -17,6 +17,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Inspect opt-in verifier facts through `ProgramAnalysis`, selected `FunctionAnalysis` and
+  `InstructionFacts` queries. Distinguish storage kinds, definite initialization, unreachable
+  code and nested contracts; follow local origins and incoming edge bindings. Contracts share
+  one analysis-local table. Normal execution artifacts retain no inspection state. Use
+  `FunctionDisassembly::instruction(pc)` to follow exact source locations with indexed lookup. ([#160][] by [@waywardmonkeys][])
+
 - Run `nested_contracts [OUTPUT.tape]` to execute and optionally save a nested-result example.
   Observatory previews nested guest signatures with bounded depth/member counts and caches the
   selected summary. `inspect_prepared` prints contract definitions once in child-before-parent
@@ -307,6 +313,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#160]: https://github.com/forest-rs/execution/pull/160
 [#159]: https://github.com/forest-rs/execution/pull/159
 [#157]: https://github.com/forest-rs/execution/pull/157
 [#156]: https://github.com/forest-rs/execution/pull/156
