@@ -31,7 +31,8 @@ open at the reported function/instruction when one is available; `d` returns to 
 Program-wide failures do not invent an instruction location. A file that cannot be decoded reports
 an error before terminal mode starts. Files are limited to 64 MiB of encoded input; decoded data and
 verification use additional memory. Successfully displaying a rejected program is a successful
-browser invocation; the header explicitly says `REJECTED`.
+browser invocation; both the program header and the Details panel title explicitly say
+`VERIFIED` or `REJECTED`. Details starts with the outcome and, for rejection, the reason.
 
 Use `[` and `]` to switch between functions, imports, constants and aggregate types. `/` searches
 visible labels (case sensitive); `Enter` applies the filter, and `Esc` clears it. Select a function,
@@ -46,6 +47,9 @@ instruction's operand registers, with destinations first. Aliased projections sh
 aggregate and its projected result separately. Local origins name an argument, defining opcode/PC,
 or incoming block state. At joins, inspect both static input arms and their simultaneous parameter
 bindings beside the common guaranteed fact; differing tuple-member kinds appear as `?`.
+This means the member type is unknown, rather than a verification error. For example,
+`tuple(i64)` and `tuple(bool)` can join as `tuple(?)`: both have one element, and `TupleLen`
+does not require its type.
 
 These are source dataflow facts: call outputs assume successful callee return, and branch outputs
 precede their outgoing edge bindings. Unreachable instructions carry no value guarantees. Rejected

@@ -87,6 +87,8 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
             lines.push(path.clone());
         }
         lines.push("d: go to diagnostic · decoded content remains inspectable".into());
+    } else {
+        lines.push("VERIFIED: program accepted by the verifier.".into());
     }
     // A focused instruction always describes that instruction, even after browsing another table.
     let section = if view.details_code {
@@ -280,17 +282,17 @@ pub(super) fn facts(
         return vec!["Verifier facts: unreachable instruction; no value guarantees.".into()];
     }
     let mut lines = vec!["Verifier facts · before → after local instruction:".into()];
+    let mut unknown_members = false;
     let (registers, truncated) = operand_registers(instruction);
     let registers: Vec<_> = registers.into_iter().filter(|&reg| reg != 0).collect();
     for &reg in registers.iter().take(4) {
         let Some(fact) = facts.register(reg) else {
             continue;
         };
-        lines.push(format!(
-            "  r{reg}: {} → {}",
-            value_fact(facts.contracts(), fact.before),
-            value_fact(facts.contracts(), fact.after)
-        ));
+        let before = value_fact(facts.contracts(), fact.before);
+        let after = value_fact(facts.contracts(), fact.after);
+        unknown_members |= before.contains('?') || after.contains('?');
+        lines.push(format!("  r{reg}: {before} → {after}"));
         if fact.before != fact.after {
             let origin = match fact.origin_before {
                 Some(FactOrigin::Argument { index }) => {
@@ -308,6 +310,9 @@ pub(super) fn facts(
                 lines.push(format!("    Before from {origin}"));
             }
         }
+    }
+    if unknown_members {
+        lines.push("  ? = member type unknown; this is not a verification error.".into());
     }
     if truncated {
         lines.push("  … additional operands omitted (scan limit: 64 reads / 64 writes)".into());
@@ -337,6 +342,9 @@ pub(super) fn facts(
         }
         (Opcode::Mov, Some(reg), _) => Some(format!("copy incoming r{reg}")),
         (Opcode::Select, _, _) => Some("keep contracts common to both alternatives".into()),
+        (Opcode::TupleLen, _, _) => {
+            Some("read tuple length; element types are not required".into())
+        }
         (Opcode::Block, _, _) => {
             Some("admit simultaneous edge transfers; keep common contracts".into())
         }
@@ -517,7 +525,25 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     .max(1);
     navigator(frame, view, columns[0]);
     code(frame, view, right[0]);
-    let details = Paragraph::new(details(view).join("\n")).wrap(Wrap { trim: false });
+    let details = Paragraph::new(
+        details(view)
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                if index == 0 {
+                    Line::styled(
+                        text,
+                        Style::default()
+                            .fg(if view.error.is_some() { ROSE } else { GREEN })
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Line::raw(text)
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false });
     let detail_lines = details.line_count(right[1].width.saturating_sub(2));
     let visible_lines = usize::from(right[1].height.saturating_sub(2));
     view.details_end =
@@ -525,7 +551,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     view.details_offset = view.details_offset.min(view.details_end);
     frame.render_widget(
         details.scroll((view.details_offset, 0)).block(
-            panel(" DETAILS ", view.focus == Focus::Details).title_bottom(format!(
+            panel(
+                format!(" DETAILS · {status} "),
+                view.focus == Focus::Details,
+            )
+            .title_bottom(format!(
                 " lines {}–{} / {detail_lines} · ↑/↓ scroll ",
                 usize::from(view.details_offset) + usize::from(detail_lines != 0),
                 (usize::from(view.details_offset) + visible_lines).min(detail_lines)

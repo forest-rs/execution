@@ -54,6 +54,7 @@ fn encoded_program_can_be_browsed_without_a_recording_or_host() {
     let program = Program::decode(&fixture().encode()).unwrap();
     let screen = render_program(&program, 120, 36).unwrap();
     assert!(screen.contains("PROGRAM · VERIFIED"));
+    assert!(screen.contains("DETAILS · VERIFIED"));
     assert!(screen.contains("branch and call"));
     assert!(screen.contains("2 functions · 0 imports"));
     assert!(screen.contains("helper"));
@@ -99,7 +100,7 @@ fn follow_branches_and_calls_then_return_to_exact_instruction() {
     press(&mut view, KeyCode::Backspace);
     assert_eq!(view.source.as_ref().unwrap().func(), FuncId(1));
     assert_eq!(view.instruction, call);
-    let shown = render_screen(|| view, 120, 36).unwrap();
+    let shown = render_screen(|| view, 120, 40).unwrap();
     assert!(shown.contains("Source span ID: 42"));
 }
 
@@ -156,6 +157,7 @@ fn verifier_failure_opens_exact_instruction_and_remains_navigable() {
     assert_eq!(view.source.as_ref().unwrap().func(), FuncId(1));
     let screen = render_screen(|| view, 120, 36).unwrap();
     assert!(screen.contains("PROGRAM · REJECTED"));
+    assert!(screen.contains("DETAILS · REJECTED"));
     assert!(screen.contains("declared I64, required Bool"), "{screen}");
 }
 
@@ -632,7 +634,10 @@ fn rejected_and_unreachable_code_never_claim_inferred_value_facts() {
     rejected.contract_ids[offset] = wrong;
     let view = Browser::new(&rejected);
     let text = render::details(&view).join("\n");
+    assert!(text.starts_with("VERIFICATION REJECTED:"), "{text}");
+    assert!(text.contains("expected bool, found i64"), "{text}");
     assert!(text.contains("Verifier facts unavailable: program rejected."));
+    assert!(!text.contains("VERIFIED:"));
     assert!(!text.contains("Verifier facts · before"));
     let mut b = ProgramBuilder::new();
     let mut body = Asm::new();
@@ -668,6 +673,7 @@ fn join_details_show_common_facts_and_each_simultaneous_input_arm() {
         ValueType::Agg,
         ValueType::Agg,
         ValueType::Agg,
+        ValueType::U64,
     ]);
     let join = body.block(&[6, 7]);
     body.const_i64(2, 42)
@@ -677,13 +683,13 @@ fn join_details_show_common_facts_and_each_simultaneous_input_arm() {
     body.br(1, join.with_args(&[4, 5]), join.with_args(&[5, 4]));
     let header = body.pc();
     body.place(join).unwrap();
-    body.ret(0, &[]);
+    body.tuple_len(8, 6).ret(0, &[8]);
     let function = b
         .push_function_checked(
             body,
             FunctionSig {
                 arg_types: vec![ValueType::Bool],
-                ret_types: vec![],
+                ret_types: vec![ValueType::U64],
             },
         )
         .unwrap();
@@ -698,12 +704,28 @@ fn join_details_show_common_facts_and_each_simultaneous_input_arm() {
         .unwrap();
     view.navigate(function, index);
     let text = render::details(&view).join("\n");
+    assert!(
+        text.starts_with("VERIFIED: program accepted by the verifier."),
+        "{text}"
+    );
     assert!(text.contains("r6: tuple(?) → tuple(?)"), "{text}");
+    assert!(text.contains("? = member type unknown; this is not a verification error."));
     assert!(text.contains("true arm"));
     assert!(text.contains("false arm"));
     assert!(text.contains("r6 ← r4: tuple(i64)"));
     assert!(text.contains("r6 ← r5: tuple(bool)"));
     assert!(text.contains("admit simultaneous edge transfers; keep common contracts"));
+    view.navigate(function, index + 1);
+    let text = render::details(&view).join("\n");
+    assert!(
+        text.contains("read tuple length; element types are not required"),
+        "{text}"
+    );
+    assert!(text.contains("r8: uninitialized → u64"), "{text}");
+    view.focus = Focus::Details;
+    view.details_offset = u16::MAX;
+    let screen = render_screen(|| view, 120, 36).unwrap();
+    assert!(screen.contains("DETAILS · VERIFIED"), "{screen}");
 }
 
 #[test]
