@@ -3338,20 +3338,23 @@ fn validate_indirect_call_signature_types(
                 actual: *first,
             });
         }
-        validate_signature_types(expected_args, rest)?;
+        validate_signature_types(expected_args, rest.iter())?;
     } else {
-        validate_signature_types(expected_args, actual_args)?;
+        validate_signature_types(expected_args, actual_args.iter())?;
     }
 
-    validate_signature_types(expected_rets, actual_rets)
+    validate_signature_types(expected_rets, actual_rets.iter())
 }
 
 #[inline]
-fn validate_signature_types(expected: &[ValueType], actual: &[ValueType]) -> Result<(), Trap> {
+fn validate_signature_types<'a>(
+    expected: &[ValueType],
+    actual: impl ExactSizeIterator<Item = &'a ValueType>,
+) -> Result<(), Trap> {
     if expected.len() != actual.len() {
         return Err(Trap::ArityMismatch);
     }
-    for (&expected, &actual) in expected.iter().zip(actual.iter()) {
+    for (&expected, &actual) in expected.iter().zip(actual) {
         if expected != actual {
             return Err(Trap::TypeMismatch { expected, actual });
         }

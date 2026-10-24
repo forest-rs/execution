@@ -1185,9 +1185,9 @@ fn build_signature_cache(program: &Program) -> Result<SignatureCache, VerifyErro
             .map_err(|_| VerifyError::CallSigMalformed {
                 call_sig: call_sig.0,
             })?;
-        let key = intern_signature(&mut canonical, args, rets);
+        let key = intern_signature(&mut canonical, args.iter(), rets.iter());
         call_sigs.push(SigFingerprint {
-            hash: sig_hash_slices(args, rets),
+            hash: crate::host::sig_hash_iter(args.iter(), rets.iter()),
             key,
         });
     }
@@ -1203,14 +1203,14 @@ fn build_signature_cache(program: &Program) -> Result<SignatureCache, VerifyErro
             .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func: func_id })?;
 
         let direct = SigFingerprint {
-            hash: sig_hash_slices(args, rets),
-            key: intern_signature(&mut canonical, args, rets),
+            hash: crate::host::sig_hash_iter(args.iter(), rets.iter()),
+            key: intern_signature(&mut canonical, args.iter(), rets.iter()),
         };
 
         let closure = match args.split_first() {
             Some((ValueType::Agg, rest)) => Some(SigFingerprint {
-                hash: sig_hash_slices(rest, rets),
-                key: intern_signature(&mut canonical, rest, rets),
+                hash: crate::host::sig_hash_iter(rest.iter(), rets.iter()),
+                key: intern_signature(&mut canonical, rest.iter(), rets.iter()),
             }),
             _ => None,
         };
@@ -1224,22 +1224,22 @@ fn build_signature_cache(program: &Program) -> Result<SignatureCache, VerifyErro
     })
 }
 
-fn intern_signature(
+fn intern_signature<'a>(
     canonical: &mut Vec<CanonicalSignature>,
-    args: &[ValueType],
-    rets: &[ValueType],
+    args: impl ExactSizeIterator<Item = &'a ValueType> + Clone,
+    rets: impl ExactSizeIterator<Item = &'a ValueType> + Clone,
 ) -> u32 {
     if let Some(i) = canonical
         .iter()
-        .position(|sig| sig.args.as_slice() == args && sig.rets.as_slice() == rets)
+        .position(|sig| sig.args.iter().eq(args.clone()) && sig.rets.iter().eq(rets.clone()))
     {
         return u32::try_from(i).unwrap_or(u32::MAX);
     }
 
     let key = u32::try_from(canonical.len()).unwrap_or(u32::MAX);
     canonical.push(CanonicalSignature {
-        args: args.to_vec(),
-        rets: rets.to_vec(),
+        args: args.copied().collect(),
+        rets: rets.copied().collect(),
     });
     key
 }
