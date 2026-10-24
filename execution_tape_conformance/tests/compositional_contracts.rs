@@ -160,7 +160,13 @@ fn statically_wrong_nested_result_reports_member_path() {
             error,
             ..
         }) => {
-            assert_eq!(error.path, vec![0, 0]);
+            assert_eq!(
+                error.path,
+                vec![
+                    execution_tape::contract::ContractPath::Member(0),
+                    execution_tape::contract::ContractPath::Member(0)
+                ]
+            );
             assert_eq!(
                 error.mismatch,
                 ContractMismatch::Kind {
@@ -229,7 +235,13 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
             position: ContractPosition::Result { index: 0 },
             error,
             ..
-        } => assert_eq!(error.path, vec![0, 0]),
+        } => assert_eq!(
+            error.path,
+            vec![
+                execution_tape::contract::ContractPath::Member(0),
+                execution_tape::contract::ContractPath::Member(0)
+            ]
+        ),
         error => panic!("unexpected trap: {error:?}"),
     }
     // Reusing both the context and numeric handles must not reuse an earlier proof.
@@ -673,7 +685,12 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
         if mode == 0 {
             main.call(0, target, 0, &[], &[4]);
         } else {
-            let sig = builder.call_sig(&[], &[ValueType::Agg]);
+            let sig = builder
+                .call_sig(FunctionAbi {
+                    args: vec![],
+                    rets: vec![required.into()],
+                })
+                .unwrap();
             main.call_indirect(0, sig, if mode == 2 { 3 } else { 1 }, 0, &[], &[4]);
         }
         main.ret(0, &[4]);
@@ -1084,7 +1101,12 @@ fn opaque_calls_erase_previous_projection_facts() {
                 rets: vec![ValueType::Agg],
             },
         );
-        let call = b.call_sig(&[], &[ValueType::Agg]);
+        let call = b
+            .call_sig(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::Agg],
+            })
+            .unwrap();
         let mut main = body(&[
             ValueType::Unit,
             ValueType::I64,

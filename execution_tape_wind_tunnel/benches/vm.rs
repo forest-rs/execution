@@ -800,7 +800,12 @@ fn build_call_indirect_loop(
     closure_target: bool,
 ) -> execution_tape::verifier::VerifiedProgram {
     let mut pb = ProgramBuilder::new();
-    let call_sig = pb.call_sig(&[], &[]);
+    let call_sig = pb
+        .call_sig(execution_tape::asm::FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![],
+        })
+        .unwrap();
 
     let f0 = pb
         .declare_function(FunctionSig {

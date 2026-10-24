@@ -53,7 +53,7 @@ pub enum ValueFact {
     /// The register is not definitely initialized along every incoming path.
     Uninitialized,
     /// A contract in [`InstructionFacts::contracts`], not in the source program's contract table.
-    /// `Kind(Agg)` is an initialized aggregate with no known nested structure.
+    /// `Kind(Agg)`, `Kind(Func)` and `Kind(Closure)` carry no structural/callable refinement.
     Contract(ContractId),
 }
 
@@ -208,12 +208,13 @@ impl<'a> FunctionAnalysis<'a> {
                     continue;
                 }
                 transfer(&mut arena, &di.instr, types, &mut state);
-                for register in di
-                    .instr
-                    .writes()
-                    .filter(|&reg| types.get(reg) == Some(ValueType::Agg))
-                {
-                    raw_changes.push((register, state.agg(register as usize).copied()));
+                for register in di.instr.writes().filter(|&reg| {
+                    matches!(
+                        types.get(reg),
+                        Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+                    )
+                }) {
+                    raw_changes.push((register, state.refinement(register as usize).copied()));
                 }
             }
         }
@@ -221,12 +222,12 @@ impl<'a> FunctionAnalysis<'a> {
         let mut roots = Vec::new();
         for state in inputs.iter().chain(&outputs) {
             if !state.top {
-                roots.extend(state.aggs.iter().map(|&(_, id)| id));
+                roots.extend(state.facts.iter().map(|&(_, id)| id));
             }
         }
         roots.extend(raw_changes.iter().filter_map(|&(_, id)| id));
         let (contracts, shapes, kinds) = freeze(&arena, roots, types);
-        let convert = |states: Vec<ShapeState>| {
+        let convert = |states: Vec<RefinementState>| {
             states
                 .into_iter()
                 .map(|state| {
@@ -234,7 +235,7 @@ impl<'a> FunctionAnalysis<'a> {
                         Vec::new()
                     } else {
                         state
-                            .aggs
+                            .facts
                             .into_iter()
                             .map(|(reg, id)| (reg, shapes[id as usize].expect("retained shape")))
                             .collect()
@@ -577,9 +578,9 @@ fn freeze(
         if core::mem::replace(&mut keep[id as usize], true) {
             continue;
         }
-        let view = arena.view(Fact::Shape(id)).expect("shape node");
+        let view = arena.view(Fact::Refined(id)).expect("shape node");
         for index in 0..view.members.len() {
-            if let Some(Fact::Shape(child)) = view.members.get(index) {
+            if let Some(Fact::Refined(child)) = view.members.get(index) {
                 pending.push(child);
             }
         }
@@ -599,7 +600,7 @@ fn freeze(
             continue;
         }
         let view = arena
-            .view(Fact::Shape(u32::try_from(index).expect("shape capacity")))
+            .view(Fact::Refined(u32::try_from(index).expect("shape capacity")))
             .expect("shape node");
         tuple.clear();
         for child in 0..view.members.len() {
@@ -607,12 +608,22 @@ fn freeze(
                 Fact::Kind(kind) => *kinds.entry(kind).or_insert_with(|| {
                     builder.intern(Contract::Kind(kind)).expect("kind capacity")
                 }),
-                Fact::Shape(id) => ids[id as usize].expect("child-before-parent facts"),
+                Fact::Refined(id) => ids[id as usize].expect("child-before-parent facts"),
             }));
         }
         let contract = match view.descriptor {
-            AggType::Tuple { .. } => Contract::Tuple(&tuple),
-            AggType::Struct { type_id } => {
+            Descriptor::Callable { kind, args } => {
+                fields.clear();
+                fields.extend(tuple.iter().map(|id| id.expect("callable kind")));
+                let (args, rets) = fields.split_at(args as usize);
+                if kind == CallableKind::Function {
+                    Contract::Function { args, rets }
+                } else {
+                    Contract::Closure { args, rets }
+                }
+            }
+            Descriptor::Aggregate(AggType::Tuple { .. }) => Contract::Tuple(&tuple),
+            Descriptor::Aggregate(AggType::Struct { type_id }) => {
                 fields.clear();
                 // A nominal field always has at least its schema kind, even if a nested proof
                 // has been lost. Unknown tuple members, in contrast, remain unknown.
@@ -636,7 +647,7 @@ fn freeze(
                     fields: &fields,
                 }
             }
-            AggType::Array { elem_type_id } => Contract::Array {
+            Descriptor::Aggregate(AggType::Array { elem_type_id }) => Contract::Array {
                 elem_type_id,
                 element: tuple[0].expect("array element kind"),
             },
@@ -663,7 +674,7 @@ impl fmt::Debug for FunctionAnalysis<'_> {
             .field("function", &self.function)
             .field("blocks", &self.blocks.len())
             .field("contracts", &self.contracts.len())
-            .field("aggregate_writes", &self.changes.len())
+            .field("refinement_writes", &self.changes.len())
             .finish_non_exhaustive()
     }
 }

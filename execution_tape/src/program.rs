@@ -15,7 +15,7 @@ use core::num::{NonZeroU32, NonZeroU64};
 
 use crate::contract::{Contract, ContractId, ContractKinds, ContractTable, ContractTableBuilder};
 use crate::format::{DecodeError, Reader, Writer};
-use crate::host::{HostSig, SigHash, sig_hash, sig_hash_slices};
+use crate::host::{HostSig, SigHash, sig_hash};
 
 #[cfg(doc)]
 use crate::verifier;
@@ -23,7 +23,7 @@ use crate::verifier;
 /// The `execution_tape` binary format version supported by this crate (draft).
 pub const VERSION_MAJOR: u16 = 0;
 /// The `execution_tape` binary format version supported by this crate (draft).
-pub const VERSION_MINOR: u16 = 3;
+pub const VERSION_MINOR: u16 = 4;
 
 const MAGIC: &[u8; 8] = b"EXTAPE\0\0";
 
@@ -536,12 +536,12 @@ pub struct HostSigEntry {
     pub rets: ByteRange,
 }
 
-/// A call signature table entry.
+/// An exact compositional indirect-call signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallSigEntry {
-    /// Argument types.
+    /// Argument contracts range into `Program::contract_ids`.
     pub args: ByteRange,
-    /// Return types.
+    /// Result contracts range into `Program::contract_ids`.
     pub rets: ByteRange,
 }
 
@@ -1055,6 +1055,11 @@ impl Program {
         Ok(ids)
     }
 
+    // Only while borrowing a program whose metadata has already been verified.
+    pub(crate) fn verified_contracts(&self, range: ByteRange) -> &[ContractId] {
+        slice_range(&self.contract_ids, range).expect("verified contract range")
+    }
+
     /// Returns the host signature entry for `id`.
     pub fn host_sig(&self, id: HostSigId) -> Option<&HostSigEntry> {
         self.host_sigs.get(id.0 as usize)
@@ -1065,29 +1070,34 @@ impl Program {
         self.call_sigs.get(id.0 as usize)
     }
 
-    /// Returns the call signature argument types for `entry`.
-    pub fn call_sig_args(&self, entry: &CallSigEntry) -> Result<&[ValueType], DecodeError> {
-        let start = entry.args.offset as usize;
-        let end = entry.args.end()? as usize;
-        self.value_types
-            .get(start..end)
-            .ok_or(DecodeError::OutOfBounds)
+    /// Borrows indirect-call argument contracts.
+    pub fn call_sig_arg_contracts(
+        &self,
+        entry: &CallSigEntry,
+    ) -> Result<&[ContractId], DecodeError> {
+        self.function_contracts(entry.args)
     }
-
-    /// Returns the call signature return types for `entry`.
-    pub fn call_sig_rets(&self, entry: &CallSigEntry) -> Result<&[ValueType], DecodeError> {
-        let start = entry.rets.offset as usize;
-        let end = entry.rets.end()? as usize;
-        self.value_types
-            .get(start..end)
-            .ok_or(DecodeError::OutOfBounds)
+    /// Borrows indirect-call result contracts.
+    pub fn call_sig_ret_contracts(
+        &self,
+        entry: &CallSigEntry,
+    ) -> Result<&[ContractId], DecodeError> {
+        self.function_contracts(entry.rets)
     }
-
-    /// Computes the canonical signature hash for `entry`.
+    /// Projects indirect-call arguments to storage kinds without allocation.
+    pub fn call_sig_args(&self, entry: &CallSigEntry) -> Result<ContractKinds<'_>, DecodeError> {
+        Ok(self.contracts.kinds(self.call_sig_arg_contracts(entry)?))
+    }
+    /// Projects indirect-call results to storage kinds without allocation.
+    pub fn call_sig_rets(&self, entry: &CallSigEntry) -> Result<ContractKinds<'_>, DecodeError> {
+        Ok(self.contracts.kinds(self.call_sig_ret_contracts(entry)?))
+    }
+    /// Computes an ABI-kind diagnostic hash; it does not prove rich contract equality.
     pub fn call_sig_hash(&self, entry: &CallSigEntry) -> Result<SigHash, DecodeError> {
-        let args = self.call_sig_args(entry)?;
-        let rets = self.call_sig_rets(entry)?;
-        Ok(sig_hash_slices(args, rets))
+        Ok(crate::host::sig_hash_iter(
+            self.call_sig_args(entry)?.iter(),
+            self.call_sig_rets(entry)?.iter(),
+        ))
     }
 
     /// Returns the host signature argument types for `entry`.
@@ -1312,15 +1322,17 @@ impl Program {
             let mut payload = Writer::new();
             payload.write_uleb128_u64(self.call_sigs.len() as u64);
             for cs in &self.call_sigs {
-                let args = self.call_sig_args(cs).unwrap_or(&[]);
+                let args = self
+                    .call_sig_arg_contracts(cs)
+                    .expect("valid call arguments");
                 payload.write_uleb128_u64(args.len() as u64);
                 for &t in args {
-                    encode_value_type(&mut payload, t);
+                    payload.write_uleb128_u32(t.0);
                 }
-                let rets = self.call_sig_rets(cs).unwrap_or(&[]);
+                let rets = self.call_sig_ret_contracts(cs).expect("valid call results");
                 payload.write_uleb128_u64(rets.len() as u64);
                 for &t in rets {
-                    encode_value_type(&mut payload, t);
+                    payload.write_uleb128_u32(t.0);
                 }
             }
             write_section(&mut w, SectionTag::CallSigs, payload.as_slice());
@@ -1801,11 +1813,23 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     // Call sigs packed last, matching the builder (see the note above).
     let mut call_sigs: Vec<CallSigEntry> = Vec::with_capacity(call_sig_defs.len());
     for (args, rets) in call_sig_defs {
-        let args_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        value_types.extend_from_slice(&args);
+        let args_off = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        for id in &args {
+            contract_ids.push(
+                *contract_remap
+                    .get(id.0 as usize)
+                    .ok_or(DecodeError::OutOfBounds)?,
+            );
+        }
         let args_len = u32::try_from(args.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        let rets_off = u32::try_from(value_types.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        value_types.extend_from_slice(&rets);
+        let rets_off = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        for id in &rets {
+            contract_ids.push(
+                *contract_remap
+                    .get(id.0 as usize)
+                    .ok_or(DecodeError::OutOfBounds)?,
+            );
+        }
         let rets_len = u32::try_from(rets.len()).map_err(|_| DecodeError::OutOfBounds)?;
         call_sigs.push(CallSigEntry {
             args: ByteRange {
@@ -2219,7 +2243,7 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
 
 type DecodedFunctionSig = (Vec<ContractId>, Vec<ContractId>, Vec<u32>, Vec<u32>);
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
-type DecodedCallSig = (Vec<ValueType>, Vec<ValueType>);
+type DecodedCallSig = (Vec<ContractId>, Vec<ContractId>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
     let mut r = Reader::new(payload);
@@ -2295,14 +2319,17 @@ fn decode_call_sigs(payload: &[u8]) -> Result<Vec<DecodedCallSig>, DecodeError> 
         let argc = read_count(&mut r)?;
         let mut args = Vec::with_capacity(argc);
         for _ in 0..argc {
-            args.push(decode_value_type(&mut r)?);
+            args.push(ContractId(r.read_uleb128_u32()?));
         }
         let retc = read_count(&mut r)?;
         let mut rets = Vec::with_capacity(retc);
         for _ in 0..retc {
-            rets.push(decode_value_type(&mut r)?);
+            rets.push(ContractId(r.read_uleb128_u32()?));
         }
         out.push((args, rets));
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
     }
     Ok(out)
 }
@@ -2434,6 +2461,19 @@ fn encode_contracts(w: &mut Writer, table: &ContractTable) {
                     w.write_uleb128_u32(id.0);
                 }
             }
+            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+                w.write_u8(if matches!(contract, Contract::Function { .. }) {
+                    4
+                } else {
+                    5
+                });
+                for values in [args, rets] {
+                    w.write_uleb128_u64(values.len() as u64);
+                    for id in values {
+                        w.write_uleb128_u32(id.0);
+                    }
+                }
+            }
             Contract::Array {
                 elem_type_id,
                 element,
@@ -2453,10 +2493,13 @@ fn decode_contracts(payload: &[u8]) -> Result<(ContractTable, Vec<ContractId>), 
     let mut remap = Vec::with_capacity(count);
     let mut tuples = Vec::new();
     let mut fields = Vec::new();
+    let mut results = Vec::new();
     for _ in 0..count {
         tuples.clear();
         fields.clear();
-        let contract = match r.read_u8()? {
+        results.clear();
+        let tag = r.read_u8()?;
+        let contract = match tag {
             0 => Contract::Kind(decode_value_type(&mut r)?),
             1 => {
                 let count = read_count(&mut r)?;
@@ -2490,6 +2533,30 @@ fn decode_contracts(payload: &[u8]) -> Result<(ContractTable, Vec<ContractId>), 
                     fields: &fields,
                 }
             }
+            4 | 5 => {
+                for values in [&mut fields, &mut results] {
+                    let count = read_count(&mut r)?;
+                    values.reserve(count);
+                    for _ in 0..count {
+                        values.push(
+                            *remap
+                                .get(r.read_uleb128_u32()? as usize)
+                                .ok_or(DecodeError::OutOfBounds)?,
+                        );
+                    }
+                }
+                if tag == 4 {
+                    Contract::Function {
+                        args: &fields,
+                        rets: &results,
+                    }
+                } else {
+                    Contract::Closure {
+                        args: &fields,
+                        rets: &results,
+                    }
+                }
+            }
             3 => Contract::Array {
                 elem_type_id: ElemTypeId(r.read_uleb128_u32()?),
                 element: *remap
@@ -2520,24 +2587,35 @@ mod tests {
     }
 
     fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> CallSigId {
-        let args_off = u32::try_from(p.value_types.len()).unwrap();
-        p.value_types.extend_from_slice(args);
-        let args_len = u32::try_from(args.len()).unwrap();
-        let rets_off = u32::try_from(p.value_types.len()).unwrap();
-        p.value_types.extend_from_slice(rets);
-        let rets_len = u32::try_from(rets.len()).unwrap();
-        let id = CallSigId(u32::try_from(p.call_sigs.len()).unwrap());
+        let mut table = ContractTableBuilder::new();
+        for (id, contract) in p.contracts.iter() {
+            assert_eq!(table.intern(contract).unwrap(), id);
+        }
+        let args: Vec<_> = args
+            .iter()
+            .map(|&kind| table.intern(Contract::Kind(kind)).unwrap())
+            .collect();
+        let rets: Vec<_> = rets
+            .iter()
+            .map(|&kind| table.intern(Contract::Kind(kind)).unwrap())
+            .collect();
+        p.contracts = table.finish();
+        let args_off = u32::try_from(p.contract_ids.len()).expect("verified address space");
+        p.contract_ids.extend_from_slice(&args);
+        let rets_off = u32::try_from(p.contract_ids.len()).expect("verified address space");
+        p.contract_ids.extend_from_slice(&rets);
+        let id = u32::try_from(p.call_sigs.len()).expect("verified address space");
         p.call_sigs.push(CallSigEntry {
             args: ByteRange {
                 offset: args_off,
-                len: args_len,
+                len: u32::try_from(args.len()).expect("verified address space"),
             },
             rets: ByteRange {
                 offset: rets_off,
-                len: rets_len,
+                len: u32::try_from(rets.len()).expect("verified address space"),
             },
         });
-        id
+        CallSigId(id)
     }
 
     fn section_tags(bytes: &[u8]) -> Vec<u8> {
@@ -2878,7 +2956,7 @@ mod tests {
         assert_eq!(hash_a, hash_b);
         assert_eq!(
             hash_a,
-            sig_hash_slices(&[ValueType::I64, ValueType::Bool], &[ValueType::U64])
+            crate::host::sig_hash_slices(&[ValueType::I64, ValueType::Bool], &[ValueType::U64])
         );
     }
 

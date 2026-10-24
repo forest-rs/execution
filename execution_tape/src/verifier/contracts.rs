@@ -1,12 +1,14 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Flow-sensitive aggregate proofs. Source contracts stay borrowed; derived facts are interned.
+//! Flow-sensitive value refinements. Source contracts stay borrowed; derived facts are interned.
 
 pub(super) mod inspection;
 
 use super::*;
-use crate::contract::{Contract, ContractHasher, ContractId, ContractMismatch, ContractViolation};
+use crate::contract::{
+    Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
+};
 use crate::value::AggType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -15,17 +17,17 @@ use core::hash::{Hash, Hasher};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Fact {
     Kind(ValueType),
-    Shape(u32),
+    Refined(u32),
 }
 
 impl Fact {
-    fn register(state: &ShapeState, types: RegisterTypes<'_>, reg: u32) -> Self {
+    fn register(state: &RefinementState, types: RegisterTypes<'_>, reg: u32) -> Self {
         let kind = types.get(reg).expect("checked register");
-        if kind == ValueType::Agg {
+        if matches!(kind, ValueType::Agg | ValueType::Func | ValueType::Closure) {
             state
-                .agg(reg as usize)
+                .refinement(reg as usize)
                 .copied()
-                .map(Self::Shape)
+                .map(Self::Refined)
                 .unwrap_or(Self::Kind(kind))
         } else {
             Self::Kind(kind)
@@ -39,6 +41,12 @@ enum Node {
     Tuple(Vec<Option<Fact>>),
     Struct(TypeId, Vec<Option<Fact>>),
     Array(ElemTypeId, Fact),
+    Function(FuncId),
+    Indirect {
+        signature: CallSigId,
+        kind: CallableKind,
+    },
+    Closure(Fact),
 }
 
 #[derive(Clone, Copy)]
@@ -47,12 +55,18 @@ enum Members<'a> {
     Tuple(&'a [Option<ContractId>], &'a BTreeMap<ContractId, Fact>),
     Struct(&'a [ContractId], &'a BTreeMap<ContractId, Fact>),
     One(Fact),
-    Registers(&'a [u32], RegisterTypes<'a>, &'a ShapeState),
+    Signature(
+        &'a [ContractId],
+        &'a [ContractId],
+        &'a BTreeMap<ContractId, Fact>,
+    ),
+    Registers(&'a [u32], RegisterTypes<'a>, &'a RefinementState),
 }
 impl Members<'_> {
     fn len(self) -> usize {
         match self {
             Self::Facts(v) => v.len(),
+            Self::Signature(args, rets, _) => args.len() + rets.len(),
             Self::Tuple(v, _) => v.len(),
             Self::Struct(v, _) => v.len(),
             Self::One(_) => 1,
@@ -62,6 +76,12 @@ impl Members<'_> {
     fn get(self, index: usize) -> Option<Fact> {
         match self {
             Self::Facts(v) => v.get(index).copied().flatten(),
+            Self::Signature(args, rets, map) => if index < args.len() {
+                args.get(index)
+            } else {
+                rets.get(index - args.len())
+            }
+            .map(|id| map[id]),
             Self::Tuple(v, map) => v.get(index).copied().flatten().map(|id| map[&id]),
             Self::Struct(v, map) => v.get(index).map(|id| map[id]),
             Self::One(fact) => (index == 0).then_some(fact),
@@ -71,12 +91,67 @@ impl Members<'_> {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum CallableKind {
+    Function,
+    Closure,
+}
+impl CallableKind {
+    fn from_kind(kind: ValueType) -> Self {
+        match kind {
+            ValueType::Func => Self::Function,
+            ValueType::Closure => Self::Closure,
+            _ => unreachable!("callable kind"),
+        }
+    }
+    fn value_type(self) -> ValueType {
+        match self {
+            Self::Function => ValueType::Func,
+            Self::Closure => ValueType::Closure,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Descriptor {
+    Aggregate(AggType),
+    Callable { kind: CallableKind, args: u32 },
+}
+impl Descriptor {
+    fn kind(self) -> ValueType {
+        match self {
+            Self::Aggregate(_) => ValueType::Agg,
+            Self::Callable { kind, .. } => kind.value_type(),
+        }
+    }
+}
 #[derive(Clone, Copy)]
 struct View<'a> {
-    descriptor: AggType,
+    descriptor: Descriptor,
     members: Members<'a>,
 }
 impl View<'_> {
+    fn closure(self) -> Option<Self> {
+        let Descriptor::Callable {
+            kind: CallableKind::Function,
+            args,
+        } = self.descriptor
+        else {
+            return None;
+        };
+        let args = args.checked_sub(1)?;
+        let members = match self.members {
+            Members::Signature(args, rets, map) => Members::Signature(args.get(1..)?, rets, map),
+            Members::Facts(values) => Members::Facts(values.get(1..)?),
+            _ => unreachable!("signature members"),
+        };
+        Some(Self {
+            descriptor: Descriptor::Callable {
+                kind: CallableKind::Closure,
+                args,
+            },
+            members,
+        })
+    }
     fn hash(self) -> u64 {
         let mut hash = ContractHasher(0xcbf2_9ce4_8422_2325);
         self.descriptor.hash(&mut hash);
@@ -92,12 +167,16 @@ impl View<'_> {
             && (0..self.members.len()).all(|i| self.members.get(i) == other.members.get(i))
     }
     fn child(self, index: usize) -> Option<Fact> {
-        self.members
-            .get(if matches!(self.descriptor, AggType::Array { .. }) {
+        self.members.get(
+            if matches!(
+                self.descriptor,
+                Descriptor::Aggregate(AggType::Array { .. })
+            ) {
                 0
             } else {
                 index
-            })
+            },
+        )
     }
 }
 
@@ -114,10 +193,12 @@ struct Arena<'a> {
     previous: Vec<u32>,
     heads: BTreeMap<u64, u32>,
     imported: BTreeMap<ContractId, Fact>,
+    function_facts: BTreeMap<u32, Fact>,
+    indirect_facts: BTreeMap<(u32, CallableKind), Fact>,
     common_cache: BTreeMap<(Fact, Fact), Option<Fact>>,
     replacements: Vec<(u32, Fact)>,
     check_frames: Vec<Check>,
-    check_path: Vec<usize>,
+    check_path: Vec<ContractPath>,
     check_proven: BTreeSet<(ContractId, Fact)>,
     import_pending: Vec<(ContractId, bool)>,
     common_pending: Vec<((Fact, Fact), bool)>,
@@ -130,6 +211,8 @@ impl<'a> Arena<'a> {
             previous: Vec::new(),
             heads: BTreeMap::new(),
             imported: BTreeMap::new(),
+            function_facts: BTreeMap::new(),
+            indirect_facts: BTreeMap::new(),
             common_cache: BTreeMap::new(),
             replacements: Vec::new(),
             check_frames: Vec::new(),
@@ -140,55 +223,94 @@ impl<'a> Arena<'a> {
         }
     }
     fn view_node<'b>(&'b self, node: &'b Node) -> View<'b> {
+        let aggregate = |descriptor, members| View {
+            descriptor: Descriptor::Aggregate(descriptor),
+            members,
+        };
         match node {
             Node::Source(id) => match self.program.contracts.get(*id).expect("verified contract") {
-                Contract::Tuple(v) => View {
-                    descriptor: AggType::Tuple {
-                        arity: u32::try_from(v.len()).expect("shape member address limit"),
+                Contract::Tuple(v) => aggregate(
+                    AggType::Tuple {
+                        arity: u32::try_from(v.len()).expect("verified address space"),
                     },
-                    members: Members::Tuple(v, &self.imported),
-                },
-                Contract::Struct { type_id, fields } => View {
-                    descriptor: AggType::Struct { type_id },
-                    members: Members::Struct(fields, &self.imported),
-                },
+                    Members::Tuple(v, &self.imported),
+                ),
+                Contract::Struct { type_id, fields } => aggregate(
+                    AggType::Struct { type_id },
+                    Members::Struct(fields, &self.imported),
+                ),
                 Contract::Array {
                     elem_type_id,
                     element,
-                } => View {
-                    descriptor: AggType::Array { elem_type_id },
-                    members: Members::One(self.imported[&element]),
+                } => aggregate(
+                    AggType::Array { elem_type_id },
+                    Members::One(self.imported[&element]),
+                ),
+                Contract::Function { args, rets } | Contract::Closure { args, rets } => View {
+                    descriptor: Descriptor::Callable {
+                        kind: CallableKind::from_kind(self.program.contracts.kind(*id).unwrap()),
+                        args: u32::try_from(args.len()).expect("signature arity"),
+                    },
+                    members: Members::Signature(args, rets, &self.imported),
                 },
-                Contract::Kind(_) => unreachable!("kind is not a shape"),
+                Contract::Kind(_) => unreachable!(),
             },
-            Node::Tuple(v) => View {
-                descriptor: AggType::Tuple {
-                    arity: u32::try_from(v.len()).expect("shape member address limit"),
+            Node::Tuple(v) => aggregate(
+                AggType::Tuple {
+                    arity: u32::try_from(v.len()).expect("verified address space"),
                 },
-                members: Members::Facts(v),
-            },
-            Node::Struct(type_id, v) => View {
-                descriptor: AggType::Struct { type_id: *type_id },
-                members: Members::Facts(v),
-            },
-            Node::Array(elem_type_id, fact) => View {
-                descriptor: AggType::Array {
+                Members::Facts(v),
+            ),
+            Node::Struct(type_id, v) => {
+                aggregate(AggType::Struct { type_id: *type_id }, Members::Facts(v))
+            }
+            Node::Array(elem_type_id, fact) => aggregate(
+                AggType::Array {
                     elem_type_id: *elem_type_id,
                 },
-                members: Members::One(*fact),
-            },
+                Members::One(*fact),
+            ),
+            Node::Function(function) => {
+                let function = &self.program.functions[function.0 as usize];
+                let args = self.program.verified_contracts(function.arg_types);
+                let rets = self.program.verified_contracts(function.ret_types);
+                View {
+                    descriptor: Descriptor::Callable {
+                        kind: CallableKind::Function,
+                        args: u32::try_from(args.len()).expect("signature arity"),
+                    },
+                    members: Members::Signature(args, rets, &self.imported),
+                }
+            }
+            Node::Indirect { signature, kind } => {
+                let entry = &self.program.call_sigs[signature.0 as usize];
+                let args = self.program.verified_contracts(entry.args);
+                let rets = self.program.verified_contracts(entry.rets);
+                View {
+                    descriptor: Descriptor::Callable {
+                        kind: *kind,
+                        args: u32::try_from(args.len()).expect("signature arity"),
+                    },
+                    members: Members::Signature(args, rets, &self.imported),
+                }
+            }
+            Node::Closure(function) => self
+                .view(*function)
+                .expect("known function")
+                .closure()
+                .expect("environment argument"),
         }
     }
     fn view(&self, fact: Fact) -> Option<View<'_>> {
         match fact {
-            Fact::Shape(id) => Some(self.view_node(&self.nodes[id as usize])),
+            Fact::Refined(id) => Some(self.view_node(&self.nodes[id as usize])),
             Fact::Kind(_) => None,
         }
     }
-    fn kind(fact: Fact) -> ValueType {
+    fn kind(&self, fact: Fact) -> ValueType {
         match fact {
             Fact::Kind(kind) => kind,
-            Fact::Shape(_) => ValueType::Agg,
+            Fact::Refined(_) => self.view(fact).unwrap().descriptor.kind(),
         }
     }
     fn find(&self, view: View<'_>) -> Option<Fact> {
@@ -196,7 +318,7 @@ impl<'a> Arena<'a> {
         let mut candidate = self.heads.get(&hash).copied().unwrap_or(u32::MAX);
         while candidate != u32::MAX {
             if view.same(self.view_node(&self.nodes[candidate as usize])) {
-                return Some(Fact::Shape(candidate));
+                return Some(Fact::Refined(candidate));
             }
             candidate = self.previous[candidate as usize];
         }
@@ -213,17 +335,17 @@ impl<'a> Arena<'a> {
         self.nodes.push(node);
         self.previous.push(previous);
         self.heads.insert(hash, id);
-        Fact::Shape(id)
+        Fact::Refined(id)
     }
     fn construction(
         &mut self,
         descriptor: AggType,
         regs: &[u32],
         types: RegisterTypes<'_>,
-        state: &ShapeState,
+        state: &RefinementState,
     ) -> Fact {
         let view = View {
-            descriptor,
+            descriptor: Descriptor::Aggregate(descriptor),
             members: Members::Registers(regs, types, state),
         };
         if let Some(fact) = self.find(view) {
@@ -267,6 +389,9 @@ impl<'a> Arena<'a> {
                     pending.extend(fields.iter().map(|&id| (id, false)));
                 }
                 Contract::Array { element, .. } => pending.push((element, false)),
+                Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+                    pending.extend(args.iter().chain(rets).map(|&id| (id, false)));
+                }
                 Contract::Kind(_) => unreachable!(),
             }
         }
@@ -277,7 +402,7 @@ impl<'a> Arena<'a> {
         if a == b {
             return Some(a);
         }
-        if Self::kind(a) != Self::kind(b) {
+        if self.kind(a) != self.kind(b) {
             return None;
         }
         fn key(a: Fact, b: Fact) -> (Fact, Fact) {
@@ -298,7 +423,7 @@ impl<'a> Arena<'a> {
                 self.common_cache.insert(pair, Some(a));
                 continue;
             }
-            if Self::kind(a) != Self::kind(b) {
+            if self.kind(a) != self.kind(b) {
                 self.common_cache.insert(pair, None);
                 continue;
             }
@@ -308,9 +433,14 @@ impl<'a> Arena<'a> {
                 .filter(|(a, b)| a.descriptor == b.descriptor);
             let Some((left, right)) = views else {
                 self.common_cache
-                    .insert(pair, Some(Fact::Kind(Self::kind(a))));
+                    .insert(pair, Some(Fact::Kind(self.kind(a))));
                 continue;
             };
+            if matches!(left.descriptor, Descriptor::Callable { .. }) {
+                self.common_cache
+                    .insert(pair, Some(Fact::Kind(left.descriptor.kind())));
+                continue;
+            }
             if !ready {
                 pending.push((pair, true));
                 for index in 0..left.members.len() {
@@ -329,7 +459,10 @@ impl<'a> Arena<'a> {
                         .and_then(|(a, b)| self.common_cache[&key(a, b)])
                 })
                 .collect();
-            let node = match left.descriptor {
+            let Descriptor::Aggregate(descriptor) = left.descriptor else {
+                unreachable!()
+            };
+            let node = match descriptor {
                 AggType::Tuple { .. } => Node::Tuple(fields),
                 AggType::Struct { type_id } => Node::Struct(type_id, fields),
                 AggType::Array { elem_type_id } => Node::Array(
@@ -343,12 +476,59 @@ impl<'a> Arena<'a> {
         self.common_pending = pending;
         self.common_cache[&root]
     }
-    fn fact(&self, state: &ShapeState, types: RegisterTypes<'_>, reg: u32) -> Fact {
+    fn indirect_signature(&mut self, signature: CallSigId, kind: ValueType) -> Fact {
+        let kind = CallableKind::from_kind(kind);
+        if let Some(&fact) = self.indirect_facts.get(&(signature.0, kind)) {
+            return fact;
+        }
+        let entry = &self.program.call_sigs[signature.0 as usize];
+        for &id in self
+            .program
+            .verified_contracts(entry.args)
+            .iter()
+            .chain(self.program.verified_contracts(entry.rets))
+        {
+            self.import(id);
+        }
+        let fact = self.intern(Node::Indirect { signature, kind });
+        self.indirect_facts.insert((signature.0, kind), fact);
+        fact
+    }
+    fn callable(&mut self, func: FuncId) -> Fact {
+        if let Some(&fact) = self.function_facts.get(&func.0) {
+            return fact;
+        }
+        let function = &self.program.functions[func.0 as usize];
+        for &id in self
+            .program
+            .verified_contracts(function.arg_types)
+            .iter()
+            .chain(self.program.verified_contracts(function.ret_types))
+        {
+            self.import(id);
+        }
+        let fact = self.intern(Node::Function(func));
+        self.function_facts.insert(func.0, fact);
+        fact
+    }
+    fn closure(&mut self, function: Fact) -> Option<Fact> {
+        let view = self.view(function)?;
+        if !view
+            .members
+            .get(0)
+            .is_some_and(|fact| self.kind(fact) == ValueType::Agg)
+        {
+            return None;
+        }
+        view.closure()?;
+        Some(self.intern(Node::Closure(function)))
+    }
+    fn fact(&self, state: &RefinementState, types: RegisterTypes<'_>, reg: u32) -> Fact {
         Fact::register(state, types, reg)
     }
     fn check(&mut self, expected: ContractId, actual: Fact) -> Result<(), ContractViolation> {
         if let Some(Contract::Kind(kind)) = self.program.contracts.get(expected) {
-            return if kind == Self::kind(actual) {
+            return if kind == self.kind(actual) {
                 Ok(())
             } else {
                 Err(ContractViolation {
@@ -356,7 +536,7 @@ impl<'a> Arena<'a> {
                     path: Vec::new(),
                     mismatch: ContractMismatch::Kind {
                         expected: kind,
-                        actual: Self::kind(actual),
+                        actual: self.kind(actual),
                     },
                 })
             };
@@ -376,10 +556,10 @@ impl<'a> Arena<'a> {
                     .contracts
                     .get(frame.expected)
                     .expect("verified contract");
-                let failure = if contract.kind() != Self::kind(frame.actual) {
+                let failure = if contract.kind() != self.kind(frame.actual) {
                     Some(ContractMismatch::Kind {
                         expected: contract.kind(),
-                        actual: Self::kind(frame.actual),
+                        actual: self.kind(frame.actual),
                     })
                 } else {
                     None
@@ -393,8 +573,30 @@ impl<'a> Arena<'a> {
                 }
                 // Missing shape facts are dynamic obligations, not static contradictions.
                 let actual = self.view(frame.actual);
+                if matches!(
+                    contract,
+                    Contract::Function { .. } | Contract::Closure { .. }
+                ) {
+                    if actual.is_some() {
+                        let expected_fact = self.import(frame.expected);
+                        if expected_fact != frame.actual {
+                            return Err(ContractViolation {
+                                contract: frame.expected,
+                                path: path.clone(),
+                                mismatch: ContractMismatch::Callable { function: None },
+                            });
+                        }
+                    }
+                    pending.pop();
+                    if !pending.is_empty() {
+                        path.pop();
+                    }
+                    continue;
+                }
                 let expected_view = match contract {
-                    Contract::Kind(_) => None,
+                    Contract::Kind(_) | Contract::Function { .. } | Contract::Closure { .. } => {
+                        None
+                    }
                     Contract::Tuple(members) => Some((
                         AggType::Tuple {
                             arity: u32::try_from(members.len())
@@ -411,13 +613,16 @@ impl<'a> Arena<'a> {
                 };
                 if let (Some(actual), Some((expected_descriptor, count))) = (actual, expected_view)
                 {
-                    if actual.descriptor != expected_descriptor {
+                    if actual.descriptor != Descriptor::Aggregate(expected_descriptor) {
                         return Err(ContractViolation {
                             contract: frame.expected,
                             path: path.clone(),
                             mismatch: ContractMismatch::Aggregate {
                                 expected: expected_descriptor,
-                                actual: actual.descriptor,
+                                actual: match actual.descriptor {
+                                    Descriptor::Aggregate(value) => value,
+                                    _ => unreachable!(),
+                                },
                             },
                         });
                     }
@@ -436,7 +641,7 @@ impl<'a> Arena<'a> {
                             _ => None,
                         };
                         if let (Some(expected), Some(actual)) = (child, actual.child(index)) {
-                            path.push(index);
+                            path.push(ContractPath::Member(index));
                             pending.push(Check {
                                 expected,
                                 actual,
@@ -464,53 +669,56 @@ impl<'a> Arena<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct ShapeState {
+pub(super) struct RefinementState {
     pub(super) top: bool,
-    pub(super) aggs: Vec<(usize, u32)>,
+    pub(super) facts: Vec<(usize, u32)>,
 }
-impl Clone for ShapeState {
+impl Clone for RefinementState {
     fn clone(&self) -> Self {
         Self {
             top: self.top,
-            aggs: self.aggs.clone(),
+            facts: self.facts.clone(),
         }
     }
     fn clone_from(&mut self, source: &Self) {
         self.top = source.top;
-        self.aggs.clone_from(&source.aggs);
+        self.facts.clone_from(&source.facts);
     }
 }
-impl ShapeState {
+impl RefinementState {
     pub(super) fn unknown() -> Self {
         Self {
             top: false,
-            aggs: Vec::new(),
+            facts: Vec::new(),
         }
     }
-    pub(super) fn agg(&self, reg: usize) -> Option<&u32> {
-        match self.aggs.last() {
+    pub(super) fn refinement(&self, reg: usize) -> Option<&u32> {
+        match self.facts.last() {
             Some((last, fact)) if *last == reg => Some(fact),
             Some((last, _)) if *last > reg => self
-                .aggs
+                .facts
                 .binary_search_by_key(&reg, |(reg, _)| *reg)
                 .ok()
-                .map(|index| &self.aggs[index].1),
+                .map(|index| &self.facts[index].1),
             _ => None,
         }
     }
-    pub(super) fn set_agg(&mut self, reg: usize, shape: Option<u32>) {
-        if self.aggs.last().is_none_or(|(last, _)| *last < reg) {
+    pub(super) fn set_refinement(&mut self, reg: usize, shape: Option<u32>) {
+        if self.facts.last().is_none_or(|(last, _)| *last < reg) {
             if let Some(shape) = shape {
-                self.aggs.push((reg, shape));
+                self.facts.push((reg, shape));
             }
             return;
         }
-        match (self.aggs.binary_search_by_key(&reg, |(reg, _)| *reg), shape) {
-            (Ok(i), Some(shape)) => self.aggs[i].1 = shape,
+        match (
+            self.facts.binary_search_by_key(&reg, |(reg, _)| *reg),
+            shape,
+        ) {
+            (Ok(i), Some(shape)) => self.facts[i].1 = shape,
             (Ok(i), None) => {
-                self.aggs.remove(i);
+                self.facts.remove(i);
             }
-            (Err(i), Some(shape)) => self.aggs.insert(i, (reg, shape)),
+            (Err(i), Some(shape)) => self.facts.insert(i, (reg, shape)),
             (Err(_), None) => {}
         }
     }
@@ -520,7 +728,7 @@ fn transfer(
     arena: &mut Arena<'_>,
     instr: &Instr,
     types: RegisterTypes<'_>,
-    state: &mut ShapeState,
+    state: &mut RefinementState,
 ) {
     // Block declarations receive facts atomically along incoming edges; they do not write again.
     if matches!(instr, Instr::Block { .. }) {
@@ -528,15 +736,34 @@ fn transfer(
     }
 
     if state.top
-        || !instr
-            .writes()
-            .any(|reg| types.get(reg) == Some(ValueType::Agg))
+        || !instr.writes().any(|reg| {
+            matches!(
+                types.get(reg),
+                Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+            )
+        })
     {
         return;
     }
     // Read every source before invalidating aliased destinations, including projection sources.
     let mut replacements = core::mem::take(&mut arena.replacements);
     match instr {
+        Instr::ConstFunc { dst, func_id } => replacements.push((*dst, arena.callable(*func_id))),
+        Instr::ClosureNew { dst, func, .. } => {
+            if let Some(fact) = arena.closure(arena.fact(state, types, *func)) {
+                replacements.push((*dst, fact));
+            }
+        }
+        Instr::CallIndirect { call_sig, rets, .. } => {
+            for (&reg, &id) in rets.iter().zip(
+                arena
+                    .program
+                    .call_sig_ret_contracts(&arena.program.call_sigs[*call_sig as usize])
+                    .unwrap(),
+            ) {
+                replacements.push((reg, arena.import(id)));
+            }
+        }
         Instr::Mov { dst, src } => replacements.push((*dst, arena.fact(state, types, *src))),
         Instr::Select { dst, a, b, .. } => {
             let a = arena.fact(state, types, *a);
@@ -622,16 +849,22 @@ fn transfer(
         _ => {}
     }
     for reg in instr.writes() {
-        if types.get(reg) == Some(ValueType::Agg) {
-            state.set_agg(reg as usize, None);
+        if matches!(
+            types.get(reg),
+            Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+        ) {
+            state.set_refinement(reg as usize, None);
         }
     }
     for &(reg, fact) in &replacements {
-        if types.get(reg) == Some(ValueType::Agg) {
-            state.set_agg(
+        if matches!(
+            types.get(reg),
+            Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+        ) {
+            state.set_refinement(
                 reg as usize,
                 match fact {
-                    Fact::Shape(id) => Some(id),
+                    Fact::Refined(id) => Some(id),
                     Fact::Kind(_) => None,
                 },
             );
@@ -647,7 +880,7 @@ fn validate(
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
-    state: &ShapeState,
+    state: &RefinementState,
 ) -> Result<(), VerifyError> {
     let projection = match instr {
         Instr::TupleGet { dst, tuple, index } => Some((*dst, *tuple, *index, AggKind::Tuple)),
@@ -672,7 +905,10 @@ fn validate(
     if let Some((reg, index, expected)) = access
         && let Some(view) = arena.view(arena.fact(state, types, reg))
     {
-        let actual = match view.descriptor {
+        let Descriptor::Aggregate(descriptor) = view.descriptor else {
+            unreachable!("aggregate register")
+        };
+        let actual = match descriptor {
             AggType::Tuple { .. } => AggKind::Tuple,
             AggType::Struct { .. } => AggKind::Struct,
             AggType::Array { .. } => AggKind::Array,
@@ -686,7 +922,7 @@ fn validate(
             });
         }
         if let Some(index) = index {
-            match view.descriptor {
+            match descriptor {
                 AggType::Tuple { arity } if index >= arity => {
                     return Err(VerifyError::TupleIndexOutOfBounds {
                         func: func_id,
@@ -716,7 +952,7 @@ fn validate(
                 pc,
                 reg,
             })?;
-        check_expected(func_id, pc, dst, types.get(dst), Arena::kind(fact))?;
+        check_expected(func_id, pc, dst, types.get(dst), arena.kind(fact))?;
     }
     match instr {
         Instr::Call {
@@ -742,6 +978,38 @@ fn validate(
                             callee: *callee,
                             index: u32::try_from(index)
                                 .expect("verified signature or schema arity"),
+                        },
+                        error,
+                    })?;
+            }
+        }
+        Instr::CallIndirect {
+            call_sig,
+            callee,
+            args,
+            ..
+        } => {
+            let signature = &arena.program.call_sigs[*call_sig as usize];
+            let arg_contracts = arena.program.call_sig_arg_contracts(signature).unwrap();
+            let expected =
+                arena.indirect_signature(CallSigId(*call_sig), types.get(*callee).unwrap());
+            let actual = arena.fact(state, types, *callee);
+            if matches!(actual, Fact::Refined(_)) && actual != expected {
+                return Err(VerifyError::CallIndirectContractMismatch {
+                    func: func_id,
+                    pc,
+                    call_sig: *call_sig,
+                });
+            }
+            for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {
+                arena
+                    .check(contract, arena.fact(state, types, reg))
+                    .map_err(|error| VerifyError::ContractMismatch {
+                        func: func_id,
+                        pc,
+                        position: ContractPosition::IndirectArgument {
+                            signature: CallSigId(*call_sig),
+                            index: u32::try_from(index).expect("signature arity"),
                         },
                         error,
                     })?;
@@ -783,7 +1051,10 @@ pub(super) fn verify_flow(
     types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
-    if !types.iter().any(|kind| kind == ValueType::Agg) {
+    if !types
+        .iter()
+        .any(|kind| matches!(kind, ValueType::Agg | ValueType::Func | ValueType::Closure))
+    {
         return Ok(());
     }
     let (mut arena, inputs, outputs) =
@@ -808,28 +1079,28 @@ fn solve_flow<'a>(
     reachable: &[bool],
     types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
-) -> (Arena<'a>, Vec<ShapeState>, Vec<ShapeState>) {
+) -> (Arena<'a>, Vec<RefinementState>, Vec<RefinementState>) {
     let mut arena = Arena::new(program);
-    let mut entry = ShapeState::unknown();
+    let mut entry = RefinementState::unknown();
     for (index, &id) in program.functions[func_id as usize]
         .arg_contracts(program)
         .expect("checked signature")
         .iter()
         .enumerate()
     {
-        if let Fact::Shape(shape) = arena.import(id) {
-            entry.set_agg(index + 1, Some(shape));
+        if let Fact::Refined(shape) = arena.import(id) {
+            entry.set_refinement(index + 1, Some(shape));
         }
     }
     let arena = core::cell::RefCell::new(arena);
-    let mut edge_scratch: Option<ShapeState> = None;
+    let mut edge_scratch: Option<RefinementState> = None;
     let (inputs, outputs) = dataflow::solve_forward(
         blocks,
         reachable,
         entry,
-        ShapeState {
+        RefinementState {
             top: true,
-            aggs: Vec::new(),
+            facts: Vec::new(),
         },
         |pred, arm, _, acc, incoming| {
             let branch = &decoded[blocks[pred].instr_end - 1].instr;
@@ -852,12 +1123,12 @@ fn solve_flow<'a>(
             }
             let mut arena = arena.borrow_mut();
             let mut changed = false;
-            acc.aggs.retain_mut(|(reg, fact)| {
+            acc.facts.retain_mut(|(reg, fact)| {
                 let common = incoming
-                    .agg(*reg)
-                    .and_then(|&other| arena.common(Fact::Shape(*fact), Fact::Shape(other)));
+                    .refinement(*reg)
+                    .and_then(|&other| arena.common(Fact::Refined(*fact), Fact::Refined(other)));
                 match common {
-                    Some(Fact::Shape(common)) => {
+                    Some(Fact::Refined(common)) => {
                         changed |= *fact != common;
                         *fact = common;
                         true
@@ -946,19 +1217,19 @@ mod tests {
 
     #[test]
     fn sparse_fact_clone_reuses_capacity_and_keeps_unreachable_distinct() {
-        let mut state = ShapeState::unknown();
-        state.set_agg(4, Some(0));
-        let allocation = state.aggs.as_ptr();
-        let mut incoming = ShapeState::unknown();
-        incoming.set_agg(3, Some(1));
+        let mut state = RefinementState::unknown();
+        state.set_refinement(4, Some(0));
+        let allocation = state.facts.as_ptr();
+        let mut incoming = RefinementState::unknown();
+        incoming.set_refinement(3, Some(1));
         state.clone_from(&incoming);
         assert_eq!(state, incoming);
-        assert_eq!(state.aggs.as_ptr(), allocation);
-        incoming.aggs.clear();
+        assert_eq!(state.facts.as_ptr(), allocation);
+        incoming.facts.clear();
         incoming.top = true;
         state.clone_from(&incoming);
         assert!(state.top);
-        assert!(state.aggs.is_empty());
-        assert_ne!(state, ShapeState::unknown());
+        assert!(state.facts.is_empty());
+        assert_ne!(state, RefinementState::unknown());
     }
 }

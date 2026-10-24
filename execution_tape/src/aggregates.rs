@@ -992,7 +992,7 @@ mod tests {
         else {
             panic!("expected wrong array element");
         };
-        assert_eq!(failure.path, vec![1]);
+        assert_eq!(failure.path, vec![crate::contract::ContractPath::Member(1)]);
         assert!(matches!(
             scratch.check(&p, &heap, array, st_contract, 100),
             Err(CheckError::Mismatch(crate::contract::ContractViolation {

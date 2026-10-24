@@ -15,7 +15,7 @@ use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
-use crate::contract::{ContractPosition, ContractViolation};
+use crate::contract::{Contract, ContractPosition, ContractViolation};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
@@ -76,6 +76,13 @@ pub enum Trap {
         expected: ValueType,
         /// Actual value type.
         actual: ValueType,
+    },
+    /// An indirect target has the right storage kinds but different compositional contracts.
+    CallableSignatureMismatch {
+        /// Expected program-local indirect signature.
+        signature: crate::program::CallSigId,
+        /// Selected guest function.
+        function: FuncId,
     },
     /// Aggregate heap error.
     AggError(AggError),
@@ -153,6 +160,14 @@ impl fmt::Display for Trap {
             Self::TypeMismatch { expected, actual } => {
                 write!(f, "type mismatch (expected {expected:?}, got {actual:?})")
             }
+            Self::CallableSignatureMismatch {
+                signature,
+                function,
+            } => write!(
+                f,
+                "function #{} does not match indirect signature #{}",
+                function.0, signature.0
+            ),
             Self::AggError(e) => write!(f, "aggregate error: {e}"),
             Self::ContractMismatch {
                 function,
@@ -2213,6 +2228,38 @@ impl<H: Host> Vm<H> {
                     self.check_arg_contracts(ctx, program_ref, callee.func, callee_vf, callee_base)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
+                    // Even an unrefined environment must resolve before entering a closure body.
+                    let environment_contract =
+                        program_ref.verified_contracts(callee_fn.arg_types)[0];
+                    if matches!(
+                        program_ref.contracts.get(environment_contract),
+                        Some(Contract::Kind(_))
+                    ) {
+                        ctx.contract_scratch
+                            .check_value(
+                                program_ref,
+                                self.memory.aggs(),
+                                &Value::Agg(callee.env),
+                                environment_contract,
+                                self.limits.max_contract_work,
+                            )
+                            .map_err(|error| {
+                                ctx.trap(
+                                    func_id,
+                                    pc,
+                                    span_id,
+                                    self.contract_trap(
+                                        callee.func,
+                                        ContractPosition::Argument {
+                                            callee: callee.func,
+                                            index: 0,
+                                        },
+                                        error,
+                                    ),
+                                )
+                            })?;
+                    }
+
                     ctx.frames.push(Frame {
                         func: callee.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
@@ -2244,6 +2291,48 @@ impl<H: Host> Vm<H> {
                         func: ctx.read_func(base, *func),
                         env: ctx.read_agg_handle(base, *env),
                     };
+                    let body = program_ref
+                        .functions
+                        .get(closure.func.0 as usize)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let env_contract = *program_ref
+                        .verified_contracts(body.arg_types)
+                        .first()
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ArityMismatch))?;
+                    if program_ref.contracts.kind(env_contract) != Some(ValueType::Agg) {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::TypeMismatch {
+                                expected: ValueType::Agg,
+                                actual: program_ref.contracts.kind(env_contract).unwrap(),
+                            },
+                        ));
+                    }
+                    ctx.contract_scratch
+                        .check_value(
+                            program_ref,
+                            self.memory.aggs(),
+                            &Value::Agg(closure.env),
+                            env_contract,
+                            self.limits.max_contract_work,
+                        )
+                        .map_err(|error| {
+                            ctx.trap(
+                                func_id,
+                                pc,
+                                span_id,
+                                self.contract_trap(
+                                    closure.func,
+                                    ContractPosition::Argument {
+                                        callee: closure.func,
+                                        index: 0,
+                                    },
+                                    error,
+                                ),
+                            )
+                        })?;
                     ctx.write_closure(base, *dst, closure);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2769,6 +2858,15 @@ impl<H: Host> Vm<H> {
         }
     }
 
+    fn contract_value(ctx: &ExecutionContext, base: RegBase, register: VReg) -> Value {
+        match register {
+            VReg::Agg(reg) => Value::Agg(ctx.read_agg_handle(base, reg)),
+            VReg::Func(reg) => Value::Func(ctx.read_func(base, reg)),
+            VReg::Closure(reg) => Value::Closure(ctx.read_closure(base, reg)),
+            _ => unreachable!("refined contract kind"),
+        }
+    }
+
     fn check_arg_contracts(
         &self,
         ctx: &mut ExecutionContext,
@@ -2778,15 +2876,13 @@ impl<H: Host> Vm<H> {
         base: RegBase,
     ) -> Result<(), Trap> {
         for check in &vf.contract_checks[..vf.arg_check_count as usize] {
-            let VReg::Agg(reg) = vf.reg_layout.arg_regs[check.index as usize] else {
-                unreachable!("aggregate contract kind");
-            };
-            let handle = ctx.read_agg_handle(base, reg);
+            let value =
+                Self::contract_value(ctx, base, vf.reg_layout.arg_regs[check.index as usize]);
             ctx.contract_scratch
-                .check(
+                .check_value(
                     program,
                     self.memory.aggs(),
-                    handle,
+                    &value,
                     check.contract,
                     self.limits.max_contract_work,
                 )
@@ -2814,15 +2910,12 @@ impl<H: Host> Vm<H> {
         rets: &[VReg],
     ) -> Result<(), Trap> {
         for check in &vf.contract_checks[vf.arg_check_count as usize..] {
-            let VReg::Agg(reg) = rets[check.index as usize] else {
-                unreachable!("aggregate contract kind");
-            };
-            let handle = ctx.read_agg_handle(base, reg);
+            let value = Self::contract_value(ctx, base, rets[check.index as usize]);
             ctx.contract_scratch
-                .check(
+                .check_value(
                     program,
                     self.memory.aggs(),
-                    handle,
+                    &value,
                     check.contract,
                     self.limits.max_contract_work,
                 )
@@ -3418,7 +3511,11 @@ fn validate_indirect_call_signature(
         call_sig,
         callee_fn,
         matches!(callee_kind, IndirectCalleeKind::Closure),
-    )
+    )?;
+    Err(Trap::CallableSignatureMismatch {
+        signature: call_sig,
+        function: callee_func,
+    })
 }
 
 #[inline]
@@ -3458,7 +3555,7 @@ fn validate_indirect_call_signature_types(
 
 #[inline]
 fn validate_signature_types<'a>(
-    expected: &[ValueType],
+    expected: crate::contract::ContractKinds<'_>,
     actual: impl ExactSizeIterator<Item = &'a ValueType>,
 ) -> Result<(), Trap> {
     if expected.len() != actual.len() {
@@ -3607,12 +3704,8 @@ mod tests {
     fn aggregate_contracts_are_checked_before_entry_and_every_call_kind() {
         for mode in 0..4 {
             let mut pb = ProgramBuilder::new();
-            let integer = pb
-                .contract(crate::contract::Contract::Kind(ValueType::I64))
-                .unwrap();
-            let tuple_contract = pb
-                .contract(crate::contract::Contract::Tuple(&[Some(integer)]))
-                .unwrap();
+            let integer = pb.contract(Contract::Kind(ValueType::I64)).unwrap();
+            let tuple_contract = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
             let mut body = Asm::new();
             body.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
             body.tuple_get(2, 1, 0);
@@ -3642,12 +3735,22 @@ mod tests {
                         caller.call(0, target, 0, &[1], &[4]);
                     }
                     2 => {
-                        let sig = pb.call_sig(&[ValueType::Agg], &[ValueType::I64]);
+                        let sig = pb
+                            .call_sig(crate::asm::FunctionAbi {
+                                args: vec![tuple_contract.into()],
+                                rets: vec![ValueType::I64.into()],
+                            })
+                            .unwrap();
                         caller.const_func(2, target);
                         caller.call_indirect(0, sig, 2, 0, &[1], &[4]);
                     }
                     _ => {
-                        let sig = pb.call_sig(&[], &[ValueType::I64]);
+                        let sig = pb
+                            .call_sig(FunctionSig {
+                                arg_types: vec![],
+                                ret_types: vec![ValueType::I64],
+                            })
+                            .unwrap();
                         caller.const_func(2, target);
                         caller.closure_new(3, 2, 1);
                         caller.call_indirect(0, sig, 3, 0, &[], &[4]);
@@ -4156,14 +4259,10 @@ mod tests {
         passthrough.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::Agg]);
         passthrough.tuple_get(2, 1, 0);
         passthrough.ret(0, &[2]);
-        let opaque = pb
-            .contract(crate::contract::Contract::Kind(ValueType::Agg))
-            .unwrap();
-        let closure = pb
-            .contract(crate::contract::Contract::Kind(ValueType::Closure))
-            .unwrap();
+        let opaque = pb.contract(Contract::Kind(ValueType::Agg)).unwrap();
+        let closure = pb.contract(Contract::Kind(ValueType::Closure)).unwrap();
         let read_contract = pb
-            .contract(crate::contract::Contract::Tuple(&[
+            .contract(Contract::Tuple(&[
                 Some(opaque),
                 Some(closure),
                 Some(opaque),
@@ -4715,23 +4814,32 @@ mod tests {
     }
 
     fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> u32 {
-        let args_offset = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
-        p.value_types.extend_from_slice(args);
-        let args_len = u32::try_from(args.len()).unwrap_or(u32::MAX);
-
-        let rets_offset = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
-        p.value_types.extend_from_slice(rets);
-        let rets_len = u32::try_from(rets.len()).unwrap_or(u32::MAX);
-
-        let id = u32::try_from(p.call_sigs.len()).unwrap_or(u32::MAX);
+        let mut table = crate::contract::ContractTableBuilder::new();
+        for (id, contract) in p.contracts.iter() {
+            assert_eq!(table.intern(contract).unwrap(), id);
+        }
+        let args: Vec<_> = args
+            .iter()
+            .map(|&kind| table.intern(Contract::Kind(kind)).unwrap())
+            .collect();
+        let rets: Vec<_> = rets
+            .iter()
+            .map(|&kind| table.intern(Contract::Kind(kind)).unwrap())
+            .collect();
+        p.contracts = table.finish();
+        let args_off = u32::try_from(p.contract_ids.len()).expect("verified address space");
+        p.contract_ids.extend_from_slice(&args);
+        let rets_off = u32::try_from(p.contract_ids.len()).expect("verified address space");
+        p.contract_ids.extend_from_slice(&rets);
+        let id = u32::try_from(p.call_sigs.len()).expect("verified address space");
         p.call_sigs.push(CallSigEntry {
             args: ByteRange {
-                offset: args_offset,
-                len: args_len,
+                offset: args_off,
+                len: u32::try_from(args.len()).expect("verified address space"),
             },
             rets: ByteRange {
-                offset: rets_offset,
-                len: rets_len,
+                offset: rets_off,
+                len: u32::try_from(rets.len()).expect("verified address space"),
             },
         });
         id
@@ -5516,7 +5624,12 @@ mod tests {
     #[test]
     fn vm_executes_closure_that_reads_typed_tuple_env() {
         let mut pb = ProgramBuilder::new();
-        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        let call_sig = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
 
         let mut entry = Asm::new();
         entry.set_register_types(vec![
@@ -5555,12 +5668,8 @@ mod tests {
         body.tuple_get(3, 1, 0);
         body.i64_add(4, 3, 2);
         body.ret(0, &[4]);
-        let integer = pb
-            .contract(crate::contract::Contract::Kind(ValueType::I64))
-            .unwrap();
-        let env_contract = pb
-            .contract(crate::contract::Contract::Tuple(&[Some(integer)]))
-            .unwrap();
+        let integer = pb.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let env_contract = pb.contract(Contract::Tuple(&[Some(integer)])).unwrap();
         pb.push_function_checked(
             body,
             crate::asm::FunctionAbi {
@@ -5579,10 +5688,6 @@ mod tests {
     #[test]
     fn vm_traps_call_indirect_on_signature_arity_mismatch() {
         let entry_bytecode = crate::bytecode::encode_instructions(&[
-            Instr::ConstFunc {
-                dst: 1,
-                func_id: FuncId(1),
-            },
             Instr::ConstI64 { dst: 2, imm: 7 },
             Instr::CallIndirect {
                 eff_out: 0,
@@ -5614,7 +5719,7 @@ mod tests {
             TypeTableDef::default(),
             vec![
                 FunctionDef {
-                    arg_types: vec![],
+                    arg_types: vec![ValueType::Func],
                     ret_types: vec![ValueType::I64],
                     register_types: vec![
                         ValueType::Unit,
@@ -5642,7 +5747,13 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Func(FuncId(1))],
+                TraceMask::NONE,
+                None,
+            )
             .unwrap_err();
         assert!(matches!(err.trap, Trap::ArityMismatch));
     }
@@ -5650,10 +5761,6 @@ mod tests {
     #[test]
     fn vm_traps_call_indirect_on_signature_type_mismatch() {
         let entry_bytecode = crate::bytecode::encode_instructions(&[
-            Instr::ConstFunc {
-                dst: 1,
-                func_id: FuncId(1),
-            },
             Instr::ConstI64 { dst: 2, imm: 7 },
             Instr::CallIndirect {
                 eff_out: 0,
@@ -5685,7 +5792,7 @@ mod tests {
             TypeTableDef::default(),
             vec![
                 FunctionDef {
-                    arg_types: vec![],
+                    arg_types: vec![ValueType::Func],
                     ret_types: vec![ValueType::I64],
                     register_types: vec![
                         ValueType::Unit,
@@ -5713,7 +5820,13 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Func(FuncId(1))],
+                TraceMask::NONE,
+                None,
+            )
             .unwrap_err();
         assert!(matches!(
             err.trap,
@@ -5992,7 +6105,12 @@ mod tests {
         a1.i64_sub(8, 2, 7); // n - 1
 
         let mut pb = ProgramBuilder::new();
-        let sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        let sig = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
         a1.call_indirect(0, sig, 6, 0, &[8], &[9]);
         a1.ret(0, &[9]);
 
@@ -6060,7 +6178,12 @@ mod tests {
         a1.ret(0, &[1]);
 
         let mut pb = ProgramBuilder::new();
-        let sig = pb.call_sig(&[], &[ValueType::Agg]);
+        let sig = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::Agg],
+            })
+            .unwrap();
 
         // -- func0 (entry) --
         let mut a0 = Asm::new();
@@ -6142,35 +6265,20 @@ mod tests {
         // call_indirect r5 = r4() with mismatched call_sig
         // ret [r5]
         let entry_bytecode = crate::bytecode::encode_instructions(&[
-            Instr::ConstI64 { dst: 1, imm: 0 },
-            Instr::TupleNew {
-                dst: 2,
-                values: vec![1],
-            },
-            Instr::ConstFunc {
-                dst: 3,
-                func_id: FuncId(1),
-            },
-            Instr::ClosureNew {
-                dst: 4,
-                func: 3,
-                env: 2,
-            },
             Instr::CallIndirect {
                 eff_out: 0,
                 call_sig: 0,
-                callee: 4,
+                callee: 1,
                 eff_in: 0,
                 args: vec![],
-                rets: vec![5],
+                rets: vec![2],
             },
             Instr::Ret {
                 eff_in: 0,
-                rets: vec![5],
+                rets: vec![2],
             },
         ])
         .unwrap();
-
         let mut p = Program::new(
             vec![],
             vec![],
@@ -6178,16 +6286,9 @@ mod tests {
             TypeTableDef::default(),
             vec![
                 FunctionDef {
-                    arg_types: vec![],
+                    arg_types: vec![ValueType::Closure],
                     ret_types: vec![ValueType::I64],
-                    register_types: vec![
-                        ValueType::Unit,
-                        ValueType::I64,
-                        ValueType::Agg,
-                        ValueType::Func,
-                        ValueType::Closure,
-                        ValueType::I64,
-                    ],
+                    register_types: vec![ValueType::Unit, ValueType::Closure, ValueType::I64],
                     bytecode: entry_bytecode,
                     spans: vec![],
                 },
@@ -6205,8 +6306,18 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run(
+                &p,
+                FuncId(0),
+                &[Value::Closure(Closure {
+                    func: FuncId(1),
+                    env,
+                })],
+                TraceMask::NONE,
+                None,
+            )
             .unwrap_err();
         assert!(matches!(
             err.trap,

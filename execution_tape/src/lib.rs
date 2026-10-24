@@ -97,8 +97,11 @@
 //! Constructors and projections preserve nested facts; direct calls propagate enforced result
 //! contracts. Joins retain common structure. Opaque boundary values are checked before callee entry
 //! or result installation, using a separate bounded contract-work budget. Contract inspection
-//! borrows definitions without expanding shared graphs. Function/closure kinds and indirect-call
-//! signatures remain coarse; callable refinements are not implied.
+//! borrows definitions without expanding shared graphs. `Contract::Function` and `Contract::Closure`
+//! describe exact exposed signatures. Their argument/result contract IDs also author indirect calls
+//! through `ProgramBuilder::call_sig(FunctionAbi { ... })`. `Kind(Func)` and `Kind(Closure)` remain
+//! opaque; exact callable matching implements no variance or subtyping. Closure environment layouts
+//! stay hidden from their exposed signature and are checked against the concrete body before use.
 //!
 //! Run `cargo run -p execution_tape_wind_tunnel --bin nested_contracts` for a complete example.
 //!

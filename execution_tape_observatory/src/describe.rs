@@ -19,7 +19,7 @@ pub(super) fn verification(
     program: &Program,
     error: &execution_tape::verifier::VerifyError,
 ) -> VerificationDiagnostic {
-    use execution_tape::contract::{Contract, ContractPosition};
+    use execution_tape::contract::{Contract, ContractPath, ContractPosition};
     use execution_tape::verifier::VerifyError;
     let VerifyError::ContractMismatch {
         func,
@@ -45,6 +45,16 @@ pub(super) fn verification(
                 .and_then(|ids| ids.get(index as usize))
                 .copied(),
         ),
+        ContractPosition::IndirectArgument { signature, index } => (
+            format!("Indirect call #{}", signature.0),
+            format!("argument[{index}]"),
+            format!("Indirect argument {}", u64::from(index) + 1),
+            program
+                .call_sig(signature)
+                .and_then(|entry| program.call_sig_arg_contracts(entry).ok())
+                .and_then(|ids| ids.get(index as usize))
+                .copied(),
+        ),
         ContractPosition::Argument { callee, index } => (
             format!("Call to {}", function(program, callee)),
             format!("argument[{index}]"),
@@ -64,7 +74,13 @@ pub(super) fn verification(
     let mut indexed = root;
     let mut trail = label;
     let mut contract = contract.and_then(|id| program.contracts.get(id));
-    for &index in error.path.iter().take(8) {
+    for &step in error.path.iter().take(8) {
+        let ContractPath::Member(index) = step else {
+            indexed.push_str(".environment");
+            trail.push_str(" → captured environment");
+            contract = None;
+            continue;
+        };
         indexed.push_str(&format!("[{index}]"));
         let (member, child) = match contract {
             Some(Contract::Tuple(members)) => (
@@ -181,7 +197,7 @@ pub(super) fn contract(
             return type_name(kind);
         }
         if depth == 0 {
-            return format!("aggregate #{}", id.0);
+            return format!("{} #{}", type_name(contract.kind()), id.0);
         }
         let members = |ids: &[Option<execution_tape::contract::ContractId>]| {
             let mut text = ids
@@ -206,6 +222,30 @@ pub(super) fn contract(
                     preview.push_str(&format!(", … +{hidden}"));
                 }
                 format!("struct #{}({preview})", type_id.0)
+            }
+            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+                let list = |values: &[execution_tape::contract::ContractId]| {
+                    let mut text = values
+                        .iter()
+                        .take(4)
+                        .map(|&id| summary(table, id, depth - 1))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if values.len() > 4 {
+                        text.push_str(&format!(", … +{}", values.len() - 4));
+                    }
+                    text
+                };
+                format!(
+                    "{}({}) → ({})",
+                    if matches!(contract, Contract::Function { .. }) {
+                        "function"
+                    } else {
+                        "closure"
+                    },
+                    list(args),
+                    list(rets)
+                )
             }
             Contract::Array {
                 elem_type_id,

@@ -265,22 +265,40 @@ fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
     asm.const_i64(1, 7)
         .tuple_new(2, &[1])
         .tuple_new(3, &[])
-        .const_func(4, FuncId(0));
+        .const_func(4, FuncId(1));
     asm.closure_new(5, 4, 2)
         .closure_new(6, 4, 3)
         .jmp(join.with_args(&[3, 2, 6, 5]));
     asm.place(join).unwrap();
     asm.ret(0, &[2, 3, 5, 6]);
-    let p = verify(
-        asm,
-        &[],
-        &[
-            ValueType::Agg,
-            ValueType::Agg,
-            ValueType::Closure,
-            ValueType::Closure,
-        ],
-    );
+    let mut builder = ProgramBuilder::new();
+    builder
+        .push_function_checked(
+            asm,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![
+                    ValueType::Agg,
+                    ValueType::Agg,
+                    ValueType::Closure,
+                    ValueType::Closure,
+                ],
+            },
+        )
+        .unwrap();
+    let mut closure_body = Asm::new();
+    closure_body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+    closure_body.ret(0, &[]);
+    builder
+        .push_function_checked(
+            closure_body,
+            FunctionSig {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+    let p = builder.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     let [
@@ -763,7 +781,12 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
             ValueType::I64,
         ]);
         if indirect {
-            let sig = builder.call_sig(&[ValueType::I64], &[ValueType::I64]);
+            let sig = builder
+                .call_sig(FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                })
+                .unwrap();
             caller
                 .const_func(2, callee)
                 .call_indirect(0, sig, 2, 0, &[1], &[3]);

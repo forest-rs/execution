@@ -300,7 +300,7 @@ impl FunctionSig {
     /// let call_rets = [ValueType::Bool];
     ///
     /// let mut builder = ProgramBuilder::new();
-    /// let call_sig = builder.call_sig(&call_args, &call_rets);
+    /// let call_sig = builder.call_sig(FunctionSig {arg_types:(&call_args).to_vec(),ret_types:(&call_rets).to_vec()}).unwrap();
     /// let body_sig = FunctionSig::closure_body(&call_args, &call_rets);
     ///
     /// assert_eq!(body_sig.arg_types, vec![ValueType::Agg, ValueType::I64]);
@@ -442,8 +442,8 @@ struct FunctionOutputNameDef {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CallSigDef {
-    args: Vec<ValueType>,
-    rets: Vec<ValueType>,
+    args: Vec<ContractId>,
+    rets: Vec<ContractId>,
 }
 
 impl ProgramBuilder {
@@ -662,21 +662,22 @@ impl ProgramBuilder {
         self.host_sig(sym, sig)
     }
 
-    /// Interns a call signature and returns its [`CallSigId`].
-    pub fn call_sig(&mut self, args: &[ValueType], rets: &[ValueType]) -> CallSigId {
+    /// Interns an exact compositional indirect-call signature.
+    pub fn call_sig(
+        &mut self,
+        abi: impl Into<FunctionAbi>,
+    ) -> Result<CallSigId, ContractBuildError> {
+        let (args, rets) = self.resolve_signature(abi.into())?;
         if let Some(i) = self
             .call_sigs
             .iter()
             .position(|x| x.args == args && x.rets == rets)
         {
-            return CallSigId(u32::try_from(i).unwrap_or(u32::MAX));
+            return Ok(CallSigId(u32::try_from(i).unwrap_or(u32::MAX)));
         }
         let id = CallSigId(u32::try_from(self.call_sigs.len()).unwrap_or(u32::MAX));
-        self.call_sigs.push(CallSigDef {
-            args: args.to_vec(),
-            rets: rets.to_vec(),
-        });
-        id
+        self.call_sigs.push(CallSigDef { args, rets });
+        Ok(id)
     }
 
     /// Interns a compositional contract. Create child contracts before their parents.
@@ -817,12 +818,12 @@ impl ProgramBuilder {
             self.contracts,
         );
         for cs in self.call_sigs {
-            let args_off = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
-            p.value_types.extend_from_slice(&cs.args);
+            let args_off = u32::try_from(p.contract_ids.len()).unwrap_or(u32::MAX);
+            p.contract_ids.extend_from_slice(&cs.args);
             let args_len = u32::try_from(cs.args.len()).unwrap_or(u32::MAX);
 
-            let rets_off = u32::try_from(p.value_types.len()).unwrap_or(u32::MAX);
-            p.value_types.extend_from_slice(&cs.rets);
+            let rets_off = u32::try_from(p.contract_ids.len()).unwrap_or(u32::MAX);
+            p.contract_ids.extend_from_slice(&cs.rets);
             let rets_len = u32::try_from(cs.rets.len()).unwrap_or(u32::MAX);
 
             p.call_sigs.push(CallSigEntry {
@@ -2484,9 +2485,24 @@ mod tests {
     #[test]
     fn program_builder_call_sig_interns_and_builds_program_table() {
         let mut pb = ProgramBuilder::new();
-        let s0 = pb.call_sig(&[ValueType::I64, ValueType::Bool], &[ValueType::I64]);
-        let s1 = pb.call_sig(&[ValueType::I64, ValueType::Bool], &[ValueType::I64]);
-        let s2 = pb.call_sig(&[ValueType::Bool], &[]);
+        let s0 = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64, ValueType::Bool],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let s1 = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64, ValueType::Bool],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let s2 = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::Bool],
+                ret_types: vec![],
+            })
+            .unwrap();
         assert_eq!(s0, s1);
         assert_ne!(s0, s2);
 
@@ -2608,7 +2624,12 @@ mod tests {
             })
             .unwrap();
 
-        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        let call_sig = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
 
         let mut callee_asm = Asm::new();
         callee_asm.set_register_types(vec![ValueType::Unit, ValueType::I64]);
@@ -2650,7 +2671,12 @@ mod tests {
             },
         );
 
-        let call_sig = pb.call_sig(&[ValueType::I64], &[ValueType::I64]);
+        let call_sig = pb
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
 
         let caller = pb
             .declare_function(FunctionSig {
