@@ -179,6 +179,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Check kind-only value contracts directly without traversal frames or successful-proof entries.
+  Preserve the same work charge, type/handle errors and opaque callable semantics. ([#168][] by [@waywardmonkeys][])
+
 - Wire version 0.4 encodes indirect signatures with shared compositional contract IDs; regenerate
   encoded programs. Replace `call_sig(args, rets)` with fallible `call_sig(FunctionSig { ... })`
   for kind-only signatures or `call_sig(FunctionAbi { ... })` for refinements. The argument/result
@@ -400,3 +403,4 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#166]: https://github.com/forest-rs/execution/pull/166
 
 [#167]: https://github.com/forest-rs/execution/pull/167
+[#168]: https://github.com/forest-rs/execution/pull/168
