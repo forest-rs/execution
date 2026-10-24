@@ -41,6 +41,19 @@ previous instruction. Indirect runtime callees are explicitly unknown. The last 
 locations are retained. `Tab`/`Shift+Tab` cycle the navigator, instructions and scrollable details;
 arrows, page keys and `Home`/`End` operate on the focused pane. `q` quits.
 
+The details pane now shows verifier-backed **before → after** contracts for the selected
+instruction's operand registers, with destinations first. Aliased projections show the old
+aggregate and its projected result separately. Local origins name an argument, defining opcode/PC,
+or incoming block state. At joins, inspect both static input arms and their simultaneous parameter
+bindings beside the common guaranteed fact; differing tuple-member kinds appear as `?`.
+
+These are source dataflow facts: call outputs assume successful callee return, and branch outputs
+precede their outgoing edge bindings. Unreachable instructions carry no value guarantees. Rejected
+programs keep their diagnostic view and explicitly report inferred facts unavailable. Analysis is
+created for the selected function and instruction views are cached across repaints. Rendering
+shows at most four value-register facts and four incoming arms/bindings at a time, with explicit
+omissions and operand scan limits; no VM executes while browsing.
+
 The details pane shows compositional guest signatures (with bounded nested contract previews), selected operand register declarations, constant previews and
 aggregate layouts. Call destinations show their nested result contracts on successful return;
 return instructions show the required contracts. Register declarations are labelled **storage
