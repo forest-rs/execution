@@ -30,6 +30,8 @@ use crate::typed::{
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
 
+mod observations;
+
 /// Execution limits for a VM run.
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -441,6 +443,11 @@ impl<'a> TraceCtx<'a> {
 
     #[inline]
     fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+        if self.mask != TraceMask::NONE
+            && let Some(sink) = self.sink.as_mut()
+        {
+            sink.run_mask(program, self.mask);
+        }
         if self.enabled(TraceMask::RUN)
             && let Some(t) = self.sink.as_mut()
         {
@@ -657,6 +664,21 @@ impl<'a> TraceCtx<'a> {
 }
 
 trait TracePolicy {
+    type RegisterState: Default;
+
+    #[inline(always)]
+    fn registers(
+        _register_state: &mut Self::RegisterState,
+        _trace: &mut TraceCtx<'_>,
+        _program: &Program,
+        _ctx: &ExecutionContext,
+        _func: FuncId,
+        _pc: u32,
+        _base: RegBase,
+        _sources: ValueSources<'_>,
+        _phase: crate::trace::RegisterPhase,
+    ) {
+    }
     #[inline(always)]
     fn values<'a>(
         _trace: &mut TraceCtx<'_>,
@@ -726,6 +748,8 @@ struct NoTracePolicy;
 struct WithTracePolicy;
 
 impl TracePolicy for NoTracePolicy {
+    type RegisterState = ();
+
     #[inline(always)]
     fn instr(
         _trace: &mut TraceCtx<'_>,
@@ -791,6 +815,32 @@ impl TracePolicy for NoTracePolicy {
 }
 
 impl TracePolicy for WithTracePolicy {
+    type RegisterState = observations::RegisterState;
+
+    #[inline(always)]
+    fn registers(
+        register_state: &mut Self::RegisterState,
+        trace: &mut TraceCtx<'_>,
+        program: &Program,
+        ctx: &ExecutionContext,
+        func: FuncId,
+        pc: u32,
+        base: RegBase,
+        sources: ValueSources<'_>,
+        phase: crate::trace::RegisterPhase,
+    ) {
+        observations::emit(
+            register_state,
+            trace,
+            program,
+            ctx,
+            func,
+            pc,
+            base,
+            sources,
+            phase,
+        );
+    }
     #[inline(always)]
     fn values<'a>(
         trace: &mut TraceCtx<'_>,
@@ -958,7 +1008,8 @@ impl<H: Host> Vm<H> {
         let trace_active = trace.enabled(TraceMask::INSTR)
             || trace.enabled(TraceMask::CALL)
             || trace.enabled(TraceMask::HOST)
-            || trace.enabled(TraceMask::VALUES);
+            || trace.enabled(TraceMask::VALUES)
+            || trace.enabled(TraceMask::REGISTERS);
 
         let result = if trace_active {
             trace.values(program_ref, || ValueEvent::Entry {
@@ -1006,6 +1057,7 @@ impl<H: Host> Vm<H> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
+        let mut register_state = P::RegisterState::default();
         ctx.reset(self.limits.fuel);
 
         let entry_fn = program_ref
@@ -1110,6 +1162,17 @@ impl<H: Host> Vm<H> {
             ctx.frames[frame_index].instr_ix = next_instr_ix;
 
             let sources = ValueSources::new(program_ref, args, self.memory.aggs());
+            P::registers(
+                &mut register_state,
+                trace,
+                program_ref,
+                ctx,
+                func_id,
+                pc,
+                base,
+                sources,
+                crate::trace::RegisterPhase::Inputs,
+            );
             match instr {
                 ExecInstr::Nop => {}
                 ExecInstr::Trap { code } => {
@@ -2847,6 +2910,17 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
             }
+            P::registers(
+                &mut register_state,
+                trace,
+                program_ref,
+                ctx,
+                func_id,
+                pc,
+                base,
+                ValueSources::new(program_ref, args, self.memory.aggs()),
+                crate::trace::RegisterPhase::Outputs,
+            );
             P::instr_end(
                 trace,
                 program_ref,

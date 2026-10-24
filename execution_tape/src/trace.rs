@@ -73,10 +73,70 @@ impl TraceMask {
     /// handles are borrowed only for the callback; the sink chooses what to retain.
     pub const VALUES: Self = Self(1 << 4);
 
+    /// Borrow selected instruction inputs and local successful writes through
+    /// [`TraceSink::registers`]. Source decoding and register mapping are built lazily per
+    /// executed function for this run; ordinary prepared artifacts do not retain them.
+    /// Use [`TraceSink::wants_registers`] to select locations before this work is performed.
+    pub const REGISTERS: Self = Self(1 << 5);
+
     /// Returns `true` if this mask includes all bits in `other`.
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
+    }
+}
+
+/// The observation boundary for instruction register values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisterPhase {
+    /// Source read operands before executing the instruction. Write-only destinations are absent.
+    Inputs,
+    /// Source write operands after a successful local operation. Calls and returns have no such
+    /// event: dispatch does not establish caller results, and return can release a register frame.
+    Outputs,
+}
+
+/// Lazy borrowed instruction operands. Iteration does not copy byte/string payloads or graphs.
+/// Duplicate source operands retain their occurrence order. Effect register r0 is omitted.
+pub struct RegisterValues<'a> {
+    pub(crate) registers: crate::disasm::RegIter<'a>,
+    pub(crate) read: &'a dyn Fn(u32) -> Option<ValueRef<'a>>,
+}
+
+impl<'a> RegisterValues<'a> {
+    /// Iterates `(source register, observed value)` pairs. `None` marks an unavailable value;
+    /// a sink must not invent one or treat it as an uninitialized register's default contents.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, Option<ValueRef<'a>>)> + '_ {
+        self.registers
+            .filter(|&reg| reg != 0)
+            .map(|reg| (reg, (self.read)(reg)))
+    }
+}
+impl core::fmt::Debug for RegisterValues<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RegisterValues").finish_non_exhaustive()
+    }
+}
+
+/// Borrowed instruction data, retained only if the sink explicitly copies it.
+pub struct RegisterEvent<'a> {
+    /// Instruction being observed.
+    pub location: TraceLocation,
+    /// Inputs before execution or outputs after a successful local operation.
+    pub phase: RegisterPhase,
+    /// Source operand values, evaluated lazily by the consumer.
+    pub values: RegisterValues<'a>,
+    /// Heap containing observed aggregate handles. Its identity follows [`ValueEvent`].
+    pub aggregates: &'a AggHeap,
+}
+impl core::fmt::Debug for RegisterEvent<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RegisterEvent")
+            .field("location", &self.location)
+            .field("phase", &self.phase)
+            .field("values", &self.values)
+            .field("aggregate_count", &self.aggregates.len_u32())
+            .finish()
     }
 }
 
@@ -235,6 +295,22 @@ impl core::fmt::Debug for ValueEvent<'_> {
 
 /// A trace sink that can receive VM events.
 pub trait TraceSink {
+    /// Reports the actual event subscription once before any events for a traced invocation.
+    /// This is independent of [`TraceMask::RUN`]; [`TraceMask::NONE`] emits no callbacks.
+    /// The recommended [`Self::mask`] does not prove which mask the caller passed to the VM.
+    fn run_mask(&mut self, _program: &Program, _mask: TraceMask) {}
+
+    /// Selects register observations before decoding/mapping a function. Called only with
+    /// [`TraceMask::REGISTERS`]. Returning false avoids constructing the event.
+    fn wants_registers(&self, _location: TraceLocation, _phase: RegisterPhase) -> bool {
+        true
+    }
+
+    /// Borrows the selected instruction's inputs or successful local writes. Enabled by
+    /// [`TraceMask::REGISTERS`] independently of instruction/boundary tracing.
+    /// No outputs are emitted for a trapping instruction, call dispatch or guest return.
+    fn registers(&mut self, _program: &Program, _event: RegisterEvent<'_>) {}
+
     /// Returns the recommended event mask for callers to pass to the VM.
     /// The explicit mask passed to the run controls delivery.
     fn mask(&self) -> TraceMask {
