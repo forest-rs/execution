@@ -652,7 +652,7 @@ pub enum VerifyError {
     MissingTerminator {
         /// Function index within the program.
         func: u32,
-        /// Byte offset of the last instruction in the block.
+        /// Byte offset of the last instruction in the block, or zero for an empty function.
         pc: u32,
     },
     /// Internal inconsistency between decoded instructions and verifier-computed basic blocks.
@@ -1545,6 +1545,12 @@ fn verify_function_bytecode(
     }
 
     let register_types = func.verified_register_types(program);
+    if decoded.is_empty() {
+        return Err(VerifyError::MissingTerminator {
+            func: func_id,
+            pc: 0,
+        });
+    }
     blocks::validate_structure(func_id, func.reg_count, decoded)?;
     let has_blocks = decoded
         .iter()

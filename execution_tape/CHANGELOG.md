@@ -267,6 +267,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Reject raw empty function bodies with `MissingTerminator` during verification and preparation,
+  matching the executable-body requirement instead of deferring failure to VM instruction fetch. ([#164][] by [@waywardmonkeys][])
+
 - Observatory distinguishes fixed register storage kinds from nested call-result contracts and
   required return contracts. Rejected contracts name the function and explain the member path,
   including named struct fields, without exposing Rust debug syntax. ([#159][] by [@waywardmonkeys][])
@@ -363,3 +366,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#143]: https://github.com/forest-rs/execution/pull/143
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv
+
+[#164]: https://github.com/forest-rs/execution/pull/164
