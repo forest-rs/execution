@@ -17,6 +17,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Measure optional inspection separately with the `inspection` benchmark: selected-function
+  analysis including destruction, repeated same-PC queries, and forward source scans. Share
+  the verifier benchmark fixtures so the workloads stay comparable.
+
 - Observatory shows selected-instruction before/after contracts and local definition origins,
   including aliased projections and the input arms of typed joins. Views cache optional analysis
   per selected function and disclose unavailable/unreachable facts. `inspect_prepared` accepts
