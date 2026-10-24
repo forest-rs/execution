@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "recording"
 harness = false
+
+[[bench]]
+name = "contracts"
+harness = false

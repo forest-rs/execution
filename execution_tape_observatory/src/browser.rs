@@ -58,6 +58,7 @@ pub(super) struct Browser<'a> {
     entries: Vec<usize>,
     selected: usize,
     function: Option<FuncId>,
+    signature: Option<String>,
     decode_error: Option<DisasmError>,
     source: Option<FunctionDisassembly<'a>>,
     instruction: usize,
@@ -92,6 +93,7 @@ impl<'a> Browser<'a> {
             entries: Vec::new(),
             selected: 0,
             function: None,
+            signature: None,
             decode_error: None,
             source: None,
             instruction: 0,
@@ -194,6 +196,7 @@ impl<'a> Browser<'a> {
                 self.load(FuncId(u32::try_from(index).unwrap_or(u32::MAX)), 0);
             } else {
                 self.function = None;
+                self.signature = None;
                 self.decode_error = None;
                 self.source = None;
                 self.flow = Flow::default();
@@ -206,6 +209,7 @@ impl<'a> Browser<'a> {
         self.message = CONTEXT.into();
         if self.function != Some(function) {
             self.function = Some(function);
+            self.signature = render::function_signature(self);
             self.spans = self
                 .program
                 .functions

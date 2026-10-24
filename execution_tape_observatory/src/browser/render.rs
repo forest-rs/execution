@@ -57,19 +57,19 @@ pub(super) fn constant(program: &Program, index: usize) -> String {
     }
 }
 
-fn function_signature(view: &Browser<'_>) -> Option<String> {
+pub(super) fn function_signature(view: &Browser<'_>) -> Option<String> {
     let func = view.function?;
     let function = view.program.functions.get(func.0 as usize)?;
     Some(
         match (
-            function.arg_types(view.program),
-            function.ret_types(view.program),
+            function.arg_contracts(view.program),
+            function.ret_contracts(view.program),
         ) {
             (Ok(args), Ok(rets)) => format!(
                 "{}{} → {}",
                 view.function_name(func),
-                describe::types(args),
-                describe::types(rets)
+                describe::contracts(view.program, args),
+                describe::contracts(view.program, rets)
             ),
             _ => "Malformed function signature".into(),
         },
@@ -99,7 +99,7 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                 lines.push("No selected function".into());
                 return lines;
             };
-            lines.push(function_signature(view).unwrap_or_default());
+            lines.push(view.signature.clone().unwrap_or_default());
             let function = &program.functions[func.0 as usize];
             lines.push(format!(
                 "{} declared registers · {} source bytes",

@@ -102,6 +102,8 @@ or result installation, using a separate bounded contract-work budget. Contract 
 borrows definitions without expanding shared graphs. Function/closure kinds and indirect-call
 signatures remain coarse; callable refinements are not implied.
 
+Run `cargo run -p execution_tape_wind_tunnel --bin nested_contracts` for a complete example.
+
 ## Core Pieces
 
 - `asm`: ergonomic builders for functions, call signatures, constants, host signatures, and

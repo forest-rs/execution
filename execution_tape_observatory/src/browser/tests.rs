@@ -350,3 +350,53 @@ fn invalid_snapshot_dimensions_are_rejected_before_preparing_the_program() {
     assert!(result.is_err());
     assert_eq!(constructions.get(), 0);
 }
+
+#[test]
+fn compositional_signature_previews_are_nested_and_bounded() {
+    use execution_tape::contract::Contract;
+    use execution_tape::program::StructTypeDef;
+    let mut b = ProgramBuilder::new();
+    let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let inner = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+    let outer = b.contract(Contract::Tuple(&[Some(inner), None])).unwrap();
+    let schema = b.struct_type(StructTypeDef {
+        field_names: (0..1000).map(|i| format!("f{i}")).collect(),
+        field_types: vec![ValueType::I64; 1000],
+    });
+    let fields = vec![integer; 1000];
+    let structure = b
+        .contract(Contract::Struct {
+            type_id: schema,
+            fields: &fields,
+        })
+        .unwrap();
+    let mut deep = outer;
+    for _ in 0..2000 {
+        deep = b
+            .contract(Contract::Tuple(&[Some(deep), Some(deep)]))
+            .unwrap();
+    }
+    let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+    body.ret(0, &[1]);
+    b.push_function_checked(
+        body,
+        execution_tape::asm::FunctionAbi {
+            args: vec![outer.into()],
+            rets: vec![outer.into()],
+        },
+    )
+    .unwrap();
+    let program = b.build_checked().unwrap();
+    let view = Browser::new(&program);
+    let details = render::details(&view).join("\n");
+    assert!(details.contains("tuple(tuple(i64), ?)"), "{details}");
+    let nested = describe::contracts(&program, &[outer]);
+    assert!(nested.contains("tuple(tuple(i64), ?)"), "{nested}");
+    let structure = describe::contracts(&program, &[structure]);
+    assert!(structure.contains("… +996"));
+    assert!(structure.len() < 150);
+    let deep = describe::contracts(&program, &[deep]);
+    assert!(deep.contains("aggregate #"));
+    assert!(deep.len() < 200);
+}
