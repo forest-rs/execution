@@ -27,6 +27,7 @@ mod flow;
 mod model;
 mod palette;
 mod render;
+pub mod sources;
 mod syntax;
 
 #[cfg(test)]

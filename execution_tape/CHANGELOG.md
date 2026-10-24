@@ -34,6 +34,10 @@ This release has an [MSRV][] of 1.88.
   selected observed registers, guest ancestry and separate static verifier guarantees; keep
   instruction-history completeness distinct from boundary capture. ([#166][] by [@waywardmonkeys][])
 
+- Attach explicit frontend UTF-8 source snapshots/ranges through `SourceMap`. Full encoded
+  program identity rejects stale maps; bounded context escapes terminal controls and reports
+  missing mappings. Source IDs never imply filesystem access or interpret opaque span IDs. ([#167][] by [@waywardmonkeys][])
+
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
   selected body, including closures received through guest boundaries. ([#163][] by [@waywardmonkeys][])
@@ -387,3 +391,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#165]: https://github.com/forest-rs/execution/pull/165
 
 [#166]: https://github.com/forest-rs/execution/pull/166
+
+[#167]: https://github.com/forest-rs/execution/pull/167
