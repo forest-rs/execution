@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Intern and inspect compositional value contracts with `ContractTableBuilder`. Definitions
+  share flat immutable storage, preserve unknown tuple members, and reject missing/forward
+  references. Contract IDs belong to one table; nominal schema validation belongs to its owner. ([#155][] by [@waywardmonkeys][])
+
+
 - Correlate VM runs, guest calls and host work with the optional `execution_tape_footfall`
   adapter. Instruction details are opt-in; bounded captures preserve loss metadata. The
   `footfall_capture` tool saves the tape, context manifest and Footfall/Perfetto exports. ([#143][] by [@waywardmonkeys][])
@@ -267,6 +272,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#155]: https://github.com/forest-rs/execution/pull/155
 [#151]: https://github.com/forest-rs/execution/pull/151
 
 [#143]: https://github.com/forest-rs/execution/pull/143
