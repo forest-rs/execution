@@ -109,6 +109,17 @@ impl<'a> FunctionDisassembly<'a> {
             .map(move |di| instr_view(self.program, self.func, di))
     }
 
+    /// Looks up one exact source instruction/declaration boundary in logarithmic time.
+    /// Returns `None` for an absent PC or when decoding failed.
+    #[must_use]
+    pub fn instruction(&self, pc: u32) -> Option<InstrView<'_>> {
+        let decoded = self.decoded.as_ref().ok()?;
+        let index = decoded
+            .binary_search_by_key(&pc, |instruction| instruction.offset)
+            .ok()?;
+        Some(instr_view(self.program, self.func, &decoded[index]))
+    }
+
     /// Maps a source instruction or declaration PC to its first executable instruction PC.
     ///
     /// Declarations carry no fuel or trace events. Returns `None` for non-boundaries, decode

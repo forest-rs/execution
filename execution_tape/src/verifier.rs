@@ -15,6 +15,10 @@ mod inspection;
 mod metadata;
 pub use blocks::{BlockDeclarationError, BlockEdgeError};
 
+pub use contracts::inspection::{
+    EdgeBinding, FactOrigin, FunctionAnalysis, IncomingEdge, InstructionFacts, ProgramAnalysis,
+    RegisterFact, ValueFact,
+};
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
 
