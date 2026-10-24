@@ -31,6 +31,9 @@ pub(crate) struct ValueSources<'a> {
 }
 
 impl<'a> ValueSources<'a> {
+    pub(crate) fn aggregates(self) -> &'a AggHeap {
+        self.aggregates
+    }
     pub(crate) fn new(program: &'a Program, args: &'a [Value], aggregates: &'a AggHeap) -> Self {
         Self {
             program,

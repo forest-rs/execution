@@ -17,7 +17,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Borrow selected instruction inputs and successful local writes through `TraceMask::REGISTERS`,
+  `TraceSink::wants_registers` and `registers`. Events preserve source register IDs, avoid
+  copying payloads, and never expose call results at dispatch or unwritten storage. ([#165][] by [@waywardmonkeys][])
 
+- Report the actual active event subscription through `TraceSink::run_mask` before callbacks.
+  Trace-forwarding wrappers must forward it when wrapping a recorder; `TraceMask::NONE` still
+  emits no callbacks. Instruction history distinguishes disabled capture from zero attempts. ([#165][] by [@waywardmonkeys][])
 
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
@@ -368,3 +374,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [MSRV]: README.md#minimum-supported-rust-version-msrv
 
 [#164]: https://github.com/forest-rs/execution/pull/164
+
+[#165]: https://github.com/forest-rs/execution/pull/165
