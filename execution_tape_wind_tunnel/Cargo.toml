@@ -49,3 +49,7 @@ harness = false
 [[bench]]
 name = "callables"
 harness = false
+
+[[bench]]
+name = "observations"
+harness = false

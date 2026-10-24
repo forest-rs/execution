@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{
-    Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, RecordLimits, Recording,
+    Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, InstructionCapture,
+    InstructionOutcome, InstructionStatus, RecordLimits, Recording,
     frames::{Frame, FrameId},
+    instructions::{History, Step},
     values::Builder,
 };
 use alloc::sync::Arc;
@@ -12,7 +14,8 @@ use core::ops::Range;
 use execution_tape::host::ValueRef;
 use execution_tape::program::Program;
 use execution_tape::trace::{
-    HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
+    HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask,
+    TraceOutcome, TraceSink, ValueEvent,
 };
 use execution_tape::value::FuncId;
 use execution_tape::verifier::VerifiedProgram;
@@ -25,6 +28,7 @@ use execution_tape::vm::Trap;
 /// The final VM trap is still retained when its payload budget permits. Create a new
 /// recorder for each invocation. The recorder never changes the VM, host or supplied values.
 pub struct Recorder {
+    history: Option<alloc::boxed::Box<History>>,
     program: Arc<VerifiedProgram>,
     builder: Builder,
     entry: Option<Entry>,
@@ -43,6 +47,7 @@ impl Recorder {
     /// Creates a recorder sharing `program`; execution must use this same prepared instance.
     pub fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
         Self {
+            history: None,
             program,
             builder: Builder::new(limits),
             entry: None,
@@ -58,10 +63,43 @@ impl Recorder {
         }
     }
 
+    /// Enables bounded instruction history. Configure before starting the invocation.
+    ///
+    /// Requests instruction callbacks in [`Self::mask`]. Reaching `max_steps` preserves a
+    /// labelled prefix; boundary recording and guest execution continue normally.
+    #[must_use]
+    pub fn with_instructions(mut self, config: InstructionCapture) -> Self {
+        self.history = Some(alloc::boxed::Box::new(History::new(config)));
+        if self.started {
+            self.history.as_mut().expect("installed history").status =
+                InstructionStatus::Incomplete;
+        }
+        self
+    }
+
     /// Freezes retained observations and discards construction lookup indexes.
     ///
     /// Inspect [`Recording::status`] before relying on the record; replay enforces it as well.
     pub fn finish(mut self) -> Recording {
+        if let Some(history) = &mut self.history {
+            history.finish();
+            if self.fault.is_some() {
+                history.status = InstructionStatus::Incomplete;
+            }
+            if history.status == InstructionStatus::Complete
+                && matches!(self.end, Some(End::Returned))
+                && !history.steps.last().is_some_and(|step| {
+                    step.outcome == InstructionOutcome::Completed
+                        && step.next.is_none()
+                        && self
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|(location, _)| *location == step.location)
+                })
+            {
+                history.status = InstructionStatus::Incomplete;
+            }
+        }
         if self.entry.is_none() {
             self.fail(CaptureFault::MissingEntry);
         }
@@ -70,6 +108,7 @@ impl Recorder {
         }
         let (arena, initial) = self.builder.finish();
         Recording {
+            history: self.history,
             program: self.program,
             arena,
             initial,
@@ -203,8 +242,92 @@ impl core::fmt::Debug for Recorder {
 }
 
 impl TraceSink for Recorder {
+    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
+        if !self.check(program) {
+            return;
+        }
+        if let Some(history) = &mut self.history {
+            history.mask_seen = true;
+            if !mask.contains(TraceMask::INSTR)
+                || (!history.config.watches.is_empty() && !mask.contains(TraceMask::REGISTERS))
+            {
+                history.status = InstructionStatus::Incomplete;
+            }
+        }
+    }
+    fn wants_registers(&self, location: TraceLocation, _: RegisterPhase) -> bool {
+        self.fault.is_none()
+            && self.history.as_ref().is_some_and(|h| {
+                h.status == InstructionStatus::Complete
+                    && h.pending
+                        .is_some_and(|index| h.steps[index].location == location)
+                    && h.watch(location).is_some()
+            })
+    }
+
+    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
+        if !self.check(program) || !self.wants_registers(event.location, event.phase) {
+            return;
+        }
+        let history = self.history.as_mut().expect("enabled history");
+        let index = history.pending.expect("pending attempt");
+        let watch = history
+            .config
+            .watches
+            .binary_search_by_key(&(event.location.func.0, event.location.pc), |watch| {
+                (watch.location.func.0, watch.location.pc)
+            })
+            .expect("requested watch");
+        let wanted = &history.config.watches[watch].registers;
+        let start = history.registers.len();
+        for (reg, value) in event
+            .values
+            .iter()
+            .filter(|(reg, _)| wanted.binary_search(reg).is_ok())
+        {
+            let Some(value) = value else {
+                self.fail_at(CaptureFault::InvalidSequence, Some(event.location));
+                return;
+            };
+            match self
+                .builder
+                .roots(core::iter::once(value), event.aggregates)
+            {
+                Ok(range) => history.registers.push((reg, range.start)),
+                Err(error) => {
+                    self.fail_at(error, Some(event.location));
+                    return;
+                }
+            }
+        }
+        let range = start..history.registers.len();
+        match event.phase {
+            RegisterPhase::Inputs => {
+                history.steps[index].inputs = range;
+                history.steps[index].inputs_seen = true;
+            }
+            RegisterPhase::Outputs => history.steps[index].outputs = range,
+        }
+    }
+
     fn mask(&self) -> TraceMask {
-        TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL
+        TraceMask::RUN
+            | TraceMask::VALUES
+            | TraceMask::CALL
+            | if self.history.is_some() {
+                TraceMask::INSTR
+            } else {
+                TraceMask::NONE
+            }
+            | if self
+                .history
+                .as_ref()
+                .is_some_and(|h| !h.config.watches.is_empty())
+            {
+                TraceMask::REGISTERS
+            } else {
+                TraceMask::NONE
+            }
     }
 
     fn run_start(&mut self, program: &Program, _: FuncId, _: usize) {
@@ -212,7 +335,98 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::MultipleRuns);
         }
         self.started = true;
+        if let Some(history) = &mut self.history {
+            if history.started {
+                history.status = InstructionStatus::Incomplete;
+            }
+            history.started = true;
+        }
         self.check(program);
+    }
+
+    fn instr(
+        &mut self,
+        program: &Program,
+        func: FuncId,
+        pc: u32,
+        _: u32,
+        _: Option<u64>,
+        opcode: u8,
+    ) {
+        if !self.check(program) {
+            return;
+        }
+        let Some(history) = &mut self.history else {
+            return;
+        };
+        if history.status != InstructionStatus::Complete {
+            return;
+        }
+        if history.pending.is_some() || !history.started || history.finished {
+            history.status = InstructionStatus::Incomplete;
+            return;
+        }
+        if history
+            .steps
+            .last()
+            .is_some_and(|step| step.next != Some(TraceLocation { func, pc }))
+        {
+            history.status = InstructionStatus::Incomplete;
+            return;
+        }
+        if history.steps.len() >= history.config.max_steps {
+            history.status = InstructionStatus::Truncated {
+                limit: history.config.max_steps,
+            };
+            return;
+        }
+        history.pending = Some(history.steps.len());
+        history.steps.push(Step {
+            inputs_seen: false,
+            inputs: history.registers.len()..history.registers.len(),
+            outputs: history.registers.len()..history.registers.len(),
+            location: TraceLocation { func, pc },
+            opcode,
+            next: None,
+            outcome: InstructionOutcome::Pending,
+            frame: self.top,
+        });
+    }
+
+    fn instr_end(
+        &mut self,
+        program: &Program,
+        location: TraceLocation,
+        next: Option<TraceLocation>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        if !self.check(program) {
+            return;
+        }
+        let Some(history) = &mut self.history else {
+            return;
+        };
+        if history.status != InstructionStatus::Complete {
+            return;
+        }
+        let Some(index) = history.pending.take() else {
+            history.status = InstructionStatus::Incomplete;
+            return;
+        };
+        let watched = history.watch(location).is_some();
+        let step = &mut history.steps[index];
+        if !step.inputs_seen && watched {
+            history.status = InstructionStatus::Incomplete;
+        }
+        if step.location != location {
+            history.status = InstructionStatus::Incomplete;
+            return;
+        }
+        step.next = next;
+        step.outcome = match outcome {
+            TraceOutcome::Ok => InstructionOutcome::Completed,
+            TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
+        };
     }
 
     fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
@@ -332,6 +546,12 @@ impl TraceSink for Recorder {
     }
 
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        if let Some(history) = &mut self.history {
+            history.finished = true;
+            if history.pending.is_some() {
+                history.status = InstructionStatus::Incomplete;
+            }
+        }
         if !core::ptr::eq(program, self.program.program()) {
             self.fail(CaptureFault::ProgramMismatch);
             return;

@@ -25,6 +25,11 @@ This release has an [MSRV][] of 1.88.
   Trace-forwarding wrappers must forward it when wrapping a recorder; `TraceMask::NONE` still
   emits no callbacks. Instruction history distinguishes disabled capture from zero attempts. ([#165][] by [@waywardmonkeys][])
 
+- Retain optional bounded instruction history with `Recorder::with_instructions`, actual
+  successors, guest ancestry and explicit register watches. Replay checks retained path/value
+  evidence; instruction truncation remains separate from boundary completeness. The `observations`
+  benchmark separates live execution, boundary recording, history and watched operand costs. ([#166][] by [@waywardmonkeys][])
+
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
   selected body, including closures received through guest boundaries. ([#163][] by [@waywardmonkeys][])
@@ -376,3 +381,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#164]: https://github.com/forest-rs/execution/pull/164
 
 [#165]: https://github.com/forest-rs/execution/pull/165
+
+[#166]: https://github.com/forest-rs/execution/pull/166
