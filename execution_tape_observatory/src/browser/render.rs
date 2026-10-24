@@ -8,8 +8,10 @@ use crate::{
     render::{panel, too_small},
     syntax,
 };
-use execution_tape::disasm::{CallTarget, Operands};
+use execution_tape::disasm::{CallTarget, FunctionDisassembly, InputIndex, InstrView, Operands};
+use execution_tape::opcode::Opcode;
 use execution_tape::program::{ConstEntry, ConstId, HostSigId, Program};
+use execution_tape::verifier::{FactOrigin, InstructionFacts, ValueFact};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -85,6 +87,8 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
             lines.push(path.clone());
         }
         lines.push("d: go to diagnostic · decoded content remains inspectable".into());
+    } else {
+        lines.push("VERIFIED: program accepted by the verifier.".into());
     }
     // A focused instruction always describes that instruction, even after browsing another table.
     let section = if view.details_code {
@@ -118,6 +122,9 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                     instruction.pc(),
                     instruction.opcode()
                 ));
+                if view.facts_pc == Some(instruction.pc()) {
+                    lines.extend(view.fact_lines.iter().cloned());
+                }
                 let span = view.span(instruction.pc());
                 lines.push(span.map_or_else(
                     || "Source span: unavailable".into(),
@@ -157,9 +164,8 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                     lines.push("Enter: jump / true arm · f: false arm · Backspace: return".into());
                 }
                 lines.push("Storage kinds (fixed register declarations):".into());
-                let mut operands = instruction.reads().chain(instruction.writes());
-                let registers: std::collections::BTreeSet<_> = operands.by_ref().take(64).collect();
-                for reg in registers {
+                let (registers, truncated) = operand_registers(instruction);
+                for &reg in registers.iter().take(64) {
                     let kind = instruction
                         .register_type(reg)
                         .map_or_else(|| "invalid / unavailable".into(), describe::type_name);
@@ -168,8 +174,10 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                         if reg == 0 { " · effect token" } else { "" }
                     ));
                 }
-                if operands.next().is_some() {
-                    lines.push("… additional operand registers omitted".into());
+                if truncated || registers.len() > 64 {
+                    lines.push(
+                        "… additional operands omitted (scan limit: 64 reads / 64 writes)".into(),
+                    );
                 }
             }
         }
@@ -230,6 +238,179 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
     lines
 }
 
+// Keep destinations visible even when a wide instruction has more than 64 inputs. Counts are
+// exact for an untruncated sample; otherwise explicitly disclose the operand scan limit.
+fn operand_registers(instruction: InstrView<'_>) -> (Vec<u32>, bool) {
+    let mut writes = instruction.writes();
+    let mut reads = instruction.reads();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut registers = Vec::new();
+    for reg in writes.by_ref().take(64).chain(reads.by_ref().take(64)) {
+        if seen.insert(reg) {
+            registers.push(reg);
+        }
+    }
+    let truncated = writes.next().is_some() | reads.next().is_some();
+    (registers, truncated)
+}
+
+fn value_fact(table: &execution_tape::contract::ContractTable, fact: ValueFact) -> String {
+    match fact {
+        ValueFact::Unreachable => "unreachable".into(),
+        ValueFact::Uninitialized => "uninitialized".into(),
+        ValueFact::Contract(id) => {
+            if table.get(id)
+                == Some(execution_tape::contract::Contract::Kind(
+                    execution_tape::program::ValueType::Agg,
+                ))
+            {
+                "aggregate (shape unknown)".into()
+            } else {
+                describe::contract(table, id)
+            }
+        }
+    }
+}
+
+pub(super) fn facts(
+    facts: &InstructionFacts<'_>,
+    instruction: InstrView<'_>,
+    program: &Program,
+    source: &FunctionDisassembly<'_>,
+) -> Vec<String> {
+    if !facts.reachable() {
+        return vec!["Verifier facts: unreachable instruction; no value guarantees.".into()];
+    }
+    let mut lines = vec!["Verifier facts · before → after local instruction:".into()];
+    let mut unknown_members = false;
+    let (registers, truncated) = operand_registers(instruction);
+    let registers: Vec<_> = registers.into_iter().filter(|&reg| reg != 0).collect();
+    for &reg in registers.iter().take(4) {
+        let Some(fact) = facts.register(reg) else {
+            continue;
+        };
+        let before = value_fact(facts.contracts(), fact.before);
+        let after = value_fact(facts.contracts(), fact.after);
+        unknown_members |= before.contains('?') || after.contains('?');
+        lines.push(format!("  r{reg}: {before} → {after}"));
+        if fact.before != fact.after {
+            let origin = match fact.origin_before {
+                Some(FactOrigin::Argument { index }) => {
+                    Some(format!("argument {}", u64::from(index) + 1))
+                }
+                Some(FactOrigin::Instruction { pc }) => source
+                    .instruction(pc)
+                    .map(|i| format!("{:?} at byte {pc}", i.opcode())),
+                Some(FactOrigin::BlockEntry { pc }) => {
+                    Some(format!("incoming control flow at byte {pc}"))
+                }
+                _ => None,
+            };
+            if let Some(origin) = origin {
+                lines.push(format!("    Before from {origin}"));
+            }
+        }
+    }
+    if unknown_members {
+        lines.push("  ? = member type unknown; this is not a verification error.".into());
+    }
+    if truncated {
+        lines.push("  … additional operands omitted (scan limit: 64 reads / 64 writes)".into());
+    } else if registers.len() > 4 {
+        lines.push(format!(
+            "  … {} more operand registers",
+            registers.len() - 4
+        ));
+    }
+    let first_read = instruction.reads().next();
+    let index = match instruction.input_index() {
+        Some(InputIndex::Index(index)) => Some(index),
+        _ => None,
+    };
+    let why = match (instruction.opcode(), first_read, index) {
+        (Opcode::TupleGet, Some(reg), Some(index)) => Some(format!(
+            "project tuple element {index} from incoming r{reg}"
+        )),
+        (Opcode::StructGet, Some(reg), Some(index)) => {
+            Some(format!("project field {index} from incoming r{reg}"))
+        }
+        (Opcode::ArrayGet | Opcode::ArrayGetImm, Some(reg), _) => {
+            Some(format!("project an element from incoming r{reg}"))
+        }
+        (Opcode::BrArgs | Opcode::JmpArgs, _, _) => {
+            Some("edge bindings are applied at the target, after this local state".into())
+        }
+        (Opcode::Mov, Some(reg), _) => Some(format!("copy incoming r{reg}")),
+        (Opcode::Select, _, _) => Some("keep contracts common to both alternatives".into()),
+        (Opcode::TupleLen, _, _) => {
+            Some("read tuple length; element types are not required".into())
+        }
+        (Opcode::Block, _, _) => {
+            Some("admit simultaneous edge transfers; keep common contracts".into())
+        }
+        (Opcode::TupleNew | Opcode::StructNew | Opcode::ArrayNew, _, _) => {
+            Some("construct an aggregate from incoming register contracts".into())
+        }
+        _ => match instruction.operands() {
+            Operands::Call(call) => Some(match call.callee {
+                CallTarget::Func(id) => format!(
+                    "result contracts enforced by {}",
+                    describe::function(program, id)
+                ),
+                _ => "ABI kinds establish no nested aggregate structure".into(),
+            }),
+            _ => None,
+        },
+    };
+    if let Some(why) = why {
+        lines.push(format!("  Why: {why}"));
+    }
+    if facts.is_block_entry() && facts.incoming_edges().len() > 0 {
+        lines.push("Static incoming arms (common facts above):".into());
+        if facts.pc() == 0 {
+            lines.push("  Also seeded by invocation arguments and the effect token.".into());
+        }
+        for edge in facts.incoming_edges().take(4) {
+            let branch = source.instruction(edge.source_pc()).map(|i| i.opcode());
+            let arm = if matches!(branch, Some(Opcode::Br | Opcode::BrArgs)) {
+                if edge.arm() == 0 { "true" } else { "false" }
+            } else {
+                "jump"
+            };
+            lines.push(format!("  From byte {} · {arm} arm", edge.source_pc()));
+            if edge.bindings().len() > 0 {
+                for binding in edge.bindings().take(4) {
+                    lines.push(format!(
+                        "    r{} ← r{}: {}",
+                        binding.parameter,
+                        binding.argument,
+                        value_fact(facts.contracts(), binding.value)
+                    ));
+                }
+                if edge.bindings().len() > 4 {
+                    lines.push(format!("    … {} more bindings", edge.bindings().len() - 4));
+                }
+            } else {
+                for &reg in registers.iter().take(4) {
+                    if let Some(value) = edge.register(reg) {
+                        lines.push(format!(
+                            "    r{reg}: {}",
+                            value_fact(facts.contracts(), value)
+                        ));
+                    }
+                }
+            }
+        }
+        if facts.incoming_edges().len() > 4 {
+            lines.push(format!(
+                "  … {} more incoming arms",
+                facts.incoming_edges().len() - 4
+            ));
+        }
+    }
+    lines
+}
+
 fn result_contracts(
     lines: &mut Vec<String>,
     program: &Program,
@@ -254,7 +435,7 @@ fn result_contracts(
     for (&register, &id) in registers.iter().zip(ids).take(4) {
         lines.push(format!(
             "  r{register}: {}",
-            describe::contract(program, id)
+            describe::contract(&program.contracts, id)
         ));
     }
     if registers.len() != ids.len() {
@@ -344,7 +525,25 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     .max(1);
     navigator(frame, view, columns[0]);
     code(frame, view, right[0]);
-    let details = Paragraph::new(details(view).join("\n")).wrap(Wrap { trim: false });
+    let details = Paragraph::new(
+        details(view)
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                if index == 0 {
+                    Line::styled(
+                        text,
+                        Style::default()
+                            .fg(if view.error.is_some() { ROSE } else { GREEN })
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Line::raw(text)
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false });
     let detail_lines = details.line_count(right[1].width.saturating_sub(2));
     let visible_lines = usize::from(right[1].height.saturating_sub(2));
     view.details_end =
@@ -352,7 +551,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     view.details_offset = view.details_offset.min(view.details_end);
     frame.render_widget(
         details.scroll((view.details_offset, 0)).block(
-            panel(" DETAILS ", view.focus == Focus::Details).title_bottom(format!(
+            panel(
+                format!(" DETAILS · {status} "),
+                view.focus == Focus::Details,
+            )
+            .title_bottom(format!(
                 " lines {}–{} / {detail_lines} · ↑/↓ scroll ",
                 usize::from(view.details_offset) + usize::from(detail_lines != 0),
                 (usize::from(view.details_offset) + visible_lines).min(detail_lines)

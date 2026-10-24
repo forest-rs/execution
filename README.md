@@ -43,6 +43,16 @@ cargo bench -p execution_tape_wind_tunnel
 cargo bench -p execution_graph_wind_tunnel
 ```
 
+Measure optional instruction inspection separately from normal verification and execution:
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench inspection
+```
+
+This times selected-function analysis including destruction, repeated queries at one PC, and a
+complete forward scan querying one register at each source instruction. Program verification, assembly and initial proof
+construction stay outside those windows. The ordinary `verifier` and VM benchmarks remain separate.
+
 Measure contract enforcement on shared input graphs:
 
 ```sh

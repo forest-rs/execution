@@ -13,7 +13,7 @@ use execution_tape::disasm::{
 };
 use execution_tape::program::{HostSigId, Program, SpanId};
 use execution_tape::value::FuncId;
-use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program};
+use execution_tape::verifier::{FunctionAnalysis, ProgramAnalysis, VerifyConfig, VerifyError};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const CONTEXT: &str = "Static program · no execution · span IDs are not source-file links";
@@ -51,6 +51,10 @@ pub(super) struct Browser<'a> {
     names: Vec<Option<&'a str>>,
     details_code: bool,
     error: Option<VerifyError>,
+    analysis: Option<ProgramAnalysis<'a>>,
+    function_facts: Option<FunctionAnalysis<'a>>,
+    facts_pc: Option<u32>,
+    fact_lines: Vec<String>,
     rejection: Option<describe::VerificationDiagnostic>,
     section: Section,
     focus: Focus,
@@ -82,7 +86,10 @@ impl<'a> Browser<'a> {
                 *slot = program.symbol_str(entry.name).ok();
             }
         }
-        let error = verify_program(program, &VerifyConfig::default()).err();
+        let (analysis, error) = match ProgramAnalysis::new(program, &VerifyConfig::default()) {
+            Ok(analysis) => (Some(analysis), None),
+            Err(error) => (None, Some(error)),
+        };
         let rejection = error
             .as_ref()
             .map(|error| describe::verification(program, error));
@@ -91,6 +98,10 @@ impl<'a> Browser<'a> {
             names,
             details_code: false,
             error,
+            analysis,
+            function_facts: None,
+            facts_pc: None,
+            fact_lines: Vec::new(),
             rejection,
             section: Section::Functions,
             focus: Focus::Navigator,
@@ -203,6 +214,9 @@ impl<'a> Browser<'a> {
             } else {
                 self.function = None;
                 self.signature = None;
+                self.function_facts = None;
+                self.facts_pc = None;
+                self.fact_lines.clear();
                 self.decode_error = None;
                 self.source = None;
                 self.flow = Flow::default();
@@ -216,6 +230,11 @@ impl<'a> Browser<'a> {
         if self.function != Some(function) {
             self.function = Some(function);
             self.signature = render::function_signature(self);
+            self.function_facts = self
+                .analysis
+                .as_ref()
+                .and_then(|analysis| analysis.function(function));
+            self.facts_pc = None;
             self.spans = self
                 .program
                 .functions
@@ -248,6 +267,39 @@ impl<'a> Browser<'a> {
             .map_or(0, |source| source.instrs().count());
         self.instruction = instruction.min(count.saturating_sub(1));
         self.details_offset = 0;
+        self.update_facts();
+    }
+
+    fn update_facts(&mut self) {
+        let instruction = self
+            .source
+            .as_ref()
+            .and_then(|source| source.instrs().nth(self.instruction));
+        let Some(instruction) = instruction else {
+            self.fact_lines.clear();
+            self.facts_pc = None;
+            return;
+        };
+        let pc = instruction.pc();
+        if self.facts_pc == Some(pc) {
+            return;
+        }
+        self.fact_lines.clear();
+        self.facts_pc = Some(pc);
+        let Some(function) = self.function_facts.as_mut() else {
+            self.fact_lines
+                .push("Verifier facts unavailable: program rejected.".into());
+            return;
+        };
+        let Some(facts) = function.instruction(pc) else {
+            return;
+        };
+        self.fact_lines = render::facts(
+            &facts,
+            instruction,
+            self.program,
+            self.source.as_ref().expect("selected source"),
+        );
     }
 
     fn diagnostic(&mut self) {
@@ -266,6 +318,7 @@ impl<'a> Browser<'a> {
         }) {
             self.instruction = index;
         }
+        self.update_facts();
     }
 
     fn remember(&mut self) {
@@ -396,6 +449,7 @@ impl<'a> Browser<'a> {
 
 impl Screen for Browser<'_> {
     fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
+        self.update_facts();
         render::draw(frame, self);
     }
 
@@ -471,6 +525,7 @@ impl Screen for Browser<'_> {
         if self.focus != Focus::Details {
             self.details_code = self.focus == Focus::Code;
         }
+        self.update_facts();
         true
     }
 }

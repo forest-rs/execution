@@ -31,7 +31,8 @@ open at the reported function/instruction when one is available; `d` returns to 
 Program-wide failures do not invent an instruction location. A file that cannot be decoded reports
 an error before terminal mode starts. Files are limited to 64 MiB of encoded input; decoded data and
 verification use additional memory. Successfully displaying a rejected program is a successful
-browser invocation; the header explicitly says `REJECTED`.
+browser invocation; both the program header and the Details panel title explicitly say
+`VERIFIED` or `REJECTED`. Details starts with the outcome and, for rejection, the reason.
 
 Use `[` and `]` to switch between functions, imports, constants and aggregate types. `/` searches
 visible labels (case sensitive); `Enter` applies the filter, and `Esc` clears it. Select a function,
@@ -40,6 +41,22 @@ host import, jump or true branch arm; `f` follows the false arm. `Backspace` ret
 previous instruction. Indirect runtime callees are explicitly unknown. The last 256 followed
 locations are retained. `Tab`/`Shift+Tab` cycle the navigator, instructions and scrollable details;
 arrows, page keys and `Home`/`End` operate on the focused pane. `q` quits.
+
+The details pane now shows verifier-backed **before → after** contracts for the selected
+instruction's operand registers, with destinations first. Aliased projections show the old
+aggregate and its projected result separately. Local origins name an argument, defining opcode/PC,
+or incoming block state. At joins, inspect both static input arms and their simultaneous parameter
+bindings beside the common guaranteed fact; differing tuple-member kinds appear as `?`.
+This means the member type is unknown, rather than a verification error. For example,
+`tuple(i64)` and `tuple(bool)` can join as `tuple(?)`: both have one element, and `TupleLen`
+does not require its type.
+
+These are source dataflow facts: call outputs assume successful callee return, and branch outputs
+precede their outgoing edge bindings. Unreachable instructions carry no value guarantees. Rejected
+programs keep their diagnostic view and explicitly report inferred facts unavailable. Analysis is
+created for the selected function and instruction views are cached across repaints. Rendering
+shows at most four value-register facts and four incoming arms/bindings at a time, with explicit
+omissions and operand scan limits; no VM executes while browsing.
 
 The details pane shows compositional guest signatures (with bounded nested contract previews), selected operand register declarations, constant previews and
 aggregate layouts. Call destinations show their nested result contracts on successful return;
@@ -105,5 +122,17 @@ cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/ne
 
 The producer returns `((42), true)`; the caller projects the inner integer. Guest signatures
 show those nested contracts, while register declarations continue to show storage kinds.
+
+To inspect how a typed join retains common structure while losing a member's scalar kind:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin join_contracts -- .local/join.tape
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/join.tape
+```
+
+Focus instructions, select `BrArgs` and press `Enter` to follow the join. Both static arms target
+one parameter: one supplies `tuple(i64)`, the other `tuple(bool)`. The header shows the common
+`tuple(?)` fact and both original bindings. The guest can still compute its length; the demo
+executes both conditions and checks that each returns one.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.

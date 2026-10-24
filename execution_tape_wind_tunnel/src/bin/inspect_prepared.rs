@@ -3,22 +3,23 @@
 
 //! Inspect prepared functions in an encoded program without running it.
 //!
-//! `cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et [function-id]`
+//! `cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et [function-id [pc]]`
 
 use std::error::Error;
 
 use execution_tape::program::Program;
 use execution_tape::value::FuncId;
-use execution_tape::verifier::{VerifyConfig, verify_program_owned};
+use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig, verify_program_owned};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let path = args
         .next()
-        .ok_or("usage: inspect_prepared program.et [function-id]")?;
+        .ok_or("usage: inspect_prepared program.et [function-id [pc]]")?;
     let selected: Option<u32> = args.next().map(|id| id.parse()).transpose()?;
+    let pc: Option<u32> = args.next().map(|pc| pc.parse()).transpose()?;
     if args.next().is_some() {
-        return Err("usage: inspect_prepared program.et [function-id]".into());
+        return Err("usage: inspect_prepared program.et [function-id [pc]]".into());
     }
     let bytes = std::fs::read(path)?;
     let program = verify_program_owned(Program::decode(&bytes)?, &VerifyConfig::default())?;
@@ -56,6 +57,43 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("{direction}_contract\t{index}\t{}", contract.0);
             }
         }
+        if let Some(pc) = pc {
+            let mut analysis = ProgramAnalysis::from(&program)
+                .function(FuncId(id))
+                .ok_or("unknown function id")?;
+            let facts = analysis
+                .instruction(pc)
+                .ok_or("PC is not a source instruction boundary")?;
+            println!("inferred_contract_id\tdefinition");
+            for (id, contract) in facts.contracts().iter() {
+                println!("{}\t{contract:?}", id.0);
+            }
+            println!("register\tstorage_kind\tbefore\tafter\torigin_before\torigin_after");
+            for register in 0..function.stats().virtual_registers {
+                let fact = facts.register(register).expect("declared register");
+                println!(
+                    "{register}\t{:?}\t{}\t{}\t{:?}\t{:?}",
+                    fact.storage_kind,
+                    value_fact(fact.before),
+                    value_fact(fact.after),
+                    fact.origin_before,
+                    fact.origin_after
+                );
+            }
+            println!("incoming_pc\tarm\tparameter\targument\tvalue");
+            for edge in facts.incoming_edges() {
+                for binding in edge.bindings() {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        edge.source_pc(),
+                        edge.arm(),
+                        binding.parameter,
+                        binding.argument,
+                        value_fact(binding.value)
+                    );
+                }
+            }
+        }
         println!("pc\tnext_pc\topcode\tspan");
         for instruction in function.instructions() {
             let span = instruction
@@ -68,4 +106,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn value_fact(fact: ValueFact) -> String {
+    match fact {
+        ValueFact::Unreachable => "unreachable".into(),
+        ValueFact::Uninitialized => "uninitialized".into(),
+        ValueFact::Contract(id) => format!("contract:{}", id.0),
+    }
 }
