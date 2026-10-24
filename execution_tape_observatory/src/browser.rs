@@ -51,6 +51,7 @@ pub(super) struct Browser<'a> {
     names: Vec<Option<&'a str>>,
     details_code: bool,
     error: Option<VerifyError>,
+    rejection: Option<describe::VerificationDiagnostic>,
     section: Section,
     focus: Focus,
     filter: String,
@@ -81,11 +82,16 @@ impl<'a> Browser<'a> {
                 *slot = program.symbol_str(entry.name).ok();
             }
         }
+        let error = verify_program(program, &VerifyConfig::default()).err();
+        let rejection = error
+            .as_ref()
+            .map(|error| describe::verification(program, error));
         let mut view = Self {
             program,
             names,
             details_code: false,
-            error: verify_program(program, &VerifyConfig::default()).err(),
+            error,
+            rejection,
             section: Section::Functions,
             focus: Focus::Navigator,
             filter: String::new(),

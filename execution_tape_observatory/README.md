@@ -42,7 +42,12 @@ locations are retained. `Tab`/`Shift+Tab` cycle the navigator, instructions and 
 arrows, page keys and `Home`/`End` operate on the focused pane. `q` quits.
 
 The details pane shows compositional guest signatures (with bounded nested contract previews), selected operand register declarations, constant previews and
-aggregate layouts. It explicitly distinguishes static types from runtime values. Span identifiers
+aggregate layouts. Call destinations show their nested result contracts on successful return;
+return instructions show the required contracts. Register declarations are labelled **storage
+kinds**: an `aggregate` register can hold a nested tuple whose structure is described by those
+contracts. These boundary requirements are separate from runtime values and from inferred
+register facts at other instructions. Rejections name the function, expected/found types and a
+readable member path (including struct field names when available). Span identifiers
 are displayed when present; they are **not yet source-file links**. Previews and large operand/field
 lists have explicit bounds. The terminal adapter enables Ratatui's `unstable-rendered-line-info`
 feature to scroll details using their actual wrapped height; no terminal dependency enters the VM.

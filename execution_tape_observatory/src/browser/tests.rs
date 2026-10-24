@@ -400,3 +400,196 @@ fn compositional_signature_previews_are_nested_and_bounded() {
     assert!(deep.contains("aggregate #"));
     assert!(deep.len() < 200);
 }
+
+fn nested_fixture(caller: bool) -> (Program, FuncId, execution_tape::contract::ContractId) {
+    use execution_tape::asm::FunctionAbi;
+    use execution_tape::contract::Contract;
+    let mut b = ProgramBuilder::new();
+    let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let boolean = b.contract(Contract::Kind(ValueType::Bool)).unwrap();
+    let inner = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+    let outer = b
+        .contract(Contract::Tuple(&[Some(inner), Some(boolean)]))
+        .unwrap();
+    let wrong_inner = b.contract(Contract::Tuple(&[Some(boolean)])).unwrap();
+    let wrong_outer = b
+        .contract(Contract::Tuple(&[Some(wrong_inner), Some(boolean)]))
+        .unwrap();
+    let entry = caller.then(|| {
+        b.declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap()
+    });
+    let mut make = Asm::new();
+    make.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::Agg,
+        ValueType::Agg,
+    ]);
+    make.const_i64(1, 42)
+        .const_bool(2, true)
+        .tuple_new(3, &[1])
+        .tuple_new(4, &[3, 2])
+        .ret(0, &[4]);
+    let make = b
+        .push_function_checked(
+            make,
+            FunctionAbi {
+                args: vec![],
+                rets: vec![outer.into()],
+            },
+        )
+        .unwrap();
+    b.set_function_name(make, "make_nested").unwrap();
+    if let Some(entry) = entry {
+        let mut main = Asm::new();
+        main.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
+        main.call(0, make, 0, &[], &[1])
+            .tuple_get(1, 1, 0)
+            .tuple_get(2, 1, 0)
+            .ret(0, &[2]);
+        b.define_function(entry, main).unwrap();
+        b.set_function_name(entry, "main").unwrap();
+    }
+    (b.build_checked().unwrap(), make, wrong_outer)
+}
+
+#[test]
+fn calls_and_returns_distinguish_nested_contracts_from_storage_kinds() {
+    let (program, make, _) = nested_fixture(true);
+    let mut view = Browser::new(&program);
+    let details = render::details(&view).join("\n");
+    assert!(
+        details.contains("Results on successful return:\n  r1: tuple(tuple(i64), bool)"),
+        "{details}"
+    );
+    assert!(details.contains("Storage kinds (fixed register declarations):"));
+    assert!(details.contains("r1: aggregate"));
+    press(&mut view, KeyCode::Enter);
+    press(&mut view, KeyCode::Down);
+    let projection = render::details(&view).join("\n");
+    assert!(!projection.contains("Results on successful return:"));
+    view.navigate(make, 4);
+    let returned = render::details(&view).join("\n");
+    assert!(
+        returned.contains("Required returned values:\n  r4: tuple(tuple(i64), bool)"),
+        "{returned}"
+    );
+}
+
+#[test]
+fn rejection_names_the_function_and_explains_the_nested_member() {
+    let (mut program, make, wrong) = nested_fixture(false);
+    let offset = program.functions[make.0 as usize].ret_types.offset as usize;
+    program.contract_ids[offset] = wrong;
+    let view = Browser::new(&program);
+    let text = render::details(&view).join("\n");
+    assert!(
+        text.contains("make_nested: expected bool, found i64 at result[0][0][0] (byte 15)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Return value 1 → tuple element 1 → tuple element 1"),
+        "{text}"
+    );
+    assert!(text.contains("Required returned values:\n  r4: tuple(tuple(bool), bool)"));
+    let screen = render_program(&program, 120, 36).unwrap();
+    assert!(screen.contains("make_nested: expected bool, found i64"));
+    assert!(!screen.contains("Kind {"));
+    assert!(!screen.contains("Result {"));
+}
+
+#[test]
+fn contract_diagnostics_resolve_named_fields_and_bound_deep_paths() {
+    use execution_tape::asm::FunctionAbi;
+    use execution_tape::contract::{
+        Contract, ContractId, ContractMismatch, ContractPosition, ContractViolation,
+    };
+    use execution_tape::program::StructTypeDef;
+    let mut b = ProgramBuilder::new();
+    let boolean = b.contract(Contract::Kind(ValueType::Bool)).unwrap();
+    let schema = b.struct_type(StructTypeDef {
+        field_names: vec!["enabled".into()],
+        field_types: vec![ValueType::Bool],
+    });
+    let settings = b
+        .contract(Contract::Struct {
+            type_id: schema,
+            fields: &[boolean],
+        })
+        .unwrap();
+    let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+    body.ret(0, &[]);
+    let callee = b
+        .push_function_checked(
+            body,
+            FunctionAbi {
+                args: vec![settings.into()],
+                rets: vec![],
+            },
+        )
+        .unwrap();
+    b.set_function_name(callee, "accepts_settings").unwrap();
+    let program = b.build_checked().unwrap();
+    let error = |path| VerifyError::ContractMismatch {
+        func: 0,
+        pc: 0,
+        position: ContractPosition::Argument { callee, index: 0 },
+        error: ContractViolation {
+            contract: ContractId(0),
+            path,
+            mismatch: ContractMismatch::Kind {
+                expected: ValueType::Bool,
+                actual: ValueType::I64,
+            },
+        },
+    };
+    let named = describe::verification(&program, &error(vec![0]));
+    assert!(
+        named
+            .summary
+            .contains("Call to accepts_settings: expected bool, found i64 at argument[0][0]")
+    );
+    assert_eq!(
+        named.path.as_deref(),
+        Some("Argument 1 to accepts_settings → field enabled")
+    );
+    let deep = describe::verification(&program, &error(vec![0; 20_000]));
+    assert!(deep.summary.contains("expected bool, found i64"));
+    assert!(deep.summary.len() < 300);
+    let path = deep.path.unwrap();
+    assert!(path.contains("19992 more members"));
+    assert!(path.len() < 400);
+}
+
+#[test]
+fn rejected_call_result_metadata_stays_explicit_and_inspectable() {
+    use execution_tape::contract::ContractId;
+    for mode in 0..3 {
+        let (mut program, make, _) = nested_fixture(true);
+        let range = &mut program.functions[make.0 as usize].ret_types;
+        let expected = match mode {
+            0 => {
+                range.offset = u32::MAX;
+                "<malformed result contract range>"
+            }
+            1 => {
+                program.contract_ids[range.offset as usize] = ContractId(u32::MAX);
+                "<invalid contract #4294967295>"
+            }
+            _ => {
+                range.len = 0;
+                "Result count mismatch: 1 registers, 0 contracts"
+            }
+        };
+        let view = Browser::new(&program);
+        assert!(view.error.is_some());
+        let text = render::details(&view).join("\n");
+        assert!(text.contains(expected), "{text}");
+    }
+}
