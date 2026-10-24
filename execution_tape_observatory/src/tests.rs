@@ -43,6 +43,15 @@ fn recording_with_calls(
     error: Option<HostError>,
     calls: bool,
 ) -> (Recording, Arc<AtomicUsize>) {
+    recording_with_options(limits, error, calls, false)
+}
+
+fn recording_with_options(
+    limits: RecordLimits,
+    error: Option<HostError>,
+    calls: bool,
+    instructions: bool,
+) -> (Recording, Arc<AtomicUsize>) {
     let mut builder = ProgramBuilder::new();
     let import = builder.host_sig_for(
         "echo",
@@ -96,6 +105,24 @@ fn recording_with_calls(
         .tuple_new(vec![Value::Str("line\n\u{1b}[2J".into()), Value::I64(42)])
         .unwrap();
     let mut recorder = Recorder::new(Arc::clone(&program), limits);
+    if instructions {
+        let source =
+            execution_tape::disasm::disassemble_function(program.program(), FuncId(0)).unwrap();
+        let watches = source
+            .instrs()
+            .map(|i| execution_tape_recording::RegisterWatch {
+                location: execution_tape::trace::TraceLocation {
+                    func: FuncId(0),
+                    pc: i.pc(),
+                },
+                registers: i.reads().chain(i.writes()).collect(),
+            })
+            .collect();
+        recorder = recorder.with_instructions(execution_tape_recording::InstructionCapture {
+            max_steps: 1000,
+            watches,
+        });
+    }
     let _ = vm.run(
         &program,
         FuncId(0),
@@ -654,4 +681,30 @@ fn actual_source_and_values_use_distinct_indexed_colors() {
             .iter()
             .all(|color| !matches!(color, ratatui::style::Color::Rgb(..)))
     );
+}
+
+#[test]
+fn actual_instruction_navigation_shows_local_values_and_preserves_boundary_selection() {
+    let (record, _) = recording_with_options(RecordLimits::default(), None, true, true);
+    assert_eq!(
+        record.instruction_status(),
+        Some(execution_tape_recording::InstructionStatus::Complete)
+    );
+    let mut view = View::new(&record);
+    let boundary = view.selected;
+    press(&mut view, KeyCode::Char('i'));
+    let shown = text(&mut view, 120, 40);
+    assert!(shown.contains("EXECUTED"), "{shown}");
+    assert!(shown.contains("Actual successor:"), "{shown}");
+    assert!(shown.contains("after r3"), "{shown}");
+    let before = view.location();
+    press(&mut view, KeyCode::Down);
+    assert_ne!(before, view.location());
+    press(&mut view, KeyCode::End);
+    assert_eq!(view.instruction, Some(record.instructions().len() - 1));
+    assert_eq!(view.stack().unwrap().len(), 1);
+    press(&mut view, KeyCode::Char('i'));
+    assert_eq!(view.instruction, None);
+    assert_eq!(view.selected, boundary);
+    assert!(text(&mut view, 120, 40).contains("CALL VALUES"));
 }

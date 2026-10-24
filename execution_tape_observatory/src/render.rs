@@ -87,7 +87,82 @@ fn import_name(view: &View<'_>, index: usize) -> String {
     describe::host(view.record.program().program(), view.calls[index].import)
 }
 
+fn history_status(view: &View<'_>) -> String {
+    match view.record.instruction_status() {
+        None => "not captured".into(),
+        Some(execution_tape_recording::InstructionStatus::Complete) => {
+            format!("complete · {} attempts", view.record.instructions().len())
+        }
+        Some(execution_tape_recording::InstructionStatus::Truncated { limit }) => {
+            format!("TRUNCATED · first {limit} attempts")
+        }
+        Some(execution_tape_recording::InstructionStatus::Incomplete) => {
+            "INCOMPLETE · missing observations".into()
+        }
+    }
+}
+
+fn step_description(
+    view: &View<'_>,
+    step: &execution_tape_recording::InstructionStep<'_>,
+) -> String {
+    use execution_tape::opcode::Opcode;
+    use execution_tape_recording::InstructionOutcome;
+    match step.outcome {
+        InstructionOutcome::Pending => "completion not observed".into(),
+        InstructionOutcome::Trapped => "trapped; no successful writes".into(),
+        InstructionOutcome::Completed => match Opcode::from_byte(step.opcode) {
+            Some(Opcode::Call | Opcode::CallIndirect) => {
+                "dispatched into callee; results come later".into()
+            }
+            Some(Opcode::Ret) => if step.next.is_some() {
+                "returned to caller"
+            } else {
+                "root return"
+            }
+            .into(),
+            Some(Opcode::Br | Opcode::BrArgs) => {
+                let condition = view
+                    .source
+                    .as_ref()
+                    .filter(|s| s.func() == step.location.func)
+                    .and_then(|s| s.instruction(step.location.pc))
+                    .and_then(|i| match i.operands() {
+                        execution_tape::disasm::Operands::Br { cond, .. }
+                        | execution_tape::disasm::Operands::BrArgs { cond, .. } => Some(cond),
+                        _ => None,
+                    });
+                step.inputs
+                    .iter()
+                    .find_map(|(reg, value)| match value {
+                        RecordedValue::Bool(value) if Some(reg) == condition => Some(format!(
+                            "took {} arm · r{reg} = {value}",
+                            if *value { "true" } else { "false" }
+                        )),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "branch completed; condition was not watched".into())
+            }
+            _ => "completed".into(),
+        },
+    }
+}
+
 fn title(view: &View<'_>, index: usize) -> String {
+    if view.instruction.is_some() {
+        return view.record.instruction(index).map_or_else(
+            || "No instruction attempts retained".into(),
+            |step| {
+                format!(
+                    "#{index} {}:{:06} {}",
+                    describe::function(view.record.program().program(), step.location.func),
+                    step.location.pc,
+                    execution_tape::opcode::Opcode::from_byte(step.opcode)
+                        .map_or_else(|| "unknown".into(), |op| format!("{op:?}"))
+                )
+            },
+        );
+    }
     if index == 0 {
         return view.record.invocation().map_or_else(
             || "Invocation · missing".into(),
@@ -177,7 +252,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             ),
             Span::styled(
                 if complete {
-                    " CAPTURE COMPLETE "
+                    if view.record.instruction_status().is_some() {
+                        " BOUNDARY CAPTURE COMPLETE "
+                    } else {
+                        " CAPTURE COMPLETE "
+                    }
                 } else {
                     " PARTIAL CAPTURE "
                 },
@@ -204,13 +283,14 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         )),
         Line::styled(
             format!(
-                " Events: start → {} host calls → {}. Guest code runs between events.",
+                " Events: start → {} host calls → {}. i: history {}",
                 view.calls.len(),
                 match view.record.outcome() {
                     Some(Outcome::Trapped(_)) => "trap",
                     Some(Outcome::Returned(_)) => "result",
                     None => "unknown outcome",
-                }
+                },
+                history_status(view)
             ),
             Style::default().fg(MUTED),
         ),
@@ -234,8 +314,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     let left = Layout::vertical([Constraint::Percentage(60), Constraint::Min(4)]).split(columns[0]);
     timeline(frame, view, left[0]);
     stack(frame, view, left[1]);
-    let value_count = view.values().size_hint().0;
-    let value_rows = if view.path.is_empty()
+    let value_count = view.value_count();
+    let value_rows = if view.instruction.is_none()
+        && view.path.is_empty()
         && let Some(call) = view
             .selected
             .checked_sub(1)
@@ -270,7 +351,26 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     })
     .saturating_sub(2)
     .max(1);
-    let detail = if let Some(call) = view
+    let detail = if let Some(index) = view.instruction {
+        view.record.instruction(index).map_or_else(
+            || "No attempts retained; check instruction history status.".into(),
+            |step| {
+                format!(
+                    "Attempt #{index}: {}\nActual successor: {} · history {}",
+                    step_description(view, &step),
+                    step.next.map_or_else(
+                        || "none".into(),
+                        |loc| format!(
+                            "{}:{:06}",
+                            describe::function(view.record.program().program(), loc.func),
+                            loc.pc
+                        )
+                    ),
+                    history_status(view)
+                )
+            },
+        )
+    } else if let Some(call) = view
         .selected
         .checked_sub(1)
         .and_then(|index| view.calls.get(index))
@@ -337,7 +437,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         footer[0],
     );
     frame.render_widget(
-        Paragraph::new("↑↓/jk move  Tab pane  ↵ open  ⌫ up  PgUp/Dn Home/End  r replay  q quit")
+        Paragraph::new("↑↓/jk move  Tab pane  ↵ open  ⌫ up  i history  r replay  q quit")
             .style(Style::default().fg(MUTED)),
         footer[1],
     );
@@ -345,8 +445,14 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
 
 fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     let height = usize::from(area.height.saturating_sub(2));
-    let start = view.selected.saturating_sub(height / 2);
-    let items: Vec<_> = (start..view.calls.len() + 2)
+    let selected = view.instruction.unwrap_or(view.selected);
+    let count = if view.instruction.is_some() {
+        view.record.instructions().len()
+    } else {
+        view.calls.len() + 2
+    };
+    let start = selected.saturating_sub(height / 2);
+    let items: Vec<_> = (start..count)
         .take(height)
         .map(|index| {
             ListItem::new(Line::styled(
@@ -361,10 +467,17 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             ))
         })
         .collect();
-    let mut state = ListState::default().with_selected(Some(view.selected - start));
+    let mut state = ListState::default().with_selected((count != 0).then_some(selected - start));
     frame.render_stateful_widget(
         List::new(items)
-            .block(panel(" EVENTS ", view.focus == Focus::Events))
+            .block(panel(
+                if view.instruction.is_some() {
+                    " EXECUTED · i boundaries "
+                } else {
+                    " EVENTS · i instructions "
+                },
+                view.focus == Focus::Events,
+            ))
             .highlight_symbol("▸ ")
             .highlight_style(Style::default().fg(GREEN).bg(Color::Indexed(23))),
         area,
@@ -508,6 +621,48 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 empty: "This aggregate has no items.".into(),
             },
         );
+    } else if view.instruction.is_some() {
+        let count = view.value_count();
+        let function = view
+            .instruction
+            .and_then(|index| view.record.instruction(index))
+            .map_or_else(
+                || "unavailable".into(),
+                |step| describe::function(view.record.program().program(), step.location.func),
+            );
+        let block = panel(
+            format!(" OBSERVED REGISTERS · {function} "),
+            view.focus == Focus::Values,
+        )
+        .title_bottom("before: inputs · after: local writes · Enter: open aggregate");
+        if count == 0 {
+            frame.render_widget(Paragraph::new("No register values captured at this attempt.\nConfigure explicit register watches; unwatched values remain unknown.").wrap(Wrap { trim: false }).block(block), area);
+        } else {
+            let height = usize::from(area.height.saturating_sub(2));
+            let start = view.value_selected.saturating_sub(height / 2);
+            let items: Vec<_> = view
+                .values()
+                .skip(start)
+                .take(height)
+                .map(|(phase, reg, value)| {
+                    let mut spans = vec![Span::styled(
+                        format!("{phase} r{reg}  "),
+                        Style::default().fg(if phase == "before" { BLUE } else { GREEN }),
+                    )];
+                    spans.extend(syntax::value(view.record, value));
+                    ListItem::new(Line::from(spans))
+                })
+                .collect();
+            let mut state = ListState::default().with_selected(Some(view.value_selected - start));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(block)
+                    .highlight_symbol("▸ ")
+                    .highlight_style(Style::default().bg(Color::Indexed(23))),
+                area,
+                &mut state,
+            );
+        }
     } else if view.selected == 0 {
         value_section(
             frame,
@@ -644,7 +799,16 @@ fn call_values(
     );
 }
 
-fn source(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
+fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
+    if !view.fact_lines.is_empty() && area.height >= 10 {
+        let parts = Layout::vertical([Constraint::Min(4), Constraint::Length(4)]).split(area);
+        frame.render_widget(
+            Paragraph::new(view.fact_lines.join("\n"))
+                .block(panel(" VERIFIER · static before → after ", false)),
+            parts[1],
+        );
+        area = parts[0];
+    }
     let location = view.location();
     let Some(source) = &view.source else {
         frame.render_widget(

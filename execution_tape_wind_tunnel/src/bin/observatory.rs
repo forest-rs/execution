@@ -13,7 +13,9 @@ use execution_tape::program::ValueType;
 use execution_tape::trace::TraceSink;
 use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
-use execution_tape_recording::{RecordLimits, Recorder, Recording};
+use execution_tape_recording::{
+    InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch,
+};
 use std::sync::Arc;
 
 type Stored = Vec<[i64; 3]>;
@@ -145,7 +147,30 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
     let program = Arc::new(builder.build_verified()?);
     let bindings = functions.bind(&program)?;
     let mut vm = Vm::new(bindings.with_state(Stored::new()), Limits::default());
-    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let watches = (0..program.program().functions.len())
+        .flat_map(|index| {
+            let func =
+                execution_tape::value::FuncId(u32::try_from(index).expect("demo function count"));
+            let source = execution_tape::disasm::disassemble_function(program.program(), func)
+                .expect("demo source");
+            source
+                .instrs()
+                .map(|i| RegisterWatch {
+                    location: execution_tape::trace::TraceLocation { func, pc: i.pc() },
+                    registers: i
+                        .reads()
+                        .chain(i.writes())
+                        .filter(|&reg| reg != 0)
+                        .collect(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default())
+        .with_instructions(InstructionCapture {
+            max_steps: 1000,
+            watches,
+        });
     let output = vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))?;
     if output != [Value::I64(42)] || vm.host().state() != &[[0, 7, 14], [1, 5, 10], [2, 9, 18]] {
         return Err("demo did not produce the expected stored samples and sum".into());
