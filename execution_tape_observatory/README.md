@@ -65,7 +65,7 @@ kinds**: an `aggregate` register can hold a nested tuple whose structure is desc
 contracts. These boundary requirements are separate from runtime values and from inferred
 register facts at other instructions. Rejections name the function, expected/found types and a
 readable member path (including struct field names when available). Span identifiers
-are displayed when present; they are **not yet source-file links**. Previews and large operand/field
+remain opaque. Explicit frontend source maps connect instruction locations to snapshots; no numeric span convention is assumed. Previews and large operand/field
 lists have explicit bounds. The terminal adapter enables Ratatui's `unstable-rendered-line-info`
 feature to scroll details using their actual wrapped height; no terminal dependency enters the VM.
 
@@ -145,3 +145,58 @@ A separate verifier panel shows static before/after guarantees when screen space
 Its call-output facts assume a successful return and are distinct from dispatch-time observations.
 History completeness is labelled separately from boundary capture, including truncated prefixes.
 The built-in recording demo enables a bounded history and explicit operand watches.
+
+## Frontend source connections
+
+Use one configured browser for interactive and headless views:
+
+```rust,no_run
+# fn example(program: &execution_tape::program::Program, sources: &execution_tape_observatory::sources::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
+use execution_tape_observatory::ProgramBrowser;
+let browser = ProgramBrowser::new(program).sources(sources)?;
+let text = browser.render_text(120, 36)?;
+# Ok(())
+# }
+```
+
+For an interactive view, finish the same builder with `run()`. The existing `browse` and
+`render_program` functions remain conveniences without source maps. The recording explorer can
+reuse the public registry; this browser slice does not infer historical source execution.
+
+A frontend supplies `SourceDocument { name, text }` snapshots and explicit
+`SourceMapping { location, document, range }` entries. Locations are exact function/bytecode PCs;
+ranges are half-open UTF-8 byte ranges, with empty ranges representing a point. Source names are
+labels and never cause filesystem reads. Generated code can remain unmapped. Every selected
+instruction shows either its supplied context or an explicit missing-mapping message.
+
+`SourceMap::new` validates documents/ranges, duplicate locations and exact instruction boundaries.
+`bind` compares the full canonical `Program::encode()` bytes, including constants, imports and
+contracts. Equal decoded programs can share a map; a changed program is rejected before terminal
+modes begin. Snapshots are the exact text supplied by the frontend, with no automatic reload from
+possibly changed files. Source correctness remains the frontend's responsibility.
+
+Source context is bounded, follows the selected instruction, and caches across repaints. The
+source panel shows exact byte coordinates separately from its preview. Tabs, control sequences
+and direction-changing Unicode controls are escaped; original source is retained unchanged.
+Line/column coordinates are one-based lines and **byte** columns, rather than display-cell or
+language-specific columns. Large ranges explicitly continue beyond their visible context.
+
+The standalone `SourceMap::encode`/`decode` sidecar includes supplied source text and one complete
+encoded-program identity. Export is explicit and separate from the tape wire format. Default
+limits allow 64 MiB of program identity, 16 MiB of source/label bytes, 1,024 documents, one million
+line-index entries and one million mappings. These bound used payload/items; decoded program,
+indexes, capacities and allocator overhead add memory. The CLI additionally bounds sidecar files
+to 128 MiB. It never opens document labels as paths.
+
+Try the small real arithmetic frontend, which parses expressions and exports their exact AST
+ranges during emission:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin source_frontend -- --snapshot
+cargo run -p execution_tape_wind_tunnel --bin source_frontend -- --source expression.expr --write-prefix /tmp/expression
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program /tmp/expression.tape --sources /tmp/expression.sources --snapshot
+```
+
+The frontend accepts integer literals, parentheses, `+`, `-` and `*`, validates the emitted program,
+and executes through the ordinary VM. Its built-in expression returns 24. Input is bounded to
+1 MiB and nesting to 128; exports create new files instead of overwriting existing artifacts.

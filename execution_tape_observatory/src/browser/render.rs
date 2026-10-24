@@ -125,11 +125,15 @@ pub(super) fn details(view: &Browser<'_>) -> Vec<String> {
                 if view.facts_pc == Some(instruction.pc()) {
                     lines.extend(view.fact_lines.iter().cloned());
                 }
-                let span = view.span(instruction.pc());
-                lines.push(span.map_or_else(
-                    || "Source span: unavailable".into(),
-                    |id| format!("Source span ID: {id} · file mapping unavailable"),
-                ));
+                if view.source_map.is_some() {
+                    lines.extend(view.source_lines.iter().cloned());
+                } else {
+                    let span = view.span(instruction.pc());
+                    lines.push(span.map_or_else(
+                        || "Source: no frontend source map supplied".into(),
+                        |id| format!("Source span ID: {id} · opaque; no frontend mapping"),
+                    ));
+                }
                 if let Operands::Call(call) = instruction.operands() {
                     match call.callee {
                         CallTarget::HostSig(id, _) => lines.push(describe::signature(program, id)),
@@ -512,19 +516,68 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
     );
     let columns =
         Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(rows[1]);
-    let right = Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+    let (code_area, source_area, detail_area) = if view.source_map.is_some() {
+        let code_height = columns[1].height.saturating_sub(7).saturating_mul(3) / 5;
+        let right = Layout::vertical([
+            Constraint::Length(code_height),
+            Constraint::Length(7),
+            Constraint::Min(4),
+        ])
         .split(columns[1]);
+        (right[0], Some(right[1]), right[2])
+    } else {
+        let right = Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(columns[1]);
+        (right[0], None, right[1])
+    };
     view.page_rows = usize::from(
         match view.focus {
             Focus::Navigator => columns[0].height,
-            Focus::Code => right[0].height,
-            Focus::Details => right[1].height,
+            Focus::Code => code_area.height,
+            Focus::Details => detail_area.height,
         }
         .saturating_sub(2),
     )
     .max(1);
     navigator(frame, view, columns[0]);
-    code(frame, view, right[0]);
+    code(frame, view, code_area);
+    if let Some(area) = source_area {
+        let range = view
+            .function
+            .zip(
+                view.source
+                    .as_ref()
+                    .and_then(|source| source.instrs().nth(view.instruction)),
+            )
+            .and_then(|(func, instruction)| {
+                view.source_map?
+                    .lookup(execution_tape::trace::TraceLocation {
+                        func,
+                        pc: instruction.pc(),
+                    })
+            })
+            .map(|source| source.range);
+        let block = panel(" FRONTEND SOURCE SNAPSHOT ", false).title_bottom(range.map_or_else(
+            || " explicit mapping unavailable ".into(),
+            |range| {
+                format!(
+                    " exact bytes {}..{} · frontend supplied ",
+                    range.start, range.end
+                )
+            },
+        ));
+        frame.render_widget(
+            Paragraph::new(
+                view.source_lines
+                    .iter()
+                    .cloned()
+                    .map(Line::raw)
+                    .collect::<Vec<_>>(),
+            )
+            .block(block),
+            area,
+        );
+    }
     let details = Paragraph::new(
         details(view)
             .into_iter()
@@ -544,8 +597,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
             .collect::<Vec<_>>(),
     )
     .wrap(Wrap { trim: false });
-    let detail_lines = details.line_count(right[1].width.saturating_sub(2));
-    let visible_lines = usize::from(right[1].height.saturating_sub(2));
+    let detail_lines = details.line_count(detail_area.width.saturating_sub(2));
+    let visible_lines = usize::from(detail_area.height.saturating_sub(2));
     view.details_end =
         u16::try_from(detail_lines.saturating_sub(visible_lines)).unwrap_or(u16::MAX);
     view.details_offset = view.details_offset.min(view.details_end);
@@ -561,7 +614,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
                 (usize::from(view.details_offset) + visible_lines).min(detail_lines)
             )),
         ),
-        right[1],
+        detail_area,
     );
     frame.render_widget(Paragraph::new("Tab focus · [ / ] tables · / search · arrows navigate · Enter follow\nf false arm · Backspace back · d diagnostic · q quit").style(Style::default().fg(MUTED)), rows[2]);
 }

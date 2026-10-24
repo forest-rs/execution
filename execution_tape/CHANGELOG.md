@@ -38,6 +38,9 @@ This release has an [MSRV][] of 1.88.
   program identity rejects stale maps; bounded context escapes terminal controls and reports
   missing mappings. Source IDs never imply filesystem access or interpret opaque span IDs. ([#167][] by [@waywardmonkeys][])
 
+- Attach frontend snapshots through `ProgramBrowser` and Observatory's `--sources` option.
+  The `source_frontend` tool demonstrates parsed emission and explicit `.tape`/`.sources` exports. ([#167][] by [@waywardmonkeys][])
+
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
   selected body, including closures received through guest boundaries. ([#163][] by [@waywardmonkeys][])
