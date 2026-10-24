@@ -45,3 +45,7 @@ harness = false
 [[bench]]
 name = "inspection"
 harness = false
+
+[[bench]]
+name = "callables"
+harness = false
