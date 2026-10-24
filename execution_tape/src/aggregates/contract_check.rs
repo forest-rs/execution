@@ -109,6 +109,26 @@ impl ContractScratch {
         limit: u64,
     ) -> Result<(), CheckError> {
         self.frames.clear();
+        // A kind obligation needs no graph traversal or successful-proof entry. In particular,
+        // opaque closure environments must resolve, but do not need a traversal frame to do so.
+        if let Contract::Kind(expected) =
+            program.contracts.get(contract).expect("verified contract")
+        {
+            self.charge(limit)?;
+            let actual = value.value_type();
+            if expected != actual {
+                return Err(self.failure(
+                    contract,
+                    None,
+                    ContractMismatch::Kind { expected, actual },
+                ));
+            }
+            if let Value::Agg(handle) = value {
+                heap.node(*handle)
+                    .map_err(|error| self.failure(contract, None, ContractMismatch::Heap(error)))?;
+            }
+            return Ok(());
+        }
         let Some(input) = Input::new(value) else {
             self.charge(limit)?;
             let expected = program.contracts.kind(contract).expect("verified contract");
@@ -337,5 +357,94 @@ impl ContractScratch {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asm::ProgramBuilder;
+    use crate::value::Closure;
+    use alloc::vec;
+
+    #[test]
+    fn kind_checks_preserve_budget_and_opaque_semantics_without_graph_scratch() {
+        let mut builder = ProgramBuilder::new();
+        let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let aggregate = builder.contract(Contract::Kind(ValueType::Agg)).unwrap();
+        let function = builder.contract(Contract::Kind(ValueType::Func)).unwrap();
+        let closure = builder
+            .contract(Contract::Kind(ValueType::Closure))
+            .unwrap();
+        let program = builder.build_checked().unwrap();
+        let mut heap = AggHeap::new();
+        let handle = heap.tuple_new(vec![]).unwrap();
+        let mut scratch = ContractScratch::default();
+        // Opaque callable kinds do not promise target identity or a valid captured environment.
+        for (contract, value) in [
+            (integer, Value::I64(42)),
+            (aggregate, Value::Agg(handle)),
+            (function, Value::Func(FuncId(u32::MAX))),
+            (
+                closure,
+                Value::Closure(Closure {
+                    func: FuncId(u32::MAX),
+                    env: AggHandle(u32::MAX),
+                }),
+            ),
+        ] {
+            scratch.reset();
+            assert!(matches!(
+                scratch.check_value(&program, &heap, &value, contract, 0),
+                Err(CheckError::Limit)
+            ));
+            assert_eq!(scratch.work, 0);
+            scratch
+                .check_value(&program, &heap, &value, contract, 1)
+                .unwrap();
+            assert_eq!(scratch.work, 1);
+            assert!(matches!(
+                scratch.check_value(&program, &heap, &value, contract, 1),
+                Err(CheckError::Limit)
+            ));
+            assert_eq!(
+                scratch.frames.capacity(),
+                0,
+                "kind-only checks never grow traversal storage"
+            );
+            assert!(
+                scratch.proven.is_empty(),
+                "constant-time obligations need no cached proof"
+            );
+        }
+        scratch.reset();
+        let invalid = Value::Agg(AggHandle(u32::MAX));
+        assert!(matches!(
+            scratch.check_value(&program, &heap, &invalid, aggregate, 0),
+            Err(CheckError::Limit)
+        ));
+        assert!(
+            matches!(scratch.check_value(&program,&heap,&invalid,aggregate,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Heap(AggError::BadHandle),path,..})) if path.is_empty())
+        );
+        assert_eq!(scratch.work, 1);
+        // Type disagreement precedes handle resolution, after exactly one charged visit.
+        scratch.reset();
+        assert!(
+            matches!(scratch.check_value(&program,&heap,&invalid,integer,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Kind{expected:ValueType::I64,actual:ValueType::Agg},path,..})) if path.is_empty())
+        );
+        assert_eq!(scratch.work, 1);
+        assert_eq!(scratch.frames.capacity(), 0);
+        assert!(scratch.proven.is_empty());
+        scratch.reset();
+        for _ in 0..2 {
+            scratch
+                .check_value(&program, &heap, &Value::Agg(handle), aggregate, 2)
+                .unwrap();
+        }
+        assert!(matches!(
+            scratch.check_value(&program, &heap, &Value::Agg(handle), aggregate, 2),
+            Err(CheckError::Limit)
+        ));
+        assert_eq!(scratch.work, 2);
     }
 }
