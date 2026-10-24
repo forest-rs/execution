@@ -49,7 +49,10 @@ static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
 ///
 /// Reuse a sink across sequential runs. Active scopes stay on the thread that starts them:
 /// the sink is neither `Send` nor `Sync`. The mask passed to the VM controls delivery; the
-/// recommended mask omits per-instruction events to keep ordinary profiling lightweight.
+/// recommended mask reflects the current Footfall level: it is empty when scopes are disabled,
+/// and otherwise enables run, call and host scopes without per-instruction events. Recompute it
+/// before each run if the level can change. Enabling capture during a run cannot enable VM
+/// callbacks omitted by that run's mask; pass an explicit mask when that behavior is needed.
 pub struct FootfallSink {
     context: ContextHandle,
     run: Option<ScopeGuard>,
@@ -115,7 +118,11 @@ impl Drop for FootfallSink {
 
 impl TraceSink for FootfallSink {
     fn mask(&self) -> TraceMask {
-        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST
+        if footfall::max_level().captures_scopes() {
+            TraceMask::RUN | TraceMask::CALL | TraceMask::HOST
+        } else {
+            TraceMask::NONE
+        }
     }
 
     fn run_start(&mut self, _program: &Program, entry: FuncId, arg_count: usize) {
@@ -128,7 +135,9 @@ impl TraceSink for FootfallSink {
 
     fn run_end(&mut self, _program: &Program, outcome: TraceOutcome<'_>) {
         let mut args = Args::none();
-        if let Some(run) = &self.run {
+        if let Some(run) = &self.run
+            && run.token().is_valid()
+        {
             args = args.with("scope_token", run.token().get());
         }
         if let TraceOutcome::Trap(error) = outcome {
@@ -208,7 +217,9 @@ impl TraceSink for FootfallSink {
             .with("func", func.0)
             .with("pc", pc)
             .with("depth", depth as u64);
-        if let Some(scope) = self.scopes.last() {
+        if let Some(scope) = self.scopes.last()
+            && scope.token().is_valid()
+        {
             args = args.with("scope_token", scope.token().get());
         }
         self.outcome(&SCOPE_END, &SCOPE_TRAP, &args, outcome);

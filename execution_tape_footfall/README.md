@@ -6,8 +6,13 @@ Footfall is currently pinned to a public Git revision until it is published.
 
 Install the backend, register an application context, then create
 `FootfallSink::new(context.handle())`. Pass `sink.mask()` to `Vm::run` for run, call and host
-scopes. Add `TraceMask::INSTR` explicitly for instruction observations. Keep the context
-registered until all callbacks and active scopes finish. Reuse a sink for sequential runs;
+scopes when Footfall's current level captures scopes. The recommendation is `TraceMask::NONE`
+at `Off` or `Counters`, including before a backend is installed. Recompute `sink.mask()` before
+each run if the level can change. A level change cannot enable callbacks omitted from the VM's
+already-copied mask; pass an explicit mask when capture may start during execution.
+Use `TraceMask::RUN` explicitly for coarse invocation timing. Add `TraceMask::INSTR` only
+when investigating individual instructions. Keep the context registered until all callbacks
+and active scopes finish. Reuse a sink for sequential runs;
 it stays on one thread. Dropping it closes remaining scopes from inner to outer, without
 creating completion events for an interrupted run.
 After catching a host panic, drop and recreate the sink before another run, regardless of mask.
@@ -45,8 +50,9 @@ contains the exact program, a context-to-program manifest, the original Footfall
 and a Perfetto trace. Host instrumentation shares the context and capture with VM events.
 
 Check Footfall's drop counts and event window before trusting an incomplete capture.
-Instruction tracing is deliberately opt-in and can produce substantial traffic. Even with
-the backend disabled, enabling VM tracing can allocate scope bookkeeping. These observations
-contain no register values or complete host inputs/results and are **not a replay record**.
+Instruction tracing is deliberately opt-in and can produce substantial traffic. Explicit VM
+tracing while Footfall is disabled still incurs callbacks and can allocate scope bookkeeping.
+These observations contain no register values or complete host inputs/results and are **not a
+replay record**.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.

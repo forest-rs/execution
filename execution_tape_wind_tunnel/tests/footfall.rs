@@ -33,11 +33,12 @@ fn balanced(snapshot: &Snapshot) {
                         | "execution_tape.run_trap"
                 ) =>
             {
-                assert_eq!(
-                    args.get("scope_token")
-                        .and_then(|value| value.as_unsigned()),
-                    stack.last().map(|token| token.get())
-                );
+                if let Some(token) = args
+                    .get("scope_token")
+                    .and_then(|value| value.as_unsigned())
+                {
+                    assert_eq!(Some(token), stack.last().map(|token| token.get()));
+                }
             }
             _ => {}
         }
@@ -303,10 +304,98 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     balanced(&runtime.snapshot_since(start));
 
     runtime.set_level(InstrumentationLevel::Off);
+    assert_eq!(sink.mask(), TraceMask::NONE);
+    runtime.set_level(InstrumentationLevel::Counters);
+    assert_eq!(sink.mask(), TraceMask::NONE);
+    runtime.set_level(InstrumentationLevel::Scoped);
+    assert_eq!(
+        sink.mask(),
+        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST
+    );
+    runtime.set_level(InstrumentationLevel::Off);
     let start = runtime.snapshot().next_cursor();
     vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
         .unwrap();
     assert!(runtime.snapshot_since(start).events().is_empty());
+    runtime.set_level(InstrumentationLevel::Scoped);
+
+    // A level drop inside a host call must still close every scope opened at run entry.
+    struct ChangeLevelDuringCall {
+        level: InstrumentationLevel,
+        runtime: &'static Runtime,
+        inner: DemoHost,
+    }
+    impl Host for ChangeLevelDuringCall {
+        fn call(
+            &mut self,
+            symbol: &str,
+            hash: SigHash,
+            args: &[ValueRef<'_>],
+            rets: &mut [Value],
+            ctx: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            self.runtime.set_level(self.level);
+            self.inner.call(symbol, hash, args, rets, ctx)
+        }
+    }
+    let mut disabling_vm = Vm::new(
+        ChangeLevelDuringCall {
+            level: InstrumentationLevel::Off,
+            runtime,
+            inner: DemoHost {
+                context: context.handle(),
+                behavior: Behavior::Success,
+            },
+        },
+        Limits::default(),
+    );
+    let start = runtime.snapshot().next_cursor();
+    let mask_at_entry = sink.mask();
+    assert_eq!(
+        disabling_vm
+            .run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
+            .unwrap(),
+        [Value::I64(42)]
+    );
+    let lowered = runtime.snapshot_since(start);
+    assert!(count(&lowered, "execution_tape.host") > 0);
+    balanced(&lowered);
+    assert_eq!(sink.mask(), TraceMask::NONE);
+
+    runtime.set_level(InstrumentationLevel::Scoped);
+    let start = runtime.snapshot().next_cursor();
+    let mask_at_entry = sink.mask();
+    vm.run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
+        .unwrap();
+    let resumed = runtime.snapshot_since(start);
+    assert_eq!(count(&resumed, "execution_tape.run"), 1);
+    balanced(&resumed);
+    // An explicit mask can observe work after capture starts mid-run. Earlier filtered
+    // scopes have no valid token; outcomes must not pretend they reference one.
+    static APPLICATION_ROOT: footfall::ScopeDesc = footfall::ScopeDesc::new("application.root");
+    let start = runtime.snapshot().next_cursor();
+    let application_root = footfall::scope(&APPLICATION_ROOT, context.handle());
+    runtime.set_level(InstrumentationLevel::Off);
+    disabling_vm.host_mut().level = InstrumentationLevel::Scoped;
+    disabling_vm
+        .run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        .unwrap();
+    drop(application_root);
+    let enabled_mid_run = runtime.snapshot_since(start);
+    balanced(&enabled_mid_run);
+    assert_eq!(count(&enabled_mid_run, "application.root"), 1);
+    assert_eq!(count(&enabled_mid_run, "execution_tape.run"), 0);
+    assert_eq!(count(&enabled_mid_run, "execution_tape.call"), 0);
+    assert_eq!(count(&enabled_mid_run, "execution_tape.host"), 0);
+    assert_eq!(count(&enabled_mid_run, "demo.host_work"), 1);
+    assert_eq!(count(&enabled_mid_run, "execution_tape.run_end"), 1);
+    for event in enabled_mid_run.events() {
+        if let Observation::Message { name, args, .. } = event.observation()
+            && matches!(*name, "execution_tape.run_end" | "execution_tape.scope_end")
+        {
+            assert!(args.get("scope_token").is_none());
+        }
+    }
     runtime.set_level(InstrumentationLevel::Trace);
 
     let start = runtime.snapshot().next_cursor();

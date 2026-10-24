@@ -43,7 +43,9 @@ fn runs_and_reuses_sink_without_backend() {
         .unwrap();
     let program = builder.build_verified().unwrap();
     let mut sink = FootfallSink::new(ContextHandle::ROOT);
-    let mask = sink.mask() | TraceMask::INSTR;
+    assert_eq!(sink.mask(), TraceMask::NONE);
+    // An explicit mask remains supported even with no backend installed.
+    let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR;
     let mut vm = Vm::new(NoHost, Limits::default());
     for _ in 0..2 {
         assert_eq!(
