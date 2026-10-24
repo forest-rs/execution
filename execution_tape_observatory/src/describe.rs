@@ -164,10 +164,17 @@ pub(super) fn types<'a>(
     format!("({output})")
 }
 
-pub(super) fn contract(program: &Program, id: execution_tape::contract::ContractId) -> String {
-    fn summary(program: &Program, id: execution_tape::contract::ContractId, depth: u8) -> String {
+pub(super) fn contract(
+    table: &execution_tape::contract::ContractTable,
+    id: execution_tape::contract::ContractId,
+) -> String {
+    fn summary(
+        table: &execution_tape::contract::ContractTable,
+        id: execution_tape::contract::ContractId,
+        depth: u8,
+    ) -> String {
         use execution_tape::contract::Contract;
-        let Some(contract) = program.contracts.get(id) else {
+        let Some(contract) = table.get(id) else {
             return format!("<invalid contract #{}>", id.0);
         };
         if let Contract::Kind(kind) = contract {
@@ -180,7 +187,7 @@ pub(super) fn contract(program: &Program, id: execution_tape::contract::Contract
             let mut text = ids
                 .iter()
                 .take(4)
-                .map(|id| id.map_or_else(|| "?".into(), |id| summary(program, id, depth - 1)))
+                .map(|id| id.map_or_else(|| "?".into(), |id| summary(table, id, depth - 1)))
                 .collect::<Vec<_>>()
                 .join(", ");
             if ids.len() > 4 {
@@ -206,18 +213,18 @@ pub(super) fn contract(program: &Program, id: execution_tape::contract::Contract
             } => format!(
                 "array #{}<{}>",
                 elem_type_id.0,
-                summary(program, element, depth - 1)
+                summary(table, element, depth - 1)
             ),
         }
     }
-    summary(program, id, 2)
+    summary(table, id, 2)
 }
 
 pub(super) fn contracts(program: &Program, ids: &[execution_tape::contract::ContractId]) -> String {
     let mut values = ids
         .iter()
         .take(4)
-        .map(|&id| contract(program, id))
+        .map(|&id| contract(&program.contracts, id))
         .collect::<Vec<_>>()
         .join(", ");
     if ids.len() > 4 {

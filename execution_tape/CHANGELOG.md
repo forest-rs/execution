@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Observatory shows selected-instruction before/after contracts and local definition origins,
+  including aliased projections and the input arms of typed joins. Views cache optional analysis
+  per selected function and disclose unavailable/unreachable facts. `inspect_prepared` accepts
+  an optional source PC to print register facts and incoming parameter bindings.
+
 - Inspect opt-in verifier facts through `ProgramAnalysis`, selected `FunctionAnalysis` and
   `InstructionFacts` queries. Distinguish storage kinds, definite initialization, unreachable
   code and nested contracts; follow local origins and incoming edge bindings. Contracts share

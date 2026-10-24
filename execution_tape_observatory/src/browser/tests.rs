@@ -593,3 +593,184 @@ fn rejected_call_result_metadata_stays_explicit_and_inspectable() {
         assert!(text.contains(expected), "{text}");
     }
 }
+
+#[test]
+fn selected_instruction_facts_follow_aliased_values_in_both_directions() {
+    let (program, make, _) = nested_fixture(true);
+    let mut view = Browser::new(&program);
+    let call = render::details(&view).join("\n");
+    assert!(
+        call.contains("r1: uninitialized → tuple(tuple(i64), bool)"),
+        "{call}"
+    );
+    assert!(call.contains("result contracts enforced by make_nested"));
+    press(&mut view, KeyCode::Enter);
+    press(&mut view, KeyCode::Down);
+    let alias = render::details(&view).join("\n");
+    assert!(
+        alias.contains("r1: tuple(tuple(i64), bool) → tuple(i64)"),
+        "{alias}"
+    );
+    assert!(alias.contains("Before from Call at byte 0"));
+    assert!(alias.contains("project tuple element 0 from incoming r1"));
+    press(&mut view, KeyCode::Down);
+    let scalar = render::details(&view).join("\n");
+    assert!(scalar.contains("r2: uninitialized → i64"), "{scalar}");
+    press(&mut view, KeyCode::Up);
+    assert_eq!(render::details(&view).join("\n"), alias);
+    // Switching functions invalidates the cached PC even when both functions start at byte zero.
+    view.navigate(make, 0);
+    let other = render::details(&view).join("\n");
+    assert!(other.contains("r1: uninitialized → i64"), "{other}");
+    assert!(!other.contains("enforced by make_nested"));
+}
+
+#[test]
+fn rejected_and_unreachable_code_never_claim_inferred_value_facts() {
+    let (mut rejected, make, wrong) = nested_fixture(false);
+    let offset = rejected.functions[make.0 as usize].ret_types.offset as usize;
+    rejected.contract_ids[offset] = wrong;
+    let view = Browser::new(&rejected);
+    let text = render::details(&view).join("\n");
+    assert!(text.contains("Verifier facts unavailable: program rejected."));
+    assert!(!text.contains("Verifier facts · before"));
+    let mut b = ProgramBuilder::new();
+    let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
+    body.ret(0, &[]).const_i64(1, 7).ret(0, &[]);
+    let function = b
+        .push_function_checked(
+            body,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+    let program = b.build_checked().unwrap();
+    let mut view = Browser::new(&program);
+    view.navigate(function, 1);
+    let text = render::details(&view).join("\n");
+    assert!(text.contains("unreachable instruction; no value guarantees"));
+    assert!(!text.contains("uninitialized → i64"));
+}
+
+#[test]
+fn join_details_show_common_facts_and_each_simultaneous_input_arm() {
+    let mut b = ProgramBuilder::new();
+    let mut body = Asm::new();
+    body.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::Bool,
+        ValueType::Agg,
+        ValueType::Agg,
+        ValueType::Agg,
+        ValueType::Agg,
+    ]);
+    let join = body.block(&[6, 7]);
+    body.const_i64(2, 42)
+        .const_bool(3, true)
+        .tuple_new(4, &[2])
+        .tuple_new(5, &[3]);
+    body.br(1, join.with_args(&[4, 5]), join.with_args(&[5, 4]));
+    let header = body.pc();
+    body.place(join).unwrap();
+    body.ret(0, &[]);
+    let function = b
+        .push_function_checked(
+            body,
+            FunctionSig {
+                arg_types: vec![ValueType::Bool],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+    let program = b.build_checked().unwrap();
+    let mut view = Browser::new(&program);
+    let index = view
+        .source
+        .as_ref()
+        .unwrap()
+        .instrs()
+        .position(|i| i.pc() == header)
+        .unwrap();
+    view.navigate(function, index);
+    let text = render::details(&view).join("\n");
+    assert!(text.contains("r6: tuple(?) → tuple(?)"), "{text}");
+    assert!(text.contains("true arm"));
+    assert!(text.contains("false arm"));
+    assert!(text.contains("r6 ← r4: tuple(i64)"));
+    assert!(text.contains("r6 ← r5: tuple(bool)"));
+    assert!(text.contains("admit simultaneous edge transfers; keep common contracts"));
+}
+
+#[test]
+fn wide_constructors_keep_the_destination_fact_and_disclose_the_scan_limit() {
+    let mut b = ProgramBuilder::new();
+    let mut body = Asm::new();
+    let mut types = vec![ValueType::I64; 102];
+    types[0] = ValueType::Unit;
+    types[101] = ValueType::Agg;
+    body.set_register_types(types);
+    for reg in 1..101 {
+        body.const_i64(reg, i64::from(reg));
+    }
+    let pc = body.pc();
+    body.tuple_new(101, &(1..101).collect::<Vec<_>>())
+        .ret(0, &[]);
+    let function = b
+        .push_function_checked(
+            body,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            },
+        )
+        .unwrap();
+    let program = b.build_checked().unwrap();
+    let mut view = Browser::new(&program);
+    let index = view
+        .source
+        .as_ref()
+        .unwrap()
+        .instrs()
+        .position(|i| i.pc() == pc)
+        .unwrap();
+    view.navigate(function, index);
+    let text = render::details(&view).join("\n");
+    assert!(
+        text.contains("r101: uninitialized → tuple(i64, i64, i64, i64, … +96)"),
+        "{text}"
+    );
+    assert!(text.contains("scan limit: 64 reads / 64 writes"));
+}
+
+#[test]
+fn entry_loops_disclose_invocation_seeds_separately_from_cfg_arms() {
+    let mut b = ProgramBuilder::new();
+    let mut body = Asm::new();
+    body.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
+    let head = body.label();
+    let done = body.label();
+    body.place(head).unwrap();
+    body.br(1, head, done);
+    body.place(done).unwrap();
+    body.ret(0, &[]);
+    b.push_function_checked(
+        body,
+        FunctionSig {
+            arg_types: vec![ValueType::Bool],
+            ret_types: vec![],
+        },
+    )
+    .unwrap();
+    let program = b.build_checked().unwrap();
+    let view = Browser::new(&program);
+    let text = render::details(&view).join("\n");
+    assert!(
+        text.contains("Also seeded by invocation arguments and the effect token."),
+        "{text}"
+    );
+}
