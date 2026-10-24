@@ -40,7 +40,7 @@ replay rejects them before running guest code.
 These recordings are in-memory artifacts. Custom errors retain their typed owned payloads;
 object/function handles retain their original domains. External object state, host effects and
 resource accesses are not reconstructed. No portable archive, cross-platform float guarantee,
-or per-instruction register history is claimed.
+is implied.
 
 Run `cargo run -p execution_tape_wind_tunnel --bin record_replay` from the workspace for an
 executable capture/drop/replay example. Optional arguments select host-call count, shared graph
@@ -48,3 +48,30 @@ depth and byte-payload size. `cargo bench -p execution_tape_wind_tunnel --bench 
 measures ordinary execution, capture/freeze/drop and fresh replay/drop separately.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+
+## Optional execution explanations
+
+Configure `Recorder::new(...).with_instructions(InstructionCapture { max_steps, watches })`
+before running, and pass its recommended mask. Default recorders retain no instruction history
+and request no register inspection. `instructions()` iterates actual attempts in execution order;
+`instruction(index)` directly accesses one attempt, its actual successor and guest ancestry.
+Typed block headers have no execution event. Calls complete at callee entry; returns resume the
+suspended caller. Fuel exhaustion before fetching an instruction creates no attempted step.
+
+`instruction_status()` is independent of boundary `status()`: a truncated instruction prefix
+can coexist with complete boundary data and successful replay. Replay checks retained instruction
+locations, opcodes, successors, outcomes and watched values as well as ordinary boundary evidence.
+A missing callback or completion reports incomplete history; it never invents successful execution.
+
+Each `RegisterWatch` selects one source location and virtual registers. Inputs are borrowed
+before execution; successful local writes are borrowed afterward. Call dispatch and guest return
+have no output-register event. Unwatched values and non-operands remain unknown. Before/after
+aggregate observations preserve their separate identities, even when a destination aliases an
+input. The VM builds optional source-to-bank maps only for requested functions, for that run;
+no observation maps are retained in ordinary prepared programs. Watched values use the existing
+value/aggregate/payload budgets; exhausting one still makes boundary capture incomplete.
+
+Trace forwarding wrappers must forward `TraceSink::run_mask` as well as instruction/value
+callbacks. The VM reports the actual nonempty subscription before event delivery, independently
+of `RUN`; `NONE` still emits no callbacks. History uses that evidence to distinguish zero attempts
+from disabled callbacks. A recommended mask alone does not establish which events were enabled.

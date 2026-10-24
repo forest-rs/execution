@@ -37,6 +37,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
             reason,
         } => {
             let boundary = match boundary {
+                ReplayBoundary::Instruction { index } => format!("instruction #{index}"),
                 ReplayBoundary::InitialState => "initial state".into(),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
@@ -75,6 +76,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 }
                 Divergence::Outcome => "outcome mismatch".into(),
                 Divergence::CallStack => "guest call stack mismatch".into(),
+                Divergence::Instruction => "instruction path mismatch".into(),
             };
             format!("FAILED · {boundary}{location} · {reason}")
         }

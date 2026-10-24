@@ -68,11 +68,18 @@ pub enum Divergence {
     Outcome,
     /// Guest activation ancestry, call site or observed stack differs.
     CallStack,
+    /// A recorded instruction, successor, completion or activation differs.
+    Instruction,
 }
 
 /// Boundary being checked when replay diverged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReplayBoundary {
+    /// Checking one retained instruction attempt or completion.
+    Instruction {
+        /// Zero-based attempt ordinal.
+        index: usize,
+    },
     /// Restoring recorded initial values before guest execution.
     #[default]
     InitialState,
@@ -131,6 +138,7 @@ pub enum ReplayOutcome {
 
 #[derive(Default)]
 struct State {
+    instructions: usize,
     boundary: ReplayBoundary,
     bindings: BTreeMap<AggregateId, AggHandle>,
     inverse: BTreeMap<u32, AggregateId>,
@@ -431,6 +439,69 @@ struct Check<'a> {
     state: Rc<RefCell<State>>,
 }
 impl TraceSink for Check<'_> {
+    fn wants_registers(
+        &self,
+        location: TraceLocation,
+        phase: execution_tape::trace::RegisterPhase,
+    ) -> bool {
+        let state = self.state.borrow();
+        let Some(step) = state
+            .instructions
+            .checked_sub(1)
+            .and_then(|index| self.record.instruction(index))
+        else {
+            return false;
+        };
+        step.location == location
+            && match phase {
+                execution_tape::trace::RegisterPhase::Inputs => !step.inputs.is_empty(),
+                execution_tape::trace::RegisterPhase::Outputs => !step.outputs.is_empty(),
+            }
+    }
+
+    fn registers(&mut self, _: &Program, event: execution_tape::trace::RegisterEvent<'_>) {
+        let mut state = self.state.borrow_mut();
+        if state.error.is_some() {
+            return;
+        }
+        let Some(index) = state.instructions.checked_sub(1) else {
+            return;
+        };
+        let Some(step) = self.record.instruction(index) else {
+            return;
+        };
+        let expected = match event.phase {
+            execution_tape::trace::RegisterPhase::Inputs => step.inputs,
+            execution_tape::trace::RegisterPhase::Outputs => step.outputs,
+        };
+        state.boundary = ReplayBoundary::Instruction { index };
+        let mut actual = event
+            .values
+            .iter()
+            .filter(|(reg, _)| expected.iter().any(|(wanted, _)| wanted == *reg));
+        for (reg, value) in expected.iter() {
+            let Some((actual_reg, Some(actual_value))) = actual.next() else {
+                state.error = Some(state.mismatch(Divergence::Instruction));
+                return;
+            };
+            if reg != actual_reg {
+                state.error = Some(state.mismatch(Divergence::Instruction));
+                return;
+            }
+            if let Err(error) = state.matches(
+                self.record,
+                core::slice::from_ref(value),
+                core::iter::once(actual_value),
+                event.aggregates,
+            ) {
+                state.error = Some(error);
+                return;
+            }
+        }
+        if actual.next().is_some() {
+            state.error = Some(state.mismatch(Divergence::Instruction));
+        }
+    }
     fn scope_enter(
         &mut self,
         _: &Program,
@@ -490,8 +561,61 @@ impl TraceSink for Check<'_> {
             .and_then(|top| self.record.frames[top.index()].parent);
     }
 
-    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, _: u8) {
-        self.state.borrow_mut().location = Some(TraceLocation { func, pc });
+    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
+        let mut state = self.state.borrow_mut();
+        state.location = Some(TraceLocation { func, pc });
+        let index = state.instructions;
+        state.instructions += 1;
+        if state.error.is_some() {
+            return;
+        }
+        if let Some(history) = &self.record.history {
+            state.boundary = ReplayBoundary::Instruction { index };
+            if let Some(step) = history.steps.get(index) {
+                if step.location != (TraceLocation { func, pc })
+                    || step.opcode != opcode
+                    || step.frame.is_some_and(|frame| Some(frame) != state.top)
+                {
+                    state.error = Some(state.mismatch(Divergence::Instruction));
+                }
+            } else if history.status == crate::InstructionStatus::Complete {
+                state.error = Some(state.mismatch(Divergence::Instruction));
+            }
+        }
+    }
+
+    fn instr_end(
+        &mut self,
+        _: &Program,
+        location: TraceLocation,
+        next: Option<TraceLocation>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        let mut state = self.state.borrow_mut();
+        if state.error.is_some() {
+            return;
+        }
+        let Some(index) = state.instructions.checked_sub(1) else {
+            return;
+        };
+        let Some(step) = self
+            .record
+            .history
+            .as_ref()
+            .and_then(|h| h.steps.get(index))
+        else {
+            return;
+        };
+        let actual = match outcome {
+            TraceOutcome::Ok => crate::InstructionOutcome::Completed,
+            TraceOutcome::Trap(_) => crate::InstructionOutcome::Trapped,
+        };
+        if step.outcome != crate::InstructionOutcome::Pending
+            && (step.location != location || step.next != next || step.outcome != actual)
+        {
+            state.boundary = ReplayBoundary::Instruction { index };
+            state.error = Some(state.mismatch(Divergence::Instruction));
+        }
     }
     fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
         if let ValueEvent::ReturnCandidate {
@@ -573,6 +697,15 @@ impl Recording {
             &args,
             TraceMask::INSTR
                 | TraceMask::VALUES
+                | if self
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| !h.config.watches.is_empty())
+                {
+                    TraceMask::REGISTERS
+                } else {
+                    TraceMask::NONE
+                }
                 | if self.frames.is_empty() {
                     TraceMask::NONE
                 } else {
@@ -585,6 +718,13 @@ impl Recording {
             return Err(error.clone());
         }
         state.boundary = ReplayBoundary::Completion;
+        if let Some(history) = &self.history
+            && (state.instructions < history.steps.len()
+                || (history.status == crate::InstructionStatus::Complete
+                    && state.instructions != history.steps.len()))
+        {
+            return Err(state.mismatch(Divergence::Instruction));
+        }
         if state.calls != self.calls.len() {
             return Err(state.mismatch(Divergence::HostCalls {
                 expected: self.calls.len(),

@@ -23,7 +23,8 @@
 //! This crate is `no_std + alloc`. Recordings are in-memory artifacts, not a portable archive.
 //! Typed custom errors retain their original owned payloads. Object handles remain tokens in
 //! their original host domain; replay does not restore external objects, repeat host effects,
-//! or replay resource-access side effects. Instruction/register history is not recorded here.
+//! or replay resource-access side effects. Optional bounded instruction history and explicit
+//! register watches share the same recording-owned graph arena; see [`InstructionCapture`].
 
 #![no_std]
 
@@ -31,6 +32,7 @@ extern crate alloc;
 
 mod capture;
 mod frames;
+mod instructions;
 mod replay;
 mod values;
 
@@ -46,6 +48,10 @@ use execution_tape::vm::{Limits, TrapInfo};
 
 pub use capture::Recorder;
 pub use frames::CallStack;
+pub use instructions::{
+    InstructionCapture, InstructionOutcome, InstructionStatus, InstructionStep,
+    RegisterObservations, RegisterWatch,
+};
 pub use replay::{Divergence, ReplayBoundary, ReplayError, ReplayOutcome};
 pub use values::{Aggregate, AggregateId, RecordedValue};
 
@@ -185,6 +191,8 @@ pub enum Outcome<'a> {
 /// Used capture-owned storage, excluding the shared program and opaque error payloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordStats {
+    /// Retained optional instruction attempts; zero when history was not requested.
+    pub instructions: usize,
     /// Captured value occurrences.
     pub values: usize,
     /// Discovered aggregate nodes; an incomplete capture can contain unfinished nodes.
@@ -228,6 +236,7 @@ enum End {
 /// this recording, not to a VM heap. Incomplete recordings remain inspectable, but replay rejects
 /// them before executing guest code. Callback arguments and outcome payloads are never formatted.
 pub struct Recording {
+    history: Option<alloc::boxed::Box<instructions::History>>,
     program: Arc<VerifiedProgram>,
     arena: values::Arena,
     initial: Vec<AggregateId>,
@@ -242,6 +251,61 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// Returns optional instruction-history completeness. `None` means it was not requested.
+    /// Boundary capture status is reported separately by [`Self::status`].
+    pub fn instruction_status(&self) -> Option<InstructionStatus> {
+        self.history.as_ref().map(|history| history.status)
+    }
+
+    /// Iterates retained attempts without reconstructing a path from static control flow.
+    /// Check [`Self::instruction_status`] before treating the prefix as the whole execution.
+    pub fn instructions(&self) -> impl ExactSizeIterator<Item = InstructionStep<'_>> {
+        self.history
+            .as_ref()
+            .map_or(&[][..], |h| h.steps.as_slice())
+            .iter()
+            .map(|step| InstructionStep {
+                inputs: RegisterObservations {
+                    entries: &self.history.as_ref().expect("history").registers
+                        [step.inputs.clone()],
+                    arena: &self.arena,
+                },
+                outputs: RegisterObservations {
+                    entries: &self.history.as_ref().expect("history").registers
+                        [step.outputs.clone()],
+                    arena: &self.arena,
+                },
+                location: step.location,
+                opcode: step.opcode,
+                next: step.next,
+                outcome: step.outcome,
+                stack: step
+                    .frame
+                    .map(|frame| CallStack::new(&self.frames, frame, step.location)),
+            })
+    }
+
+    /// Looks up one retained attempt by its execution ordinal, without scanning history.
+    pub fn instruction(&self, index: usize) -> Option<InstructionStep<'_>> {
+        let step = self.history.as_ref()?.steps.get(index)?;
+        Some(InstructionStep {
+            inputs: RegisterObservations {
+                entries: &self.history.as_ref()?.registers[step.inputs.clone()],
+                arena: &self.arena,
+            },
+            outputs: RegisterObservations {
+                entries: &self.history.as_ref()?.registers[step.outputs.clone()],
+                arena: &self.arena,
+            },
+            location: step.location,
+            opcode: step.opcode,
+            next: step.next,
+            outcome: step.outcome,
+            stack: step
+                .frame
+                .map(|frame| CallStack::new(&self.frames, frame, step.location)),
+        })
+    }
     /// Returns whether all required boundary data and the final outcome were captured.
     pub fn status(&self) -> Result<(), &CaptureFault> {
         self.fault.as_ref().map_or(Ok(()), Err)
@@ -335,6 +399,7 @@ impl Recording {
     /// Returns used storage counts, not allocator traffic, capacity or RSS.
     pub fn stats(&self) -> RecordStats {
         RecordStats {
+            instructions: self.history.as_ref().map_or(0, |h| h.steps.len()),
             values: self.arena.values.len(),
             aggregates: self.arena.nodes.len(),
             host_calls: self.calls.len(),
