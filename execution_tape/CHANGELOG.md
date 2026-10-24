@@ -17,14 +17,18 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Run `join_contracts [OUTPUT.tape]` to execute both arms of a typed join and optionally save
+  its program. Observatory exposes why `tuple(i64)` and `tuple(bool)` meet at `tuple(?)`, while
+  preserving the outer tuple's known length. ([#161][] by [@waywardmonkeys][])
+
 - Measure optional inspection separately with the `inspection` benchmark: selected-function
   analysis including destruction, repeated same-PC queries, and forward source scans. Share
-  the verifier benchmark fixtures so the workloads stay comparable.
+  the verifier benchmark fixtures so the workloads stay comparable. ([#161][] by [@waywardmonkeys][])
 
 - Observatory shows selected-instruction before/after contracts and local definition origins,
   including aliased projections and the input arms of typed joins. Views cache optional analysis
   per selected function and disclose unavailable/unreachable facts. `inspect_prepared` accepts
-  an optional source PC to print register facts and incoming parameter bindings.
+  an optional source PC to print register facts and incoming parameter bindings. ([#161][] by [@waywardmonkeys][])
 
 - Inspect opt-in verifier facts through `ProgramAnalysis`, selected `FunctionAnalysis` and
   `InstructionFacts` queries. Distinguish storage kinds, definite initialization, unreachable
@@ -322,6 +326,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#161]: https://github.com/forest-rs/execution/pull/161
 [#160]: https://github.com/forest-rs/execution/pull/160
 [#159]: https://github.com/forest-rs/execution/pull/159
 [#157]: https://github.com/forest-rs/execution/pull/157

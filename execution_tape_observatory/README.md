@@ -119,4 +119,16 @@ cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/ne
 The producer returns `((42), true)`; the caller projects the inner integer. Guest signatures
 show those nested contracts, while register declarations continue to show storage kinds.
 
+To inspect how a typed join retains common structure while losing a member's scalar kind:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin join_contracts -- .local/join.tape
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/join.tape
+```
+
+Focus instructions, select `BrArgs` and press `Enter` to follow the join. Both static arms target
+one parameter: one supplies `tuple(i64)`, the other `tuple(bool)`. The header shows the common
+`tuple(?)` fact and both original bindings. The guest can still compute its length; the demo
+executes both conditions and checks that each returns one.
+
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
