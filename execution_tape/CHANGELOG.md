@@ -17,9 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+
+
 - Function and closure value contracts preserve exact exposed signatures through aggregates,
   projections, joins and indirect calls. Concrete closure environments are checked against the
-  selected body, including closures received through guest boundaries.
+  selected body, including closures received through guest boundaries. ([#163][] by [@waywardmonkeys][])
 
 
 - Observatory repeats the verification outcome in the Details title and highlights its
@@ -162,7 +164,7 @@ This release has an [MSRV][] of 1.88.
   producing a closure. Signature mismatches precede selected-callee dispatch; validation can still
   fail after earlier host work, whose external effects are not rolled back.
   Handle the new callable mismatch diagnostics and `ContractPath::{Member, Environment}` path steps.
-  Contract-work limits additionally count callable signature positions and environment edges.
+  Contract-work limits additionally count callable signature positions and environment edges. ([#163][] by [@waywardmonkeys][])
 
 
 - Contract failures display readable expected/found types and indexed argument/result paths.
@@ -349,6 +351,7 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#150]: https://github.com/forest-rs/execution/pull/150
 
+[#163]: https://github.com/forest-rs/execution/pull/163
 [#161]: https://github.com/forest-rs/execution/pull/161
 [#160]: https://github.com/forest-rs/execution/pull/160
 [#159]: https://github.com/forest-rs/execution/pull/159

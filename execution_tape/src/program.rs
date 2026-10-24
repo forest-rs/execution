@@ -1138,7 +1138,8 @@ impl Program {
     ///
     /// # Panics
     ///
-    /// Panics if a function's register declaration range, count or type ID is malformed.
+    /// Panics if a function's register declaration range, count or type ID is malformed, or if
+    /// required guest argument/result or indirect-call contract ranges or IDs are malformed.
     /// Verify manually edited programs before encoding them. In particular, required declarations
     /// are never silently omitted from the output.
     #[must_use]
