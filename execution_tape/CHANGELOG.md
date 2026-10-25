@@ -189,6 +189,10 @@ This release has an [MSRV][] of 1.88.
 
 - Check kind-only value contracts directly without traversal frames or successful-proof entries.
   Preserve the same work charge, type/handle errors and opaque callable semantics. ([#168][] by [@waywardmonkeys][])
+- Refresh the workspace lockfile with Rust 1.88-compatible dependencies. Developer benchmarks
+  use Criterion 0.8.2 and the Tracy adapter uses `tracy-client` 0.19; benchmarks use the standard
+  library's `black_box`. ([#179][] by [@waywardmonkeys][])
+
 - Recording is now the regular `execution_tape::recording` module. Remove the separate
   `execution_tape_recording` dependency and update imports to `execution_tape::recording`.
   No feature flag or extra dependency is required; capture remains opt-in at runtime. ([#178][] by [@waywardmonkeys][])
@@ -421,3 +425,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#174]: https://github.com/forest-rs/execution/pull/174
 
 [#178]: https://github.com/forest-rs/execution/pull/178
+
+[#179]: https://github.com/forest-rs/execution/pull/179
