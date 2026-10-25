@@ -12,8 +12,15 @@ workspace = true
 
 [features]
 observatory = ["dep:execution_tape_observatory"]
+footfall = ["dep:footfall"]
 
 [dependencies]
 execution_graph = { workspace = true, features = ["std"] }
 execution_tape = { workspace = true }
 execution_tape_observatory = { workspace = true, optional = true }
+footfall = { workspace = true, optional = true, features = [
+  "analysis",
+  "export",
+  "runtime",
+  "session",
+] }
