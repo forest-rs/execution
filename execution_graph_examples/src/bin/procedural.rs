@@ -31,6 +31,14 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "footfall")]
+#[path = "procedural/observations.rs"]
+mod observations;
+#[cfg(not(feature = "footfall"))]
+#[path = "procedural/quiet.rs"]
+mod observations;
+use observations::{Buffer, Probe};
+
 const SOURCE: &str = "segments = density * levels + quality()\ndeformation = (amplitude,)\nreturn segments, deformation\n";
 const QUALITY_OP: u64 = 7;
 
@@ -102,6 +110,7 @@ fn compile() -> Result<Compiled, Box<dyn Error>> {
 
 struct QualityHost {
     quality: i64,
+    probe: Probe,
 }
 impl Host for QualityHost {
     fn call(
@@ -112,6 +121,7 @@ impl Host for QualityHost {
         outputs: &mut [Value],
         mut cx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
+        let _scope = self.probe.host();
         if symbol != "quality" {
             return Err(HostError::UnknownSymbol);
         }
@@ -132,6 +142,7 @@ struct Captured {
 }
 #[derive(Default)]
 struct Observe {
+    probe: Probe,
     next: bool,
     started: Option<Instant>,
     captures: Vec<Captured>,
@@ -142,6 +153,7 @@ impl TapeObserver for Observe {
         if !std::mem::take(&mut self.next) {
             return None;
         }
+        self.probe.recording(invocation.node, invocation.attempt);
         self.started = Some(Instant::now());
         let source = execution_tape::disasm::disassemble_function(
             invocation.program.program(),
@@ -178,8 +190,8 @@ impl TapeObserver for Observe {
             .expect("selected capture start")
             .elapsed()
             .as_nanos();
-        // Retention is an application policy; this demo keeps at most two selected invocations.
-        if self.captures.len() == 2 {
+        // Retention is an application policy; this demo keeps at most three selected invocations.
+        if self.captures.len() == 3 {
             self.captures.remove(0);
         }
         self.captures.push(Captured {
@@ -193,14 +205,25 @@ impl TapeObserver for Observe {
 
 struct Mesh {
     points: Vec<[f64; 3]>,
-    triangles: Arc<Vec<[u32; 3]>>,
+    _lease: observations::Lease,
+    triangles: Arc<Topology>,
+}
+struct Topology {
+    triangles: Vec<[u32; 3]>,
+    _lease: observations::Lease,
+}
+impl std::ops::Deref for Topology {
+    type Target = [[u32; 3]];
+    fn deref(&self) -> &Self::Target {
+        &self.triangles
+    }
 }
 impl fmt::Debug for Mesh {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Mesh")
             .field("points", &self.points.len())
             .field("triangles", &self.triangles.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -251,6 +274,7 @@ impl Error for SceneError {
 }
 
 struct Scene {
+    probe: Probe,
     tape: TapeExecutor<QualityHost, Observe>,
     args: Vec<TapeValue>,
     results: Vec<TapeValue>,
@@ -267,116 +291,157 @@ impl Executor for Scene {
         outputs: &mut Vec<SceneValue>,
         access: &mut NodeAccess<'_, SceneValue>,
     ) -> Result<NodeOutcome, SceneError> {
-        match node {
-            SceneNode::Tape(node) => {
-                let result = (|| {
-                    for input in inputs {
-                        let SceneValue::Tape(input) = input else {
-                            return Err(SceneError::Expected("tape parameters"));
-                        };
-                        self.args.push(input.clone());
+        let kind = match node {
+            SceneNode::Tape(_) => "tape",
+            SceneNode::Grid => "grid",
+            SceneNode::Deform => "deform",
+            SceneNode::Bounds => "bounds",
+        };
+        let items = match inputs.first() {
+            Some(SceneValue::Mesh(mesh)) => mesh.points.len(),
+            Some(SceneValue::Tape(value)) if matches!(node, SceneNode::Grid) => match value.value()
+            {
+                Value::I64(count) if (1..=512).contains(count) => {
+                    usize::try_from((count + 1) * (count + 1)).unwrap()
+                }
+                _ => 0,
+            },
+            _ => inputs.len(),
+        };
+        let _scope = self.probe.node(
+            kind,
+            access.node(),
+            access.attempt(),
+            items,
+            matches!(node, SceneNode::Tape(_)) && self.tape.observer().next,
+        );
+        let result = (|| {
+            match node {
+                SceneNode::Tape(node) => {
+                    let result = (|| {
+                        for input in inputs {
+                            let SceneValue::Tape(input) = input else {
+                                return Err(SceneError::Expected("tape parameters"));
+                            };
+                            self.args.push(input.clone());
+                        }
+                        self.tape
+                            .execute_node(node, &self.args, &mut self.results, access)
+                            .map_err(SceneError::Tape)?;
+                        outputs.extend(self.results.drain(..).map(SceneValue::Tape));
+                        Ok(())
+                    })();
+                    self.args.clear();
+                    self.results.clear();
+                    result?;
+                }
+                SceneNode::Grid => {
+                    let [SceneValue::Tape(count)] = inputs else {
+                        return Err(SceneError::Expected("segment count"));
+                    };
+                    let Value::I64(count) = count.value() else {
+                        return Err(SceneError::Expected("integer segment count"));
+                    };
+                    if !(1..=512).contains(count) {
+                        return Err(SceneError::Segments(*count));
                     }
-                    self.tape
-                        .execute_node(node, &self.args, &mut self.results, access)
-                        .map_err(SceneError::Tape)?;
-                    outputs.extend(self.results.drain(..).map(SceneValue::Tape));
-                    Ok(())
-                })();
-                self.args.clear();
-                self.results.clear();
-                result?;
-            }
-            SceneNode::Grid => {
-                let [SceneValue::Tape(count)] = inputs else {
-                    return Err(SceneError::Expected("segment count"));
-                };
-                let Value::I64(count) = count.value() else {
-                    return Err(SceneError::Expected("integer segment count"));
-                };
-                if !(1..=512).contains(count) {
-                    return Err(SceneError::Segments(*count));
-                }
-                let count = u32::try_from(*count).expect("bounded segment count");
-                let width = count + 1;
-                let mut points = Vec::with_capacity((width * width) as usize);
-                for row in 0..width {
-                    for column in 0..width {
-                        points.push([
-                            2.0 * f64::from(column) / f64::from(count) - 1.0,
-                            0.0,
-                            2.0 * f64::from(row) / f64::from(count) - 1.0,
-                        ]);
+                    let count = u32::try_from(*count).expect("bounded segment count");
+                    let width = count + 1;
+                    let mut points = Vec::with_capacity((width * width) as usize);
+                    for row in 0..width {
+                        for column in 0..width {
+                            points.push([
+                                2.0 * f64::from(column) / f64::from(count) - 1.0,
+                                0.0,
+                                2.0 * f64::from(row) / f64::from(count) - 1.0,
+                            ]);
+                        }
                     }
-                }
-                let mut triangles = Vec::with_capacity((count * count * 2) as usize);
-                for row in 0..count {
-                    for column in 0..count {
-                        let corner = row * width + column;
-                        triangles.extend([
-                            [corner, corner + width, corner + 1],
-                            [corner + 1, corner + width, corner + width + 1],
-                        ]);
+                    let mut triangles = Vec::with_capacity((count * count * 2) as usize);
+                    for row in 0..count {
+                        for column in 0..count {
+                            let corner = row * width + column;
+                            triangles.extend([
+                                [corner, corner + width, corner + 1],
+                                [corner + 1, corner + width, corner + width + 1],
+                            ]);
+                        }
                     }
+                    outputs.push(SceneValue::Mesh(Arc::new(Mesh {
+                        _lease: self
+                            .probe
+                            .buffer(Buffer::Points, points.capacity() * size_of::<[f64; 3]>()),
+                        points,
+                        triangles: Arc::new(Topology {
+                            _lease: self.probe.buffer(
+                                Buffer::Topology,
+                                triangles.capacity() * size_of::<[u32; 3]>(),
+                            ),
+                            triangles,
+                        }),
+                    })));
                 }
-                outputs.push(SceneValue::Mesh(Arc::new(Mesh {
-                    points,
-                    triangles: Arc::new(triangles),
-                })));
-            }
-            SceneNode::Deform => {
-                let [SceneValue::Mesh(mesh), SceneValue::Tape(parameters)] = inputs else {
-                    return Err(SceneError::Expected("mesh and deformation tuple"));
-                };
-                let Value::Agg(tuple) = parameters.value() else {
-                    return Err(SceneError::Expected("deformation tuple"));
-                };
-                let Value::F64(amplitude) = parameters
-                    .aggregates()
-                    .expect("owned aggregate")
-                    .tuple_get(*tuple, 0)
-                    .map_err(|error| SceneError::Tape(TapeError::Aggregate(error)))?
-                else {
-                    return Err(SceneError::Expected("floating amplitude"));
-                };
-                if !amplitude.is_finite() || amplitude.abs() > 100.0 {
-                    return Err(SceneError::Amplitude(amplitude));
-                }
-                let points = mesh
-                    .points
-                    .iter()
-                    .map(|&[x, _, z]| {
-                        [
-                            x,
-                            amplitude
-                                * (x * std::f64::consts::PI).sin()
-                                * (z * std::f64::consts::PI).cos(),
-                            z,
-                        ]
-                    })
-                    .collect();
-                outputs.push(SceneValue::Mesh(Arc::new(Mesh {
-                    points,
-                    triangles: Arc::clone(&mesh.triangles),
-                })));
-            }
-            SceneNode::Bounds => {
-                let [SceneValue::Mesh(mesh)] = inputs else {
-                    return Err(SceneError::Expected("mesh"));
-                };
-                let mut bounds = Bounds {
-                    min: [f64::INFINITY; 3],
-                    max: [f64::NEG_INFINITY; 3],
-                };
-                for point in &mesh.points {
-                    for (axis, coordinate) in point.iter().enumerate() {
-                        bounds.min[axis] = bounds.min[axis].min(*coordinate);
-                        bounds.max[axis] = bounds.max[axis].max(*coordinate);
+                SceneNode::Deform => {
+                    let [SceneValue::Mesh(mesh), SceneValue::Tape(parameters)] = inputs else {
+                        return Err(SceneError::Expected("mesh and deformation tuple"));
+                    };
+                    let Value::Agg(tuple) = parameters.value() else {
+                        return Err(SceneError::Expected("deformation tuple"));
+                    };
+                    let Value::F64(amplitude) = parameters
+                        .aggregates()
+                        .expect("owned aggregate")
+                        .tuple_get(*tuple, 0)
+                        .map_err(|error| SceneError::Tape(TapeError::Aggregate(error)))?
+                    else {
+                        return Err(SceneError::Expected("floating amplitude"));
+                    };
+                    if !amplitude.is_finite() || amplitude.abs() > 100.0 {
+                        return Err(SceneError::Amplitude(amplitude));
                     }
+                    let points: Vec<[f64; 3]> = mesh
+                        .points
+                        .iter()
+                        .map(|&[x, _, z]| {
+                            [
+                                x,
+                                amplitude
+                                    * (x * std::f64::consts::PI).sin()
+                                    * (z * std::f64::consts::PI).cos(),
+                                z,
+                            ]
+                        })
+                        .collect();
+                    outputs.push(SceneValue::Mesh(Arc::new(Mesh {
+                        _lease: self
+                            .probe
+                            .buffer(Buffer::Points, points.capacity() * size_of::<[f64; 3]>()),
+                        points,
+                        triangles: Arc::clone(&mesh.triangles),
+                    })));
                 }
-                outputs.push(SceneValue::Bounds(bounds));
+                SceneNode::Bounds => {
+                    let [SceneValue::Mesh(mesh)] = inputs else {
+                        return Err(SceneError::Expected("mesh"));
+                    };
+                    let mut bounds = Bounds {
+                        min: [f64::INFINITY; 3],
+                        max: [f64::NEG_INFINITY; 3],
+                    };
+                    for point in &mesh.points {
+                        for (axis, coordinate) in point.iter().enumerate() {
+                            bounds.min[axis] = bounds.min[axis].min(*coordinate);
+                            bounds.max[axis] = bounds.max[axis].max(*coordinate);
+                        }
+                    }
+                    outputs.push(SceneValue::Bounds(bounds));
+                }
             }
-        }
-        Ok(NodeOutcome::Complete)
+            Ok(NodeOutcome::Complete)
+        })();
+        self.probe
+            .outcome(access.node(), access.attempt(), result.is_ok());
+        result
     }
     fn values_equal(&self, previous: &SceneValue, next: &SceneValue) -> bool {
         match (previous, next) {
@@ -408,11 +473,18 @@ struct Nodes {
 }
 
 fn graph(compiled: &Compiled, density: i64) -> Result<(Graph, Nodes), GraphError<SceneError>> {
-    let mut tape = TapeExecutor::new(QualityHost { quality: 0 }, Limits::default())
-        .with_observer(Observe::default());
+    let mut tape = TapeExecutor::new(
+        QualityHost {
+            quality: 0,
+            probe: Probe::default(),
+        },
+        Limits::default(),
+    )
+    .with_observer(Observe::default());
     tape.set_strict_deps(true);
     tape.set_early_cutoff(true);
     let mut graph = ExecutionGraph::new(Scene {
+        probe: Probe::default(),
         tape,
         args: Vec::new(),
         results: Vec::new(),
@@ -531,7 +603,9 @@ fn verify_bounds(graph: &Graph, nodes: &Nodes, density: i64, quality: i64, ampli
 }
 
 fn report(graph: &mut Graph, label: &str) -> Result<(), GraphError<SceneError>> {
-    let report = graph.run_all_with_report(ReportDetailMask::FULL)?;
+    let result = graph.run_all_with_report(ReportDetailMask::FULL);
+    graph.executor().probe.completed(graph, &result);
+    let report = result?;
     println!(
         "{label}: executed [{}]; cutoff [{}]",
         report
@@ -558,6 +632,16 @@ fn report(graph: &mut Graph, label: &str) -> Result<(), GraphError<SceneError>> 
     Ok(())
 }
 
+fn query(graph: &mut Graph, target: NodeId) -> Result<(), GraphError<SceneError>> {
+    if graph.executor().probe.enabled() {
+        let result = graph.run_node_with_report(target, ReportDetailMask::FULL);
+        graph.executor().probe.completed(graph, &result);
+        result.map(|_| ())
+    } else {
+        graph.run_node(target).map(|_| ())
+    }
+}
+
 struct Options {
     edits: u32,
     density: i64,
@@ -566,6 +650,7 @@ struct Options {
     inspect: bool,
     snapshot: bool,
     write_mesh: Option<PathBuf>,
+    capture: Option<PathBuf>,
 }
 fn options() -> Result<Options, Box<dyn Error>> {
     let mut options = Options {
@@ -576,6 +661,7 @@ fn options() -> Result<Options, Box<dyn Error>> {
         inspect: false,
         snapshot: false,
         write_mesh: None,
+        capture: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -585,6 +671,11 @@ fn options() -> Result<Options, Box<dyn Error>> {
                 options.density = args.next().ok_or("--density needs a count")?.parse()?;
             }
             "--record" => options.record = true,
+            "--capture" => {
+                options.capture =
+                    Some(args.next().ok_or("--capture needs a new directory")?.into());
+                options.record = true;
+            }
             "--write-mesh" => {
                 options.write_mesh = Some(args.next().ok_or("--write-mesh needs a path")?.into());
             }
@@ -602,7 +693,7 @@ fn options() -> Result<Options, Box<dyn Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "procedural [--edits N] [--density N] [--record] [--explain] [--inspect | --snapshot] [--write-mesh PATH]\nDefault: 64 edits, 32 segments. --inspect/--snapshot require the observatory feature.\nModels native geometry ownership and selected VM evidence, not native graph replay."
+                    "procedural [--edits N] [--density N] [--record] [--explain] [--inspect | --snapshot] [--write-mesh PATH] [--capture DIR]\nDefault: 64 edits, 32 segments. --inspect/--snapshot require the observatory feature.\nModels native geometry ownership and selected VM evidence, not native graph replay."
                 );
                 std::process::exit(0);
             }
@@ -611,6 +702,13 @@ fn options() -> Result<Options, Box<dyn Error>> {
     }
     if options.edits > 1_000_000 || !(1..=64).contains(&options.density) {
         return Err("use at most 1,000,000 edits and density 1..=64".into());
+    }
+    if options.capture.is_some() && options.edits > 1024 {
+        return Err("the capture demo supports at most 1024 edits".into());
+    }
+    #[cfg(not(feature = "footfall"))]
+    if options.capture.is_some() {
+        return Err("--capture requires --features footfall".into());
     }
     #[cfg(not(feature = "observatory"))]
     if options.inspect || options.snapshot {
@@ -622,9 +720,10 @@ fn options() -> Result<Options, Box<dyn Error>> {
     Ok(options)
 }
 
-fn explain(compiled: &Compiled, capture: &Captured) -> Result<(), Box<dyn Error>> {
-    println!(
-        "\nTape evidence for node {} attempt {} ({} ns observed adapter work):",
+fn explanation(compiled: &Compiled, capture: &Captured) -> Result<String, Box<dyn Error>> {
+    use std::fmt::Write as _;
+    let mut text = format!(
+        "Tape evidence for node {} attempt {} ({} ns observed adapter work):\n",
         capture.node.as_u64(),
         capture.attempt,
         capture.elapsed_ns
@@ -636,22 +735,39 @@ fn explain(compiled: &Compiled, capture: &Captured) -> Result<(), Box<dyn Error>
             .find(|(pc, _)| *pc == step.location.pc)
             .expect("compiler maps each instruction")
             .1;
-        println!(
-            "  #{index} parameters.expr:{}..{} {:?}",
+        writeln!(
+            text,
+            "  #{index} f{}:{:06} parameters.expr:{}..{} {:?}",
+            step.location.func.0,
+            step.location.pc,
             range.start,
             range.end,
             &SOURCE[range.clone()]
-        );
+        )?;
         for (label, observations) in [("before", step.inputs), ("after", step.outputs)] {
             for (register, value) in observations.iter() {
-                println!("    {label} r{register} = {value:?}");
+                if let execution_tape::recording::RecordedValue::F64(bits) = value {
+                    writeln!(
+                        text,
+                        "    {label} r{register} = f64 {:?} (bits 0x{bits:016x})",
+                        f64::from_bits(*bits)
+                    )?;
+                } else {
+                    writeln!(text, "    {label} r{register} = {value:?}")?;
+                }
             }
         }
     }
     capture.recording.replay()?;
-    println!(
-        "  Checked VM replay matched; native geometry and graph publication are separate evidence."
-    );
+    writeln!(
+        text,
+        "Checked VM replay matched. Native geometry and graph publication are separate evidence."
+    )?;
+    Ok(text)
+}
+
+fn explain(compiled: &Compiled, capture: &Captured) -> Result<(), Box<dyn Error>> {
+    println!("\n{}", explanation(compiled, capture)?);
     Ok(())
 }
 
@@ -695,11 +811,21 @@ fn explore(compiled: &Compiled, capture: &Captured, snapshot: bool) -> Result<()
 
 fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let compiled = compile()?;
+    let mut capture = observations::Capture::start(options.capture.as_deref())?;
+    let probe = capture.probe();
     let (mut graph, nodes) = graph(&compiled, options.density)?;
+    graph.executor_mut().probe = probe.clone();
+    graph.executor_mut().tape.host_mut().probe = probe.clone();
+    graph.executor_mut().tape.observer_mut().probe = probe.clone();
+    let initial = probe.edit("initial");
     graph.executor_mut().tape.observer_mut().next = options.record;
     report(&mut graph, "Initial cook")?;
     verify_bounds(&graph, &nodes, options.density, 0, 1.0);
     let undo = mesh(&graph, nodes.deform);
+    probe.root("undo", 0, Some(&undo));
+    probe.checkpoint("initial and undo");
+    drop(initial);
+    capture.flush()?;
     println!(
         "Surface: {} points, {} triangles; old viewport result retained for undo.",
         undo.points.len(),
@@ -709,9 +835,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut previous: Option<Weak<Mesh>> = None;
     let start = Instant::now();
     for edit in 0..options.edits {
+        let observed = probe.edit("amplitude");
         let value = 0.5 + f64::from(edit % 16) / 16.0;
         amplitude(&mut graph, &nodes, value)?;
-        graph.run_node(nodes.bounds)?;
+        query(&mut graph, nodes.bounds)?;
         verify_bounds(&graph, &nodes, options.density, 0, value);
         if let Some(previous) = previous.take() {
             assert!(
@@ -720,6 +847,9 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             );
         }
         previous = Some(Arc::downgrade(&mesh(&graph, nodes.deform)));
+        probe.checkpoint("amplitude publication");
+        drop(observed);
+        capture.flush()?;
     }
     let elapsed = start.elapsed();
     assert_eq!(
@@ -733,6 +863,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         elapsed.as_nanos()
     );
 
+    let quality = probe.edit("quality");
     graph.executor_mut().tape.host_mut().quality = 2;
     graph.invalidate(ResourceKey::host_state(HostOpId::new(QUALITY_OP), 0));
     graph.executor_mut().tape.observer_mut().next = options.record;
@@ -748,11 +879,16 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         0.5 + f64::from((options.edits - 1) % 16) / 16.0
     };
     verify_bounds(&graph, &nodes, options.density, 2, last_amplitude);
+    probe.checkpoint("topology publication");
+    drop(quality);
+    capture.flush()?;
+    let rejected = probe.edit("rejected");
     let before_failure = mesh(&graph, nodes.deform);
+    probe.root("failure-check", 0, Some(&before_failure));
+    graph.executor_mut().tape.observer_mut().next = options.capture.is_some();
     amplitude(&mut graph, &nodes, f64::NAN)?;
-    let failure = graph
-        .run_node(nodes.bounds)
-        .expect_err("invalid amplitude fails native deformation");
+    let failure =
+        query(&mut graph, nodes.bounds).expect_err("invalid amplitude fails native deformation");
     println!("Rejected edit: {failure}");
     assert!(
         Arc::ptr_eq(&before_failure, &mesh(&graph, nodes.deform)),
@@ -762,10 +898,18 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         "Previous viewport result is still readable; status: {:?}.",
         graph.node_status(nodes.deform)
     );
+    probe.checkpoint("failed edit retained cache");
+    drop(rejected);
+    capture.flush()?;
+    let recovery = probe.edit("recovery");
     amplitude(&mut graph, &nodes, 1.0)?;
-    graph.run_node(nodes.bounds)?;
+    query(&mut graph, nodes.bounds)?;
     verify_bounds(&graph, &nodes, options.density, 2, 1.0);
+    probe.root("failure-check", 0, None);
     drop(before_failure);
+    probe.checkpoint("recovered");
+    drop(recovery);
+    capture.flush()?;
     if let Some(path) = &options.write_mesh {
         use std::io::Write;
         let mesh = mesh(&graph, nodes.deform);
@@ -792,8 +936,11 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     }
     let current = Arc::downgrade(&mesh(&graph, nodes.deform));
     let captures = std::mem::take(&mut graph.executor_mut().tape.observer_mut().captures);
+    let retirement = probe.edit("retirement");
     for node in [nodes.bounds, nodes.deform, nodes.grid, nodes.parameters] {
-        drop(graph.remove_node(node)?);
+        let removed = graph.remove_node(node)?;
+        probe.root("cache", node.as_u64(), None);
+        drop(removed);
     }
     assert_eq!(
         graph.storage_stats().nodes,
@@ -809,6 +956,15 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         "Removed all nodes: current geometry released; retained undo still has {} points.",
         undo.points.len()
     );
+    probe.checkpoint("graph removed; undo retained");
+    drop(retirement);
+    capture.flush()?;
+    let release = probe.edit("undo-release");
+    probe.root("undo", 0, None);
+    drop(undo);
+    probe.checkpoint("undo released");
+    drop(release);
+    capture.flush()?;
     for capture in &captures {
         assert!(
             matches!(capture.recording.replay()?, ReplayOutcome::Returned(_)),
@@ -821,6 +977,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             captures.len()
         );
     }
+    capture.finish(&compiled, &captures)?;
     if let Some(capture) = captures.last() {
         if options.explain {
             explain(&compiled, capture)?;
@@ -850,7 +1007,159 @@ mod tests {
             inspect: false,
             snapshot: false,
             write_mesh: None,
+            capture: None,
         })
         .unwrap();
+    }
+
+    #[cfg(feature = "footfall")]
+    #[test]
+    fn capture_distinguishes_execution_publication_and_retained_undo() {
+        use footfall::analysis::{OwnedLabelValue, Trace};
+        use footfall::session::capture::CaptureReader;
+        use std::{fs::File, io::BufReader};
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "execution-edit-capture-{}-{unique}",
+            std::process::id()
+        ));
+        run(Options {
+            edits: 4,
+            density: 2,
+            record: true,
+            explain: false,
+            inspect: false,
+            snapshot: false,
+            write_mesh: None,
+            capture: Some(directory.clone()),
+        })
+        .unwrap();
+        let captured = Trace::from_capture(
+            CaptureReader::new(BufReader::new(
+                File::open(directory.join("edits.ffcap")).unwrap(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(captured.truncated().is_none());
+        assert_eq!(captured.skipped(), 0);
+        let trace = captured.trace();
+        let joined = CaptureReader::new(BufReader::new(
+            File::open(directory.join("edits.ffcap")).unwrap(),
+        ))
+        .unwrap()
+        .join()
+        .unwrap()
+        .into_snapshot();
+        assert!(joined.events().len() > observations::EVENT_CAPACITY);
+        assert!(trace.spans().table().basis().is_complete());
+        assert!(trace.flows().all(|flow| flow.is_complete()));
+        assert_eq!(trace.marks(footfall::MarkerKind::Transaction).len(), 10);
+        assert!(trace.frames().is_empty());
+        assert_eq!(trace.flows().count(), 10);
+        let count = |name: &str| trace.messages().iter().filter(|m| m.name() == name).count();
+        assert_eq!(count("procedural.published"), 24);
+        assert_eq!(count("procedural.cutoff"), 6);
+        assert_eq!(count("procedural.failed"), 1);
+        assert_eq!(count("procedural.recording"), 3);
+        assert_eq!(trace.spans().named("procedural.grid").iter().len(), 2);
+        let failed = trace
+            .messages()
+            .iter()
+            .find(|m| m.name() == "procedural.failed")
+            .unwrap();
+        let edit = failed
+            .args()
+            .iter()
+            .find(|arg| arg.key() == "edit")
+            .unwrap()
+            .value();
+        let in_failed_edit = |m: &&footfall::analysis::Message| {
+            m.args()
+                .iter()
+                .any(|arg| arg.key() == "edit" && arg.value() == edit)
+        };
+        let publications: Vec<_> = trace
+            .messages()
+            .iter()
+            .filter(|m| m.name() == "procedural.published")
+            .filter(in_failed_edit)
+            .collect();
+        assert_eq!(publications.len(), 1);
+        assert_eq!(publications[0].text(), "parameters");
+        assert!(
+            trace
+                .messages()
+                .iter()
+                .filter(|m| m.name() == "procedural.body_outcome")
+                .filter(in_failed_edit)
+                .any(|m| m.text() == "failed")
+        );
+        let storage = |phase| {
+            trace
+                .messages()
+                .iter()
+                .find(|m| m.name() == "procedural.storage" && m.text() == phase)
+                .unwrap()
+                .args()
+                .iter()
+                .find(|arg| arg.key() == "live")
+                .unwrap()
+                .value()
+        };
+        assert!(
+            matches!(storage("graph removed; undo retained"), OwnedLabelValue::Unsigned(n) if *n > 0)
+        );
+        assert_eq!(storage("undo released"), &OwnedLabelValue::Unsigned(0));
+        assert_eq!(trace.resources().len(), 11);
+        assert!(
+            trace
+                .resources()
+                .iter()
+                .all(|resource| resource.dropped().is_some())
+        );
+        let report = std::fs::read_to_string(directory.join("report.txt")).unwrap();
+        assert!(report.contains("undo[0] ->"));
+        assert!(report.contains("FewUnits"));
+        let manifest = std::fs::read_to_string(directory.join("manifest.json")).unwrap();
+        assert_eq!(manifest.matches("\"explanation\"").count(), 3);
+        for marker in trace
+            .messages()
+            .iter()
+            .filter(|message| message.name() == "procedural.recording")
+        {
+            let arg = |key| {
+                let value = marker
+                    .args()
+                    .iter()
+                    .find(|arg| arg.key() == key)
+                    .unwrap()
+                    .value();
+                let OwnedLabelValue::Unsigned(value) = value else {
+                    panic!("recording identity must be unsigned")
+                };
+                value
+            };
+            assert!(manifest.contains(&format!(
+                "\"node\":{},\"attempt\":{},\"edit\":{}",
+                arg("node"),
+                arg("attempt"),
+                arg("edit")
+            )));
+        }
+        assert!(manifest.contains("\"presentation_observed\":false"));
+        let timeline = std::fs::read(directory.join("timeline.pftrace")).unwrap();
+        // Perfetto's protobuf keeps string arguments verbatim. Both ends must survive export,
+        // even though the runtime has evicted the initial edit by the end of this capture.
+        assert!(timeline.windows(b"initial".len()).any(|s| s == b"initial"));
+        assert!(
+            timeline
+                .windows(b"undo-release".len())
+                .any(|s| s == b"undo-release")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

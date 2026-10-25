@@ -384,6 +384,7 @@ dependencies = [
  "execution_graph",
  "execution_tape",
  "execution_tape_observatory",
+ "footfall",
 ]
 
 [[package]]
@@ -470,6 +471,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec16960b0dbe379826f738ab4dc5215360445017c52c1f74a20204c2abd51331"
 dependencies = [
+ "footfall_analysis",
  "footfall_core",
  "footfall_export",
  "footfall_runtime",
