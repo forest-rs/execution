@@ -339,6 +339,8 @@ mod executor;
 #[cfg(test)]
 mod freshness_tests;
 mod graph;
+#[cfg(test)]
+mod history_tests;
 mod key_arena;
 #[cfg(test)]
 mod lifecycle_tests;
