@@ -17,6 +17,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- `ExecutionContext::clear` drops transient run payloads and proof state between invocations,
+  retaining reusable capacities and leaving returned values and VM aggregates valid. ([#174][] by [@waywardmonkeys][])
+
 - Consume aggregate storage with `AggHeap::into_snapshot`, moving reachable values into owned
   storage without copying their payloads. Handles are remapped in place; unreachable nodes are
   discarded. The returned `AggRemap` transfers per-node metadata to the new handle space.
@@ -411,3 +414,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#168]: https://github.com/forest-rs/execution/pull/168
 
 [#173]: https://github.com/forest-rs/execution/pull/173
+
+[#174]: https://github.com/forest-rs/execution/pull/174

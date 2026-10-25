@@ -375,7 +375,12 @@ impl ExecutionContext {
         Self::default()
     }
 
-    fn reset(&mut self, fuel: u64) {
+    /// Drops transient run state and computed payloads while retaining reusable capacities.
+    ///
+    /// Returned values and retained VM aggregates are independent of this context. Call this
+    /// between runs when an idle embedding should release payloads from its last invocation;
+    /// the next run also clears the context automatically.
+    pub fn clear(&mut self) {
         self.frames.clear();
         self.units.clear();
         self.bools.clear();
@@ -392,8 +397,13 @@ impl ExecutionContext {
         self.arena.clear();
         self.contract_scratch.reset();
 
-        self.fuel = fuel;
+        self.fuel = 0;
         self.host_calls = 0;
+    }
+
+    fn reset(&mut self, fuel: u64) {
+        self.clear();
+        self.fuel = fuel;
     }
 }
 
@@ -3763,6 +3773,25 @@ fn f64_max_num(a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_context_releases_payloads_and_preserves_register_capacity() {
+        let mut ctx = ExecutionContext::new();
+        let bytes = ctx.arena.alloc_bytes(vec![7; 8192]);
+        let text = ctx.arena.alloc_str(String::from("computed"));
+        ctx.i64s.extend([1, 2, 3]);
+        let capacity = ctx.i64s.capacity();
+        let program = ProgramBuilder::new().build();
+        let heap = AggHeap::new();
+        let sources = ValueSources::new(&program, &[], &heap);
+        assert_eq!(ctx.arena.bytes(bytes, sources).unwrap().len(), 8192);
+        assert_eq!(ctx.arena.str(text, sources), Some("computed"));
+        ctx.clear();
+        assert_eq!(ctx.arena.bytes(bytes, sources), None);
+        assert_eq!(ctx.arena.str(text, sources), None);
+        assert!(ctx.i64s.is_empty());
+        assert_eq!(ctx.i64s.capacity(), capacity);
+    }
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
     use crate::bytecode::Instr;
     use crate::host::{AccessSink, HostContext, HostSig, ResourceKeyRef, SigHash};
