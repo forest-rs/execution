@@ -1267,7 +1267,8 @@ impl<X: Executor> ExecutionGraph<X> {
 
         self.nodes[node_index].body = Some(body);
 
-        // Restore the args buffer to scratch for reuse on the next run.
+        // Reuse capacity without keeping the attempt's input values alive while idle.
+        args.clear();
         self.scratch.args = args;
 
         let outcome = match result {
