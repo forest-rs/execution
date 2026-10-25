@@ -8,10 +8,10 @@ use super::{
     model::{Focus, View},
 };
 use super::{palette::*, syntax};
-use execution_tape::vm::Trap;
-use execution_tape_recording::{
+use execution_tape::recording::{
     Divergence, HostOutcome, Outcome, RecordedValue, ReplayBoundary, ReplayError,
 };
+use execution_tape::vm::Trap;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -90,13 +90,13 @@ fn import_name(view: &View<'_>, index: usize) -> String {
 fn history_status(view: &View<'_>) -> String {
     match view.record.instruction_status() {
         None => "not captured".into(),
-        Some(execution_tape_recording::InstructionStatus::Complete) => {
+        Some(execution_tape::recording::InstructionStatus::Complete) => {
             format!("complete · {} attempts", view.record.instructions().len())
         }
-        Some(execution_tape_recording::InstructionStatus::Truncated { limit }) => {
+        Some(execution_tape::recording::InstructionStatus::Truncated { limit }) => {
             format!("TRUNCATED · first {limit} attempts")
         }
-        Some(execution_tape_recording::InstructionStatus::Incomplete) => {
+        Some(execution_tape::recording::InstructionStatus::Incomplete) => {
             "INCOMPLETE · missing observations".into()
         }
     }
@@ -104,10 +104,10 @@ fn history_status(view: &View<'_>) -> String {
 
 fn step_description(
     view: &View<'_>,
-    step: &execution_tape_recording::InstructionStep<'_>,
+    step: &execution_tape::recording::InstructionStep<'_>,
 ) -> String {
     use execution_tape::opcode::Opcode;
-    use execution_tape_recording::InstructionOutcome;
+    use execution_tape::recording::InstructionOutcome;
     match step.outcome {
         InstructionOutcome::Pending => "completion not observed".into(),
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
@@ -723,7 +723,7 @@ fn call_values(
     frame: &mut Frame<'_>,
     view: &View<'_>,
     area: Rect,
-    call: &execution_tape_recording::HostCall<'_>,
+    call: &execution_tape::recording::HostCall<'_>,
 ) {
     let (returns, failure) = match call.outcome {
         HostOutcome::Returned { values, .. } => (values, None),

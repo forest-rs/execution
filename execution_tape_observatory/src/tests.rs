@@ -5,10 +5,10 @@ use super::*;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
+use execution_tape::recording::{RecordLimits, RecordedValue, Recorder};
 use execution_tape::trace::TraceSink;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
-use execution_tape_recording::{RecordLimits, RecordedValue, Recorder};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::{
     Arc,
@@ -110,7 +110,7 @@ fn recording_with_options(
             execution_tape::disasm::disassemble_function(program.program(), FuncId(0)).unwrap();
         let watches = source
             .instrs()
-            .map(|i| execution_tape_recording::RegisterWatch {
+            .map(|i| execution_tape::recording::RegisterWatch {
                 location: execution_tape::trace::TraceLocation {
                     func: FuncId(0),
                     pc: i.pc(),
@@ -118,7 +118,7 @@ fn recording_with_options(
                 registers: i.reads().chain(i.writes()).collect(),
             })
             .collect();
-        recorder = recorder.with_instructions(execution_tape_recording::InstructionCapture {
+        recorder = recorder.with_instructions(execution_tape::recording::InstructionCapture {
             max_steps: 1000,
             watches,
         });
@@ -371,8 +371,8 @@ fn returning_to_parent_restores_selected_return_slot() {
 
 #[test]
 fn compact_failures_keep_boundary_location_and_reason_visible() {
+    use execution_tape::recording::{Divergence, ReplayBoundary, ReplayError};
     use execution_tape::trace::TraceLocation;
-    use execution_tape_recording::{Divergence, ReplayBoundary, ReplayError};
     let (record, _) = recording(RecordLimits::default(), None);
     let mut view = View::new(&record);
     view.select(0);
@@ -688,7 +688,7 @@ fn actual_instruction_navigation_shows_local_values_and_preserves_boundary_selec
     let (record, _) = recording_with_options(RecordLimits::default(), None, true, true);
     assert_eq!(
         record.instruction_status(),
-        Some(execution_tape_recording::InstructionStatus::Complete)
+        Some(execution_tape::recording::InstructionStatus::Complete)
     );
     let mut view = View::new(&record);
     let boundary = view.selected;
@@ -817,9 +817,9 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
     let program = Arc::new(b.build_verified().unwrap());
     let source = execution_tape::disasm::disassemble_function(program.program(), callee).unwrap();
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default())
-        .with_instructions(execution_tape_recording::InstructionCapture {
+        .with_instructions(execution_tape::recording::InstructionCapture {
             max_steps: 100,
-            watches: vec![execution_tape_recording::RegisterWatch {
+            watches: vec![execution_tape::recording::RegisterWatch {
                 location: execution_tape::trace::TraceLocation {
                     func: callee,
                     pc: 0,

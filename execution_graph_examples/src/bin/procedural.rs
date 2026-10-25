@@ -9,6 +9,9 @@ use execution_graph::{
     ReportDetailMask, ResourceKey, TapeError, TapeExecutor, TapeInvocation, TapeNode, TapeObserver,
     TapeValue,
 };
+use execution_tape::recording::{
+    InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch, ReplayOutcome,
+};
 use execution_tape::{
     asm::{Asm, FunctionAbi, ProgramBuilder},
     contract::Contract,
@@ -18,9 +21,6 @@ use execution_tape::{
     value::{FuncId, Value},
     verifier::VerifiedProgram,
     vm::Limits,
-};
-use execution_tape_recording::{
-    InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch, ReplayOutcome,
 };
 use std::{
     error::Error,

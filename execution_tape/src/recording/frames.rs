@@ -1,9 +1,9 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::trace::TraceLocation;
+use crate::value::FuncId;
 use core::num::NonZeroU32;
-use execution_tape::trace::TraceLocation;
-use execution_tape::value::FuncId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FrameId(NonZeroU32);

@@ -6,9 +6,9 @@
 #[path = "../recording.rs"]
 mod workload;
 
+use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncId;
-use execution_tape_recording::{RecordLimits, Recorder, ReplayOutcome};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

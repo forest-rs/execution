@@ -549,8 +549,8 @@ fn even_unused_nominal_refinements_must_match_the_schema() {
 
 #[test]
 fn rejected_root_candidate_is_retained_and_checked_during_replay() {
+    use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
     use execution_tape::trace::TraceSink;
-    use execution_tape_recording::{RecordLimits, Recorder, ReplayOutcome};
     use std::sync::Arc;
     let mut builder = ProgramBuilder::new();
     let integer = integer(&mut builder);
@@ -602,8 +602,8 @@ fn rejected_root_candidate_is_retained_and_checked_during_replay() {
 
 #[test]
 fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
+    use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
     use execution_tape::trace::{ScopeKind, TraceLocation, TraceOutcome, TraceSink};
-    use execution_tape_recording::{RecordLimits, Recorder, ReplayOutcome};
     use std::sync::Arc;
     struct Completions {
         call: TraceLocation,

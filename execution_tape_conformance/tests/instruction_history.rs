@@ -7,14 +7,14 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::program::ValueType;
+use execution_tape::recording::{
+    InstructionCapture, InstructionOutcome, InstructionStatus, RecordLimits, Recorder,
+    ReplayOutcome,
+};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
-use execution_tape_recording::{
-    InstructionCapture, InstructionOutcome, InstructionStatus, RecordLimits, Recorder,
-    ReplayOutcome,
-};
 use std::sync::Arc;
 
 struct NoHost;
@@ -74,7 +74,7 @@ fn capture(
     max_steps: usize,
     fuel: u64,
     instructions: bool,
-) -> execution_tape_recording::Recording {
+) -> execution_tape::recording::Recording {
     let p = fixture();
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default()).with_instructions(
         InstructionCapture {
@@ -197,7 +197,7 @@ fn normal_recorders_have_no_instruction_history() {
     assert_eq!(record.stats().instructions, 0);
 }
 
-fn watches(program: &VerifiedProgram) -> Vec<execution_tape_recording::RegisterWatch> {
+fn watches(program: &VerifiedProgram) -> Vec<execution_tape::recording::RegisterWatch> {
     (0..program.program().functions.len())
         .flat_map(|index| {
             let func = FuncId(u32::try_from(index).unwrap());
@@ -205,7 +205,7 @@ fn watches(program: &VerifiedProgram) -> Vec<execution_tape_recording::RegisterW
                 execution_tape::disasm::disassemble_function(program.program(), func).unwrap();
             source
                 .instrs()
-                .map(|i| execution_tape_recording::RegisterWatch {
+                .map(|i| execution_tape::recording::RegisterWatch {
                     location: execution_tape::trace::TraceLocation { func, pc: i.pc() },
                     registers: i.reads().chain(i.writes()).filter(|&r| r != 0).collect(),
                 })
@@ -223,7 +223,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
         .find(|watch| watch.location.func == FuncId(1) && watch.location.pc == 0)
         .unwrap()
         .clone();
-    selected.push(execution_tape_recording::RegisterWatch {
+    selected.push(execution_tape::recording::RegisterWatch {
         registers: vec![0, 1, 1],
         ..duplicate
     });
@@ -251,13 +251,13 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     let branch = record.instruction(0).unwrap();
     assert!(matches!(
         branch.inputs.iter().collect::<Vec<_>>().as_slice(),
-        [(1, execution_tape_recording::RecordedValue::Bool(false))]
+        [(1, execution_tape::recording::RecordedValue::Bool(false))]
     ));
     let constant = record.instruction(1).unwrap();
     assert!(constant.inputs.is_empty());
     assert!(matches!(
         constant.outputs.iter().collect::<Vec<_>>().as_slice(),
-        [(2, execution_tape_recording::RecordedValue::I64(7))]
+        [(2, execution_tape::recording::RecordedValue::I64(7))]
     ));
     let call = record.instruction(3).unwrap();
     assert!(call.outputs.is_empty()); // caller r3 was allocated but is not initialized yet
@@ -265,7 +265,7 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     assert_eq!(add.inputs.len(), 2); // repeated read occurrence is preserved
     assert!(matches!(
         add.outputs.iter().collect::<Vec<_>>().as_slice(),
-        [(2, execution_tape_recording::RecordedValue::I64(14))]
+        [(2, execution_tape::recording::RecordedValue::I64(14))]
     ));
     assert!(record.instruction(5).unwrap().outputs.is_empty());
     record.replay().unwrap();
@@ -364,22 +364,22 @@ fn aliased_aggregate_watches_preserve_before_after_graph_identity() {
     drop(vm);
     let record = recorder.finish();
     let project = record.instruction(2).unwrap();
-    let (_, execution_tape_recording::RecordedValue::Agg(before)) =
+    let (_, execution_tape::recording::RecordedValue::Agg(before)) =
         project.inputs.iter().next().unwrap()
     else {
         panic!("before aggregate");
     };
-    let (_, execution_tape_recording::RecordedValue::Agg(after)) =
+    let (_, execution_tape::recording::RecordedValue::Agg(after)) =
         project.outputs.iter().next().unwrap()
     else {
         panic!("after aggregate");
     };
     assert_ne!(before, after);
     assert!(
-        matches!(record.aggregate(*before).unwrap().values, [execution_tape_recording::RecordedValue::Agg(child)] if child == after)
+        matches!(record.aggregate(*before).unwrap().values, [execution_tape::recording::RecordedValue::Agg(child)] if child == after)
     );
     assert!(
-        matches!(record.aggregate(*after).unwrap().values, [execution_tape_recording::RecordedValue::Str(text)] if &**text == "retained text")
+        matches!(record.aggregate(*after).unwrap().values, [execution_tape::recording::RecordedValue::Str(text)] if &**text == "retained text")
     );
     record.replay().unwrap();
 }
@@ -414,8 +414,8 @@ fn omitted_watch_callbacks_do_not_claim_complete_value_history() {
 #[test]
 fn replay_rejects_a_retained_successor_that_was_not_executed() {
     use execution_tape::aggregates::AggHeap;
+    use execution_tape::recording::{Divergence, ReplayBoundary, ReplayError};
     use execution_tape::trace::{TraceLocation, TraceOutcome, ValueEvent};
-    use execution_tape_recording::{Divergence, ReplayBoundary, ReplayError};
     let mut b = ProgramBuilder::new();
     let mut a = Asm::new();
     a.set_register_types(vec![ValueType::Unit, ValueType::I64]);

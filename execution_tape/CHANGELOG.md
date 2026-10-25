@@ -125,7 +125,7 @@ This release has an [MSRV][] of 1.88.
   The read/compute/store demo now includes a guest helper and compact call-value rows. ([#148][] by [@waywardmonkeys][])
 
 
-- Capture bounded guest activation ancestry in `execution_tape_recording`, with exact caller
+- Capture bounded guest activation ancestry in `execution_tape::recording`, with exact caller
   PCs, shared parent links and borrowed innermost-to-root `CallStack` iteration. Inspect
   `HostCall::stack` and `Recording::outcome_stack`; trap ancestry survives VM unwinding.
   Replay checks captured activation order, caller locations and boundary ancestry. ([#148][] by [@waywardmonkeys][])
@@ -142,8 +142,8 @@ This release has an [MSRV][] of 1.88.
   candidates precede validation/compaction and their handles are borrowed for the callback.
   Recording ownership and replay policy remain outside the VM. ([#144][] by [@waywardmonkeys][])
 
-- Own invocation boundary values and reachable aggregate graphs with the separate
-  `execution_tape_recording` crate. Capture budgets and incomplete states are explicit;
+- Own invocation boundary values and reachable aggregate graphs through
+  `execution_tape::recording`. Capture budgets and incomplete states are explicit;
   replay reexecutes guest code in a fresh VM with recorded host outcomes, preserving graph
   identities and typed failures without invoking the live host. ([#145][] by [@waywardmonkeys][])
 
@@ -189,6 +189,9 @@ This release has an [MSRV][] of 1.88.
 
 - Check kind-only value contracts directly without traversal frames or successful-proof entries.
   Preserve the same work charge, type/handle errors and opaque callable semantics. ([#168][] by [@waywardmonkeys][])
+- Recording is now the regular `execution_tape::recording` module. Remove the separate
+  `execution_tape_recording` dependency and update imports to `execution_tape::recording`.
+  No feature flag or extra dependency is required; capture remains opt-in at runtime. ([#178][] by [@waywardmonkeys][])
 
 - Wire version 0.4 encodes indirect signatures with shared compositional contract IDs; regenerate
   encoded programs. Replace `call_sig(args, rets)` with fallible `call_sig(FunctionSig { ... })`
@@ -416,3 +419,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#173]: https://github.com/forest-rs/execution/pull/173
 
 [#174]: https://github.com/forest-rs/execution/pull/174
+
+[#178]: https://github.com/forest-rs/execution/pull/178

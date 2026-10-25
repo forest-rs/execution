@@ -376,7 +376,6 @@ dependencies = [
  "execution_graph",
  "execution_tape",
  "execution_tape_observatory",
- "execution_tape_recording",
 ]
 
 [[package]]
@@ -407,7 +406,6 @@ version = "0.0.1"
 dependencies = [
  "execution_graph",
  "execution_tape",
- "execution_tape_recording",
 ]
 
 [[package]]
@@ -423,7 +421,6 @@ name = "execution_tape_observatory"
 version = "0.0.1"
 dependencies = [
  "execution_tape",
- "execution_tape_recording",
  "ratatui",
 ]
 
@@ -436,13 +433,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "execution_tape_recording"
-version = "0.0.1"
-dependencies = [
- "execution_tape",
-]
-
-[[package]]
 name = "execution_tape_wind_tunnel"
 version = "0.0.1"
 dependencies = [
@@ -450,7 +440,6 @@ dependencies = [
  "execution_tape",
  "execution_tape_footfall",
  "execution_tape_observatory",
- "execution_tape_recording",
  "footfall",
  "ratatui",
 ]

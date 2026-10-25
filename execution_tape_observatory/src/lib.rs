@@ -37,7 +37,7 @@ mod syntax;
 mod tests;
 
 use execution_tape::program::Program;
-use execution_tape_recording::Recording;
+use execution_tape::recording::Recording;
 use model::View;
 use ratatui::Terminal;
 use ratatui::backend::{CrosstermBackend, TestBackend};

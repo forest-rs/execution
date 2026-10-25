@@ -1,20 +1,18 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{AggregateId, CallOutcome, CaptureFault, End, RecordedValue, Recording};
+use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
+use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
+use crate::program::{HostSigId, Program};
+use crate::recording::{AggregateId, CallOutcome, CaptureFault, End, RecordedValue, Recording};
+use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent};
+use crate::value::{AggHandle, AggType, Closure, FuncId, Value};
+use crate::vm::{Trap, TrapInfo, Vm};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use execution_tape::aggregates::{AggError, AggHeap, ValueSnapshot};
-use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use execution_tape::program::{HostSigId, Program};
-use execution_tape::trace::{
-    ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
-};
-use execution_tape::value::{AggHandle, AggType, Closure, FuncId, Value};
-use execution_tape::vm::{Trap, TrapInfo, Vm};
 
 /// Difference between the replay and the captured boundary contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,8 +145,8 @@ struct State {
     location: Option<TraceLocation>,
     candidate: bool,
     frames: usize,
-    top: Option<crate::frames::FrameId>,
-    final_top: Option<crate::frames::FrameId>,
+    top: Option<crate::recording::frames::FrameId>,
+    final_top: Option<crate::recording::frames::FrameId>,
     error: Option<ReplayError>,
 }
 
@@ -439,11 +437,7 @@ struct Check<'a> {
     state: Rc<RefCell<State>>,
 }
 impl TraceSink for Check<'_> {
-    fn wants_registers(
-        &self,
-        location: TraceLocation,
-        phase: execution_tape::trace::RegisterPhase,
-    ) -> bool {
+    fn wants_registers(&self, location: TraceLocation, phase: crate::trace::RegisterPhase) -> bool {
         let state = self.state.borrow();
         let Some(step) = state
             .instructions
@@ -454,12 +448,12 @@ impl TraceSink for Check<'_> {
         };
         step.location == location
             && match phase {
-                execution_tape::trace::RegisterPhase::Inputs => !step.inputs.is_empty(),
-                execution_tape::trace::RegisterPhase::Outputs => !step.outputs.is_empty(),
+                crate::trace::RegisterPhase::Inputs => !step.inputs.is_empty(),
+                crate::trace::RegisterPhase::Outputs => !step.outputs.is_empty(),
             }
     }
 
-    fn registers(&mut self, _: &Program, event: execution_tape::trace::RegisterEvent<'_>) {
+    fn registers(&mut self, _: &Program, event: crate::trace::RegisterEvent<'_>) {
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -471,8 +465,8 @@ impl TraceSink for Check<'_> {
             return;
         };
         let expected = match event.phase {
-            execution_tape::trace::RegisterPhase::Inputs => step.inputs,
-            execution_tape::trace::RegisterPhase::Outputs => step.outputs,
+            crate::trace::RegisterPhase::Inputs => step.inputs,
+            crate::trace::RegisterPhase::Outputs => step.outputs,
         };
         state.boundary = ReplayBoundary::Instruction { index };
         let mut actual = event
@@ -532,7 +526,7 @@ impl TraceSink for Check<'_> {
             state.error = Some(state.mismatch(Divergence::CallStack));
             return;
         }
-        state.top = crate::frames::FrameId::new(state.frames);
+        state.top = crate::recording::frames::FrameId::new(state.frames);
         state.frames += 1;
     }
 
@@ -578,7 +572,7 @@ impl TraceSink for Check<'_> {
                 {
                     state.error = Some(state.mismatch(Divergence::Instruction));
                 }
-            } else if history.status == crate::InstructionStatus::Complete {
+            } else if history.status == crate::recording::InstructionStatus::Complete {
                 state.error = Some(state.mismatch(Divergence::Instruction));
             }
         }
@@ -607,10 +601,10 @@ impl TraceSink for Check<'_> {
             return;
         };
         let actual = match outcome {
-            TraceOutcome::Ok => crate::InstructionOutcome::Completed,
-            TraceOutcome::Trap(_) => crate::InstructionOutcome::Trapped,
+            TraceOutcome::Ok => crate::recording::InstructionOutcome::Completed,
+            TraceOutcome::Trap(_) => crate::recording::InstructionOutcome::Trapped,
         };
-        if step.outcome != crate::InstructionOutcome::Pending
+        if step.outcome != crate::recording::InstructionOutcome::Pending
             && (step.location != location || step.next != next || step.outcome != actual)
         {
             state.boundary = ReplayBoundary::Instruction { index };
@@ -720,7 +714,7 @@ impl Recording {
         state.boundary = ReplayBoundary::Completion;
         if let Some(history) = &self.history
             && (state.instructions < history.steps.len()
-                || (history.status == crate::InstructionStatus::Complete
+                || (history.status == crate::recording::InstructionStatus::Complete
                     && state.instructions != history.steps.len()))
         {
             return Err(state.mismatch(Divergence::Instruction));
@@ -863,12 +857,12 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Call, RecordLimits, Recorder};
+    use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+    use crate::host::HostSig;
+    use crate::program::ValueType;
+    use crate::recording::{Call, RecordLimits, Recorder};
+    use crate::vm::Limits;
     use alloc::vec;
-    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
-    use execution_tape::host::HostSig;
-    use execution_tape::program::ValueType;
-    use execution_tape::vm::Limits;
 
     struct Echo;
     impl Host for Echo {
@@ -1128,7 +1122,7 @@ mod tests {
         // supplied by the guest: the invocation still binds the original root.
         let node = &record.arena.nodes[original.0 as usize];
         let duplicate = AggregateId(u32::try_from(record.arena.nodes.len()).unwrap());
-        record.arena.nodes.push(crate::values::Node {
+        record.arena.nodes.push(crate::recording::values::Node {
             kind: node.kind,
             fields: node.fields.clone(),
             initial: true,

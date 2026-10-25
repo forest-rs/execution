@@ -6,8 +6,8 @@
 use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands};
 use execution_tape::host::HostError;
 use execution_tape::program::{HostSigId, Program, ValueType};
+use execution_tape::recording::{AggregateId, RecordedValue, Recording};
 use execution_tape::value::{AggType, FuncId};
-use execution_tape_recording::{AggregateId, RecordedValue, Recording};
 
 #[derive(Debug)]
 pub(super) struct VerificationDiagnostic {

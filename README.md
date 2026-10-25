@@ -5,15 +5,13 @@ Workspace repository for `execution_tape`, a small verifiable bytecode container
 
 Crates:
 - `execution_tape/`: publishable `no_std + alloc` crate for the bytecode format, verifier, VM,
-  tracing hooks, host ABI, and disassembler.
+  tracing hooks, host ABI, disassembly, owned recording and checked replay.
 - `execution_graph/`: publishable `no_std + alloc` crate owning scheduling, invalidation and
   publication, with native Rust execution and an optional tape adapter.
 - `execution_graph_examples/`: native and tape examples, including a procedural surface with
   retained geometry, edit histories and source-linked VM recordings.
 - `execution_tape_conformance/`: conformance/regression tests for the tape format, verifier, and VM.
 - `execution_tape_profiling/`: optional profiling adapters; kept separate from the core crate.
-- `execution_tape_recording/`: owned boundary recordings and checked replay in a fresh VM,
-  with capture budgets and recording-local aggregate identities (`no_std + alloc`).
 - `execution_tape_observatory/`: optional terminal exploration of recordings, graph values,
   source instructions and checked replay (`std`, Ratatui).
 - `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks and
