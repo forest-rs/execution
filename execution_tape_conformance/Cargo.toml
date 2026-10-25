@@ -17,3 +17,4 @@ workspace = true
 [dependencies]
 execution_tape = { workspace = true }
 execution_tape_recording.workspace = true
+execution_graph.workspace = true

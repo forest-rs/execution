@@ -208,6 +208,12 @@ output keeps its publication bundle alive; unrelated scalar payload outputs have
 owners. Host-object tokens still require their host's own retention policy. Temporary payloads
 are cleared after attempts; reusable workspace capacity is distinct from published storage.
 
+[`TapeExecutor::with_observer`] installs a [`TapeObserver`] that selects individual invocations
+for any VM [`TraceSink`](execution_tape::trace::TraceSink), including recording or profiling.
+[`TapeInvocation`] correlates each selected body with its graph node and attempt. Observers
+receive adapter completion before graph publication validation, so a successful recording
+does not prove that the graph committed the output. Cache hits produce no VM invocation.
+
 ```rust
 use std::sync::Arc;
 

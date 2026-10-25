@@ -1254,6 +1254,8 @@ impl<X: Executor> ExecutionGraph<X> {
         let mut pending = Vec::new();
         let result = {
             let mut access = NodeAccess::new(
+                node,
+                self.nodes[node_index].attempt_count,
                 &mut self.dirty,
                 &mut self.scratch.read_ids,
                 &mut self.scratch.write_ids,

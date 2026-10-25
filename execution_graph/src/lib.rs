@@ -206,6 +206,12 @@
 //! owners. Host-object tokens still require their host's own retention policy. Temporary payloads
 //! are cleared after attempts; reusable workspace capacity is distinct from published storage.
 //!
+//! [`TapeExecutor::with_observer`] installs a [`TapeObserver`] that selects individual invocations
+//! for any VM [`TraceSink`](execution_tape::trace::TraceSink), including recording or profiling.
+//! [`TapeInvocation`] correlates each selected body with its graph node and attempt. Observers
+//! receive adapter completion before graph publication validation, so a successful recording
+//! does not prove that the graph committed the output. Cache hits produce no VM invocation.
+//!
 //! ```rust
 //! # #[cfg(feature = "tape")]
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -345,7 +351,7 @@ pub use report::{
     GraphStorageStats, NodeRunDetail, NodeStatus, ReportDetailMask, RunDetailReport, RunSummary,
 };
 #[cfg(feature = "tape")]
-pub use tape::{TapeError, TapeExecutor, TapeNode};
+pub use tape::{NoTapeObserver, TapeError, TapeExecutor, TapeInvocation, TapeNode, TapeObserver};
 #[cfg(feature = "tape")]
 pub use tape_value::{TapeValue, TapeValueDomain};
 

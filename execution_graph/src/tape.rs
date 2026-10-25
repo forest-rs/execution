@@ -29,6 +29,11 @@ use crate::graph::{ExecutionGraph, GraphError};
 use crate::node_access::NodeAccess;
 use crate::tape_value::{Importer, TapeValue};
 
+#[path = "tape_observation.rs"]
+mod observation;
+use observation::CombinedTrace;
+pub use observation::{NoTapeObserver, TapeInvocation, TapeObserver};
+
 /// Failures specific to tape nodes.
 #[derive(Clone, Debug)]
 pub enum TapeError {
@@ -206,7 +211,7 @@ fn plain_values_equal(previous: &Value, next: &Value) -> bool {
 /// Result owners are independent of this executor. Inputs are admitted before execution,
 /// imported with sharing preserved, then discarded with transient context data after each
 /// attempt. Cached and externally cloned results keep only their immutable publication storage.
-pub struct TapeExecutor<H: Host> {
+pub struct TapeExecutor<H: Host, O: TapeObserver = NoTapeObserver> {
     vm: Vm<H>,
     ctx: ExecutionContext,
     strict_deps: bool,
@@ -214,9 +219,10 @@ pub struct TapeExecutor<H: Host> {
     args: Vec<Value>,
     results: Vec<Value>,
     importer: Importer,
+    observer: O,
 }
 
-impl<H: Host> fmt::Debug for TapeExecutor<H> {
+impl<H: Host, O: TapeObserver> fmt::Debug for TapeExecutor<H, O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TapeExecutor")
             .field("vm", &self.vm)
@@ -238,7 +244,37 @@ impl<H: Host> TapeExecutor<H> {
             args: Vec::new(),
             results: Vec::new(),
             importer: Importer::default(),
+            observer: NoTapeObserver,
         }
+    }
+}
+
+impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
+    /// Installs an observer that selects individual invocations for tracing or recording.
+    /// The default observer skips every invocation and adds no capture storage.
+    #[must_use]
+    pub fn with_observer<N: TapeObserver>(self, observer: N) -> TapeExecutor<H, N> {
+        TapeExecutor {
+            vm: self.vm,
+            ctx: self.ctx,
+            strict_deps: self.strict_deps,
+            early_cutoff: self.early_cutoff,
+            args: self.args,
+            results: self.results,
+            importer: self.importer,
+            observer,
+        }
+    }
+
+    /// Borrows the installed observer and any captures it retained.
+    #[must_use]
+    pub fn observer(&self) -> &O {
+        &self.observer
+    }
+
+    /// Updates capture selection or drains retained observations between graph runs.
+    pub fn observer_mut(&mut self) -> &mut O {
+        &mut self.observer
     }
 
     /// Enables or disables early cutoff (off by default).
@@ -296,7 +332,7 @@ impl<H: Host> TapeExecutor<H> {
     }
 }
 
-impl<H: Host> Executor for TapeExecutor<H> {
+impl<H: Host, O: TapeObserver> Executor for TapeExecutor<H, O> {
     type Value = TapeValue;
     type Node = TapeNode;
     type Error = TapeError;
@@ -334,7 +370,7 @@ impl<H: Host> Executor for TapeExecutor<H> {
     }
 }
 
-impl<H: Host> TapeExecutor<H> {
+impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
     /// Executes one tape body as part of a custom graph executor with edge type `V`.
     ///
     /// Convert selected inputs to `TapeValue`, then wrap appended outputs in the custom edge
@@ -354,7 +390,27 @@ impl<H: Host> TapeExecutor<H> {
         for (index, input) in inputs.iter().enumerate() {
             input.validate_input(index, &node.program)?;
         }
-        let result = self.execute_owned(node, inputs, outputs, access);
+        for input in inputs {
+            match self.importer.import(input, self.vm.aggregates_mut()) {
+                Ok(value) => self.args.push(value),
+                Err(error) => {
+                    self.clear_workspace();
+                    return Err(TapeError::Aggregate(error));
+                }
+            }
+        }
+        let invocation = TapeInvocation {
+            node: access.node(),
+            attempt: access.attempt(),
+            program: &node.program,
+            entry: node.entry,
+        };
+        let mut capture = self.observer.begin(invocation);
+        let result = self.execute_owned(node, outputs, access, capture.as_mut());
+        if let Some(capture) = capture {
+            self.observer
+                .finish(invocation, capture, result.as_ref().copied());
+        }
         self.clear_workspace();
         result
     }
@@ -362,30 +418,25 @@ impl<H: Host> TapeExecutor<H> {
     fn execute_owned<V>(
         &mut self,
         node: &TapeNode,
-        inputs: &[TapeValue],
         outputs: &mut Vec<TapeValue>,
         access: &mut NodeAccess<'_, V>,
+        capture: Option<&mut O::Sink>,
     ) -> Result<(), TapeError> {
-        for input in inputs {
-            self.args.push(
-                self.importer
-                    .import(input, self.vm.aggregates_mut())
-                    .map_err(TapeError::Aggregate)?,
-            );
-        }
         let access_count: Cell<usize> = Cell::new(0);
         let mut strict = StrictDepsTrace::new(&access_count);
-        let (trace_mask, trace): (TraceMask, Option<&mut dyn TraceSink>) = if self.strict_deps {
-            (TraceMask::HOST, Some(&mut strict as &mut dyn TraceSink))
-        } else {
-            (TraceMask::NONE, None)
-        };
         let mut sink = TapeAccessSink {
             access,
             counter: &access_count,
         };
-        self.vm
-            .run_with_ctx(
+        let result = {
+            let mut combined = CombinedTrace::new(capture, &mut strict, self.strict_deps);
+            let trace_mask = combined.mask();
+            let trace = if trace_mask == TraceMask::NONE {
+                None
+            } else {
+                Some(&mut combined as &mut dyn TraceSink)
+            };
+            self.vm.run_with_ctx(
                 &mut self.ctx,
                 &node.program,
                 node.entry,
@@ -395,7 +446,8 @@ impl<H: Host> TapeExecutor<H> {
                 trace,
                 Some(&mut sink),
             )
-            .map_err(TapeError::Trap)?;
+        };
+        result.map_err(TapeError::Trap)?;
 
         if self.strict_deps
             && let Some(v) = strict.violation()
@@ -426,7 +478,7 @@ impl<H: Host> TapeExecutor<H> {
     }
 }
 
-impl<H: Host> ExecutionGraph<TapeExecutor<H>> {
+impl<H: Host, O: TapeObserver> ExecutionGraph<TapeExecutor<H, O>> {
     /// Adds a tape node and returns its [`NodeId`].
     ///
     /// `input_names` defines the mapping from per-node binding names to positional function args.

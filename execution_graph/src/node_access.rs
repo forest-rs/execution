@@ -16,6 +16,8 @@ use core::fmt;
 /// are not rolled back. Keys read and written by the same node are excluded from its dependency
 /// set, so a read-modify-write node does not retrigger itself.
 pub struct NodeAccess<'a, V> {
+    node: NodeId,
+    attempt: u64,
     dirty: &'a mut DirtyEngine,
     read_ids: &'a mut Vec<DirtyKey>,
     write_ids: &'a mut Vec<DirtyKey>,
@@ -26,6 +28,8 @@ pub struct NodeAccess<'a, V> {
 
 impl<'a, V> NodeAccess<'a, V> {
     pub(crate) fn new(
+        node: NodeId,
+        attempt: u64,
         dirty: &'a mut DirtyEngine,
         read_ids: &'a mut Vec<DirtyKey>,
         write_ids: &'a mut Vec<DirtyKey>,
@@ -34,6 +38,8 @@ impl<'a, V> NodeAccess<'a, V> {
         pending: &'a mut Vec<NodeId>,
     ) -> Self {
         Self {
+            node,
+            attempt,
             dirty,
             read_ids,
             write_ids,
@@ -41,6 +47,18 @@ impl<'a, V> NodeAccess<'a, V> {
             outputs,
             pending,
         }
+    }
+
+    /// Returns the graph-scoped identity of the currently executing node.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// Returns this node's one-based execution attempt, including failed and pending attempts.
+    #[must_use]
+    pub const fn attempt(&self) -> u64 {
+        self.attempt
     }
     fn read(&mut self, key: ResourceKey) {
         let id = self.dirty.intern(key.clone());
@@ -118,6 +136,8 @@ impl<V: Clone> NodeAccess<'_, V> {
 impl<V> fmt::Debug for NodeAccess<'_, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodeAccess")
+            .field("node", &self.node)
+            .field("attempt", &self.attempt)
             .field("pending", &self.pending)
             .finish_non_exhaustive()
     }
