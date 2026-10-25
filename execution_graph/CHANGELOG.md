@@ -17,6 +17,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add `TapeExecutor::host` and `host_mut` for host-state access between runs. Report affected
+  graph keys through invalidation after mutation. ([#175][] by [@waywardmonkeys][])
+
 - Add composable `ReportDetailMask` methods and bitwise operators, with `Default` selecting no
   optional details. ([#94][] by [@waywardmonkeys][])
 - Add advisory node labels through `set_node_label`, `clear_node_label`, and `node_label`, with
@@ -49,6 +52,16 @@ This release has an [MSRV][] of 1.88.
 - Reject zero-output node definitions with `GraphError::NoOutputs` instead of accepting work
   that never executes. Declare one completion output and return a unit value; tape entry
   functions must likewise return unit when they have no data result. ([#171][] by [@waywardmonkeys][])
+- `TapeExecutor::Value` is now `TapeValue`, with owned immutable result storage and cheap edge
+  clones. Convert plain inputs from `Value` with `.into()`, including in custom executors.
+  Inspect roots with `value()`, domains with `domain()`, and storage with `aggregates()`.
+  Adopt snapshots with `TapeValue::from_snapshot`; supply the original prepared program for
+  nested callable or nominal IDs. Unowned or foreign scoped values are rejected before execution.
+  Input aggregate graphs are copied at invocation ingress; output storage moves into shared
+  publication bundles. Retaining one aggregate output retains that bundle, while dropping its
+  last owner releases it. Old results remain valid after replacement or executor destruction.
+  `execute_node<V>` delegates through custom edge representations with the same ownership and
+  dependency-reporting path. ([#175][] by [@waywardmonkeys][])
 
 - `TapeError` no longer implements `PartialEq`/`Eq`, following typed host failures in Execution
   Tape. Match variants and compare fields or inspect the standard error source chain instead. ([#133][] by [@waywardmonkeys][])
@@ -137,3 +150,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 
 [#171]: https://github.com/forest-rs/execution/pull/171
 [#172]: https://github.com/forest-rs/execution/pull/172
+
+[#175]: https://github.com/forest-rs/execution/pull/175

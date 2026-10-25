@@ -492,6 +492,7 @@ mod tape {
     use execution_tape::vm::Limits;
 
     use super::super::*;
+    use crate::TapeValue;
     use crate::executor::Executor;
     use crate::native::{FnExecutor, FnNode};
     use crate::node_access::NodeAccess;
@@ -516,25 +517,25 @@ mod tape {
     #[derive(Debug)]
     enum Mixed {
         Tape(TapeNode),
-        Native(FnNode<Value, TapeError>),
+        Native(FnNode<TapeValue, TapeError>),
     }
 
     #[derive(Debug)]
     struct MixedExecutor {
         tape: TapeExecutor<HostNoop>,
-        native: FnExecutor<Value, TapeError>,
+        native: FnExecutor<TapeValue, TapeError>,
     }
 
     impl Executor for MixedExecutor {
-        type Value = Value;
+        type Value = TapeValue;
         type Node = Mixed;
         type Error = TapeError;
 
         fn execute(
             &mut self,
             node: &mut Mixed,
-            inputs: &[Value],
-            outputs: &mut Vec<Value>,
+            inputs: &[TapeValue],
+            outputs: &mut Vec<TapeValue>,
             access: &mut NodeAccess<'_, Self::Value>,
         ) -> Result<NodeOutcome, TapeError> {
             match node {
@@ -543,7 +544,7 @@ mod tape {
             }
         }
 
-        fn values_equal(&self, previous: &Value, next: &Value) -> bool {
+        fn values_equal(&self, previous: &TapeValue, next: &TapeValue) -> bool {
             self.tape.values_equal(previous, next)
         }
 
@@ -586,7 +587,7 @@ mod tape {
             .unwrap();
         let reader = g
             .add_node(
-                Mixed::Native(FnNode::new(|inputs: &[Value], outputs, _access| {
+                Mixed::Native(FnNode::new(|inputs: &[TapeValue], outputs, _access| {
                     outputs.push(inputs[0].clone());
                     Ok(())
                 })),
@@ -594,7 +595,8 @@ mod tape {
                 vec!["value".into()],
             )
             .unwrap();
-        g.set_input_value(constant, "x", Value::I64(1)).unwrap();
+        g.set_input_value(constant, "x", Value::I64(1).into())
+            .unwrap();
         g.connect(constant, "value", reader, "v").unwrap();
         g.run_all().unwrap();
         (g, constant, reader)
@@ -604,7 +606,8 @@ mod tape {
     fn tape_outputs_cut_off_native_readers_when_enabled() {
         for (early_cutoff, reader_runs) in [(false, 2), (true, 1)] {
             let (mut g, constant, reader) = graph(early_cutoff);
-            g.set_input_value(constant, "x", Value::I64(2)).unwrap();
+            g.set_input_value(constant, "x", Value::I64(2).into())
+                .unwrap();
             g.invalidate_input("x");
             g.run_all().unwrap();
             assert_eq!(g.node_run_count(constant), Some(2));
@@ -615,13 +618,16 @@ mod tape {
     #[test]
     fn tape_equality_compares_plain_values_by_bits() {
         let mut tape = TapeExecutor::new(HostNoop, Limits::default());
-        assert!(!tape.values_equal(&Value::I64(1), &Value::I64(1)));
+        assert!(!tape.values_equal(&Value::I64(1).into(), &Value::I64(1).into()));
         tape.set_early_cutoff(true);
-        assert!(tape.values_equal(&Value::I64(1), &Value::I64(1)));
-        assert!(!tape.values_equal(&Value::I64(1), &Value::U64(1)));
-        assert!(tape.values_equal(&Value::F64(f64::NAN), &Value::F64(f64::NAN)));
-        assert!(!tape.values_equal(&Value::F64(0.0), &Value::F64(-0.0)));
-        assert!(tape.values_equal(&Value::Str("a".into()), &Value::Str("a".into())));
-        assert!(tape.values_equal(&Value::Unit, &Value::Unit));
+        assert!(tape.values_equal(&Value::I64(1).into(), &Value::I64(1).into()));
+        assert!(!tape.values_equal(&Value::I64(1).into(), &Value::U64(1).into()));
+        assert!(tape.values_equal(&Value::F64(f64::NAN).into(), &Value::F64(f64::NAN).into()));
+        assert!(!tape.values_equal(&Value::F64(0.0).into(), &Value::F64(-0.0).into()));
+        assert!(tape.values_equal(
+            &Value::Str("a".into()).into(),
+            &Value::Str("a".into()).into()
+        ));
+        assert!(tape.values_equal(&Value::Unit.into(), &Value::Unit.into()));
     }
 }

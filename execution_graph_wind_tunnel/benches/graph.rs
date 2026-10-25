@@ -79,7 +79,7 @@ fn build_chain_graph(len: usize) -> (TapeGraph<NopHost>, execution_graph::NodeId
     let n0 = g
         .add_tape_node(prog.clone(), entry, vec!["in".into()])
         .unwrap();
-    g.set_input_value(n0, "in", Value::I64(1)).unwrap();
+    g.set_input_value(n0, "in", Value::I64(1).into()).unwrap();
 
     let mut prev = n0;
     for _ in 1..len {
@@ -130,7 +130,7 @@ fn build_stable_deps_graph(input_count: usize) -> TapeGraph<NopHost> {
 
     for (i, name) in input_names.iter().enumerate() {
         let value = i64::try_from(i).unwrap_or(i64::MAX);
-        g.set_input_value(node, name.as_ref(), Value::I64(value))
+        g.set_input_value(node, name.as_ref(), Value::I64(value).into())
             .unwrap();
     }
 
@@ -153,14 +153,14 @@ fn bench_single_node_rerun(c: &mut Criterion) {
     let (prog, entry) = build_identity_program("value");
     let mut g = ExecutionGraph::new(TapeExecutor::new(NopHost, Limits::default()));
     let n0 = g.add_tape_node(prog, entry, vec!["in".into()]).unwrap();
-    g.set_input_value(n0, "in", Value::I64(0)).unwrap();
+    g.set_input_value(n0, "in", Value::I64(0).into()).unwrap();
     g.run_all().unwrap();
 
     c.bench_function("single_node_rerun", |b| {
         let mut v = 0_i64;
         b.iter(|| {
             v = v.wrapping_add(1);
-            g.set_input_value(n0, "in", Value::I64(black_box(v)))
+            g.set_input_value(n0, "in", Value::I64(black_box(v)).into())
                 .unwrap();
             g.invalidate_input("in");
             g.run_all().unwrap();
@@ -186,7 +186,7 @@ fn bench_chain_rerun(c: &mut Criterion) {
             let mut v = 0_i64;
             b.iter(|| {
                 v = v.wrapping_add(1);
-                g.set_input_value(n0, "in", Value::I64(black_box(v)))
+                g.set_input_value(n0, "in", Value::I64(black_box(v)).into())
                     .unwrap();
                 g.invalidate_input("in");
                 g.run_all().unwrap();
@@ -365,7 +365,7 @@ fn build_fanout_graph(fanout: usize) -> (TapeGraph<NopHost>, execution_graph::No
     let root = g
         .add_tape_node(prog.clone(), entry, vec!["in".into()])
         .unwrap();
-    g.set_input_value(root, "in", Value::I64(1)).unwrap();
+    g.set_input_value(root, "in", Value::I64(1).into()).unwrap();
 
     for _ in 0..fanout {
         let leaf = g
@@ -398,7 +398,7 @@ fn bench_fanout_rerun(c: &mut Criterion) {
             let mut v = 0_i64;
             b.iter(|| {
                 v = v.wrapping_add(1);
-                g.set_input_value(root, "in", Value::I64(black_box(v)))
+                g.set_input_value(root, "in", Value::I64(black_box(v)).into())
                     .unwrap();
                 g.invalidate_input("in");
                 g.run_all().unwrap();
@@ -495,7 +495,7 @@ fn build_disjoint_chains(
         g.set_input_value(
             root,
             "key",
-            Value::U64(u64::try_from(i).unwrap_or(u64::MAX)),
+            Value::U64(u64::try_from(i).unwrap_or(u64::MAX)).into(),
         )
         .unwrap();
 
@@ -602,7 +602,8 @@ fn build_shared_upstream(
     let global = g
         .add_tape_node(param_prog.clone(), param_entry, vec!["key".into()])
         .unwrap();
-    g.set_input_value(global, "key", Value::U64(0)).unwrap();
+    g.set_input_value(global, "key", Value::U64(0).into())
+        .unwrap();
 
     for i in 0..tenants {
         let per = g
@@ -611,7 +612,7 @@ fn build_shared_upstream(
         g.set_input_value(
             per,
             "key",
-            Value::U64(u64::try_from(i + 1).unwrap_or(u64::MAX)),
+            Value::U64(u64::try_from(i + 1).unwrap_or(u64::MAX)).into(),
         )
         .unwrap();
 
@@ -731,8 +732,12 @@ fn build_layered_dag(
         let n = g
             .add_tape_node(param_prog.clone(), param_entry, vec!["key".into()])
             .unwrap();
-        g.set_input_value(n, "key", Value::U64(u64::try_from(i).unwrap_or(u64::MAX)))
-            .unwrap();
+        g.set_input_value(
+            n,
+            "key",
+            Value::U64(u64::try_from(i).unwrap_or(u64::MAX)).into(),
+        )
+        .unwrap();
         prev.push(n);
     }
 

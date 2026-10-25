@@ -210,8 +210,8 @@ fn main() -> Result<(), GraphError<TapeError>> {
     g.set_node_label(n_tax, "tax_amount")?;
     g.set_node_label(n_total, "total")?;
 
-    g.set_input_value(n_price, "qty", Value::I64(2))?;
-    g.set_input_value(n_price, "unit_price", Value::I64(120))?;
+    g.set_input_value(n_price, "qty", Value::I64(2).into())?;
+    g.set_input_value(n_price, "unit_price", Value::I64(120).into())?;
 
     g.connect(n_price, "subtotal", n_tax, "subtotal")?;
     g.connect(n_price, "subtotal", n_total, "subtotal")?;
@@ -233,7 +233,7 @@ fn main() -> Result<(), GraphError<TapeError>> {
     // Change 1: the order quantity changes.
     println!();
     println!("🟦 change: qty");
-    g.set_input_value(n_price, "qty", Value::I64(3))?;
+    g.set_input_value(n_price, "qty", Value::I64(3).into())?;
     g.invalidate_input("qty");
 
     let report = g.run_all_with_report(ReportDetailMask::FULL)?;
