@@ -128,6 +128,11 @@ unknown input names, and unknown output names.
 External input keys are separate from input slots: [`ResourceKey::InputId`] identifies a
 resource shared by any readers, while `InputId(0)` means the first slot of a particular node.
 [`ExecutionGraph::set_input_value_by_id`] binds these explicitly.
+[`ExecutionGraph::node_input_source`] borrows the current authored value/key or producer port;
+an unbound slot returns `None`. [`ExecutionGraph::clear_input`] disconnects one positional slot
+while preserving cached outputs and committed reads. Execution reports a missing input until
+it is rebound. Inspect [`ExecutionGraph::node_dependencies`] for the last successful read set,
+and [`ExecutionGraph::node_status`] for whether those cached outputs are current.
 
 [`ExecutionGraph::remove_node`] retires a node identity permanently and returns ownership of
 its body and cached outputs. Its consumers become dirty; stale connections report the reader,

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{
-    ExecutionGraph, FnExecutor, FnNode, GraphError, InputId, NodeStatus, OutputId, ResourceKey,
+    ExecutionGraph, FnExecutor, FnNode, GraphError, InputId, InputSource, NodeStatus, OutputId,
+    ResourceKey,
 };
 use alloc::{rc::Rc, vec, vec::Vec};
 use core::cell::Cell;
@@ -173,6 +174,10 @@ fn broken_binding_does_not_schedule_a_recycled_resource_during_another_edit() {
     graph.run_all().unwrap();
     graph.connect(removed, "out", reader, "left").unwrap();
     drop(graph.remove_node(removed).unwrap());
+    assert!(matches!(
+        graph.node_input_source(reader, InputId::new(0)).unwrap(),
+        Some(InputSource::NodeOutput { node, .. }) if node == removed
+    ));
     let recycled = graph
         .add_node(constant(99), vec![], vec!["out".into()])
         .unwrap();
@@ -250,4 +255,99 @@ fn rewired_dynamic_reads_are_resolved_at_runtime_instead_of_blocking_authored_ed
     dynamic.set(false);
     graph.run_node(a).unwrap();
     assert_eq!(graph.node_outputs(a).unwrap().get("out"), Some(&10));
+}
+
+#[test]
+fn clear_and_inspect_wiring_without_reactivating_historical_prerequisites() {
+    let mut graph = Graph::new(FnExecutor::new());
+    let a = graph
+        .add_node(copy(), vec!["a".into()], vec!["out".into()])
+        .unwrap();
+    let b = graph
+        .add_node(copy(), vec!["b".into()], vec!["out".into()])
+        .unwrap();
+    graph.set_input_value(a, "a", 1).unwrap();
+    graph.connect(a, "out", b, "b").unwrap();
+    graph.run_all().unwrap();
+    assert!(
+        matches!(graph.node_input_source(b, InputId::new(0)).unwrap(), Some(InputSource::NodeOutput { node, output }) if node == a && output == OutputId::new(0))
+    );
+    graph.clear_input(b, InputId::new(0)).unwrap();
+    assert!(
+        graph
+            .node_input_source(b, InputId::new(0))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        graph
+            .node_dependencies(b)
+            .unwrap()
+            .cloned()
+            .collect::<Vec<_>>(),
+        [ResourceKey::node_output(a, OutputId::new(0))]
+    );
+    graph.invalidate_input("a");
+    assert!(matches!(graph.run_node(b), Err(GraphError::MissingInput { node, .. }) if node == b));
+    assert_eq!(graph.node_run_count(a), Some(1));
+    assert_eq!(graph.node_outputs(b).unwrap().get("out"), Some(&1));
+    graph.set_input_value(b, "b", 2).unwrap();
+    assert!(
+        matches!(graph.node_input_source(b, InputId::new(0)).unwrap(), Some(InputSource::External { value, key }) if *value == 2 && key == &ResourceKey::input("b"))
+    );
+    graph.run_node(b).unwrap();
+    assert_eq!(graph.node_outputs(b).unwrap().get("out"), Some(&2));
+}
+
+#[test]
+fn clear_validates_identity_and_targets_one_duplicate_named_slot() {
+    let mut graph = Graph::new(FnExecutor::new());
+    let node = graph
+        .add_node(
+            FnNode::new(|inputs, outputs, _| {
+                outputs.push(inputs.iter().sum());
+                Ok(())
+            }),
+            vec!["same".into(), "same".into()],
+            vec!["out".into()],
+        )
+        .unwrap();
+    let before = graph.storage_stats();
+    graph.clear_input(node, InputId::new(0)).unwrap();
+    assert_eq!(graph.storage_stats(), before);
+    assert!(matches!(
+        graph.clear_input(node, InputId::new(2)),
+        Err(GraphError::UnknownInputId { .. })
+    ));
+    assert!(matches!(
+        graph.node_input_source(node, InputId::new(2)),
+        Err(GraphError::UnknownInputId { .. })
+    ));
+    graph.set_input_value(node, "same", 3).unwrap();
+    graph.run_all().unwrap();
+    graph.clear_input(node, InputId::new(0)).unwrap();
+    assert!(
+        graph
+            .node_input_source(node, InputId::new(0))
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        graph.node_input_source(node, InputId::new(1)).unwrap(),
+        Some(InputSource::External { value: &3, .. })
+    ));
+    graph
+        .set_input_value_by_id(node, InputId::new(0), 77, 5)
+        .unwrap();
+    graph.run_all().unwrap();
+    assert_eq!(graph.node_outputs(node).unwrap().get("out"), Some(&8));
+    drop(graph.remove_node(node).unwrap());
+    assert!(matches!(
+        graph.clear_input(node, InputId::new(0)),
+        Err(GraphError::BadNodeId)
+    ));
+    assert!(matches!(
+        graph.node_input_source(node, InputId::new(0)),
+        Err(GraphError::BadNodeId)
+    ));
 }
