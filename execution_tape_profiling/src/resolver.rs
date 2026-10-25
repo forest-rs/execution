@@ -3,7 +3,6 @@
 
 use execution_tape::program::{HostSigId, Program};
 use execution_tape::value::FuncId;
-use std::collections::HashMap;
 use std::string::String;
 
 /// Optional label resolver for profiling scopes.
@@ -28,32 +27,22 @@ pub struct DefaultLabelResolver;
 impl LabelResolver for DefaultLabelResolver {}
 
 /// Resolver that uses `Program`-provided names when available.
+///
+/// Names are resolved from the supplied program on every call. Function and host-import IDs
+/// are local to a program, so a resolver can be reused across programs without stale labels.
 #[derive(Default, Debug)]
-pub struct ProgramSymbolResolver {
-    call_frame_cache: HashMap<FuncId, String>,
-    host_call_cache: HashMap<HostSigId, String>,
-}
+pub struct ProgramSymbolResolver {}
 
 impl LabelResolver for ProgramSymbolResolver {
     fn call_frame_label(&mut self, func: FuncId, program: &Program) -> Option<String> {
-        if let Some(label) = self.call_frame_cache.get(&func) {
-            return Some(label.clone());
-        }
         let name = program.function_name(func.0)?;
-        let label = format!("func:{name}");
-        self.call_frame_cache.insert(func, label.clone());
-        Some(label)
+        Some(format!("func:{name}"))
     }
 
     fn host_call_label(&mut self, host_sig: HostSigId, program: &Program) -> Option<String> {
-        if let Some(label) = self.host_call_cache.get(&host_sig) {
-            return Some(label.clone());
-        }
         let entry = program.host_sig(host_sig)?;
         let symbol_str = program.symbol_str(entry.symbol).ok()?;
-        let label = format!("host:{symbol_str}@{:016x}", entry.sig_hash.0);
-        self.host_call_cache.insert(host_sig, label.clone());
-        Some(label)
+        Some(format!("host:{symbol_str}@{:016x}", entry.sig_hash.0))
     }
 }
 
@@ -69,4 +58,73 @@ pub(crate) fn default_host_call_label(host_sig: HostSigId, program: &Program) ->
         );
     }
     format!("host:sig={}", host_sig.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+    use execution_tape::host::HostSig;
+    use execution_tape::program::ValueType;
+
+    fn named_program(name: Option<&str>, host: &str, result: ValueType) -> Program {
+        let mut builder = ProgramBuilder::new();
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit]);
+        body.ret(0, &[]);
+        let func = builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![],
+                },
+            )
+            .unwrap();
+        if let Some(name) = name {
+            builder.set_function_name(func, name).unwrap();
+        }
+        builder.host_sig_for(
+            host,
+            HostSig {
+                args: vec![],
+                rets: vec![result],
+            },
+        );
+        builder.build()
+    }
+
+    #[test]
+    fn overlapping_local_ids_resolve_against_each_program() {
+        let first = named_program(Some("first"), "host_first", ValueType::I64);
+        let second = named_program(Some("second"), "host_second", ValueType::Bool);
+        let mut resolver = ProgramSymbolResolver::default();
+        for program in [&first, &second, &first] {
+            assert_eq!(
+                resolver.call_frame_label(FuncId(0), program),
+                Some(format!("func:{}", program.function_name(0).unwrap()))
+            );
+            let import = program.host_sig(HostSigId(0)).unwrap();
+            assert_eq!(
+                resolver.host_call_label(HostSigId(0), program),
+                Some(format!(
+                    "host:{}@{:016x}",
+                    program.symbol_str(import.symbol).unwrap(),
+                    import.sig_hash.0
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn previous_labels_do_not_supply_missing_symbols() {
+        let named = named_program(Some("named"), "host", ValueType::I64);
+        let unnamed = named_program(None, "host", ValueType::I64);
+        let empty = ProgramBuilder::new().build();
+        let mut resolver = ProgramSymbolResolver::default();
+        assert!(resolver.call_frame_label(FuncId(0), &named).is_some());
+        assert_eq!(resolver.call_frame_label(FuncId(0), &unnamed), None);
+        assert!(resolver.host_call_label(HostSigId(0), &named).is_some());
+        assert_eq!(resolver.host_call_label(HostSigId(0), &empty), None);
+    }
 }
