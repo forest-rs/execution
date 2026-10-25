@@ -13,6 +13,41 @@ fn copy() -> FnNode<i64, ()> {
 }
 
 #[test]
+fn idle_scratch_does_not_retain_inputs_after_success_error_or_pending() {
+    use crate::NodeOutcome;
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
+
+    for mode in 0..3 {
+        let input = Arc::new(vec![1_u8; 4096]);
+        let weak = Arc::downgrade(&input);
+        let mut graph = ExecutionGraph::new(FnExecutor::<Arc<Vec<u8>>, ()>::new());
+        let node = graph
+            .add_node(
+                FnNode::<Arc<Vec<u8>>, ()>::restartable(move |inputs, outputs, _| {
+                    outputs.push(inputs[0].clone());
+                    match mode {
+                        0 => Ok(NodeOutcome::Complete),
+                        1 => Err(()),
+                        _ => Ok(NodeOutcome::Pending),
+                    }
+                }),
+                vec!["input".into()],
+                vec!["output".into()],
+            )
+            .unwrap();
+        graph.set_input_value(node, "input", input).unwrap();
+        let result = graph.run_node(node);
+        assert_eq!(result.is_ok(), mode == 0);
+        drop(graph.remove_node(node).unwrap());
+        assert!(
+            weak.upgrade().is_none(),
+            "mode {mode} left a hidden strong owner"
+        );
+    }
+}
+
+#[test]
 fn numeric_slots_and_external_keys_have_distinct_identity() {
     let mut g = Graph::new(FnExecutor::new());
     let a = g

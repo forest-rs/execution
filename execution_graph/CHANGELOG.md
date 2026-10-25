@@ -77,6 +77,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Drop cloned attempt inputs before reusing graph scratch capacity. Idle graphs no longer
+  retain the final attempt's input values after success, failure, or suspension. ([#172][] by [@waywardmonkeys][])
+
 - Stop a node's own host writes from continually scheduling it again, while still invalidating
   other readers of the written keys. ([#90][] by [@no-materials][])
 - Ignore host writes to graph-owned inputs, including when checking strict dependency reporting. ([#90][] by [@no-materials][])
@@ -133,3 +136,4 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [MSRV]: README.md#minimum-supported-rust-version-msrv
 
 [#171]: https://github.com/forest-rs/execution/pull/171
+[#172]: https://github.com/forest-rs/execution/pull/172
