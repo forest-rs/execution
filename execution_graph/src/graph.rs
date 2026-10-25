@@ -316,8 +316,8 @@ pub(crate) struct Node<X: Executor> {
 ///   (a read-modify-write) reaches a fixpoint — while *other* nodes that read the written key are
 ///   still invalidated. Because such a key is excluded from the writer's own dependency set, even
 ///   an external invalidation of it will not re-run that node: treat a key a node writes as an
-///   output it owns, not an input. The [`connect`](ExecutionGraph::connect) method adds
-///   conservative edges to enforce initial topological ordering before the first run.
+///   output it owns, not an input. Binding edits install current authored prerequisites for
+///   ordering and cycle checks until publication, retaining historical reads for invalidation.
 /// - [`ExecutionGraph::run_all`] / [`ExecutionGraph::run_node`] execute dirty work and return a
 ///   cheap executed-node summary. With early cutoff (see [`Executor::values_equal`]), scheduled
 ///   nodes whose reads all turn out unchanged during the run are skipped and counted separately.
@@ -793,21 +793,49 @@ impl<X: Executor> ExecutionGraph<X> {
         slot: usize,
         binding: Binding<X::Value>,
     ) -> Result<(), GraphError<X::Error>> {
-        let n = &mut self.nodes[usize::try_from(node.as_u64()).unwrap()];
-        let read_id = match &binding {
-            Binding::External { read_id, .. } | Binding::FromNode { read_id, .. } => *read_id,
-        };
-        let rebound = !matches!((&n.inputs[slot], &binding), (Some(Binding::External { read_id: old, .. }), Binding::External { .. }) if *old == read_id);
+        let index = usize::try_from(node.as_u64()).unwrap();
+        let n = &self.nodes[index];
+        let rebound = !matches!((&n.inputs[slot], &binding), (Some(Binding::External { read_id: old, .. }), Binding::External { read_id, .. }) if old == read_id);
         if rebound {
-            self.dirty
-                .add_dependencies(&n.output_ids, read_id)
-                .map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
+            let mut reads = Vec::with_capacity(n.inputs.len());
+            for (candidate_slot, current) in n.inputs.iter().enumerate() {
+                let current = if candidate_slot == slot {
+                    Some(&binding)
+                } else {
+                    current.as_ref()
+                };
+                let key = match current {
+                    Some(Binding::External { read_id, .. }) => Some(*read_id),
+                    // Broken producer identities remain bindings, but their retired physical
+                    // resource slots must never become prerequisites of an unrelated node.
+                    Some(Binding::FromNode { node, output, .. }) => usize::try_from(node.as_u64())
+                        .ok()
+                        .and_then(|index| self.nodes.get(index))
+                        .and_then(|producer| producer.output_ids.get(output.index() as usize))
+                        .copied(),
+                    None => None,
+                };
+                if let Some(key) = key {
+                    reads.push(key);
+                }
+            }
+            reads.sort_unstable();
+            reads.dedup();
+            let result = if n.run_count == 0 {
+                // Before first publication there is no history to retain or overlay to allocate.
+                self.dirty.set_dependencies(&n.output_ids, &reads)
+            } else {
+                self.dirty.set_prospective(&n.output_ids, &reads)
+            };
+            result.map_err(|(from, to)| GraphError::DependencyCycle { from, to })?;
+            let n = &mut self.nodes[index];
             n.deps_initialized = false;
             for &key in &n.output_ids {
                 self.dirty.mark_dirty(key);
             }
         }
-        n.inputs[slot] = Some(binding);
+        self.nodes[index].inputs[slot] = Some(binding);
+        self.dirty.collect_unused();
         Ok(())
     }
 
@@ -3173,7 +3201,7 @@ mod tape_tests {
         let nb_index = usize::try_from(nb.as_u64()).unwrap();
         let src = g.nodes[na_index].output_ids[0];
         let dst = g.nodes[nb_index].output_ids[0];
-        g.dirty.add_dependencies(&[dst], src).unwrap();
+        g.dirty.set_dependencies(&[dst], &[src]).unwrap();
         g.dirty.mark_dirty(dst);
         g.set_input_value(na, "in", Value::I64(1).into()).unwrap();
 

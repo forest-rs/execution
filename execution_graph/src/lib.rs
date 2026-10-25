@@ -172,8 +172,14 @@
 //! statically wired graph. Execution errors remain failures, even after a pending read.
 //!
 //! Successful execution replaces the committed read set, so a conditional branch can remove a
-//! dependency and discover it again later. Scheduling conservatively visits previously committed
-//! dependencies before the reader; new runtime requests extend that scope. Native readers can
+//! dependency and discover it again later. With unchanged wiring, scheduling conservatively visits
+//! previously committed dependencies before the reader; new runtime requests extend that scope.
+//! After rewiring, scheduling and cycle checks use the current authored inputs until publication.
+//! For example, replacing `A → B` with a literal input on B allows connecting `B → A` immediately,
+//! without executing either node during the edit. The old outputs and committed reads remain
+//! available; historical reads still propagate invalidation until a successful publication replaces
+//! them. Dynamic reads are rediscovered at runtime and can still report a cycle or failed attempt.
+//! Native readers can
 //! request tape outputs in a mixed executor, and tape input bindings can consume native outputs.
 //! The tape adapter itself completes whole VM calls and does not suspend host calls.
 //!
@@ -320,6 +326,8 @@
 extern crate alloc;
 
 mod access;
+#[cfg(test)]
+mod authoring_tests;
 mod dirty;
 mod dispatch;
 mod executor;

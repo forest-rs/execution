@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Single-channel dependency storage with consumer-owned pending work.
+//! Dependency storage with consumer-owned pending work and sparse authoring overrides.
 //!
 //! Invalidation walks existing consumers once. Scoped queries walk only pending dependencies
 //! of their targets; unread host writes retain a revision, not a pending root. Revisions make
@@ -9,6 +9,7 @@
 
 use crate::ResourceKey;
 use crate::key_arena::{KeyArena, KeyRange};
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -56,6 +57,9 @@ pub(crate) struct DirtyEngine {
     ids: HashMap<ResourceKey, DirtyKey>,
     entries: Vec<Entry>,
     edges: KeyArena,
+    // Only rewired, previously published outputs need an overlay. Ordinary/cold graph storage
+    // keeps its existing per-key representation; committed reads still own historical keys.
+    prospective: BTreeMap<DirtyKey, KeyRange>,
     pending: BTreeMap<DirtyKey, Pending>,
     revision: u64,
     free: Vec<DirtyKey>,
@@ -92,7 +96,7 @@ impl DirtyEngine {
     pub(crate) fn stats(&self) -> (usize, usize, usize, usize, usize) {
         (
             self.ids.len(),
-            self.entries.iter().map(|e| e.dependencies.len()).sum(),
+            self.entries.iter().map(|e| e.consumers.len()).sum(),
             self.pending.len(),
             self.entries.capacity(),
             self.edges.capacity(),
@@ -114,18 +118,31 @@ impl DirtyEngine {
         self.pending.remove(&id);
         let dependencies = core::mem::take(&mut entry.dependencies);
         let consumers = core::mem::take(&mut entry.consumers);
+        let prospective = self.prospective.remove(&id).unwrap_or_default();
         for slot in 0..dependencies.len() {
             let dependency = self.edges.get(dependencies)[slot];
             self.edges
                 .remove(&mut self.entries[dependency.0].consumers, id);
             self.unused.push(dependency);
         }
+        for slot in 0..prospective.len() {
+            let dependency = self.edges.get(prospective)[slot];
+            if !self.edges.get(dependencies).contains(&dependency) {
+                self.edges
+                    .remove(&mut self.entries[dependency.0].consumers, id);
+                self.unused.push(dependency);
+            }
+        }
         let readers = self.edges.get(consumers).to_vec();
         for &consumer in &readers {
             self.edges
                 .remove(&mut self.entries[consumer.0].dependencies, id);
+            if let Some(prospective) = self.prospective.get_mut(&consumer) {
+                self.edges.remove(prospective, id);
+            }
         }
         self.edges.release(dependencies);
+        self.edges.release(prospective);
         self.edges.release(consumers);
         self.free.push(id);
         readers
@@ -263,12 +280,7 @@ impl DirtyEngine {
                     continue;
                 }
                 stack.push((key, true));
-                for &dependency in self
-                    .edges
-                    .get(self.entries[key.0].dependencies)
-                    .iter()
-                    .rev()
-                {
+                for &dependency in self.effective_dependencies(key).iter().rev() {
                     stack.push((dependency, false));
                 }
             }
@@ -294,51 +306,111 @@ impl DirtyEngine {
         from: &[DirtyKey],
         to: &[DirtyKey],
     ) -> Result<(), (ResourceKey, ResourceKey)> {
-        self.validate(from, to)?;
+        let to = Self::canonical_keys(to);
+        self.validate(from, &to)?;
         for &key in from {
-            let old = core::mem::take(&mut self.entries[key.0].dependencies);
-            for slot in 0..old.len() {
-                let dependency = self.edges.get(old)[slot];
-                self.edges
-                    .remove(&mut self.entries[dependency.0].consumers, key);
-                self.unused.push(dependency);
-            }
-            self.edges.release(old);
-            for &dependency in to {
-                if !self
-                    .edges
-                    .get(self.entries[key.0].dependencies)
-                    .contains(&dependency)
-                {
-                    self.edges
-                        .push(&mut self.entries[key.0].dependencies, dependency);
-                    self.edges
-                        .push(&mut self.entries[dependency.0].consumers, key);
-                }
-            }
-            self.edges.sort(self.entries[key.0].dependencies);
+            self.replace_dependencies(key, &to, false);
         }
         Ok(())
     }
 
-    pub(crate) fn add_dependencies(
+    /// Installs current authored inputs while retaining the last committed read set.
+    pub(crate) fn set_prospective(
         &mut self,
         from: &[DirtyKey],
-        to: DirtyKey,
+        to: &[DirtyKey],
     ) -> Result<(), (ResourceKey, ResourceKey)> {
-        self.validate(from, &[to])?;
+        let to = Self::canonical_keys(to);
+        self.validate(from, &to)?;
         for &key in from {
-            if !self
-                .edges
-                .get(self.entries[key.0].dependencies)
-                .contains(&to)
-            {
-                self.edges.push(&mut self.entries[key.0].dependencies, to);
-                self.edges.sort(self.entries[key.0].dependencies);
-                self.edges.push(&mut self.entries[to.0].consumers, key);
-            }
+            self.replace_dependencies(key, &to, true);
         }
         Ok(())
+    }
+
+    fn effective_dependencies(&self, key: DirtyKey) -> &[DirtyKey] {
+        let range = if self.prospective.is_empty() {
+            self.entries[key.0].dependencies
+        } else {
+            self.prospective
+                .get(&key)
+                .copied()
+                .unwrap_or(self.entries[key.0].dependencies)
+        };
+        self.edges.get(range)
+    }
+
+    fn canonical_keys(keys: &[DirtyKey]) -> Cow<'_, [DirtyKey]> {
+        if keys.windows(2).all(|pair| pair[0] < pair[1]) {
+            Cow::Borrowed(keys)
+        } else {
+            let mut keys = keys.to_vec();
+            keys.sort_unstable();
+            keys.dedup();
+            Cow::Owned(keys)
+        }
+    }
+
+    fn make_range(&mut self, keys: &[DirtyKey]) -> KeyRange {
+        let mut range = KeyRange::default();
+        for &key in keys {
+            self.edges.push(&mut range, key);
+        }
+        range
+    }
+
+    fn replace_dependencies(&mut self, key: DirtyKey, to: &[DirtyKey], prospective: bool) {
+        let committed = self.entries[key.0].dependencies;
+        let previous = self.prospective.get(&key).copied().unwrap_or_default();
+        // Reverse consumers represent the union. Historical keys cannot retire until either
+        // publication replaces the committed reads or the node itself is removed.
+        if !prospective {
+            for slot in 0..committed.len() {
+                let dependency = self.edges.get(committed)[slot];
+                if to.binary_search(&dependency).is_err() {
+                    self.edges
+                        .remove(&mut self.entries[dependency.0].consumers, key);
+                    self.unused.push(dependency);
+                }
+            }
+        }
+        for slot in 0..previous.len() {
+            let dependency = self.edges.get(previous)[slot];
+            if self
+                .edges
+                .get(committed)
+                .binary_search(&dependency)
+                .is_err()
+                && to.binary_search(&dependency).is_err()
+            {
+                self.edges
+                    .remove(&mut self.entries[dependency.0].consumers, key);
+                self.unused.push(dependency);
+            }
+        }
+        for &dependency in to {
+            if self
+                .edges
+                .get(committed)
+                .binary_search(&dependency)
+                .is_err()
+                && self.edges.get(previous).binary_search(&dependency).is_err()
+            {
+                self.edges
+                    .push(&mut self.entries[dependency.0].consumers, key);
+            }
+        }
+        if let Some(previous) = self.prospective.remove(&key) {
+            self.edges.release(previous);
+        }
+        if prospective {
+            let range = self.make_range(to);
+            // An empty override is meaningful: do not reactivate historical prerequisites.
+            self.prospective.insert(key, range);
+        } else if self.edges.get(committed) != to {
+            self.edges.release(committed);
+            self.entries[key.0].dependencies = self.make_range(to);
+        }
     }
 
     fn validate(
@@ -349,18 +421,23 @@ impl DirtyEngine {
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
         for &dependency in to {
+            // Removing edges cannot introduce a cycle. An edge already present on every
+            // destination was checked when installed; only new effective edges need traversal.
+            // This keeps a wide join from revisiting all earlier upstream chains on each edit.
+            if from.iter().all(|&key| {
+                self.effective_dependencies(key)
+                    .binary_search(&dependency)
+                    .is_ok()
+            }) {
+                continue;
+            }
             stack.push(dependency);
             while let Some(key) = stack.pop() {
                 if from.contains(&key) {
                     return Err((self.key(key).clone(), self.key(dependency).clone()));
                 }
                 if visited.insert(key) {
-                    stack.extend(
-                        self.edges
-                            .get(self.entries[key.0].dependencies)
-                            .iter()
-                            .copied(),
-                    );
+                    stack.extend(self.effective_dependencies(key).iter().copied());
                 }
             }
         }
@@ -394,6 +471,69 @@ mod tests {
         assert_eq!(e.edges.get(e.entries[a.0].dependencies), [old]);
         assert_eq!(e.edges.get(e.entries[b.0].dependencies), [old]);
     }
+    #[test]
+    fn rejected_prospective_replacement_keeps_all_outputs_and_reverse_edges() {
+        let mut e = DirtyEngine::new();
+        let old = e.intern(ResourceKey::input("old"));
+        let next = e.intern(ResourceKey::input("next"));
+        let a = e.intern(ResourceKey::node_output(
+            NodeId::new(0),
+            crate::OutputId::new(0),
+        ));
+        let b = e.intern(ResourceKey::node_output(
+            NodeId::new(0),
+            crate::OutputId::new(1),
+        ));
+        let c = e.intern(ResourceKey::node_output(
+            NodeId::new(1),
+            crate::OutputId::new(0),
+        ));
+        e.set_dependencies(&[a, b], &[old]).unwrap();
+        e.set_dependencies(&[c], &[b]).unwrap();
+        e.set_prospective(&[a, b], &[next, next]).unwrap();
+        assert!(e.set_prospective(&[a, b], &[c]).is_err());
+        for output in [a, b] {
+            assert_eq!(e.effective_dependencies(output), [next]);
+            assert_eq!(e.edges.get(e.entries[output.0].dependencies), [old]);
+        }
+        assert_eq!(e.edges.get(e.entries[old.0].consumers), [a, b]);
+        assert_eq!(e.edges.get(e.entries[next.0].consumers), [a, b]);
+        assert!(e.edges.get(e.entries[c.0].consumers).is_empty());
+        e.set_dependencies(&[a, b], &[next]).unwrap();
+        assert!(e.prospective.is_empty());
+        assert!(e.edges.get(e.entries[old.0].consumers).is_empty());
+        assert_eq!(e.edges.get(e.entries[next.0].consumers), [a, b]);
+        e.collect_unused();
+        assert_eq!(e.lookup(&ResourceKey::input("old")), None);
+    }
+
+    #[test]
+    fn removing_prospective_producer_keeps_an_empty_override_until_publication() {
+        let mut e = DirtyEngine::new();
+        let old = e.intern(ResourceKey::input("old"));
+        let a = e.intern(ResourceKey::node_output(
+            NodeId::new(0),
+            crate::OutputId::new(0),
+        ));
+        let b = e.intern(ResourceKey::node_output(
+            NodeId::new(1),
+            crate::OutputId::new(0),
+        ));
+        e.set_dependencies(&[a], &[old]).unwrap();
+        e.set_prospective(&[a], &[b]).unwrap();
+        assert_eq!(e.remove(b), [a]);
+        assert!(e.effective_dependencies(a).is_empty());
+        assert!(e.prospective.contains_key(&a));
+        assert_eq!(e.edges.get(e.entries[a.0].dependencies), [old]);
+        let recycled = e.intern(ResourceKey::input("recycled"));
+        assert_eq!(recycled, b);
+        assert!(e.edges.get(e.entries[recycled.0].consumers).is_empty());
+        e.set_dependencies(&[a], &[]).unwrap();
+        e.collect_unused();
+        assert!(e.prospective.is_empty());
+        assert_eq!(e.lookup(&ResourceKey::input("old")), None);
+    }
+
     #[test]
     fn unread_writes_have_no_pending_work() {
         let mut e = DirtyEngine::new();

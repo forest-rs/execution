@@ -96,6 +96,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Allow acyclic rewiring without evaluating intermediate edits. Scheduling and cycle checks
+  use current authored prerequisites after rewiring; committed reads and cached outputs survive
+  failures, and historical reads continue to propagate invalidation until publication. Pending
+  edits release obsolete prospective keys without reusing retired producer identities.
+  Storage dependency counts include historical and current edges once. ([#181][] by [@waywardmonkeys][])
+
 - Drop cloned attempt inputs before reusing graph scratch capacity. Idle graphs no longer
   retain the final attempt's input values after success, failure, or suspension. ([#172][] by [@waywardmonkeys][])
 
@@ -160,3 +166,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#175]: https://github.com/forest-rs/execution/pull/175
 
 [#176]: https://github.com/forest-rs/execution/pull/176
+
+[#181]: https://github.com/forest-rs/execution/pull/181
