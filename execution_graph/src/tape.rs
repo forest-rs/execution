@@ -308,7 +308,8 @@ impl<H: Host> ExecutionGraph<TapeExecutor<H>> {
     ///
     /// Returns [`TapeError::BadEntryFunc`] if `entry` is not present in `program`, or
     /// [`TapeError::BadInputArity`] if `input_names` does not match the entry function's
-    /// argument count, both wrapped in [`GraphError::InvalidNode`].
+    /// argument count, both wrapped in [`GraphError::InvalidNode`]. An entry without returns
+    /// produces [`GraphError::NoOutputs`]; return unit to represent completion.
     pub fn add_tape_node(
         &mut self,
         program: Arc<VerifiedProgram>,
@@ -368,6 +369,47 @@ mod memory_tests {
         ) -> Result<u64, execution_tape::host::HostError> {
             unreachable!("the test program has no host calls")
         }
+    }
+
+    #[test]
+    fn tape_nodes_require_a_result_or_explicit_unit_completion() {
+        let mut builder = ProgramBuilder::new();
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit]);
+        body.ret(0, &[]);
+        let empty = builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![],
+                },
+            )
+            .unwrap();
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit]);
+        body.ret(0, &[0]);
+        let unit = builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::Unit],
+                },
+            )
+            .unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+        let mut graph = ExecutionGraph::new(TapeExecutor::new(NoHost, Limits::default()));
+        assert!(matches!(
+            graph.add_tape_node(Arc::clone(&program), empty, vec![]),
+            Err(GraphError::NoOutputs)
+        ));
+        let node = graph.add_tape_node(program, unit, vec![]).unwrap();
+        assert_eq!(graph.run_node(node).unwrap().executed_nodes, 1);
+        assert_eq!(
+            graph.node_outputs(node).unwrap().get("ret0"),
+            Some(&Value::Unit)
+        );
     }
 
     #[test]

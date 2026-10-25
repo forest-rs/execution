@@ -46,6 +46,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Reject zero-output node definitions with `GraphError::NoOutputs` instead of accepting work
+  that never executes. Declare one completion output and return a unit value; tape entry
+  functions must likewise return unit when they have no data result. ([#171][] by [@waywardmonkeys][])
+
 - `TapeError` no longer implements `PartialEq`/`Eq`, following typed host failures in Execution
   Tape. Match variants and compare fields or inspect the standard error source chain instead. ([#133][] by [@waywardmonkeys][])
 
@@ -127,3 +131,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_graph-v0.0.1
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv
+
+[#171]: https://github.com/forest-rs/execution/pull/171
