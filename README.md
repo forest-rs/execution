@@ -1,14 +1,15 @@
 # `forest-rs/execution`
 
 Workspace repository for `execution_tape`, a small verifiable bytecode container and VM, and
-`execution_graph`, an incremental execution graph built on top of it.
+`execution_graph`, an incremental execution graph with native and tape executors.
 
 Crates:
 - `execution_tape/`: publishable `no_std + alloc` crate for the bytecode format, verifier, VM,
   tracing hooks, host ABI, and disassembler.
-- `execution_graph/`: publishable `no_std + alloc` crate for dirty-tracked incremental execution
-  of verified tape programs.
-- `execution_graph_examples/`: runnable graph examples, including the `tax` demo.
+- `execution_graph/`: publishable `no_std + alloc` crate owning scheduling, invalidation and
+  publication, with native Rust execution and an optional tape adapter.
+- `execution_graph_examples/`: native and tape examples, including a procedural surface with
+  retained geometry, edit histories and source-linked VM recordings.
 - `execution_tape_conformance/`: conformance/regression tests for the tape format, verifier, and VM.
 - `execution_tape_profiling/`: optional profiling adapters; kept separate from the core crate.
 - `execution_tape_recording/`: owned boundary recordings and checked replay in a fresh VM,
