@@ -106,6 +106,20 @@
 //! Run `cargo run -p execution_tape_wind_tunnel --bin nested_contracts` for a complete example.
 //! Run `cargo run -p execution_tape_wind_tunnel --bin typed_callable` for an indirect nested result.
 //!
+//! ## Resource policy
+//!
+//! [`vm::Limits`] separately bounds instruction fuel, call depth, host-call count, contract work,
+//! and logical byte/string work. `max_payload_work` defaults to 64 MiB per run: copying operations
+//! and owned result/aggregate-field materialization charge bytes before copying, while comparisons
+//! and UTF-8 conversion charge their documented input work. Direct host-owned bytes/strings are
+//! charged before adoption, after the host has already executed. Borrowed inputs and guest-call
+//! transfers cost zero. The counter resets every run; scalar instructions have no payload debit.
+//!
+//! This is not a heap or process-memory limit. Storage of retained results, aggregate/frame storage, nested
+//! host aggregate payloads, host effects/allocations, preparation, recording, and graph imports
+//! need their own policies. See [`vm::Limits::max_payload_work`] for exact charging rules and
+//! [`vm::Trap::PayloadWorkExceeded`] for recoverable limit diagnostics.
+//!
 //! ## Inspecting Verifier Facts
 //!
 //! `ProgramAnalysis::new(&program, &config)` verifies a borrowed source once. When a prepared

@@ -187,6 +187,14 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Bound logical byte/string work per invocation with `Limits::max_payload_work` (64 MiB by
+  default). Copying, comparisons, conversions, direct host payload admission, and owned result
+  materialization charge their documented work before performing it. Add the field to explicit
+  `Limits` literals (or use `..Limits::default()`), raise it for trusted large workloads, and
+  handle `Trap::PayloadWorkExceeded { limit, used, requested }` and `PayloadSizeOverflow` in
+  exhaustive trap matches. This is a work budget, not a heap or process-memory limit.
+  ([#185][] by [@waywardmonkeys][])
+
 - Check kind-only value contracts directly without traversal frames or successful-proof entries.
   Preserve the same work charge, type/handle errors and opaque callable semantics. ([#168][] by [@waywardmonkeys][])
 - Refresh the workspace lockfile with Rust 1.88-compatible dependencies. Developer benchmarks
@@ -427,3 +435,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#178]: https://github.com/forest-rs/execution/pull/178
 
 [#179]: https://github.com/forest-rs/execution/pull/179
+
+[#185]: https://github.com/forest-rs/execution/pull/185

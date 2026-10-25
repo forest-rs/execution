@@ -31,6 +31,8 @@ use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
 
 mod observations;
+#[cfg(test)]
+mod payload_tests;
 
 /// Execution limits for a VM run.
 #[derive(Clone, Debug)]
@@ -44,6 +46,20 @@ pub struct Limits {
     /// Maximum aggregate contract work per run: visited value/contract pairs and child edges.
     /// Separate from guest instruction fuel; shared subgraphs reuse successful proofs.
     pub max_contract_work: u64,
+    /// Maximum logical byte/string work per run (64 MiB by default).
+    ///
+    /// Charges copied bytes for concatenation, slicing, string-to-bytes conversion, and each
+    /// owned payload materialization (including aggregate fields and root returns). Equal-length
+    /// comparisons charge one operand's byte length even if they differ early; unequal lengths
+    /// cost zero. Bytes-to-string conversion charges twice its input length for copying and
+    /// UTF-8 validation, before either operation. Direct successful host return slots containing
+    /// bytes/strings charge their lengths before adoption, after all return kinds are validated.
+    ///
+    /// Borrowed arguments/constants/projections and guest-call transfers cost zero. This is not
+    /// a heap or RSS limit: aggregate slots, frames, storage of retained results, nested host aggregate
+    /// payloads, host allocations/effects, preparation, tracing/recording, and graph-adapter
+    /// imports are outside this budget. Set `u64::MAX` for the maximum supported budget.
+    pub max_payload_work: u64,
 }
 
 impl Default for Limits {
@@ -53,6 +69,7 @@ impl Default for Limits {
             max_call_depth: 256,
             max_host_calls: 1_000_000,
             max_contract_work: 1_000_000,
+            max_payload_work: 64 * 1024 * 1024,
         }
     }
 }
@@ -66,6 +83,17 @@ pub enum Trap {
     CallDepthExceeded,
     /// Host call count limit exceeded.
     HostCallLimitExceeded,
+    /// A payload operation would exceed the run's logical byte/string work budget.
+    PayloadWorkExceeded {
+        /// Configured logical byte limit.
+        limit: u64,
+        /// Successfully charged work before this rejected operation.
+        used: u64,
+        /// Additional logical bytes requested; rejected work is not charged.
+        requested: u64,
+    },
+    /// A payload size or logical work calculation cannot be represented.
+    PayloadSizeOverflow,
     /// Attempted to access an invalid `pc` / instruction boundary.
     InvalidPc,
     /// A register was out of bounds.
@@ -156,6 +184,15 @@ impl fmt::Display for Trap {
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
+            Self::PayloadWorkExceeded {
+                limit,
+                used,
+                requested,
+            } => write!(
+                f,
+                "payload work limit exceeded: {used} of {limit} logical bytes used; operation requires {requested} more; increase Limits::max_payload_work or reduce payload work"
+            ),
+            Self::PayloadSizeOverflow => write!(f, "payload size or work calculation overflowed"),
             Self::InvalidPc => write!(f, "invalid pc"),
             Self::RegOutOfBounds => write!(f, "register out of bounds"),
             Self::ConstOutOfBounds => write!(f, "constant out of bounds"),
@@ -330,6 +367,9 @@ pub struct ExecutionContext {
     fuel: u64,
     /// Number of host calls performed so far in the current run.
     host_calls: u64,
+    /// Successfully charged logical byte/string work and the current run's limit.
+    payload_work: u64,
+    payload_limit: u64,
 
     /// Arena backing bytes/strings and other out-of-line temporaries.
     arena: ValueArena,
@@ -399,11 +439,30 @@ impl ExecutionContext {
 
         self.fuel = 0;
         self.host_calls = 0;
+        self.payload_work = 0;
+        self.payload_limit = 0;
     }
 
-    fn reset(&mut self, fuel: u64) {
+    fn reset(&mut self, fuel: u64, payload_limit: u64) {
         self.clear();
         self.fuel = fuel;
+        self.payload_limit = payload_limit;
+    }
+
+    fn charge_payload_bytes(&mut self, len: usize, factor: u64) -> Result<(), Trap> {
+        let requested = u64::try_from(len)
+            .ok()
+            .and_then(|len| len.checked_mul(factor))
+            .ok_or(Trap::PayloadSizeOverflow)?;
+        if requested > self.payload_limit - self.payload_work {
+            return Err(Trap::PayloadWorkExceeded {
+                limit: self.payload_limit,
+                used: self.payload_work,
+                requested,
+            });
+        }
+        self.payload_work += requested;
+        Ok(())
     }
 }
 
@@ -1068,7 +1127,7 @@ impl<H: Host> Vm<H> {
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
         let mut register_state = P::RegisterState::default();
-        ctx.reset(self.limits.fuel);
+        ctx.reset(self.limits.fuel, self.limits.max_payload_work);
 
         let entry_fn = program_ref
             .functions
@@ -2151,6 +2210,19 @@ impl<H: Host> Vm<H> {
                         v.check_type(expected)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
+                    let payload_bytes = ret_slots
+                        .iter()
+                        .try_fold(0_usize, |total, value| {
+                            let len = match value {
+                                Value::Bytes(bytes) => bytes.len(),
+                                Value::Str(s) => s.len(),
+                                _ => 0,
+                            };
+                            total.checked_add(len).ok_or(Trap::PayloadSizeOverflow)
+                        })
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.charge_payload_bytes(payload_bytes, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     for (dst, v) in rets.iter().copied().zip(ret_slots.iter_mut()) {
                         let val = core::mem::replace(v, Value::Unit);
                         ctx.write_owned_value(base, dst, val)
@@ -2779,6 +2851,17 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::BytesEq { dst, a, b } => {
+                    let work = {
+                        let a = ctx
+                            .read_bytes(a, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        let b = ctx
+                            .read_bytes(b, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        if a.len() == b.len() { a.len() } else { 0 }
+                    };
+                    ctx.charge_payload_bytes(work, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let a = ctx
                         .read_bytes(a, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -2789,6 +2872,17 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::StrEq { dst, a, b } => {
+                    let work = {
+                        let a = ctx
+                            .read_str(a, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        let b = ctx
+                            .read_str(b, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        if a.len() == b.len() { a.len() } else { 0 }
+                    };
+                    ctx.charge_payload_bytes(work, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let a = ctx
                         .read_str(a, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
@@ -2799,6 +2893,22 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::BytesConcat { dst, a, b } => {
+                    let len = {
+                        let a = ctx
+                            .read_bytes(a, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        let b = ctx
+                            .read_bytes(b, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        a.len()
+                            .checked_add(b.len())
+                            .filter(|&len| isize::try_from(len).is_ok())
+                            .ok_or_else(|| {
+                                ctx.trap(func_id, pc, span_id, Trap::PayloadSizeOverflow)
+                            })?
+                    };
+                    ctx.charge_payload_bytes(len, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let a = ctx
                             .read_bytes(a, base, sources)
@@ -2806,7 +2916,7 @@ impl<H: Host> Vm<H> {
                         let b = ctx
                             .read_bytes(b, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                        let mut out = Vec::with_capacity(a.len() + b.len());
+                        let mut out = Vec::with_capacity(len);
                         out.extend_from_slice(a);
                         out.extend_from_slice(b);
                         out
@@ -2816,6 +2926,22 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::StrConcat { dst, a, b } => {
+                    let len = {
+                        let a = ctx
+                            .read_str(a, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        let b = ctx
+                            .read_str(b, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                        a.len()
+                            .checked_add(b.len())
+                            .filter(|&len| isize::try_from(len).is_ok())
+                            .ok_or_else(|| {
+                                ctx.trap(func_id, pc, span_id, Trap::PayloadSizeOverflow)
+                            })?
+                    };
+                    ctx.charge_payload_bytes(len, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let a = ctx
                             .read_str(a, base, sources)
@@ -2823,7 +2949,7 @@ impl<H: Host> Vm<H> {
                         let b = ctx
                             .read_str(b, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                        let mut out = String::with_capacity(a.len() + b.len());
+                        let mut out = String::with_capacity(len);
                         out.push_str(a);
                         out.push_str(b);
                         out
@@ -2860,43 +2986,56 @@ impl<H: Host> Vm<H> {
                     start,
                     end,
                 } => {
-                    let out = {
-                        let bytes = ctx
-                            .read_bytes(bytes, base, sources)
-                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                        let start =
-                            usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
-                        let end = usize::try_from(ctx.read_u64(base, *end)).unwrap_or(usize::MAX);
-                        bytes
-                            .get(start..end)
-                            .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?
-                            .to_vec()
-                    };
+                    let start = usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
+                    let end = usize::try_from(ctx.read_u64(base, *end)).unwrap_or(usize::MAX);
+                    let len = ctx
+                        .read_bytes(bytes, base, sources)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
+                        .get(start..end)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?
+                        .len();
+                    ctx.charge_payload_bytes(len, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let out = ctx
+                        .read_bytes(bytes, base, sources)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?[start..end]
+                        .to_vec();
                     let h = ctx.arena.alloc_bytes(out);
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::StrSlice { dst, s, start, end } => {
-                    let out = {
+                    let start = usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
+                    let end = usize::try_from(ctx.read_u64(base, *end)).unwrap_or(usize::MAX);
+                    {
                         let s = ctx
                             .read_str(s, base, sources)
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                        let start =
-                            usize::try_from(ctx.read_u64(base, *start)).unwrap_or(usize::MAX);
-                        let end = usize::try_from(ctx.read_u64(base, *end)).unwrap_or(usize::MAX);
                         if start > end || end > s.len() {
                             return Err(ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds));
                         }
                         if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
                             return Err(ctx.trap(func_id, pc, span_id, Trap::StrNotCharBoundary));
                         }
-                        String::from(&s[start..end])
-                    };
+                    }
+                    ctx.charge_payload_bytes(end - start, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let out = String::from(
+                        &ctx.read_str(s, base, sources)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
+                            [start..end],
+                    );
                     let h = ctx.arena.alloc_str(out);
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::StrToBytes { dst, s } => {
+                    let len = ctx
+                        .read_str(s, base, sources)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
+                        .len();
+                    ctx.charge_payload_bytes(len, 1)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let s = ctx
                             .read_str(s, base, sources)
@@ -2908,6 +3047,12 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::BytesToStr { dst, bytes } => {
+                    let len = ctx
+                        .read_bytes(bytes, base, sources)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
+                        .len();
+                    ctx.charge_payload_bytes(len, 2)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let bytes = ctx
                             .read_bytes(bytes, base, sources)
@@ -3225,7 +3370,7 @@ impl ExecutionContext {
     }
 
     fn materialize_vreg(
-        &self,
+        &mut self,
         base: RegBase,
         v: VReg,
         sources: ValueSources<'_>,
@@ -3237,17 +3382,33 @@ impl ExecutionContext {
             VReg::U64(r) => Value::U64(self.read_u64(base, r)),
             VReg::F64(r) => Value::F64(self.read_f64(base, r)),
             VReg::Decimal(r) => Value::Decimal(self.read_decimal(base, r)),
-            VReg::Bytes(r) => Value::Bytes(
-                self.arena
-                    .bytes(self.read_bytes_handle(base, r), sources)
+            VReg::Bytes(r) => {
+                let handle = self.read_bytes_handle(base, r);
+                let len = self
+                    .arena
+                    .bytes(handle, sources)
                     .ok_or(Trap::InvalidPc)?
-                    .to_vec(),
-            ),
-            VReg::Str(r) => Value::Str(String::from(
-                self.arena
-                    .str(self.read_str_handle(base, r), sources)
-                    .ok_or(Trap::InvalidPc)?,
-            )),
+                    .len();
+                self.charge_payload_bytes(len, 1)?;
+                Value::Bytes(
+                    self.arena
+                        .bytes(handle, sources)
+                        .ok_or(Trap::InvalidPc)?
+                        .to_vec(),
+                )
+            }
+            VReg::Str(r) => {
+                let handle = self.read_str_handle(base, r);
+                let len = self
+                    .arena
+                    .str(handle, sources)
+                    .ok_or(Trap::InvalidPc)?
+                    .len();
+                self.charge_payload_bytes(len, 1)?;
+                Value::Str(String::from(
+                    self.arena.str(handle, sources).ok_or(Trap::InvalidPc)?,
+                ))
+            }
             VReg::Obj(r) => Value::Obj(self.read_obj(base, r)),
             VReg::Agg(r) => Value::Agg(self.read_agg_handle(base, r)),
             VReg::Func(r) => Value::Func(self.read_func(base, r)),

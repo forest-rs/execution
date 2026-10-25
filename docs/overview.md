@@ -38,10 +38,30 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Register-based VM with function frames and recursion.
 - The VM executes `VerifiedProgram` only (verification is a required pre-step).
 - Sync host calls only.
-- Limits: fuel (instruction budget), max host calls, max call depth; host may contribute additional cost.
+- Limits: instruction fuel, host calls, call depth, contract work, and logical byte/string work;
+  host calls may contribute additional fuel cost.
 - Errors are traps:
   - VM traps: invalid bytecode, out-of-bounds, type mismatch at runtime boundary, fuel exceeded, stack overflow.
   - Host traps: host call reports fatal error (no rollback semantics).
+
+`Limits::max_payload_work` defaults to 64 MiB per run. Concatenation, slices, string-to-bytes,
+and each owned payload materialization charge copied bytes before allocation/copying. Repeated
+aggregate fields and root return slots charge each actual copy. Equal-length equality charges
+one operand's byte length even on an early mismatch; unequal lengths cost zero. Bytes-to-string
+charges twice the input length before copying and UTF-8 validation, so budget exhaustion can
+precede an invalid-UTF-8 error. Slice bounds and character boundaries are checked first.
+
+Successful direct host byte/string return slots charge their combined byte lengths after all
+return-kind checks and before any result adoption. Raw host outcomes remain observable before
+this rejection; host work and effects have already happened. Borrowed arguments, constants,
+aggregate projections, and guest-call transfers cost zero. `PayloadWorkExceeded` reports the
+limit, successfully used work, and the rejected request; rejection leaves used work unchanged.
+Unrepresentable payload sizes/work calculations trap with `PayloadSizeOverflow`.
+
+This deterministic work budget is separate from memory residency. Aggregate slots, frames,
+storage of previously retained results, nested host aggregate payloads, host allocations/effects,
+preparation, capture, and graph-adapter imports are outside it. Trusted workloads can explicitly
+raise the limit or select `u64::MAX`. Usage resets on each invocation and context clearing.
 
 ## Typed joins
 
