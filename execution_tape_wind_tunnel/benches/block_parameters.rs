@@ -7,11 +7,12 @@
 
 #[path = "../src/block_parameters.rs"]
 mod workload;
-use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
+use std::hint::black_box;
 
 fn benchmarks(c: &mut Criterion) {
     let config = VerifyConfig::default();

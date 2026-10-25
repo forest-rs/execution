@@ -6,10 +6,11 @@
 #[path = "../src/recording.rs"]
 mod workload;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncId;
+use std::hint::black_box;
 use std::sync::Arc;
 
 fn recording(c: &mut Criterion) {

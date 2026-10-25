@@ -9,8 +9,9 @@
 
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::verifier::{VerifyConfig, verify_program};
+use std::hint::black_box;
 
 #[path = "support/programs.rs"]
 mod programs;

@@ -13,7 +13,7 @@ categories = ["development-tools::profiling"]
 
 [dependencies]
 execution_tape = { workspace = true }
-tracy-client = "0.18"
+tracy-client = "0.19"
 
 [lints]
 workspace = true

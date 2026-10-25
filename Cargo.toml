@@ -30,6 +30,9 @@ execution_graph = { path = "execution_graph", version = "0.0.1" }
 execution_tape_observatory = { path = "execution_tape_observatory", version = "0.0.1" }
 execution_tape_footfall = { path = "execution_tape_footfall", version = "0.0.1" }
 
+# Benchmark tooling is shared by both wind-tunnel crates.
+criterion = "0.8.2"
+
 # Shared by the optional terminal adapter and its executable demo.
 ratatui = { version = "0.30.2", default-features = false, features = [
   "crossterm",
