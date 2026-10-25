@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Consume aggregate storage with `AggHeap::into_snapshot`, moving reachable values into owned
+  storage without copying their payloads. Handles are remapped in place; unreachable nodes are
+  discarded. The returned `AggRemap` transfers per-node metadata to the new handle space.
+  Existing borrowed `snapshot` and host retention still copy their reachable values. ([#173][] by [@waywardmonkeys][])
+
 - Borrow selected instruction inputs and successful local writes through `TraceMask::REGISTERS`,
   `TraceSink::wants_registers` and `registers`. Events preserve source register IDs, avoid
   copying payloads, and never expose call results at dispatch or unwritten storage. ([#165][] by [@waywardmonkeys][])
@@ -404,3 +409,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#167]: https://github.com/forest-rs/execution/pull/167
 [#168]: https://github.com/forest-rs/execution/pull/168
+
+[#173]: https://github.com/forest-rs/execution/pull/173

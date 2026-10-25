@@ -272,7 +272,7 @@ fn mark_reachable(
     Ok(())
 }
 
-/// Handle remapping produced by [`AggDelta::merge_into`].
+/// Handle remapping produced by [`AggDelta::merge_into`] or [`AggHeap::into_snapshot`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AggRemap {
     base_len: u32,
@@ -310,7 +310,7 @@ impl AggRemap {
         })
     }
 
-    /// Remaps one value from staged/base snapshot space to merged-base space.
+    /// Remaps one value from its source handle space to the destination handle space.
     pub fn remap_value(&self, value: &Value) -> Result<Value, AggError> {
         let mut value = value.clone();
         self.remap_values_in_place(core::slice::from_mut(&mut value))?;
@@ -332,7 +332,8 @@ impl AggRemap {
         Ok(())
     }
 
-    fn remap_handle(&self, handle: AggHandle) -> Result<AggHandle, AggError> {
+    /// Remaps one aggregate handle, rejecting unreachable or invalid source handles.
+    pub fn remap_handle(&self, handle: AggHandle) -> Result<AggHandle, AggError> {
         if handle.0 < self.base_len {
             return Ok(handle);
         }
@@ -511,6 +512,38 @@ impl AggHeap {
         self.snapshot_owned(values.to_vec())
     }
 
+    /// Moves roots and their reachable graph into an independent owned snapshot.
+    ///
+    /// Discards unreachable nodes and remaps handles in place, preserving sharing and distinct
+    /// node identity without cloning byte/string payloads or retained aggregate nodes. The
+    /// snapshot discards spare node capacity. Dangling roots or edges return an error.
+    /// The returned remapping relates original handles to snapshot handles, so callers can
+    /// transfer their own per-node metadata. Unreachable handles have no mapping. Function and
+    /// nominal type IDs still belong to their original program; host objects remain host-owned.
+    pub fn into_snapshot(
+        mut self,
+        mut values: Vec<Value>,
+    ) -> Result<(ValueSnapshot, AggRemap), AggError> {
+        let remap = self
+            .compact_since(0, &mut values, true)
+            .map_err(|error| {
+                if error == AggError::UnresolvedStagedHandle {
+                    AggError::BadHandle
+                } else {
+                    error
+                }
+            })?
+            .expect("requested remapping");
+        self.nodes.shrink_to_fit();
+        Ok((
+            ValueSnapshot {
+                values,
+                aggregates: self,
+            },
+            remap,
+        ))
+    }
+
     pub(crate) fn snapshot_owned(&self, mut values: Vec<Value>) -> Result<ValueSnapshot, AggError> {
         let mut aggregates = Self::new();
         self.copy_roots_into(&mut aggregates, &mut values)?;
@@ -600,10 +633,19 @@ impl AggHeap {
         base_len: u32,
         roots: &mut [Value],
     ) -> Result<(), AggError> {
+        self.compact_since(base_len, roots, false).map(|_| ())
+    }
+
+    fn compact_since(
+        &mut self,
+        base_len: u32,
+        roots: &mut [Value],
+        keep_remap: bool,
+    ) -> Result<Option<AggRemap>, AggError> {
         let start = base_len as usize;
         let reachable = reachable_nodes(&self.nodes[start..], base_len, roots)?;
-        if reachable.iter().all(|&live| live) {
-            return Ok(());
+        if !keep_remap && reachable.iter().all(|&live| live) {
+            return Ok(None);
         }
         let remap = AggRemap::from_reachable(base_len, base_len, &reachable)?;
         // Reachability validated every reachable edge and root before any mutation. Preserve
@@ -618,7 +660,8 @@ impl AggHeap {
             }
         }
         self.nodes.truncate(next);
-        remap.remap_values_in_place(roots)
+        remap.remap_values_in_place(roots)?;
+        Ok(Some(remap))
     }
 
     /// Returns the aggregate type for `handle`.
@@ -793,6 +836,72 @@ impl AggHeap {
 mod tests {
     use super::*;
     use crate::value::{Closure, FuncId};
+
+    #[test]
+    fn consuming_snapshot_moves_payloads_and_preserves_aliases() {
+        let mut heap = AggHeap::new();
+        let discarded = heap.tuple_new(vec![Value::I64(-1)]).unwrap();
+        let payload = vec![42_u8; 4096];
+        let pointer = payload.as_ptr();
+        let child = heap.tuple_new(vec![Value::Bytes(payload)]).unwrap();
+        let equal_but_distinct = heap.tuple_new(vec![Value::I64(-1)]).unwrap();
+        let root = heap
+            .tuple_new(vec![
+                Value::Agg(child),
+                Value::Agg(child),
+                Value::Agg(equal_but_distinct),
+            ])
+            .unwrap();
+        let (snapshot, remap) = heap
+            .into_snapshot(vec![
+                Value::Agg(root),
+                Value::Closure(Closure {
+                    func: FuncId(7),
+                    env: child,
+                }),
+            ])
+            .unwrap();
+        assert_eq!(snapshot.aggregates().len_u32(), 3);
+        let Value::Agg(root) = snapshot.values()[0] else {
+            panic!("root")
+        };
+        let Value::Agg(first) = snapshot.aggregates().tuple_get(root, 0).unwrap() else {
+            panic!("child")
+        };
+        assert_eq!(
+            snapshot.aggregates().tuple_get(root, 1).unwrap(),
+            Value::Agg(first)
+        );
+        let Value::Bytes(bytes) = snapshot.aggregates().tuple_get_ref(first, 0).unwrap() else {
+            panic!("payload")
+        };
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(remap.remap_handle(child), Ok(first));
+        assert!(remap.remap_handle(discarded).is_err());
+        assert_eq!(
+            snapshot.values()[1],
+            Value::Closure(Closure {
+                func: FuncId(7),
+                env: first
+            })
+        );
+        assert_eq!(discarded.0, 0); // The dead prefix forces root/edge remapping.
+    }
+
+    #[test]
+    fn consuming_snapshot_rejects_dangling_roots_and_drops_unreachable_nodes() {
+        assert!(matches!(
+            AggHeap::new().into_snapshot(vec![Value::Agg(AggHandle(0))]),
+            Err(AggError::BadHandle)
+        ));
+        let mut heap = AggHeap::new();
+        heap.tuple_new(vec![Value::I64(1)]).unwrap();
+        let (snapshot, _) = heap.into_snapshot(vec![Value::I64(2)]).unwrap();
+        assert_eq!(snapshot.aggregates().len_u32(), 0);
+        assert_eq!(snapshot.aggregates().nodes.capacity(), 0);
+        assert_eq!(snapshot.values(), &[Value::I64(2)]);
+    }
+
     use alloc::vec;
 
     fn agg_handle(v: Value) -> AggHandle {
