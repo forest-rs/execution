@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Inspect current authored wiring with `node_input_source` and borrowed `InputSource` values,
+  independently of the committed reads from `node_dependencies`. Use `clear_input` to disconnect
+  one positional slot while retaining cached outputs and history; rebind it before execution.
+  ([#182][] by [@waywardmonkeys][])
+
 - Select tape invocations with `TapeExecutor::with_observer` and `TapeObserver`, correlated by
   `TapeInvocation` and `NodeAccess::node`/`attempt`. Observers compose with strict dependency
   checking and retain their selected trace sinks after adapter completion. Recording an
@@ -168,3 +173,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#176]: https://github.com/forest-rs/execution/pull/176
 
 [#181]: https://github.com/forest-rs/execution/pull/181
+
+[#182]: https://github.com/forest-rs/execution/pull/182

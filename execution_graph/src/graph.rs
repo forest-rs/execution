@@ -10,7 +10,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::nodes::Nodes;
-use crate::{InputId, NodeOutcome, NodeOutputs, NodeStatus, OutputId};
+use crate::{InputId, InputSource, NodeOutcome, NodeOutputs, NodeStatus, OutputId};
 use hashbrown::HashSet;
 
 #[cfg(test)]
@@ -609,10 +609,10 @@ impl<X: Executor> ExecutionGraph<X> {
             self.bind(
                 node,
                 slot,
-                Binding::External {
+                Some(Binding::External {
                     value: value.clone(),
                     read_id,
-                },
+                }),
             )?;
         }
         Ok(())
@@ -653,6 +653,72 @@ impl<X: Executor> ExecutionGraph<X> {
         Ok(OutputId::new(
             u32::try_from(slot).expect("too many outputs"),
         ))
+    }
+
+    /// Borrows an input's current authored source, or `None` if it is unbound.
+    ///
+    /// This is distinct from [`Self::node_dependencies`], which describes the last successful
+    /// execution. Rewiring can change this source while cached output values remain pending.
+    /// Missing producers remain inspectable as [`InputSource::NodeOutput`].
+    pub fn node_input_source(
+        &self,
+        node: NodeId,
+        input: InputId,
+    ) -> Result<Option<InputSource<'_, X::Value>>, GraphError<X::Error>> {
+        self.validate_input(node, input)?;
+        let n = &self.nodes[usize::try_from(node.as_u64()).expect("validated node id")];
+        Ok(n.inputs[input.index() as usize]
+            .as_ref()
+            .map(|binding| match binding {
+                Binding::External { value, read_id } => InputSource::External {
+                    value,
+                    key: self.dirty.key(*read_id),
+                },
+                Binding::FromNode { node, output, .. } => InputSource::NodeOutput {
+                    node: *node,
+                    output: *output,
+                },
+            }))
+    }
+
+    /// Clears one authored input without executing work or discarding cached outputs/history.
+    ///
+    /// The node becomes pending. Execution reports [`GraphError::MissingInput`] until that slot
+    /// is rebound. Use [`Self::input_id`] to resolve a named slot. Clearing an unbound slot is a
+    /// no-op; duplicate input names still identify separate positional slots here.
+    ///
+    /// ```rust
+    /// use execution_graph::{ExecutionGraph, FnExecutor, FnNode, GraphError, InputSource};
+    ///
+    /// let mut graph = ExecutionGraph::new(FnExecutor::<i64, ()>::new());
+    /// let reader = graph.add_node(
+    ///     FnNode::new(|inputs, outputs, _| { outputs.push(inputs[0]); Ok(()) }),
+    ///     vec!["value".into()], vec!["out".into()],
+    /// ).unwrap();
+    /// let input = graph.input_id(reader, "value").unwrap();
+    /// graph.set_input_value(reader, "value", 7).unwrap();
+    /// graph.run_node(reader).unwrap();
+    /// let old_reads: Vec<_> = graph.node_dependencies(reader).unwrap().cloned().collect();
+    ///
+    /// graph.clear_input(reader, input).unwrap();
+    /// assert!(graph.node_input_source(reader, input).unwrap().is_none());
+    /// assert_eq!(graph.node_dependencies(reader).unwrap().cloned().collect::<Vec<_>>(), old_reads);
+    /// assert_eq!(graph.node_outputs(reader).unwrap().get("out"), Some(&7));
+    /// assert!(matches!(graph.run_node(reader), Err(GraphError::MissingInput { .. })));
+    ///
+    /// graph.set_input_value(reader, "value", 9).unwrap();
+    /// assert!(matches!(graph.node_input_source(reader, input).unwrap(),
+    ///     Some(InputSource::External { value: &9, .. })));
+    /// graph.run_node(reader).unwrap();
+    /// assert_eq!(graph.node_outputs(reader).unwrap().get("out"), Some(&9));
+    /// ```
+    pub fn clear_input(
+        &mut self,
+        node: NodeId,
+        input: InputId,
+    ) -> Result<(), GraphError<X::Error>> {
+        self.validate_input(node, input)?;
+        self.bind(node, input.index() as usize, None)
     }
 
     /// Returns the declared name of a positional input, if the node and slot exist.
@@ -709,7 +775,7 @@ impl<X: Executor> ExecutionGraph<X> {
         self.bind(
             node,
             input.index() as usize,
-            Binding::External { value, read_id },
+            Some(Binding::External { value, read_id }),
         )
     }
 
@@ -768,11 +834,11 @@ impl<X: Executor> ExecutionGraph<X> {
         self.bind(
             to,
             input.index() as usize,
-            Binding::FromNode {
+            Some(Binding::FromNode {
                 node: from,
                 output,
                 read_id,
-            },
+            }),
         )
     }
 
@@ -791,16 +857,23 @@ impl<X: Executor> ExecutionGraph<X> {
         &mut self,
         node: NodeId,
         slot: usize,
-        binding: Binding<X::Value>,
+        binding: Option<Binding<X::Value>>,
     ) -> Result<(), GraphError<X::Error>> {
         let index = usize::try_from(node.as_u64()).unwrap();
         let n = &self.nodes[index];
-        let rebound = !matches!((&n.inputs[slot], &binding), (Some(Binding::External { read_id: old, .. }), Binding::External { read_id, .. }) if old == read_id);
+        let rebound = match (&n.inputs[slot], &binding) {
+            (None, None) => false,
+            (
+                Some(Binding::External { read_id: old, .. }),
+                Some(Binding::External { read_id, .. }),
+            ) if old == read_id => false,
+            _ => true,
+        };
         if rebound {
             let mut reads = Vec::with_capacity(n.inputs.len());
             for (candidate_slot, current) in n.inputs.iter().enumerate() {
                 let current = if candidate_slot == slot {
-                    Some(&binding)
+                    binding.as_ref()
                 } else {
                     current.as_ref()
                 };
@@ -834,7 +907,7 @@ impl<X: Executor> ExecutionGraph<X> {
                 self.dirty.mark_dirty(key);
             }
         }
-        self.nodes[index].inputs[slot] = Some(binding);
+        self.nodes[index].inputs[slot] = binding;
         self.dirty.collect_unused();
         Ok(())
     }

@@ -3,7 +3,31 @@
 
 //! Positional ports and indexed output storage.
 
+use crate::{NodeId, ResourceKey};
 use alloc::boxed::Box;
+
+/// A node input's current authored source, independent of its last published read set.
+///
+/// A removed producer remains an explicit target until repaired or cleared; inspecting this
+/// source does not execute anything or claim that a cached output is current.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum InputSource<'a, V> {
+    /// A graph-bound value whose changes are reported under an external resource key.
+    External {
+        /// Current bound value.
+        value: &'a V,
+        /// Invalidation identity, distinct from the positional input slot.
+        key: &'a ResourceKey,
+    },
+    /// An output of another node, including a deliberately retained broken connection.
+    NodeOutput {
+        /// Producer identity, which is never reused after removal.
+        node: NodeId,
+        /// Positional output of that producer.
+        output: OutputId,
+    },
+}
 
 /// Positional input slot within a node, assigned in declaration order.
 ///
