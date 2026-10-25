@@ -203,7 +203,8 @@ pub struct GraphStorageStats {
     pub nodes: usize,
     /// Live interned resource keys, including outputs.
     pub resources: usize,
-    /// Directed output-to-resource dependency edges.
+    /// Directed output-to-resource edges, including the union of committed reads and pending
+    /// authored wiring. Shared edges are counted once.
     pub dependencies: usize,
     /// Output keys awaiting execution or verification.
     pub pending_outputs: usize,

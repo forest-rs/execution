@@ -118,10 +118,6 @@ impl KeyArena {
             self.release(old);
         }
     }
-
-    pub(crate) fn sort(&mut self, range: KeyRange) {
-        self.values[range.start as usize..range.start as usize + range.len()].sort_unstable();
-    }
 }
 
 #[cfg(test)]

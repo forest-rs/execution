@@ -2,6 +2,32 @@
 
 Run the Criterion workloads with `cargo bench -p execution_graph_wind_tunnel`.
 
+The `authoring` benchmark measures connecting 16 or 64 independent 32-node chains
+into one join, both before first execution and after publishing literal inputs.
+Graph construction, initial execution, and destruction are outside the timed interval.
+Run it with `cargo bench -p execution_graph_wind_tunnel --bench authoring`.
+
+On macOS arm64 with Rust 1.99 release builds (2026-10-25), a short Criterion probe
+used 20 samples, 0.1 s warmup, and 0.3 s measurement windows. Baseline is `0745d9f`
+plus this benchmark; the candidate separates authored prerequisites from committed
+reads. These are connection-batch timings, not VM execution timings:
+
+| Connections into join | Baseline | Candidate |
+|---|---:|---:|
+| 16, before first execution | 13.7 µs | 18.3 µs |
+| 64, before first execution | 55.0 µs | 99.2 µs |
+| 16, previously published | 13.8 µs | 20.5 µs |
+| 64, previously published | 70.8 µs | 138.2 µs |
+
+This is a correctness improvement with an authoring cost: each edit rebuilds the
+current binding set, and published nodes retain historical invalidation edges
+until successful publication. An initial candidate also traversed every retained
+upstream chain on each connection; the 64-input published case took 1.14 ms.
+Checking only newly added effective edges removes that repeated traversal.
+An empty authoring overlay adds no per-resource storage; pending rewires use a
+sparse map. This probe does not measure allocator residency or complete edit/query
+histories, and these short runs do not establish a general performance ratio.
+
 The standalone native scaling probe isolates node bookkeeping and pending writes:
 
 ```sh
