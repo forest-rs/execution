@@ -15,6 +15,10 @@ tracking, dirty propagation, scheduling, and reporting. What a node *is* and how
 supplied by an [`Executor`]: the value type carried on edges, the node body type, and the
 code that turns bound inputs into outputs.
 
+Every node declares at least one output, which provides its execution identity. For work
+without a data result, declare a completion output and return a unit value. Zero-output
+definitions are rejected by [`GraphError::NoOutputs`].
+
 Two executors ship with the crate:
 - [`FnExecutor`] runs native Rust closures ([`FnNode`]).
 - [`TapeExecutor`] runs verified `execution_tape` programs ([`TapeNode`]); it is behind the

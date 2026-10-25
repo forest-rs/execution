@@ -28,6 +28,8 @@ use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary
 pub enum GraphError<E> {
     /// A node id was invalid.
     BadNodeId,
+    /// A node declared no output through which execution could be scheduled.
+    NoOutputs,
     /// A requested dependency would create a cycle. The rejected dependencies are not installed.
     DependencyCycle {
         /// Output that would gain the dependency.
@@ -163,6 +165,10 @@ impl<E: fmt::Display> fmt::Display for GraphError<E> {
                 "dynamic dependency cycle {path:?}; remove a cyclic output read"
             ),
             Self::BadNodeId => write!(f, "bad node id"),
+            Self::NoOutputs => write!(
+                f,
+                "a node must declare at least one output; return a unit value to represent completion"
+            ),
             Self::UnknownInputId { node, input } => write!(
                 f,
                 "unknown input slot: node={} input={}",
@@ -504,14 +510,19 @@ impl<X: Executor> ExecutionGraph<X> {
     /// this order. `output_names` names the values the executor must produce, in order. Both are
     /// part of the dependency key space: inputs are bound by name and outputs are wired by name.
     ///
-    /// Returns [`GraphError::DuplicateOutput`] if an output name repeats. Duplicate input names
-    /// are permitted and alias one binding.
+    /// Returns [`GraphError::NoOutputs`] if no outputs are declared, or
+    /// [`GraphError::DuplicateOutput`] if an output name repeats. Scheduling is driven by outputs;
+    /// computations without a result must declare and produce a unit-valued completion output.
+    /// Duplicate input names are permitted and alias one binding.
     pub fn add_node(
         &mut self,
         body: X::Node,
         input_names: Vec<Box<str>>,
         output_names: Vec<Box<str>>,
     ) -> Result<NodeId, GraphError<X::Error>> {
+        if output_names.is_empty() {
+            return Err(GraphError::NoOutputs);
+        }
         let node = self.nodes.next_id();
 
         let mut seen: BTreeSet<&str> = BTreeSet::new();

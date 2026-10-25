@@ -18,6 +18,49 @@ fn copy() -> FnNode<i64, &'static str> {
 }
 
 #[test]
+fn zero_output_definitions_are_rejected_without_consuming_storage_or_identity() {
+    let mut graph = Graph::new(FnExecutor::new());
+    let before = graph.storage_stats();
+    assert!(matches!(
+        graph.add_node(
+            FnNode::new(|_, _, _| panic!("rejected body must not run")),
+            vec![],
+            vec![]
+        ),
+        Err(GraphError::NoOutputs)
+    ));
+    assert_eq!(graph.storage_stats(), before);
+    let node = graph
+        .add_node(copy(), vec!["x".into()], vec!["out".into()])
+        .unwrap();
+    assert_eq!(node.as_u64(), 0);
+}
+
+#[test]
+fn unit_completion_output_runs_and_can_be_invalidated() {
+    let calls = Rc::new(Cell::new(0));
+    let counted = calls.clone();
+    let mut graph = ExecutionGraph::new(FnExecutor::<(), &'static str>::new());
+    let node = graph
+        .add_node(
+            FnNode::new(move |_, outputs, _| {
+                counted.set(counted.get() + 1);
+                outputs.push(());
+                Ok(())
+            }),
+            vec![],
+            vec!["done".into()],
+        )
+        .unwrap();
+    assert_eq!(graph.run_node(node).unwrap().executed_nodes, 1);
+    assert_eq!(graph.run_all().unwrap().executed_nodes, 0);
+    graph.invalidate(ResourceKey::node_output(node, OutputId::new(0)));
+    assert_eq!(graph.run_all().unwrap().executed_nodes, 1);
+    assert_eq!(calls.get(), 2);
+    assert_eq!(graph.node_outputs(node).unwrap().get("done"), Some(&()));
+}
+
+#[test]
 fn rejected_connection_preserves_bindings_outputs_and_dirty_state() {
     let mut graph = Graph::new(FnExecutor::new());
     let a = graph
