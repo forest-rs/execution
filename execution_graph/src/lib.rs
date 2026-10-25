@@ -192,12 +192,26 @@
 //! Host calls record dependency keys through `execution_tape::host::AccessSink`, and those keys
 //! are translated into graph [`ResourceKey`]s.
 //!
+//! Tape edges carry [`TapeValue`], which owns its immutable result storage. Clone a cached
+//! output to retain it across edits or removal; it remains readable after the executor drops.
+//! Use [`TapeValue::value`] and [`TapeValue::aggregates`] for borrowed inspection. Native nodes
+//! can adopt portable tuple snapshots through [`TapeValue::from_snapshot`] without a program.
+//! Function, closure and nominal aggregate IDs require their exact original prepared program,
+//! including IDs nested inside tuples. Foreign and unowned IDs fail before VM or host execution.
+//!
+//! Edge clones share storage. At invocation ingress, the adapter copies only selected reachable
+//! input graphs into VM storage, preserving shared node identity across publications. Returned
+//! aggregate storage moves into an owned bundle without cloning payloads. One retained aggregate
+//! output keeps its publication bundle alive; unrelated scalar payload outputs have separate
+//! owners. Host-object tokens still require their host's own retention policy. Temporary payloads
+//! are cleared after attempts; reusable workspace capacity is distinct from published storage.
+//!
 //! ```rust
 //! # #[cfg(feature = "tape")]
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::Arc;
 //!
-//! use execution_graph::{ExecutionGraph, TapeExecutor};
+//! use execution_graph::{ExecutionGraph, TapeExecutor, TapeValue};
 //! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
@@ -238,11 +252,11 @@
 //!
 //! let mut graph = ExecutionGraph::new(TapeExecutor::new(NoHost, Limits::default()));
 //! let node = graph.add_tape_node(program, entry, vec!["x".into()])?;
-//! graph.set_input_value(node, "x", Value::I64(41))?;
+//! graph.set_input_value(node, "x", Value::I64(41).into())?;
 //!
 //! let summary = graph.run_all()?;
 //! assert_eq!(summary.executed_nodes, 1);
-//! assert_eq!(graph.node_outputs(node).unwrap().get("y"), Some(&Value::I64(42)));
+//! assert_eq!(graph.node_outputs(node).unwrap().get("y").map(TapeValue::value), Some(&Value::I64(42)));
 //! # Ok(())
 //! # }
 //! # #[cfg(not(feature = "tape"))]
@@ -318,6 +332,8 @@ mod pretty;
 mod report;
 #[cfg(feature = "tape")]
 pub mod tape;
+#[cfg(feature = "tape")]
+mod tape_value;
 
 pub use access::{Access, AccessLog, HostOpId, NodeId, ResourceKey};
 pub use executor::{Executor, NodeOutcome};
@@ -330,6 +346,8 @@ pub use report::{
 };
 #[cfg(feature = "tape")]
 pub use tape::{TapeError, TapeExecutor, TapeNode};
+#[cfg(feature = "tape")]
+pub use tape_value::{TapeValue, TapeValueDomain};
 
 #[cfg(test)]
 mod dynamic_tests;

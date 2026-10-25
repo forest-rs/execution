@@ -1391,6 +1391,7 @@ mod tape_tests {
     extern crate std;
 
     use super::*;
+    use crate::TapeValue;
     use crate::access::HostOpId;
     use crate::tape::{TapeError, TapeExecutor};
     use alloc::string::ToString;
@@ -1644,7 +1645,7 @@ mod tape_tests {
         // Target chain: A -> B
         let na = g.add_tape_node(a_prog, a_entry, vec!["a".into()]).unwrap();
         let nb = g.add_tape_node(b_prog, b_entry, vec!["b".into()]).unwrap();
-        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.set_input_value(na, "a", Value::I64(1).into()).unwrap();
         g.connect(na, "value", nb, "b").unwrap();
 
         // Many unrelated chains: X_i -> Y_i
@@ -1657,7 +1658,7 @@ mod tape_tests {
             g.set_input_value(
                 nx,
                 "x",
-                Value::I64(10 + i64::try_from(i).unwrap_or(i64::MAX)),
+                Value::I64(10 + i64::try_from(i).unwrap_or(i64::MAX)).into(),
             )
             .unwrap();
             g.connect(nx, "value", ny, "y").unwrap();
@@ -1671,7 +1672,7 @@ mod tape_tests {
         }
 
         // Dirty target chain and all unrelated chains.
-        g.set_input_value(na, "a", Value::I64(2)).unwrap();
+        g.set_input_value(na, "a", Value::I64(2).into()).unwrap();
         g.invalidate_input("a");
 
         // This invalidates the shared input key for all unrelated chains. The key property we
@@ -1681,7 +1682,10 @@ mod tape_tests {
         // Run only the A->B closure; unrelated chains should remain dirty and not execute.
         g.run_node(nb).unwrap();
         assert_eq!(
-            g.node_outputs(nb).unwrap().get("value"),
+            g.node_outputs(nb)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(2))
         );
         assert_eq!(g.node_run_count(nb), Some(2));
@@ -1722,12 +1726,12 @@ mod tape_tests {
 
         let na = g.add_tape_node(a_prog, a_entry, vec!["a".into()]).unwrap();
         let nb = g.add_tape_node(b_prog, b_entry, vec!["b".into()]).unwrap();
-        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.set_input_value(na, "a", Value::I64(1).into()).unwrap();
         g.connect(na, "value", nb, "b").unwrap();
 
         g.run_all().unwrap();
 
-        g.set_input_value(na, "a", Value::I64(2)).unwrap();
+        g.set_input_value(na, "a", Value::I64(2).into()).unwrap();
         g.invalidate_input("a");
 
         let r = g.run_node_with_report(nb, ReportDetailMask::FULL).unwrap();
@@ -1798,7 +1802,7 @@ mod tape_tests {
 
         let na = g.add_tape_node(a_prog, a_entry, vec!["a".into()]).unwrap();
         let nb = g.add_tape_node(b_prog, b_entry, vec!["b".into()]).unwrap();
-        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.set_input_value(na, "a", Value::I64(1).into()).unwrap();
         g.connect(na, "value", nb, "b").unwrap();
 
         let first = g.run_all().unwrap();
@@ -1834,11 +1838,11 @@ mod tape_tests {
 
         let na = g.add_tape_node(a_prog, a_entry, vec!["a".into()]).unwrap();
         let nb = g.add_tape_node(b_prog, b_entry, vec!["b".into()]).unwrap();
-        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.set_input_value(na, "a", Value::I64(1).into()).unwrap();
         g.connect(na, "value", nb, "b").unwrap();
 
         g.run_all().unwrap();
-        g.set_input_value(na, "a", Value::I64(2)).unwrap();
+        g.set_input_value(na, "a", Value::I64(2).into()).unwrap();
         g.invalidate_input("a");
 
         let minimal = g.run_node_with_report(nb, ReportDetailMask::NONE).unwrap();
@@ -1849,7 +1853,7 @@ mod tape_tests {
             assert!(e.why_path_traced.is_none());
         }
 
-        g.set_input_value(na, "a", Value::I64(3)).unwrap();
+        g.set_input_value(na, "a", Value::I64(3).into()).unwrap();
         g.invalidate_input("a");
 
         let because_only = g
@@ -1862,7 +1866,7 @@ mod tape_tests {
             assert!(e.why_path_traced.is_none());
         }
 
-        g.set_input_value(na, "a", Value::I64(4)).unwrap();
+        g.set_input_value(na, "a", Value::I64(4).into()).unwrap();
         g.invalidate_input("a");
 
         let why_only = g
@@ -1875,7 +1879,7 @@ mod tape_tests {
             assert_eq!(e.why_path_traced, Some(true));
         }
 
-        g.set_input_value(na, "a", Value::I64(5)).unwrap();
+        g.set_input_value(na, "a", Value::I64(5).into()).unwrap();
         g.invalidate_input("a");
 
         let full = g
@@ -1920,11 +1924,11 @@ mod tape_tests {
         let nb = g.add_tape_node(b_prog, b_entry, vec!["b".into()]).unwrap();
         g.set_node_label(na, "source").unwrap();
         g.set_node_label(nb, "sink").unwrap();
-        g.set_input_value(na, "a", Value::I64(1)).unwrap();
+        g.set_input_value(na, "a", Value::I64(1).into()).unwrap();
         g.connect(na, "value", nb, "b").unwrap();
 
         g.run_all().unwrap();
-        g.set_input_value(na, "a", Value::I64(2)).unwrap();
+        g.set_input_value(na, "a", Value::I64(2).into()).unwrap();
         g.invalidate_input("a");
 
         let labels_only = g
@@ -1945,7 +1949,7 @@ mod tape_tests {
         assert!(labels_only.executed[1].why_path.is_none());
         assert!(labels_only.executed[1].why_path_traced.is_none());
 
-        g.set_input_value(na, "a", Value::I64(3)).unwrap();
+        g.set_input_value(na, "a", Value::I64(3).into()).unwrap();
         g.invalidate_input("a");
 
         let why_only = g
@@ -2186,7 +2190,8 @@ mod tape_tests {
         let summary = g.run_node(node1).unwrap();
         assert_eq!(summary.executed_nodes, 1);
         assert_eq!(
-            g.node_outputs(node1).and_then(|o| o.get("value")),
+            g.node_outputs(node1)
+                .and_then(|o| o.get("value").map(TapeValue::value)),
             Some(&Value::I64(42))
         );
     }
@@ -2219,7 +2224,8 @@ mod tape_tests {
         // node_c was unrun and re-marked, so it remains recoverable.
         assert_eq!(g.run_node(node_c).unwrap().executed_nodes, 1);
         assert_eq!(
-            g.node_outputs(node_c).and_then(|o| o.get("value")),
+            g.node_outputs(node_c)
+                .and_then(|o| o.get("value").map(TapeValue::value)),
             Some(&Value::I64(99))
         );
     }
@@ -2277,7 +2283,8 @@ mod tape_tests {
         let summary = g.run_node(node_sib).unwrap();
         assert_eq!(summary.executed_nodes, 1);
         assert_eq!(
-            g.node_outputs(node_sib).and_then(|o| o.get("value")),
+            g.node_outputs(node_sib)
+                .and_then(|o| o.get("value").map(TapeValue::value)),
             Some(&Value::I64(42))
         );
     }
@@ -2351,7 +2358,7 @@ mod tape_tests {
         let n = g.add_tape_node(prog, f, vec!["qty".into()]).unwrap();
 
         assert!(
-            matches!(g.set_input_value(n, "unit_price", Value::I64(10)), Err(GraphError::UnknownInput { node, name }) if node == n && name.as_ref() == "unit_price")
+            matches!(g.set_input_value(n, "unit_price", Value::I64(10).into()), Err(GraphError::UnknownInput { node, name }) if node == n && name.as_ref() == "unit_price")
         );
     }
 
@@ -2486,7 +2493,10 @@ mod tape_tests {
 
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(7))
         );
         assert_eq!(g.node_run_count(n), Some(1));
@@ -2501,7 +2511,10 @@ mod tape_tests {
         g.run_all().unwrap();
 
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(8))
         );
         assert_eq!(g.node_run_count(n), Some(2));
@@ -2634,7 +2647,10 @@ mod tape_tests {
 
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(reader).unwrap().get("value"),
+            g.node_outputs(reader)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(7))
         );
         assert_eq!(g.node_run_count(reader), Some(1));
@@ -2645,7 +2661,10 @@ mod tape_tests {
 
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(reader).unwrap().get("value"),
+            g.node_outputs(reader)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(8))
         );
         assert_eq!(g.node_run_count(reader), Some(2));
@@ -2733,7 +2752,10 @@ mod tape_tests {
         g.run_all().unwrap();
         assert_eq!(g.node_run_count(n), Some(1));
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(1))
         );
 
@@ -2747,7 +2769,10 @@ mod tape_tests {
             "a node that reads and writes the same key must not re-run itself"
         );
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(1))
         );
     }
@@ -2807,18 +2832,21 @@ mod tape_tests {
 
         let mut g = ExecutionGraph::new(TapeExecutor::new(PublishHost, Limits::default()));
         let n = g.add_tape_node(prog, entry, vec!["x".into()]).unwrap();
-        g.set_input_value(n, "x", Value::I64(1)).unwrap();
+        g.set_input_value(n, "x", Value::I64(1).into()).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(g.node_run_count(n), Some(1));
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(1))
         );
 
         // The host's Input-key write is ignored, so the node keeps its "x" binding dependency:
         // changing and invalidating "x" must still rerun the node and refresh its output.
-        g.set_input_value(n, "x", Value::I64(2)).unwrap();
+        g.set_input_value(n, "x", Value::I64(2).into()).unwrap();
         g.invalidate_input("x");
         g.run_all().unwrap();
         assert_eq!(
@@ -2827,7 +2855,10 @@ mod tape_tests {
             "graph input dependency must survive a host write to the same Input key"
         );
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(2))
         );
     }
@@ -2997,7 +3028,10 @@ mod tape_tests {
 
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(7))
         );
         assert_eq!(g.node_run_count(n), Some(1));
@@ -3008,7 +3042,10 @@ mod tape_tests {
         g.run_all().unwrap();
 
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(8))
         );
         assert_eq!(g.node_run_count(n), Some(2));
@@ -3043,13 +3080,16 @@ mod tape_tests {
         let nb = g.add_tape_node(b_prog, b_entry, vec!["x".into()]).unwrap();
         let nc = g.add_tape_node(c_prog, c_entry, vec!["y".into()]).unwrap();
 
-        g.set_input_value(na, "in", Value::I64(7)).unwrap();
+        g.set_input_value(na, "in", Value::I64(7).into()).unwrap();
         g.connect(na, "value", nb, "x").unwrap();
         g.connect(nb, "value", nc, "y").unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(nc).unwrap().get("value"),
+            g.node_outputs(nc)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(7))
         );
         assert_eq!(g.node_run_count(na), Some(1));
@@ -3063,12 +3103,15 @@ mod tape_tests {
         assert_eq!(g.node_run_count(nc), Some(1));
 
         // Change the external input and invalidate its key.
-        g.set_input_value(na, "in", Value::I64(8)).unwrap();
+        g.set_input_value(na, "in", Value::I64(8).into()).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
 
         assert_eq!(
-            g.node_outputs(nc).unwrap().get("value"),
+            g.node_outputs(nc)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(8))
         );
         assert_eq!(g.node_run_count(na), Some(2));
@@ -3130,14 +3173,14 @@ mod tape_tests {
         let dst = g.nodes[nb_index].output_ids[0];
         g.dirty.add_dependencies(&[dst], src).unwrap();
         g.dirty.mark_dirty(dst);
-        g.set_input_value(na, "in", Value::I64(1)).unwrap();
+        g.set_input_value(na, "in", Value::I64(1).into()).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(g.node_run_count(na), Some(1));
         assert_eq!(g.node_run_count(nb), Some(1));
 
         // If conservative deps were not replaced on first run, this would spuriously rerun B.
-        g.set_input_value(na, "in", Value::I64(2)).unwrap();
+        g.set_input_value(na, "in", Value::I64(2).into()).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
 
@@ -3178,11 +3221,14 @@ mod tape_tests {
         let n = g
             .add_tape_node(prog, f, vec!["x".into(), "x".into()])
             .unwrap();
-        g.set_input_value(n, "x", Value::I64(7)).unwrap();
+        g.set_input_value(n, "x", Value::I64(7).into()).unwrap();
 
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(7))
         );
     }
@@ -3244,7 +3290,7 @@ mod tape_tests {
         let (prog, entry) = make_identity_program("value");
         let mut g = ExecutionGraph::new(TapeExecutor::new(HostNoop, Limits::default()));
         let n = g.add_tape_node(prog, entry, vec!["in".into()]).unwrap();
-        g.set_input_value(n, "in", Value::I64(1)).unwrap();
+        g.set_input_value(n, "in", Value::I64(1).into()).unwrap();
 
         // Run with collection enabled — should produce a log.
         g.set_collect_access_log(true);
@@ -3253,7 +3299,7 @@ mod tape_tests {
 
         // Disable collection, rerun — stale log must be cleared.
         g.set_collect_access_log(false);
-        g.set_input_value(n, "in", Value::I64(2)).unwrap();
+        g.set_input_value(n, "in", Value::I64(2).into()).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
         assert!(
@@ -3287,28 +3333,37 @@ mod tape_tests {
         let n = g.add_tape_node(prog, entry, vec!["in".into()]).unwrap();
 
         // First run populates the output map.
-        g.set_input_value(n, "in", Value::I64(10)).unwrap();
+        g.set_input_value(n, "in", Value::I64(10).into()).unwrap();
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(10))
         );
 
         // Second run uses in-place update path.
-        g.set_input_value(n, "in", Value::I64(20)).unwrap();
+        g.set_input_value(n, "in", Value::I64(20).into()).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(20))
         );
 
         // Third run confirms stability.
-        g.set_input_value(n, "in", Value::I64(30)).unwrap();
+        g.set_input_value(n, "in", Value::I64(30).into()).unwrap();
         g.invalidate_input("in");
         g.run_all().unwrap();
         assert_eq!(
-            g.node_outputs(n).unwrap().get("value"),
+            g.node_outputs(n)
+                .unwrap()
+                .get("value")
+                .map(TapeValue::value),
             Some(&Value::I64(30))
         );
         assert_eq!(g.node_run_count(n), Some(3));
@@ -3817,6 +3872,7 @@ mod mixed_tests {
     use execution_tape::vm::Limits;
 
     use super::*;
+    use crate::TapeValue;
     use crate::executor::Executor;
     use crate::native::{FnExecutor, FnNode};
     use crate::node_access::NodeAccess;
@@ -3840,18 +3896,18 @@ mod mixed_tests {
 
     #[derive(Debug)]
     enum MixedNode {
-        Native(FnNode<Value, TapeError>),
+        Native(FnNode<TapeValue, TapeError>),
         Tape(TapeNode),
     }
 
     #[derive(Debug)]
     struct MixedExecutor {
-        native: FnExecutor<Value, TapeError>,
+        native: FnExecutor<TapeValue, TapeError>,
         tape: TapeExecutor<HostNoop>,
     }
 
     impl Executor for MixedExecutor {
-        type Value = Value;
+        type Value = TapeValue;
         type Node = MixedNode;
         type Error = TapeError;
 
@@ -3908,7 +3964,8 @@ mod mixed_tests {
                 vec!["out".into()],
             )
             .unwrap();
-        g.set_input_value(source, "x", Value::I64(2)).unwrap();
+        g.set_input_value(source, "x", Value::I64(2).into())
+            .unwrap();
         let double = g
             .add_node(
                 MixedNode::Tape(TapeNode::new(program.clone(), entry).unwrap()),
@@ -3919,19 +3976,21 @@ mod mixed_tests {
         g.connect(source, "out", double, "x").unwrap();
         let increment = g
             .add_node(
-                MixedNode::Native(FnNode::restartable(move |_, outputs, access| {
-                    let Some(value) = access
-                        .read_node_output(double, OutputId::new(0))
-                        .expect("live declared tape output")
-                    else {
-                        return Ok(NodeOutcome::Pending);
-                    };
-                    let Value::I64(value) = value else {
-                        unreachable!("typed tape output")
-                    };
-                    outputs.push(Value::I64(value + 1));
-                    Ok(NodeOutcome::Complete)
-                })),
+                MixedNode::Native(FnNode::<TapeValue, TapeError>::restartable(
+                    move |_, outputs, access| {
+                        let Some(value) = access
+                            .read_node_output(double, OutputId::new(0))
+                            .expect("live declared tape output")
+                        else {
+                            return Ok(NodeOutcome::Pending);
+                        };
+                        let Value::I64(value) = value.value() else {
+                            unreachable!("typed tape output")
+                        };
+                        outputs.push(Value::I64(value + 1).into());
+                        Ok(NodeOutcome::Complete)
+                    },
+                )),
                 vec![],
                 vec!["out".into()],
             )
@@ -3947,14 +4006,21 @@ mod mixed_tests {
         let summary = g.run_node(result).unwrap();
         assert_eq!((summary.executed_nodes, summary.execution_attempts), (4, 5));
         assert_eq!(
-            g.node_outputs(result).unwrap().get("out"),
+            g.node_outputs(result)
+                .unwrap()
+                .get("out")
+                .map(TapeValue::value),
             Some(&Value::I64(10))
         );
-        g.set_input_value(source, "x", Value::I64(3)).unwrap();
+        g.set_input_value(source, "x", Value::I64(3).into())
+            .unwrap();
         g.invalidate_input("x");
         assert_eq!(g.run_node(result).unwrap().executed_nodes, 4);
         assert_eq!(
-            g.node_outputs(result).unwrap().get("out"),
+            g.node_outputs(result)
+                .unwrap()
+                .get("out")
+                .map(TapeValue::value),
             Some(&Value::I64(14))
         );
     }
@@ -3990,33 +4056,44 @@ mod mixed_tests {
             .unwrap();
         let increment = g
             .add_node(
-                MixedNode::Native(FnNode::named("increment", |inputs, outputs, _access| {
-                    let Value::I64(v) = inputs[0] else {
-                        unreachable!("tape output is typed i64");
-                    };
-                    outputs.push(Value::I64(v + 1));
-                    Ok(())
-                })),
+                MixedNode::Native(FnNode::<TapeValue, TapeError>::named(
+                    "increment",
+                    |inputs, outputs, _access| {
+                        let Value::I64(v) = inputs[0].value() else {
+                            unreachable!("tape output is typed i64");
+                        };
+                        outputs.push(Value::I64(v + 1).into());
+                        Ok(())
+                    },
+                )),
                 vec!["value".into()],
                 vec!["result".into()],
             )
             .unwrap();
-        g.set_input_value(double, "x", Value::I64(20)).unwrap();
+        g.set_input_value(double, "x", Value::I64(20).into())
+            .unwrap();
         g.connect(double, "doubled", increment, "value").unwrap();
 
         assert_eq!(g.run_all().unwrap().executed_nodes, 2);
         assert_eq!(
-            g.node_outputs(increment).unwrap().get("result"),
+            g.node_outputs(increment)
+                .unwrap()
+                .get("result")
+                .map(TapeValue::value),
             Some(&Value::I64(41))
         );
         assert_eq!(g.node_description(increment).as_deref(), Some("increment"));
         assert_eq!(g.node_description(double).as_deref(), Some("entry=f0"));
 
-        g.set_input_value(double, "x", Value::I64(21)).unwrap();
+        g.set_input_value(double, "x", Value::I64(21).into())
+            .unwrap();
         g.invalidate_input("x");
         assert_eq!(g.run_all().unwrap().executed_nodes, 2);
         assert_eq!(
-            g.node_outputs(increment).unwrap().get("result"),
+            g.node_outputs(increment)
+                .unwrap()
+                .get("result")
+                .map(TapeValue::value),
             Some(&Value::I64(43))
         );
     }

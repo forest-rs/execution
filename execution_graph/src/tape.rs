@@ -5,7 +5,8 @@
 //!
 //! A [`TapeNode`] is a `(VerifiedProgram, entry FuncId)` pair. The [`TapeExecutor`] owns one VM
 //! and one reusable execution context, runs each node's entry function with the bound argument
-//! values, and translates the host's [`AccessSink`] events into graph dependency keys.
+//! values, and translates the host's [`AccessSink`] events into graph dependency keys. Edges
+//! carry owned [`TapeValue`]s; the VM heap is invocation-local rather than a lifetime-long cache.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -15,6 +16,7 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 use core::fmt;
 
+use execution_tape::aggregates::AggError;
 use execution_tape::host::{AccessSink, Host, ResourceKeyRef, SigHash};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
@@ -25,10 +27,28 @@ use crate::access::{HostOpId, NodeId, ResourceKey};
 use crate::executor::Executor;
 use crate::graph::{ExecutionGraph, GraphError};
 use crate::node_access::NodeAccess;
+use crate::tape_value::{Importer, TapeValue};
 
 /// Failures specific to tape nodes.
 #[derive(Clone, Debug)]
 pub enum TapeError {
+    /// A retained root contains program-local IDs without their owning program.
+    MissingProgram {
+        /// Root index in the retained snapshot.
+        root: usize,
+    },
+    /// A raw input handle has no ownership or program domain.
+    UnownedInput {
+        /// Positional node input.
+        input: usize,
+    },
+    /// An input's scoped IDs belong to a different prepared program.
+    ProgramMismatch {
+        /// Positional node input, including scoped IDs nested inside aggregates.
+        input: usize,
+    },
+    /// Retaining or importing an aggregate graph failed.
+    Aggregate(AggError),
     /// A function id was not present in the verified program supplied for a node.
     BadEntryFunc {
         /// Invalid entry function id.
@@ -57,6 +77,19 @@ pub enum TapeError {
 impl fmt::Display for TapeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingProgram { root } => write!(
+                f,
+                "snapshot root {root} contains program-local IDs; supply its original prepared program"
+            ),
+            Self::UnownedInput { input } => write!(
+                f,
+                "input {input} contains an unowned aggregate or callable; adopt a retained snapshot with TapeValue::from_snapshot"
+            ),
+            Self::ProgramMismatch { input } => write!(
+                f,
+                "input {input} contains IDs belonging to a different prepared program; use its original program or explicitly translate the value"
+            ),
+            Self::Aggregate(error) => write!(f, "aggregate transfer failed: {error}"),
             Self::BadEntryFunc { func } => {
                 write!(
                     f,
@@ -87,6 +120,7 @@ impl core::error::Error for TapeError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Trap(trap) => Some(trap),
+            Self::Aggregate(error) => Some(error),
             _ => None,
         }
     }
@@ -167,12 +201,19 @@ fn plain_values_equal(previous: &Value, next: &Value) -> bool {
     }
 }
 
-/// Executor that runs [`TapeNode`]s on one `execution_tape` VM.
+/// Executor that runs [`TapeNode`]s on one `execution_tape` VM with owned [`TapeValue`] edges.
+///
+/// Result owners are independent of this executor. Inputs are admitted before execution,
+/// imported with sharing preserved, then discarded with transient context data after each
+/// attempt. Cached and externally cloned results keep only their immutable publication storage.
 pub struct TapeExecutor<H: Host> {
     vm: Vm<H>,
     ctx: ExecutionContext,
     strict_deps: bool,
     early_cutoff: bool,
+    args: Vec<Value>,
+    results: Vec<Value>,
+    importer: Importer,
 }
 
 impl<H: Host> fmt::Debug for TapeExecutor<H> {
@@ -194,6 +235,9 @@ impl<H: Host> TapeExecutor<H> {
             ctx: ExecutionContext::new(),
             strict_deps: false,
             early_cutoff: false,
+            args: Vec::new(),
+            results: Vec::new(),
+            importer: Importer::default(),
         }
     }
 
@@ -231,10 +275,29 @@ impl<H: Host> TapeExecutor<H> {
     pub const fn strict_deps(&self) -> bool {
         self.strict_deps
     }
+
+    /// Borrows host state between runs.
+    pub fn host(&self) -> &H {
+        self.vm.host()
+    }
+
+    /// Updates host state between runs. Report affected keys through the graph's
+    /// `invalidate`/`invalidate_many` methods before querying dependent outputs.
+    pub fn host_mut(&mut self) -> &mut H {
+        self.vm.host_mut()
+    }
+
+    fn clear_workspace(&mut self) {
+        self.ctx.clear();
+        self.args.clear();
+        self.results.clear();
+        self.importer.clear();
+        self.vm.aggregates_mut().clear();
+    }
 }
 
 impl<H: Host> Executor for TapeExecutor<H> {
-    type Value = Value;
+    type Value = TapeValue;
     type Node = TapeNode;
     type Error = TapeError;
 
@@ -245,46 +308,17 @@ impl<H: Host> Executor for TapeExecutor<H> {
         outputs: &mut Vec<Self::Value>,
         access: &mut NodeAccess<'_, Self::Value>,
     ) -> Result<crate::NodeOutcome, Self::Error> {
-        let access_count: Cell<usize> = Cell::new(0);
-        let mut strict = StrictDepsTrace::new(&access_count);
-        let (trace_mask, trace): (TraceMask, Option<&mut dyn TraceSink>) = if self.strict_deps {
-            (TraceMask::HOST, Some(&mut strict as &mut dyn TraceSink))
-        } else {
-            (TraceMask::NONE, None)
-        };
-        let mut sink = TapeAccessSink {
-            access,
-            counter: &access_count,
-        };
-        let original_len = outputs.len();
-        self.vm
-            .run_with_ctx(
-                &mut self.ctx,
-                &node.program,
-                node.entry,
-                inputs,
-                outputs,
-                trace_mask,
-                trace,
-                Some(&mut sink),
-            )
-            .map_err(TapeError::Trap)?;
-
-        if self.strict_deps
-            && let Some(v) = strict.violation()
-        {
-            outputs.truncate(original_len);
-            return Err(TapeError::StrictDepsViolation {
-                symbol: v.symbol.clone(),
-                sig_hash: v.sig_hash,
-            });
-        }
-
-        Ok(crate::NodeOutcome::Complete)
+        self.execute_node(node, inputs, outputs, access)
+            .map(|()| crate::NodeOutcome::Complete)
     }
 
     fn values_equal(&self, previous: &Self::Value, next: &Self::Value) -> bool {
-        self.early_cutoff && plain_values_equal(previous, next)
+        self.early_cutoff
+            && plain_values_equal(previous.value(), next.value())
+            && match (previous.value(), next.value()) {
+                (Value::Func(_), Value::Func(_)) => previous == next,
+                _ => true,
+            }
     }
 
     fn describe(&self, node: &Self::Node) -> Option<String> {
@@ -297,6 +331,98 @@ impl<H: Host> Executor for TapeExecutor<H> {
             Some(name) => format!("program={name}\n{entry}"),
             None => entry,
         })
+    }
+}
+
+impl<H: Host> TapeExecutor<H> {
+    /// Executes one tape body as part of a custom graph executor with edge type `V`.
+    ///
+    /// Convert selected inputs to `TapeValue`, then wrap appended outputs in the custom edge
+    /// representation. `access` forwards host resource keys regardless of that representation.
+    /// This does not schedule graph work or publish outputs; the graph validates the custom
+    /// executor's attempt afterward. The built-in [`Executor`] implementation uses this same
+    /// ownership and cleanup path. Tape calls complete or fail; they do not suspend or read
+    /// graph outputs dynamically through host calls.
+    pub fn execute_node<V>(
+        &mut self,
+        node: &TapeNode,
+        inputs: &[TapeValue],
+        outputs: &mut Vec<TapeValue>,
+        access: &mut NodeAccess<'_, V>,
+    ) -> Result<(), TapeError> {
+        // Admission is complete before copying any input or allowing host effects.
+        for (index, input) in inputs.iter().enumerate() {
+            input.validate_input(index, &node.program)?;
+        }
+        let result = self.execute_owned(node, inputs, outputs, access);
+        self.clear_workspace();
+        result
+    }
+
+    fn execute_owned<V>(
+        &mut self,
+        node: &TapeNode,
+        inputs: &[TapeValue],
+        outputs: &mut Vec<TapeValue>,
+        access: &mut NodeAccess<'_, V>,
+    ) -> Result<(), TapeError> {
+        for input in inputs {
+            self.args.push(
+                self.importer
+                    .import(input, self.vm.aggregates_mut())
+                    .map_err(TapeError::Aggregate)?,
+            );
+        }
+        let access_count: Cell<usize> = Cell::new(0);
+        let mut strict = StrictDepsTrace::new(&access_count);
+        let (trace_mask, trace): (TraceMask, Option<&mut dyn TraceSink>) = if self.strict_deps {
+            (TraceMask::HOST, Some(&mut strict as &mut dyn TraceSink))
+        } else {
+            (TraceMask::NONE, None)
+        };
+        let mut sink = TapeAccessSink {
+            access,
+            counter: &access_count,
+        };
+        self.vm
+            .run_with_ctx(
+                &mut self.ctx,
+                &node.program,
+                node.entry,
+                &self.args,
+                &mut self.results,
+                trace_mask,
+                trace,
+                Some(&mut sink),
+            )
+            .map_err(TapeError::Trap)?;
+
+        if self.strict_deps
+            && let Some(v) = strict.violation()
+        {
+            return Err(TapeError::StrictDepsViolation {
+                symbol: v.symbol.clone(),
+                sig_hash: v.sig_hash,
+            });
+        }
+
+        if !self
+            .results
+            .iter()
+            .any(|value| matches!(value, Value::Agg(_) | Value::Closure(_)))
+        {
+            outputs.extend(
+                self.results
+                    .drain(..)
+                    .map(|value| TapeValue::plain_result(value, &node.program)),
+            );
+            return Ok(());
+        }
+        let values = core::mem::take(&mut self.results);
+        let heap = core::mem::take(self.vm.aggregates_mut());
+        let origins = core::mem::take(&mut self.importer.origins);
+        TapeValue::publish(heap, values, Arc::clone(&node.program), origins, outputs)?;
+        Ok(())
     }
 }
 
@@ -408,8 +534,105 @@ mod memory_tests {
         assert_eq!(graph.run_node(node).unwrap().executed_nodes, 1);
         assert_eq!(
             graph.node_outputs(node).unwrap().get("ret0"),
-            Some(&Value::Unit)
+            Some(&Value::Unit.into())
         );
+    }
+
+    #[test]
+    fn failed_attempts_clear_imports_and_preserve_previous_owned_outputs() {
+        use execution_tape::aggregates::AggHeap;
+        use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
+
+        #[derive(Default)]
+        struct FallibleHost {
+            fail: bool,
+        }
+        impl Host for FallibleHost {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                _: &[ValueRef<'_>],
+                _: &mut [Value],
+                _: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                if self.fail {
+                    Err(HostError::UnknownSymbol)
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+        let mut builder = ProgramBuilder::new();
+        let host = builder.host_sig_for(
+            "check",
+            HostSig {
+                args: vec![],
+                rets: vec![],
+            },
+        );
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::Agg]);
+        body.host_call_sig_id(0, host, 0, &[], &[]).ret(0, &[1]);
+        let entry = builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![ValueType::Agg],
+                    ret_types: vec![ValueType::Agg],
+                },
+            )
+            .unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+        let mut heap = AggHeap::new();
+        let root = heap.tuple_new(vec![Value::Bytes(vec![7; 65536])]).unwrap();
+        let (snapshot, _) = heap.into_snapshot(vec![Value::Agg(root)]).unwrap();
+        let input = TapeValue::from_snapshot(snapshot, None).unwrap().remove(0);
+        let mut graph = ExecutionGraph::new(TapeExecutor::new(
+            FallibleHost::default(),
+            Limits::default(),
+        ));
+        let node = graph
+            .add_tape_node(program, entry, vec!["input".into()])
+            .unwrap();
+        graph.set_input_value(node, "input", input).unwrap();
+        graph.run_all().unwrap();
+        let previous = graph
+            .node_outputs(node)
+            .unwrap()
+            .get("ret0")
+            .unwrap()
+            .clone();
+        for strict in [false, true] {
+            graph.executor_mut().host_mut().fail = !strict;
+            graph.executor_mut().set_strict_deps(strict);
+            graph.invalidate_input("input");
+            let error = graph.run_all().unwrap_err();
+            assert!(matches!(
+                (strict, error),
+                (
+                    false,
+                    GraphError::Node {
+                        source: TapeError::Trap(_),
+                        ..
+                    }
+                ) | (
+                    true,
+                    GraphError::Node {
+                        source: TapeError::StrictDepsViolation { .. },
+                        ..
+                    }
+                )
+            ));
+            assert_eq!(
+                graph.node_outputs(node).unwrap().get("ret0"),
+                Some(&previous)
+            );
+            let executor = graph.executor();
+            assert_eq!(executor.vm.aggregates().len_u32(), 0);
+            assert!(executor.args.is_empty());
+            assert!(executor.results.is_empty());
+        }
     }
 
     #[test]
@@ -533,7 +756,9 @@ mod memory_tests {
         let b = graph
             .add_tape_node(program, reader, vec!["tuple".into()])
             .unwrap();
-        graph.set_input_value(a, "x", Value::I64(42)).unwrap();
+        graph
+            .set_input_value(a, "x", Value::I64(42).into())
+            .unwrap();
         graph.connect(a, "ret0", b, "tuple").unwrap();
         assert_eq!(graph.run_all().unwrap().executed_nodes, 2);
         let retained = graph.node_outputs(a).unwrap().get("ret0").cloned();
@@ -546,22 +771,26 @@ mod memory_tests {
             );
             assert_eq!(
                 graph.node_outputs(b).unwrap().get("ret0"),
-                Some(&Value::I64(42))
+                Some(&Value::I64(42).into())
             );
-            assert_eq!(graph.executor().vm.aggregates().len_u32(), 1);
+            assert_eq!(graph.executor().vm.aggregates().len_u32(), 0);
+            assert_eq!(
+                retained.as_ref().unwrap().aggregates().unwrap().len_u32(),
+                1
+            );
         }
     }
 }
 
 /// Translates tape host access events into graph dependency recording.
-struct TapeAccessSink<'a, 'b> {
-    access: &'a mut NodeAccess<'b, Value>,
+struct TapeAccessSink<'a, 'b, V> {
+    access: &'a mut NodeAccess<'b, V>,
     /// Shared with [`StrictDepsTrace`] so strict-deps validation can verify that each host call
     /// reported at least one usable key.
     counter: &'a Cell<usize>,
 }
 
-impl AccessSink for TapeAccessSink<'_, '_> {
+impl<V> AccessSink for TapeAccessSink<'_, '_, V> {
     fn read(&mut self, key: ResourceKeyRef<'_>) {
         self.counter.set(self.counter.get().saturating_add(1));
         match key {
