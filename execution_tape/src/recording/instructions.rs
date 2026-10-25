@@ -1,9 +1,9 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{CallStack, RecordedValue, frames::FrameId};
+use crate::recording::{CallStack, RecordedValue, frames::FrameId};
+use crate::trace::TraceLocation;
 use alloc::vec::Vec;
-use execution_tape::trace::TraceLocation;
 
 /// Optional instruction-history retention. Boundary recording remains enabled separately.
 #[derive(Clone, Debug)]
@@ -37,7 +37,7 @@ pub struct RegisterWatch {
 #[derive(Clone, Copy)]
 pub struct RegisterObservations<'a> {
     pub(crate) entries: &'a [(u32, usize)],
-    pub(crate) arena: &'a crate::values::Arena,
+    pub(crate) arena: &'a crate::recording::values::Arena,
 }
 impl<'a> RegisterObservations<'a> {
     /// Number of retained source operand occurrences.

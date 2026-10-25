@@ -6,13 +6,13 @@
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
+use execution_tape::recording::{
+    CaptureFault, CaptureResource, Outcome, RecordLimits, Recorder, Recording, ReplayOutcome,
+};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
-use execution_tape_recording::{
-    CaptureFault, CaptureResource, Outcome, RecordLimits, Recorder, Recording, ReplayOutcome,
-};
 use std::sync::Arc;
 
 struct Echo {

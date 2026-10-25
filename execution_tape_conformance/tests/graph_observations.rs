@@ -12,14 +12,14 @@ use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef,
 };
 use execution_tape::program::ValueType;
+use execution_tape::recording::{
+    InstructionCapture, InstructionStatus, RecordLimits, Recorder, Recording, RegisterWatch,
+    ReplayOutcome,
+};
 use execution_tape::trace::{TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::Limits;
-use execution_tape_recording::{
-    InstructionCapture, InstructionStatus, RecordLimits, Recorder, Recording, RegisterWatch,
-    ReplayOutcome,
-};
 use std::sync::Arc;
 
 struct State {

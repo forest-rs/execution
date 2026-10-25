@@ -156,6 +156,7 @@ Ordinary verification, preparation and execution retain no inspection data.
   hooks.
 - `trace`: profiling events and opt-in borrowed invocation, host outcome and return-candidate
   values for recording and diagnostics.
+- `recording`: owned bounded observations, instruction histories and checked replay.
 - `disasm`: human-readable disassembly for verified programs.
 
 ## Design Docs

@@ -6,6 +6,9 @@
 #[path = "support/programs.rs"]
 mod programs;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use execution_tape::recording::{
+    InstructionCapture, InstructionStatus, RecordLimits, Recorder, RegisterWatch,
+};
 use execution_tape::{
     disasm::disassemble_function,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -13,9 +16,6 @@ use execution_tape::{
     value::{FuncId, Value},
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
-};
-use execution_tape_recording::{
-    InstructionCapture, InstructionStatus, RecordLimits, Recorder, RegisterWatch,
 };
 use std::{hint::black_box, sync::Arc, time::Duration};
 struct NoHost;

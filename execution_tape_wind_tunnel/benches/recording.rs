@@ -7,9 +7,9 @@
 mod workload;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncId;
-use execution_tape_recording::{RecordLimits, Recorder, ReplayOutcome};
 use std::sync::Arc;
 
 fn recording(c: &mut Criterion) {

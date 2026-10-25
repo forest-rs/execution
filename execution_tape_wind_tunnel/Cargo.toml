@@ -9,7 +9,6 @@ repository.workspace = true
 
 [dependencies]
 execution_tape = { workspace = true, features = ["std"] }
-execution_tape_recording.workspace = true
 execution_tape_observatory.workspace = true
 ratatui.workspace = true
 execution_tape_footfall.workspace = true

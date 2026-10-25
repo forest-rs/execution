@@ -2,7 +2,7 @@
 
 A terminal browser for compiled Execution Tape programs and real, owned recordings. The optional `std` UI borrows a
 recording; capture, immutable value ownership, completeness and replay remain in
-`execution_tape_recording`. The core VM and recorder have no terminal dependencies.
+`execution_tape::recording`. The core VM and recorder have no terminal dependencies.
 
 From the workspace, run:
 
@@ -204,7 +204,7 @@ and executes through the ordinary VM. Its built-in expression returns 24. Input 
 Attach the same source bundle to an owned recording and open directly on captured instructions:
 
 ```rust,no_run
-# fn example(record: &execution_tape_recording::Recording, sources: &execution_tape_observatory::sources::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
+# fn example(record: &execution_tape::recording::Recording, sources: &execution_tape_observatory::sources::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
 use execution_tape_observatory::RecordingExplorer;
 let explorer = RecordingExplorer::new(record).sources(sources)?.instructions();
 let text = explorer.render_text(160, 60)?;

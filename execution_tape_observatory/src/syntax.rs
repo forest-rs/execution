@@ -4,7 +4,7 @@
 //! Presentation-only token colors. Descriptions remain the source of displayed text.
 
 use super::{describe, palette::*};
-use execution_tape_recording::{RecordedValue, Recording};
+use execution_tape::recording::{RecordedValue, Recording};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 

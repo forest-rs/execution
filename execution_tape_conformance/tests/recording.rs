@@ -6,14 +6,14 @@
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{ElemTypeId, HostTypeId, TypeId, ValueType};
+use execution_tape::recording::{
+    CaptureFault, CaptureResource, HostOutcome, Outcome, RecordLimits, RecordedValue, Recorder,
+    Recording, ReplayError, ReplayOutcome,
+};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::{AggHandle, AggType, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Trap, Vm};
-use execution_tape_recording::{
-    CaptureFault, CaptureResource, HostOutcome, Outcome, RecordLimits, RecordedValue, Recorder,
-    Recording, ReplayError, ReplayOutcome,
-};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

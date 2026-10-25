@@ -3,10 +3,10 @@
 
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
-use execution_tape::trace::TraceLocation;
-use execution_tape_recording::{
+use execution_tape::recording::{
     AggregateId, CallStack, HostCall, HostOutcome, Outcome, RecordedValue, Recording, ReplayOutcome,
 };
+use execution_tape::trace::TraceLocation;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

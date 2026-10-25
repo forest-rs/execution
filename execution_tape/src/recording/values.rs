@@ -1,14 +1,14 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{CaptureFault, CaptureResource, RecordLimits};
+use crate::aggregates::AggHeap;
+use crate::host::ValueRef;
+use crate::recording::{CaptureFault, CaptureResource, RecordLimits};
+use crate::value::{AggHandle, AggType, Decimal, FuncId, Obj};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
-use execution_tape::aggregates::AggHeap;
-use execution_tape::host::ValueRef;
-use execution_tape::value::{AggHandle, AggType, Decimal, FuncId, Obj};
 
 /// Identity of an aggregate in one recording, independent of VM heap numbering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

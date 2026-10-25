@@ -290,7 +290,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("cannot inspect emitted function: {error:?}"))?;
         let watches = source
             .instrs()
-            .map(|i| execution_tape_recording::RegisterWatch {
+            .map(|i| execution_tape::recording::RegisterWatch {
                 location: TraceLocation {
                     func: source.func(),
                     pc: i.pc(),
@@ -299,11 +299,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             })
             .collect();
         Some(
-            execution_tape_recording::Recorder::new(
+            execution_tape::recording::Recorder::new(
                 std::sync::Arc::clone(&prepared),
-                execution_tape_recording::RecordLimits::default(),
+                execution_tape::recording::RecordLimits::default(),
             )
-            .with_instructions(execution_tape_recording::InstructionCapture {
+            .with_instructions(execution_tape::recording::InstructionCapture {
                 max_steps: 1024,
                 watches,
             }),

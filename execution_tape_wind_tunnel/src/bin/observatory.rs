@@ -10,12 +10,12 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
 use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
+use execution_tape::recording::{
+    InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch,
+};
 use execution_tape::trace::TraceSink;
 use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
-use execution_tape_recording::{
-    InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch,
-};
 use std::sync::Arc;
 
 type Stored = Vec<[i64; 3]>;
@@ -241,7 +241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape_recording::{Outcome, ReplayOutcome};
+    use execution_tape::recording::{Outcome, ReplayOutcome};
 
     #[test]
     fn real_read_compute_store_workflow_replays_after_host_state_is_dropped() {
@@ -257,7 +257,7 @@ mod tests {
         assert!(matches!(
             record.outcome(),
             Some(Outcome::Returned([
-                execution_tape_recording::RecordedValue::I64(42)
+                execution_tape::recording::RecordedValue::I64(42)
             ]))
         ));
         let ReplayOutcome::Returned(output) = record.replay().unwrap() else {

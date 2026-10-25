@@ -13,7 +13,6 @@ categories = ["development-tools::debugging"]
 
 [dependencies]
 execution_tape.workspace = true
-execution_tape_recording.workspace = true
 # Used to bound scrolling by the actual wrapped paragraph height.
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 

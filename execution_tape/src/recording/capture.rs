@@ -1,25 +1,25 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{
+use crate::host::ValueRef;
+use crate::program::Program;
+use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, InstructionCapture,
     InstructionOutcome, InstructionStatus, RecordLimits, Recording,
     frames::{Frame, FrameId},
     instructions::{History, Step},
     values::Builder,
 };
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::ops::Range;
-use execution_tape::host::ValueRef;
-use execution_tape::program::Program;
-use execution_tape::trace::{
+use crate::trace::{
     HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask,
     TraceOutcome, TraceSink, ValueEvent,
 };
-use execution_tape::value::FuncId;
-use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::Trap;
+use crate::value::FuncId;
+use crate::verifier::VerifiedProgram;
+use crate::vm::Trap;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::ops::Range;
 
 /// Owns boundary observations for one invocation of a shared prepared program.
 ///

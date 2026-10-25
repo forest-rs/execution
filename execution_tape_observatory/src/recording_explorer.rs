@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{interact, model::View, render_screen, sources};
-use execution_tape_recording::Recording;
+use execution_tape::recording::Recording;
 use std::io;
 
 /// Configured recording explorer for the same interactive and headless presentation.
