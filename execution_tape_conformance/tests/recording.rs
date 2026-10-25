@@ -768,3 +768,39 @@ fn missing_masks_program_mismatch_reuse_and_invalid_graphs_never_claim_completen
     assert!(matches!(record.outcome(), Some(Outcome::Trapped(_))));
     assert!(matches!(record.replay(), Err(ReplayError::Incomplete(_))));
 }
+
+#[test]
+fn payload_admission_and_root_copy_rejections_preserve_raw_host_outcomes_for_replay() {
+    let p = host_program(ValueType::Bytes);
+    for (limit, used) in [(3, 0), (7, 4)] {
+        let mut vm = Vm::new(
+            TestHost::returning(Value::Bytes(vec![1; 4])),
+            Limits {
+                max_payload_work: limit,
+                ..Limits::default()
+            },
+        );
+        let record = capture(&mut vm, &p, &[]);
+        drop(vm);
+        assert!(
+            matches!(record.host_calls().next().unwrap().outcome, HostOutcome::Returned { values, .. } if values.len() == 1)
+        );
+        let ReplayOutcome::Trapped(error) = record.replay().unwrap() else {
+            panic!("trap")
+        };
+        assert!(
+            matches!(error.trap, Trap::PayloadWorkExceeded { limit: actual, used: actual_used, requested: 4 } if actual == limit && actual_used == used)
+        );
+        assert!(error.to_string().contains("Limits::max_payload_work"));
+    }
+    let mut vm = Vm::new(
+        TestHost::returning(Value::Bytes(vec![1; 4])),
+        Limits {
+            max_payload_work: 8,
+            ..Limits::default()
+        },
+    );
+    let record = capture(&mut vm, &p, &[]);
+    drop(vm);
+    assert!(matches!(record.replay(), Ok(ReplayOutcome::Returned(_))));
+}

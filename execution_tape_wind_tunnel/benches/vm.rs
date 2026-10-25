@@ -1042,6 +1042,7 @@ fn wide_open_limits() -> Limits {
         max_call_depth: 1024,
         max_host_calls: u64::MAX,
         max_contract_work: u64::MAX,
+        max_payload_work: u64::MAX,
     }
 }
 

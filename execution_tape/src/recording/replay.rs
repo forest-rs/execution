@@ -766,6 +766,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         (Trap::FuelExceeded, Trap::FuelExceeded)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
+        | (Trap::PayloadSizeOverflow, Trap::PayloadSizeOverflow)
         | (Trap::InvalidPc, Trap::InvalidPc)
         | (Trap::RegOutOfBounds, Trap::RegOutOfBounds)
         | (Trap::ConstOutOfBounds, Trap::ConstOutOfBounds)
@@ -791,6 +792,18 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 actual: right_actual,
             },
         ) => ae == be && aa == right_actual,
+        (
+            Trap::PayloadWorkExceeded {
+                limit: al,
+                used: au,
+                requested: ar,
+            },
+            Trap::PayloadWorkExceeded {
+                limit: bl,
+                used: bu,
+                requested: br,
+            },
+        ) => al == bl && au == bu && ar == br,
         (Trap::AggError(a), Trap::AggError(b)) => a == b,
         (
             Trap::CallableSignatureMismatch {
@@ -946,6 +959,62 @@ mod tests {
             panic!("changed evidence must diverge during guest execution");
         };
         reason
+    }
+
+    #[test]
+    fn changed_payload_budget_diagnostic_fields_are_rejected() {
+        for field in 0..3 {
+            let mut builder = ProgramBuilder::new();
+            let mut body = Asm::new();
+            body.set_register_types(vec![ValueType::Unit, ValueType::Bytes]);
+            body.ret(0, &[1]);
+            builder
+                .push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![ValueType::Bytes],
+                        ret_types: vec![ValueType::Bytes],
+                    },
+                )
+                .unwrap();
+            let program = Arc::new(builder.build_verified().unwrap());
+            let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+            Vm::new(
+                Echo,
+                Limits {
+                    max_payload_work: 3,
+                    ..Limits::default()
+                },
+            )
+            .run(
+                &program,
+                FuncId(0),
+                &[Value::Bytes(vec![1; 4])],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
+            .unwrap_err();
+            let mut record = recorder.finish();
+            assert!(matches!(record.replay(), Ok(ReplayOutcome::Trapped(_))));
+            let Some(End::Trapped(TrapInfo {
+                trap:
+                    Trap::PayloadWorkExceeded {
+                        limit,
+                        used,
+                        requested,
+                    },
+                ..
+            })) = &mut record.end
+            else {
+                panic!("payload trap")
+            };
+            match field {
+                0 => *limit += 1,
+                1 => *used += 1,
+                _ => *requested += 1,
+            }
+            assert_eq!(reason(&record), Divergence::Outcome);
+        }
     }
 
     #[test]
