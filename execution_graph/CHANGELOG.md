@@ -17,6 +17,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Select tape invocations with `TapeExecutor::with_observer` and `TapeObserver`, correlated by
+  `TapeInvocation` and `NodeAccess::node`/`attempt`. Observers compose with strict dependency
+  checking and retain their selected trace sinks after adapter completion. Recording an
+  invocation does not imply graph publication or replay of native nodes. The default observer
+  skips all invocations and allocates no capture storage. ([#176][] by [@waywardmonkeys][])
+
 - Add `TapeExecutor::host` and `host_mut` for host-state access between runs. Report affected
   graph keys through invalidation after mutation. ([#175][] by [@waywardmonkeys][])
 
@@ -152,3 +158,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#172]: https://github.com/forest-rs/execution/pull/172
 
 [#175]: https://github.com/forest-rs/execution/pull/175
+
+[#176]: https://github.com/forest-rs/execution/pull/176
