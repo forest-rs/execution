@@ -14,12 +14,14 @@ env:
   RUST_MIN_VER_PKGS: >-
     -p execution_tape
     -p execution_graph
+    -p execution_tape_footfall
+    -p execution_tape_tracy
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
     --exclude execution_graph_examples
     --exclude execution_graph_wind_tunnel
     --exclude execution_tape_codegen
-    --exclude execution_tape_profiling
+    --exclude execution_tape_tracy
     --exclude execution_tape_observatory
     --exclude execution_tape_wind_tunnel
   # List of packages that don't support wasip1
@@ -27,7 +29,7 @@ env:
     --exclude execution_graph_examples
     --exclude execution_graph_wind_tunnel
     --exclude execution_tape_codegen
-    --exclude execution_tape_profiling
+    --exclude execution_tape_tracy
     --exclude execution_tape_observatory
     --exclude execution_tape_wind_tunnel
   # List of packages that don't support wasm32
@@ -35,7 +37,7 @@ env:
     --exclude execution_graph_examples
     --exclude execution_graph_wind_tunnel
     --exclude execution_tape_codegen
-    --exclude execution_tape_profiling
+    --exclude execution_tape_tracy
     --exclude execution_tape_observatory
     --exclude execution_tape_wind_tunnel
   # List of features that depend on the standard library and will be excluded from no_std checks.
@@ -318,6 +320,30 @@ jobs:
         run: cargo doc --workspace --locked --all-features --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: '--cfg docsrs -D warnings'
+
+  package:
+    name: cargo package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE_VER }}
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'merge_group' }}
+
+      # Stage all publishable adapters against the same new tape API.
+      # Isolate the temporary registry by revision: unpublished versions can change between PRs.
+      - name: verify publishable package archives
+        run: >-
+          cargo package -p execution_tape -p execution_graph
+          -p execution_tape_footfall -p execution_tape_tracy --all-features --locked
+          --target-dir target/package-check-${{ github.sha }}
 
   cargo-rdme:
     name: cargo rdme

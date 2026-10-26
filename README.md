@@ -11,12 +11,12 @@ Crates:
 - `execution_graph_examples/`: native and tape examples, including a procedural surface with
   retained geometry, edit histories and source-linked VM recordings.
 - `execution_tape_conformance/`: conformance/regression tests for the tape format, verifier, and VM.
-- `execution_tape_profiling/`: optional profiling adapters; kept separate from the core crate.
+- `execution_tape_tracy/`: publishable Tracy adapter, kept separate from the core crate.
 - `execution_tape_observatory/`: optional terminal exploration of recordings, graph values,
   source instructions and checked replay (`std`, Ratatui).
 - `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks and
   runnable inspection/comparison tools.
-- `execution_tape_footfall/`: `no_std + alloc` Footfall adapter for semantic VM observations.
+- `execution_tape_footfall/`: publishable `no_std + alloc` Footfall adapter for semantic VM observations.
 
 Docs:
 - `docs/overview.md`: design notes for the tape VM and host boundary.
@@ -25,6 +25,22 @@ Docs:
 - `execution_graph/README.md`: graph model, dependency keys, and demo.
 
 The workspace MSRV is Rust 1.88.
+
+## Versions and compatibility
+
+The workspace prepares the core Rust API release `0.1.0`. The graph's optional `tape`
+feature requires the `execution_tape` 0.1 API; its default build cannot use the old published
+0.0.1 API. Building the native graph with default features disabled omits the tape dependency.
+`execution_tape`, `execution_graph`, `execution_tape_footfall` and `execution_tape_tracy` are
+publishable. Observatory, examples and development tools remain `publish = false`.
+Verify all four archives together before release; publish tape first so the graph and adapters'
+registry dependencies can resolve. Footfall and Tracy stay separate so applications select one
+backend without depending on the other.
+
+Rust package versions and the tape wire version are independent. The current wire version
+is 0.5, and decoding requires an exact wire-version match. Regenerate compiled tapes and
+their matching source metadata when upgrading from an older format. Recordings currently
+own in-memory evidence; they do not define a portable, durable archive format.
 
 Tickets:
 - Tickets live in `.tickets/` at the repo root.
@@ -36,11 +52,14 @@ cargo fmt --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo test --doc --workspace --all-features
-cargo package -p execution_tape
-cargo package -p execution_graph
+cargo package -p execution_tape -p execution_graph -p execution_tape_footfall -p execution_tape_tracy \
+  --all-features --locked --target-dir "target/package-check-$(git rev-parse HEAD)"
 cargo bench -p execution_tape_wind_tunnel
 cargo bench -p execution_graph_wind_tunnel
 ```
+
+The package check uses a revision-specific staging directory so Cargo cannot reuse another
+unpublished build of the same crate version from its temporary-registry cache.
 
 Measure optional instruction inspection separately from normal verification and execution:
 

@@ -1,10 +1,10 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Simple Tracy-backed example for `execution_tape_profiling`.
+//! Simple Tracy-backed example for `execution_tape_tracy`.
 //!
 //! Run with:
-//! `cargo run -p execution_tape_profiling --example tracy_simple`
+//! `cargo run -p execution_tape_wind_tunnel --bin tracy_capture`
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
@@ -14,7 +14,7 @@ use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
 
-use execution_tape_profiling::{ProfilingTraceSink, ProgramSymbolResolver};
+use execution_tape_tracy::{ProfilingTraceSink, ProgramSymbolResolver};
 
 struct EchoHost {
     expected_sig: SigHash,

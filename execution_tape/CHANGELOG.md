@@ -212,6 +212,14 @@ This release has an [MSRV][] of 1.88.
   byte_column }` coordinates. `context()` remains structured; terminal `context_lines()` is now
   private to Observatory. Existing source sidecar encoding and tape wire bytes are unchanged. ([#200][] by [@waywardmonkeys][])
 
+- Prepare Rust package version 0.1.0 and matching internal dependency requirements.
+  The current tape wire version remains 0.5; the package-version update does not change
+  encoding or require another tape regeneration. Changes since published 0.0.1 are listed here. ([#199][] by [@waywardmonkeys][])
+
+- Prepare the Footfall and Tracy adapters for independent publication alongside the core.
+  Rename the unpublished `execution_tape_profiling` crate to `execution_tape_tracy`; update
+  dependency/import paths accordingly. Observatory and development tools remain unpublished. ([#199][] by [@waywardmonkeys][])
+
 - Remove the zero-filled runtime Unit/effect register bank and prepared Unit payload operations.
   Verification, boundary kind checks, source PCs/fuel and observations are preserved. Unit block
   transfers require no copy scratch. `FunctionStats::register_bytes` now excludes this removed
@@ -506,3 +514,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#198]: https://github.com/forest-rs/execution/pull/198
 
 [#200]: https://github.com/forest-rs/execution/pull/200
+
+[#199]: https://github.com/forest-rs/execution/pull/199

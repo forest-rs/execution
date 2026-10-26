@@ -4,6 +4,10 @@
 The adapter requires only `no_std + alloc`; applications choose their capture/export backend.
 The workspace uses published Footfall 0.2 with default features disabled.
 
+The adapter's first release is being prepared as `execution_tape_footfall` 0.1.0 alongside
+`execution_tape` 0.1.0. Its MSRV is Rust 1.88. It requires only Footfall's `alloc` support;
+applications enable Footfall's runtime/export features when selecting those backends.
+
 Install the backend, register an application context, then create
 `FootfallSink::new(context.handle())`. Pass `sink.mask()` to `Vm::run` for run, call and host
 scopes when Footfall's current level captures scopes. The recommendation is `TraceMask::NONE`

@@ -1,19 +1,23 @@
 [package]
-name = "execution_tape_profiling"
-publish = false
+name = "execution_tape_tracy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Profiling adapters for execution_tape (currently Tracy)."
+description = "Tracy profiling scopes for Execution Tape."
 readme = "README.md"
 keywords = ["profiling", "tracing", "vm"]
 categories = ["development-tools::profiling"]
 
 [dependencies]
 execution_tape = { workspace = true }
-tracy-client = "0.19"
+tracy-client.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "x86_64-unknown-linux-gnu"
+targets = []

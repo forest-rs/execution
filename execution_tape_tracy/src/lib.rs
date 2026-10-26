@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Profiling adapters for `execution_tape` (currently Tracy).
+//! Tracy profiling scopes for Execution Tape.
 //!
 //! This crate is `std`-only and keeps `execution_tape` itself free of profiling dependencies.
 //! It listens for scope enter/exit callbacks and emits matching profiling scopes.
@@ -12,7 +12,7 @@
 //! ## Example
 //! ```ignore
 //! use execution_tape::trace::TraceSink;
-//! use execution_tape_profiling::ProfilingTraceSink;
+//! use execution_tape_tracy::ProfilingTraceSink;
 //!
 //! let mut sink = ProfilingTraceSink::new();
 //! let mask = sink.mask();
