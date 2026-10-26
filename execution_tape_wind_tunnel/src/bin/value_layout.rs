@@ -4,8 +4,11 @@
 //! Report public value layout on this target; these sizes are not a stable ABI.
 
 use execution_tape::{
+    codec::DecodedOperand,
+    disasm::ConstValue,
     host::ValueRef,
     program::{Const, ConstEntry},
+    recording::RecordedValue,
     value::{AggHandle, Closure, Decimal, FuncId, Obj, Value},
 };
 
@@ -74,6 +77,9 @@ fn main() {
     row::<ValueRef<'_>>("ValueRef");
     row::<Const>("Const");
     row::<ConstEntry>("ConstEntry");
+    row::<RecordedValue>("RecordedValue");
+    row::<ConstValue<'_>>("ConstValue");
+    row::<DecodedOperand>("DecodedOperand");
     assert_eq!(size_of::<Value>(), size_of::<models::Owned<Decimal>>());
     assert_eq!(
         size_of::<ValueRef<'_>>(),

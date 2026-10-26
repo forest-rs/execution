@@ -8,12 +8,27 @@ use std::{hint::black_box, time::Duration};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
-    host::{Host, HostContext, HostError, SigHash, ValueRef},
-    program::ValueType,
+    host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
+    program::{Const, ValueType},
     trace::TraceMask,
     value::{Decimal, Value},
     vm::{ExecutionContext, Limits, Vm},
 };
+
+struct EchoHost;
+impl Host for EchoHost {
+    fn call(
+        &mut self,
+        _: &str,
+        _: SigHash,
+        args: &[ValueRef<'_>],
+        rets: &mut [Value],
+        _: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        rets[0] = args[0].to_value();
+        Ok(0)
+    }
+}
 
 struct NoHost;
 impl Host for NoHost {
@@ -96,13 +111,15 @@ fn numeric(c: &mut Criterion) {
             .unwrap();
             match &outputs[0] {
                 Value::I64(value) => assert_eq!(*value, 12345 + count),
-                Value::Decimal(value) => assert_eq!(
-                    *value,
-                    Decimal {
-                        mantissa: 12345 + count,
-                        scale: 2
-                    }
-                ),
+                Value::Decimal(value) => {
+                    assert_eq!(
+                        *value,
+                        Decimal {
+                            mantissa: 12345 + count,
+                            scale: 2
+                        }
+                    )
+                }
                 Value::F64(value) => {
                     assert!((*value - (123.45 + count as f64 * 0.01)).abs() < 1e-9)
                 }
@@ -129,12 +146,109 @@ fn numeric(c: &mut Criterion) {
     group.finish();
 }
 
+// Same values and instruction counts across inline, pool, and host paths. The
+// timed run reuses context/output storage; construction and result checks are outside timing.
+fn boundaries(c: &mut Criterion) {
+    let mut group = c.benchmark_group("numeric_boundaries");
+    for kind in [ValueType::I64, ValueType::Decimal] {
+        for path in ["inline", "pool", "host"] {
+            let decimal = Decimal {
+                mantissa: 12345,
+                scale: 2,
+            };
+            let expected = if kind == ValueType::I64 {
+                Value::I64(12345)
+            } else {
+                Value::Decimal(decimal)
+            };
+            let mut builder = ProgramBuilder::new();
+            let literal = builder.constant(if kind == ValueType::I64 {
+                Const::I64(12345)
+            } else {
+                Const::Decimal {
+                    mantissa: decimal.mantissa,
+                    scale: decimal.scale,
+                }
+            });
+            let host = builder.host_sig_for(
+                "echo",
+                HostSig {
+                    args: vec![kind],
+                    rets: vec![kind],
+                },
+            );
+            let mut body = Asm::new();
+            body.set_register_types(vec![ValueType::Unit, kind]);
+            body.const_pool(1, literal);
+            for _ in 0..128 {
+                match path {
+                    "inline" if kind == ValueType::I64 => {
+                        body.const_i64(1, 12345);
+                    }
+                    "inline" => {
+                        body.const_decimal_value(1, decimal);
+                    }
+                    "pool" => {
+                        body.const_pool(1, literal);
+                    }
+                    _ => {
+                        body.host_call_sig_id(0, host, 0, &[1], &[1]);
+                    }
+                }
+            }
+            body.ret(0, &[1]);
+            let entry = builder
+                .push_function_checked(
+                    body,
+                    FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![kind],
+                    },
+                )
+                .unwrap();
+            let program = builder.build_verified().unwrap();
+            let mut vm = Vm::new(EchoHost, Limits::default());
+            let mut context = ExecutionContext::new();
+            let mut outputs = Vec::new();
+            vm.run_with_ctx(
+                &mut context,
+                &program,
+                entry,
+                &[],
+                &mut outputs,
+                TraceMask::NONE,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(outputs, [expected]);
+            group.bench_function(BenchmarkId::new(format!("{kind:?}"), path), |b| {
+                b.iter(|| {
+                    vm.run_with_ctx(
+                        &mut context,
+                        black_box(&program),
+                        entry,
+                        &[],
+                        &mut outputs,
+                        TraceMask::NONE,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    black_box(&outputs);
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(300))
         .measurement_time(Duration::from_millis(1200))
         .sample_size(40);
-    targets = numeric
+    targets = numeric, boundaries
 }
 criterion_main!(benches);
