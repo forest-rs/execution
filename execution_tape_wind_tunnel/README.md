@@ -75,3 +75,22 @@ borrowed host views. Those models implement no arithmetic and establish no
 throughput, allocation, stable ABI, or cross-target guarantee. Run timing probes
 sequentially, retaining the same target/toolchain and workload when comparing a
 candidate; use `--baseline before` for the later run.
+
+### Register authoring helper probe
+
+A short macOS arm64/Rust 1.99 release probe (2026-10-26) compared core main
+`609483a` plus these fixtures with the same streaming fixture using declared
+function bodies and assembler-owned temporary allocation:
+
+| Steps | Explicit ledger, build | Allocated body, build | Explicit ledger, build + verify | Allocated body, build + verify |
+| --- | ---: | ---: | ---: | ---: |
+| 256 | 6.79 us | 7.27 us | 55.84 us | 55.88 us |
+| 1,024 | 21.70 us | 21.80 us | 223.29 us | 223.63 us |
+
+These are short construction probes including destruction, not application
+execution results. The 256-step construction case remains slower. Smaller
+cases and unchanged lowered controls varied across runs, so these observations
+do not establish a general speedup or cost bound. An initial out-of-line
+allocator was about 12% slower at 1,024 steps; making the small public allocator
+inline reduced that repeat to the values above. Keep the primitive, host-heavy,
+and decimal probes separate when changing runtime representations.

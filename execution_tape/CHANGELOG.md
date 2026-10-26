@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Seed function bodies from their declared argument contracts with `ProgramBuilder::function_asm`
+  and append typed temporaries with `Asm::alloc_register`. Emitters can remove their external
+  register-kind vector/allocation callback; pre-numbered frontends can transfer their existing
+  ledger and append backend temporaries. Declarations remain separate from initialization. ([#190][] by [@waywardmonkeys][])
+
 - `ExecutionContext::clear` drops transient run payloads and proof state between invocations,
   retaining reusable capacities and leaving returned values and VM aggregates valid. ([#174][] by [@waywardmonkeys][])
 
@@ -448,3 +453,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#179]: https://github.com/forest-rs/execution/pull/179
 
 [#185]: https://github.com/forest-rs/execution/pull/185
+
+[#190]: https://github.com/forest-rs/execution/pull/190

@@ -377,8 +377,10 @@ impl From<&Self> for FunctionAbi {
 
 /// Convenience builder for constructing small [`Program`]s.
 ///
-/// This is primarily intended for tests and prototypes. For production usage you may want a more
-/// structured frontend that emits bytecode with spans and stable ids.
+/// Owns program tables and declared guest signatures. Frontends supply their language semantics,
+/// source spans, and lowering policy. Use [`Self::function_asm`] to seed function bodies from their
+/// declarations and [`Asm::alloc_register`] for typed temporaries; pre-numbered frontends can
+/// transfer a complete ledger through [`Asm::set_register_types`].
 ///
 /// For execution, see [`Vm::run`].
 ///
@@ -731,6 +733,31 @@ impl ProgramBuilder {
         Ok(id)
     }
 
+    /// Creates an empty body for a declared function, with r0 and its arguments declared.
+    ///
+    /// The returned assembler owns its register ledger and does not borrow this builder. Keep
+    /// interning constants, contracts, and imports while emitting its body. Allocate temporaries
+    /// with [`Asm::alloc_register`], then pass the body to [`Self::define_function`]. Rich argument
+    /// contracts supply their storage kinds here; verification still enforces their full contracts.
+    /// A function's declaration is unchanged, and calling this again creates another empty body.
+    pub fn function_asm(&self, func: FuncId) -> Result<Asm, BuildError> {
+        let function = self
+            .functions
+            .get(func.0 as usize)
+            .ok_or(BuildError::BadFuncId { func: func.0 })?;
+        let mut types = Vec::with_capacity(function.args.len() + 1);
+        types.push(ValueType::Unit);
+        types.extend(function.args.iter().map(|id| {
+            self.contracts
+                .table()
+                .kind(*id)
+                .expect("declared argument contracts remain in the builder")
+        }));
+        let mut body = Asm::new();
+        body.set_register_types(types);
+        Ok(body)
+    }
+
     /// Defines the body of a previously declared function.
     pub fn define_function(&mut self, func: FuncId, a: Asm) -> Result<(), BuildError> {
         let parts = a.finish_parts()?;
@@ -990,6 +1017,32 @@ impl Asm {
     pub fn set_register_types(&mut self, types: Vec<ValueType>) -> &mut Self {
         self.register_types = types;
         self
+    }
+
+    /// Appends one register declaration and returns its source register ID.
+    ///
+    /// This declares storage without initializing it. Instruction emission does not infer kinds.
+    /// Start with [`ProgramBuilder::function_asm`] to seed r0 and the arguments from a declaration.
+    /// Frontends with pre-numbered registers can transfer their ledger with
+    /// [`Self::set_register_types`] and allocate additional temporaries afterward. A raw
+    /// [`Self::new`] lazily reserves r0 as `Unit` on the first allocation, returning r1 for the
+    /// first value register. When arguments exist, allocate their kinds in signature order before
+    /// temporaries, or transfer the known r0/argument prefix with [`Self::set_register_types`].
+    /// This also supports emitters that discover return types during emission and supply the
+    /// completed signature to [`ProgramBuilder::push_function_checked`] afterward.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the next register ID cannot be represented by `u32`.
+    #[inline]
+    pub fn alloc_register(&mut self, kind: ValueType) -> u32 {
+        if self.register_types.is_empty() {
+            self.register_types.push(ValueType::Unit);
+        }
+        let register = u32::try_from(self.register_types.len())
+            .expect("register count exceeds the u32 address space");
+        self.register_types.push(kind);
+        register
     }
 
     /// Allocates a new label.
@@ -2283,6 +2336,119 @@ fn patch_uleb128_u32(bytes: &mut [u8], at: usize, value: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn declared_body_owns_argument_kinds_and_allows_further_builder_work() {
+        let mut builder = ProgramBuilder::new();
+        let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let tuple = builder.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+        let function = builder
+            .declare_function(FunctionAbi {
+                args: vec![tuple.into()],
+                rets: vec![integer.into()],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(function).unwrap();
+        assert_eq!(body.register_types, [ValueType::Unit, ValueType::Agg]);
+        let result = body.alloc_register(ValueType::I64);
+        assert_eq!(result, 2);
+        let text = body.alloc_register(ValueType::Str);
+        let literal = builder.const_str("still mutable");
+        body.const_pool(text, literal)
+            .tuple_get(result, 1, 0)
+            .ret(0, &[result]);
+        builder.define_function(function, body).unwrap();
+        builder.build_verified().unwrap();
+    }
+
+    #[test]
+    fn allocated_temporary_remains_uninitialized_until_written() {
+        let mut builder = ProgramBuilder::new();
+        let function = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(function).unwrap();
+        let result = body.alloc_register(ValueType::I64);
+        body.ret(0, &[result]);
+        builder.define_function(function, body).unwrap();
+        assert!(matches!(
+            builder.build_verified(),
+            Err(BuildError::Verify(VerifyError::UninitializedRead {
+                reg: 1,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn declared_body_rejects_missing_function_without_mutation() {
+        let builder = ProgramBuilder::new();
+        assert!(matches!(
+            builder.function_asm(FuncId(7)),
+            Err(BuildError::BadFuncId { func: 7 })
+        ));
+        assert!(builder.functions.is_empty());
+    }
+
+    #[test]
+    fn pre_numbered_ledger_can_append_typed_temporaries() {
+        let mut body = Asm::new();
+        body.set_register_types(vec![ValueType::Unit, ValueType::Bool, ValueType::I64]);
+        assert_eq!(body.alloc_register(ValueType::Str), 3);
+        assert_eq!(
+            body.finish_parts().unwrap().register_types,
+            [
+                ValueType::Unit,
+                ValueType::Bool,
+                ValueType::I64,
+                ValueType::Str
+            ]
+        );
+    }
+
+    #[test]
+    fn streaming_allocation_reserves_effect_without_a_signature() {
+        let mut body = Asm::new();
+        let result = body.alloc_register(ValueType::I64);
+        assert_eq!(result, 1);
+        body.const_i64(result, 42).ret(0, &[result]);
+        let mut builder = ProgramBuilder::new();
+        builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        builder.build_verified().unwrap();
+    }
+
+    #[test]
+    fn streaming_allocation_can_declare_arguments_before_temporaries() {
+        let mut body = Asm::new();
+        let argument = body.alloc_register(ValueType::I64);
+        let one = body.alloc_register(ValueType::I64);
+        let result = body.alloc_register(ValueType::I64);
+        body.const_i64(one, 1)
+            .i64_add(result, argument, one)
+            .ret(0, &[result]);
+        let mut builder = ProgramBuilder::new();
+        builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![ValueType::I64],
+                },
+            )
+            .unwrap();
+        builder.build_verified().unwrap();
+    }
+
     #[test]
     fn duplicate_declared_block_placement_preserves_name_and_bytes() {
         let mut asm = Asm::new();

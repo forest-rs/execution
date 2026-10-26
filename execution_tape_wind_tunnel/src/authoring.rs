@@ -9,23 +9,23 @@ use execution_tape::program::{Program, SpanId, ValueType};
 
 pub(super) fn streaming(steps: u32) -> Program {
     let mut builder = ProgramBuilder::new();
-    let mut body = Asm::new();
-    let mut kinds = vec![ValueType::Unit, ValueType::I64];
-    let mut alloc = |kind| {
-        let reg = u32::try_from(kinds.len()).unwrap();
-        kinds.push(kind);
-        reg
-    };
-    let one = alloc(ValueType::I64);
+    let function = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let mut body = builder.function_asm(function).unwrap();
+    let one = body.alloc_register(ValueType::I64);
     body.const_i64(one, 1);
     let mut value = 1;
     for step in 0..steps {
         body.span(SpanId::try_from(u64::from(step) + 1).unwrap());
-        let next = alloc(ValueType::I64);
+        let next = body.alloc_register(ValueType::I64);
         body.i64_add(next, value, one);
         if step % 4 == 0 {
-            let condition = alloc(ValueType::Bool);
-            let joined = alloc(ValueType::I64);
+            let condition = body.alloc_register(ValueType::Bool);
+            let joined = body.alloc_register(ValueType::I64);
             body.i64_lt(condition, value, next);
             let join = body.block(&[joined]);
             body.br(condition, join.with_args(&[next]), join.with_args(&[value]));
@@ -36,16 +36,7 @@ pub(super) fn streaming(steps: u32) -> Program {
         }
     }
     body.ret(0, &[value]);
-    body.set_register_types(kinds);
-    builder
-        .push_function_checked(
-            body,
-            FunctionSig {
-                arg_types: vec![ValueType::I64],
-                ret_types: vec![ValueType::I64],
-            },
-        )
-        .unwrap();
+    builder.define_function(function, body).unwrap();
     builder.build()
 }
 
