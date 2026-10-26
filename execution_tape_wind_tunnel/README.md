@@ -47,3 +47,31 @@ Correctness tests separately exercise concatenation growth, exact/one-short
 budgets, comparisons, slices, conversions, aggregate/root copies, borrowed
 projections, host admission, reset/rollback, and checked replay of budget traps.
 The work budget is not an allocation or resident-memory budget.
+
+## Authoring and numeric baselines
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench authoring -- --save-baseline before
+cargo bench -p execution_tape_wind_tunnel --bench numeric_baselines -- --save-baseline before
+cargo run -p execution_tape_wind_tunnel --bin value_layout
+```
+
+The authoring workloads cover two frontend styles equally: an emitter allocating
+typed temporaries and joins as it goes, and a module of pre-numbered closure
+bodies/callers with contracts, names, and spans. Construction-only and
+construction-plus-verification both include destruction. They do not time guest
+execution. Use the separate `verifier` benchmark for isolated preparation costs.
+Round-trip execution tests check the generated programs and callable metadata.
+
+The numeric probe times reused-context addition on bounded `I64`, `F64`, and
+fixed-scale decimal inputs. Preparation, initial capacity growth, and output
+checking are outside timing. Integer/decimal outputs are checked exactly; float
+outputs use a tolerance. These are primitive instruction probes, not comparisons
+of interchangeable numeric semantics or measurements of application workloads.
+
+The layout tool reports sizes and alignments on its current target. Its wider
+decimal models show the effect of native `i128` alignment, two-word storage, and
+borrowed host views. Those models implement no arithmetic and establish no
+throughput, allocation, stable ABI, or cross-target guarantee. Run timing probes
+sequentially, retaining the same target/toolchain and workload when comparing a
+candidate; use `--baseline before` for the later run.
