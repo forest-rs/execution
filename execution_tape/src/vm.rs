@@ -376,7 +376,7 @@ pub struct ExecutionContext {
     contract_scratch: ContractScratch,
 
     // Split register file by class (SoA).
-    /// Unit registers (`()`), stored as a compact `u32` to allow "uninit" tracking.
+    /// Unit registers (`()`), currently stored as zero-valued `u32` bank elements.
     units: Vec<u32>,
     /// Boolean registers.
     bools: Vec<bool>,

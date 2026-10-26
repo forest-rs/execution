@@ -91,8 +91,9 @@ codec `DecodedOperand` grows from 24 to 32 bytes; this is a transient decoding
 representation, separate from the interpreter's prepared instruction stream.
 
 For the 1,026-instruction addition fixtures, prepared used/capacity bytes remain
-73,888/73,912 for all three numeric kinds. Scalar frame elements stay 16 bytes;
-the two decimal register elements grow from 32 to 34 bytes. A 1,024-value scalar
+73,888/73,912 for all three numeric kinds. Scalar frame elements stay 20 bytes;
+the decimal fixture grows from 36 to 38 bytes. These totals include the four-byte
+effect-register bank entry, which earlier inspection counts omitted. A 1,024-value scalar
 or decimal recording retains 24,576 used value bytes in either revision, excluding
 the costs listed above. The all-decimal 1,024-constant fixture additionally owns
 17,408 blob bytes (also its measured capacity); constant entries remain 16,384
