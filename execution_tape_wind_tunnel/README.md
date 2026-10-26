@@ -69,6 +69,12 @@ checking are outside timing. Integer/decimal outputs are checked exactly; float
 outputs use a tolerance. These are primitive instruction probes, not comparisons
 of interchangeable numeric semantics or measurements of application workloads.
 
+The numeric boundary group compares 128 inline loads, pooled loads, or echo-host
+calls for `I64` and Decimal, with the same reuse and output-checking rules.
+`numeric_storage` prints the wire version, actual prepared-buffer/frame sizes,
+constant entry/blob lengths and capacities, and used recording value bytes.
+Its recording figure excludes capacities, metadata, payloads, and the shared program.
+
 The layout tool reports sizes and alignments on its current target. Its wider
 decimal models show the effect of native `i128` alignment, two-word storage, and
 borrowed host views. Those models implement no arithmetic and establish no
