@@ -122,6 +122,7 @@ fn operand_kind_rust(operand: &str) -> Result<&'static str> {
         "imm_u8" => "OperandKind::ImmU8",
         "imm_u32" => "OperandKind::ImmU32",
         "imm_i64" => "OperandKind::ImmI64",
+        "decimal" => "OperandKind::Decimal",
         "imm_u64" => "OperandKind::ImmU64",
 
         "const_id" => "OperandKind::ConstId",
@@ -162,6 +163,7 @@ fn operand_encoding_rust(enc: &str) -> Result<&'static str> {
         "u8_raw" => "OperandEncoding::U8Raw",
         "u32_uleb" => "OperandEncoding::U32Uleb",
         "i64_sleb" => "OperandEncoding::I64Sleb",
+        "decimal_sleb" => "OperandEncoding::DecimalSleb",
         "u64_uleb" => "OperandEncoding::U64Uleb",
         "u64_le" => "OperandEncoding::U64Le",
 
@@ -221,6 +223,8 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    ImmU32,\n");
     out.push_str("    /// An immediate `i64`.\n");
     out.push_str("    ImmI64,\n");
+    out.push_str("    /// A complete decimal literal.\n");
+    out.push_str("    Decimal,\n");
     out.push_str("    /// An immediate `u64`.\n");
     out.push_str("    ImmU64,\n");
     out.push_str("    /// A constant pool index.\n");
@@ -285,6 +289,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    U8Raw,\n");
     out.push_str("    U32Uleb,\n");
     out.push_str("    I64Sleb,\n");
+    out.push_str("    DecimalSleb,\n");
     out.push_str("    U64Uleb,\n");
     out.push_str("    U64Le,\n");
     out.push_str("}\n\n");
@@ -616,6 +621,18 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                         "            let {field} = crate::codec_primitives::read_bool_u8(r)?;\n"
                     ));
                 }
+                "decimal" => {
+                    if operand.encoding.as_str() != "decimal_sleb" {
+                        bail!(
+                            "unsupported decimal encoding '{}' for opcode {}",
+                            operand.encoding,
+                            op.name
+                        );
+                    }
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::read_decimal(r)?;\n"
+                    ));
+                }
                 "imm_i64" => {
                     if operand.encoding.as_str() != "i64_sleb" {
                         bail!(
@@ -877,6 +894,18 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                     }
                     out.push_str(&format!(
                         "            crate::codec_primitives::write_bool_u8(out, *{field});\n"
+                    ));
+                }
+                "decimal" => {
+                    if operand.encoding.as_str() != "decimal_sleb" {
+                        bail!(
+                            "unsupported decimal encoding '{}' for opcode {}",
+                            operand.encoding,
+                            op.name
+                        );
+                    }
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::write_decimal(out, *{field});\n"
                     ));
                 }
                 "imm_i64" => {

@@ -207,14 +207,8 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
             Value::F64(-0.0),
         ],
         [
-            Value::Decimal(Decimal {
-                mantissa: 123,
-                scale: 2,
-            }),
-            Value::Decimal(Decimal {
-                mantissa: -123,
-                scale: 3,
-            }),
+            Value::Decimal(Decimal::new(123, 2)),
+            Value::Decimal(Decimal::new(-123, 3)),
         ],
         [Value::Bytes(vec![0, 255]), Value::Bytes(vec![1, 2, 3])],
         [Value::Str("héllo".into()), Value::Str("世界".into())],

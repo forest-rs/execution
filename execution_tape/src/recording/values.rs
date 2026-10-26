@@ -211,7 +211,7 @@ impl Builder {
             ValueRef::I64(value) => RecordedValue::I64(value),
             ValueRef::U64(value) => RecordedValue::U64(value),
             ValueRef::F64(value) => RecordedValue::F64(value.to_bits()),
-            ValueRef::Decimal(value) => RecordedValue::Decimal(value),
+            ValueRef::Decimal(value) => RecordedValue::Decimal(*value),
             ValueRef::Obj(value) => RecordedValue::Obj(value),
             ValueRef::Func(value) => RecordedValue::Func(value),
             ValueRef::Agg(handle) => RecordedValue::Agg(self.handle(handle, heap)?),

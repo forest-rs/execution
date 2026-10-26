@@ -82,7 +82,51 @@ throughput, allocation, stable ABI, or cross-target guarantee. Run timing probes
 sequentially, retaining the same target/toolchain and workload when comparing a
 candidate; use `--baseline before` for the later run.
 
-### Register authoring helper probe
+#### Wider decimal representation
+
+On macOS arm64, Rust 1.99 release builds, compared with the pre-wide core `b9a6d45`, byte-aligned signed 128-bit Decimal uses
+17 bytes rather than 16. `Value` stays 32 bytes, `ValueRef` 24, `Const` 32,
+`ConstEntry` 16, `RecordedValue` 24, and `disasm::ConstValue` 24. Public operand
+codec `DecodedOperand` grows from 24 to 32 bytes; this is a transient decoding
+representation, separate from the interpreter's prepared instruction stream.
+
+For the 1,026-instruction addition fixtures, prepared used/capacity bytes remain
+73,888/73,912 for all three numeric kinds. Scalar frame elements stay 16 bytes;
+the two decimal register elements grow from 32 to 34 bytes. A 1,024-value scalar
+or decimal recording retains 24,576 used value bytes in either revision, excluding
+the costs listed above. The all-decimal 1,024-constant fixture additionally owns
+17,408 blob bytes (also its measured capacity); constant entries remain 16,384
+bytes. The scalar constant fixture acquires no blob storage. These are buffer
+measurements, not allocator or RSS totals, and layouts may differ on other targets.
+
+Sequential Criterion runs (same workloads, bounded values, reused context/output
+buffers) gave these middle estimates. Preparation and destruction are outside timing:
+
+| Work | Parent | Wider decimal |
+| --- | ---: | ---: |
+| 1,024 I64 additions | 4.907 µs | 4.916 µs |
+| 1,024 F64 additions | 4.950 µs | 4.948 µs |
+| 1,024 Decimal additions | 5.152 µs | 5.268 µs |
+| 128 Decimal inline loads | 0.669 µs | 0.686 µs |
+| 128 Decimal pooled loads | 0.688 µs | 0.690 µs |
+| 128 Decimal echo-host calls | 3.775 µs | 3.929 µs |
+
+These small probes retain the measured arithmetic/host costs of the wider range;
+they establish neither an application speedup nor a universal overhead bound.
+A version that unpacked each pooled decimal during every execution took about
+0.839 µs for that load fixture. Preparation now resolves those immutable literals
+once into the existing prepared literal instruction; it adds no instruction rows
+or per-run pool traversal. A two-word layout also worked, but used 24 bytes per
+Decimal and enlarged recording rows; the byte-aligned representation avoids both.
+No unsafe code, packed references, or new production dependency is required.
+
+For reproducibility, the parent storage probe and added boundary fixtures were
+copied unchanged apart from decimal constructor syntax. An unused parent-only
+`--cfg execution_decimal_parent_measurement` isolated Cargo's cached artifacts
+in the shared build directory; optimization settings were identical. The storage
+probe prints both wire version and Decimal size to identify the compared core.
+
+## Register authoring helper probe
 
 A short macOS arm64/Rust 1.99 release probe (2026-10-26) compared core main
 `609483a` plus these fixtures with the same streaming fixture using declared

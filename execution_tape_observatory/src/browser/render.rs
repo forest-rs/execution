@@ -28,7 +28,10 @@ pub(super) fn constant(program: &Program, index: usize) -> String {
         Some(ConstEntry::I64(value)) => value.to_string(),
         Some(ConstEntry::U64(value)) => format!("{value}u64"),
         Some(ConstEntry::F64(bits)) => format!("{:?} · bits {bits:016x}", f64::from_bits(*bits)),
-        Some(ConstEntry::Decimal { mantissa, scale }) => format!("{mantissa}e-{scale}"),
+        Some(ConstEntry::Decimal(_)) => match program.const_decimal(id) {
+            Ok(value) => format!("{}e-{}", value.mantissa(), value.scale()),
+            Err(_) => "<invalid decimal>".into(),
+        },
         Some(ConstEntry::Str(_)) => program.const_str(id).map_or_else(
             |_| "invalid text range".into(),
             |value| {

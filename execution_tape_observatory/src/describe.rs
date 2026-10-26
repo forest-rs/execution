@@ -322,7 +322,7 @@ fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
                 format!("{:?}", f64::from_bits(*bits))
             }
         }
-        RecordedValue::Decimal(value) => format!("{}e-{}", value.mantissa, value.scale),
+        RecordedValue::Decimal(value) => format!("{}e-{}", value.mantissa(), value.scale()),
         RecordedValue::Str(value) => format!("\"{}\"", preview(value, limit)),
         RecordedValue::Bytes(value) => format!(
             "{} bytes [{}{}]",
@@ -515,7 +515,9 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
                     ConstValue::F64Bits(bits) => {
                         format!("{:?}f64 [bits {bits:016x}]", f64::from_bits(bits))
                     }
-                    ConstValue::Decimal { mantissa, scale } => format!("{mantissa}e-{scale}"),
+                    ConstValue::Decimal(value) => {
+                        format!("{}e-{}", value.mantissa(), value.scale())
+                    }
                     ConstValue::Str(value) => format!("\"{}\"", preview(value, 32)),
                     ConstValue::Bytes(value) => format!("bytes[{}]", value.len()),
                 }

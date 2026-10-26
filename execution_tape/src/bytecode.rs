@@ -17,7 +17,6 @@ use crate::program::{ElemTypeId, TypeId};
 use crate::register_operands::OperandIter;
 use crate::value::FuncId;
 
-#[cfg(doc)]
 use crate::value::Decimal;
 
 /// A bytecode decoding error.
@@ -121,7 +120,7 @@ pub(crate) enum Instr {
     /// `dst = f64` encoded as raw IEEE bits.
     ConstF64 { dst: u32, bits: u64 },
     /// `dst = Decimal { mantissa, scale }`.
-    ConstDecimal { dst: u32, mantissa: i64, scale: u8 },
+    ConstDecimal { dst: u32, value: Decimal },
     /// `dst = const_pool[idx]`.
     ConstPool { dst: u32, idx: ConstId },
     /// `dst = func#func_id`.
@@ -347,9 +346,9 @@ pub(crate) enum Instr {
     /// `dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).
     F64ToU64 { dst: u32, a: u32 },
 
-    /// `dst = a.mantissa` ([`Decimal`] to `i64`, traps if `scale != 0`).
+    /// `dst = a.mantissa` ([`Decimal`] to `i64`, traps if `scale != 0` or outside `i64`).
     DecToI64 { dst: u32, a: u32 },
-    /// `dst = a.mantissa` ([`Decimal`] to `u64`, traps if `scale != 0` or mantissa < 0).
+    /// `dst = a.mantissa` ([`Decimal`] to `u64`, traps if `scale != 0` or outside `u64`).
     DecToU64 { dst: u32, a: u32 },
     /// `dst = Decimal { mantissa: a * 10^scale, scale }` (traps on overflow).
     I64ToDec { dst: u32, a: u32, scale: u8 },
@@ -520,8 +519,7 @@ mod tests {
                 Opcode::ConstDecimal,
                 Instr::ConstDecimal {
                     dst: 1,
-                    mantissa: 12,
-                    scale: 2,
+                    value: crate::value::Decimal::new(12, 2),
                 },
             ),
             (
@@ -772,8 +770,7 @@ mod tests {
             },
             Instr::ConstDecimal {
                 dst: 1,
-                mantissa: 7,
-                scale: 2,
+                value: crate::value::Decimal::new(7, 2),
             },
             Instr::ConstPool {
                 dst: 1,

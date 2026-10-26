@@ -87,10 +87,7 @@ fn main() {
         let mut builder = ProgramBuilder::new();
         for index in 0..1024 {
             builder.constant(if decimal {
-                Const::Decimal {
-                    mantissa: index,
-                    scale: 2,
-                }
+                Const::Decimal(Decimal::new(i128::from(index), 2))
             } else {
                 Const::I64(index)
             });

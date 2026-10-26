@@ -58,7 +58,7 @@ The VM defines a closed set of value kinds. v1 requires these kinds:
 - `I64`
 - `U64`
 - `F64`
-- `Decimal` (`mantissa: i64`, `scale: u8`)
+- `Decimal` (`mantissa: i128`, `scale: u8`)
 - `Bytes` (alloc-backed)
 - `Str` (alloc-backed, UTF-8)
 - `Obj` (opaque handle)
@@ -71,7 +71,12 @@ union `Value` in order to avoid runtime tag checks in the hot interpreter loop. 
 requires verification, and the producer declares each register's kind and the verifier enforces type correctness.
 
 ### `Decimal`
-- Per-value scale (`u8`) and mantissa (`i64`).
+- Per-value scale (`u8`) and mantissa (`i128`), including the full signed range.
+- Construction preserves scale; equality distinguishes `1.0` and `1.00` (including differently
+  scaled zeros). No implicit normalization, division, or rounding is performed.
+- Decimal literal mantissas use signed LEB128, bounded to 19 bytes. Scale is one raw byte.
+  The in-memory constant pool packs each decimal into 17 bytes in the shared blob arena;
+  `Program::const_decimal` reads it without growing other constant entries.
 - v1 arithmetic requirements:
   - `dec_add`, `dec_sub`, `dec_mul` are defined only when the result scale is well-defined (e.g. add/sub require equal scale; mul defines scale = a.scale + b.scale).
   - Division and rounding are host-provided in v1.
@@ -370,7 +375,7 @@ Stores per-function metadata and references into blob sections:
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
 
-The current draft wire version is 0.4. Older versions are rejected; rebuild serialized programs
+The current draft wire version is 0.5. Older versions are rejected; rebuild serialized programs
 from their producer. Each declaration is authoritative for the register's entire function lifetime.
 Every instruction definition and operand must match, including inactive instructions and unused
 results. A declaration does not initialize a register or supply a projection's aggregate shape proof.
@@ -701,8 +706,8 @@ Projection:
 - `0x71 u64_to_f64 dst, a`
 - `0x72 f64_to_i64 dst, a` (truncates; traps on NaN/inf/out-of-range)
 - `0x73 f64_to_u64 dst, a` (truncates; traps on NaN/inf/out-of-range/negative)
-- `0x74 dec_to_i64 dst, a` (traps if `a.scale != 0`)
-- `0x75 dec_to_u64 dst, a` (traps if `a.scale != 0` or `a.mantissa < 0`)
+- `0x74 dec_to_i64 dst, a` (traps if `a.scale != 0` or mantissa is outside `i64`)
+- `0x75 dec_to_u64 dst, a` (traps if `a.scale != 0` or mantissa is outside `u64`)
 - `0x76 i64_to_dec dst, a, scale_u8` (traps on overflow)
 - `0x77 u64_to_dec dst, a, scale_u8` (traps on overflow)
 - `0x78 bytes_eq dst, a, b`

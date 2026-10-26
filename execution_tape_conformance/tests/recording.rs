@@ -471,10 +471,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
             vec![
                 Value::F64(-0.0),
                 Value::F64(f64::from_bits(0x7ff8_0000_0000_0042)),
-                Value::Decimal(Decimal {
-                    mantissa: 120,
-                    scale: 2,
-                }),
+                Value::Decimal(Decimal::new(i128::MIN, 2)),
                 Value::Bytes(vec![0, 255]),
             ],
         )
@@ -529,10 +526,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
     assert_eq!(nan.to_bits(), 0x7ff8_0000_0000_0042);
     assert_eq!(
         output.aggregates().array_get(inner.env, 2).unwrap(),
-        Value::Decimal(Decimal {
-            mantissa: 120,
-            scale: 2
-        })
+        Value::Decimal(Decimal::new(i128::MIN, 2))
     );
     assert_eq!(
         output.aggregates().array_get(inner.env, 3).unwrap(),
@@ -803,4 +797,45 @@ fn payload_admission_and_root_copy_rejections_preserve_raw_host_outcomes_for_rep
     let record = capture(&mut vm, &p, &[]);
     drop(vm);
     assert!(matches!(record.replay(), Ok(ReplayOutcome::Returned(_))));
+}
+
+#[test]
+fn wide_decimal_host_results_survive_drop_and_checked_replay() {
+    let p = host_program(ValueType::Decimal);
+    for mantissa in [i128::MIN, i128::MAX] {
+        let value = Value::Decimal(Decimal::new(mantissa, 255));
+        let mut vm = Vm::new(TestHost::returning(value.clone()), Limits::default());
+        let record = capture(&mut vm, &p, &[]);
+        drop(vm);
+        assert_eq!(returned(&record).values(), [value]);
+    }
+}
+
+#[test]
+fn wide_decimal_register_arguments_are_borrowed_by_hosts_and_returned_exactly() {
+    let p = program(
+        &[ValueType::Decimal],
+        &[ValueType::Decimal],
+        vec![ValueType::Unit, ValueType::Decimal],
+        |body, builder| {
+            let import = builder.host_sig_for(
+                "observe",
+                HostSig {
+                    args: vec![ValueType::Decimal],
+                    rets: vec![ValueType::Decimal],
+                },
+            );
+            body.host_call_sig_id(0, import, 0, &[1], &[1]).ret(0, &[1]);
+        },
+    );
+    for mantissa in [i128::MIN, i128::MAX] {
+        let value = Value::Decimal(Decimal::new(mantissa, 255));
+        let host = TestHost::returning(Value::Unit);
+        let calls = Arc::clone(&host.calls);
+        let mut vm = Vm::new(host, Limits::default());
+        let record = capture(&mut vm, &p, core::slice::from_ref(&value));
+        drop(vm);
+        assert_eq!(returned(&record).values(), [value]);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
 }

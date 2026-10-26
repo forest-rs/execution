@@ -553,8 +553,8 @@ pub enum ValueRef<'a> {
     U64(u64),
     /// 64-bit float.
     F64(f64),
-    /// Decimal.
-    Decimal(Decimal),
+    /// Decimal borrowed from its owning register or value.
+    Decimal(&'a Decimal),
     /// Byte string.
     Bytes(&'a [u8]),
     /// UTF-8 string.
@@ -579,7 +579,7 @@ impl<'a> ValueRef<'a> {
             Value::I64(v) => Self::I64(*v),
             Value::U64(v) => Self::U64(*v),
             Value::F64(v) => Self::F64(*v),
-            Value::Decimal(v) => Self::Decimal(*v),
+            Value::Decimal(v) => Self::Decimal(v),
             Value::Bytes(v) => Self::Bytes(v.as_slice()),
             Value::Str(v) => Self::Str(v.as_str()),
             Value::Obj(v) => Self::Obj(*v),
@@ -602,7 +602,7 @@ impl<'a> ValueRef<'a> {
             Self::I64(i) => Value::I64(i),
             Self::U64(u) => Value::U64(u),
             Self::F64(f) => Value::F64(f),
-            Self::Decimal(d) => Value::Decimal(d),
+            Self::Decimal(d) => Value::Decimal(*d),
             Self::Bytes(b) => Value::Bytes(b.to_vec()),
             Self::Str(s) => Value::Str(s.into()),
             Self::Obj(o) => Value::Obj(o),

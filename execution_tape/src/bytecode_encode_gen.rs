@@ -52,11 +52,10 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_u64_le(out, *bits);
             Ok(())
         },
-        Instr::ConstDecimal { dst, mantissa, scale } => {
+        Instr::ConstDecimal { dst, value } => {
             out.push(Opcode::ConstDecimal as u8);
             crate::codec_primitives::write_reg(out, *dst);
-            crate::codec_primitives::write_i64_sleb(out, *mantissa);
-            crate::codec_primitives::write_u8_raw(out, *scale);
+            crate::codec_primitives::write_decimal(out, *value);
             Ok(())
         },
         Instr::ConstPool { dst, idx } => {

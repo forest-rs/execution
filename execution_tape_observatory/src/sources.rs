@@ -120,6 +120,14 @@ pub struct SourceMap {
 }
 fn identity(program: &Program) -> Result<Vec<u8>, SourceError> {
     // These are the required ranges whose infallible writer has documented panic preconditions.
+    for (index, constant) in program.const_pool.iter().enumerate() {
+        if matches!(constant, execution_tape::program::ConstEntry::Decimal(_)) {
+            let id = u32::try_from(index).map_err(|_| SourceError::InvalidProgram)?;
+            program
+                .const_decimal(execution_tape::program::ConstId(id))
+                .map_err(|_| SourceError::InvalidProgram)?;
+        }
+    }
     for function in &program.functions {
         function
             .register_types(program)
@@ -856,6 +864,39 @@ mod tests {
             map.bind(&malformed),
             Err(SourceError::InvalidProgram)
         ));
+    }
+
+    #[test]
+    fn malformed_decimal_storage_is_rejected_for_source_creation_and_binding() {
+        use execution_tape::program::{ByteRange, ConstEntry};
+
+        let (mut program, loc) = fixture(42);
+        program.const_bytes_data.resize(17, 0);
+        program
+            .const_pool
+            .push(ConstEntry::Decimal(ByteRange { offset: 0, len: 17 }));
+        let map = source(&program, loc, "42", 0..2).unwrap();
+        for range in [
+            ByteRange { offset: 0, len: 16 },
+            ByteRange { offset: 0, len: 18 },
+            ByteRange { offset: 1, len: 17 },
+            ByteRange {
+                offset: u32::MAX,
+                len: 17,
+            },
+        ] {
+            let mut malformed = program.clone();
+            let last = malformed.const_pool.last_mut().unwrap();
+            *last = ConstEntry::Decimal(range);
+            assert!(matches!(
+                SourceMap::new(&malformed, vec![], vec![], SourceLimits::default()),
+                Err(SourceError::InvalidProgram)
+            ));
+            assert!(matches!(
+                map.bind(&malformed),
+                Err(SourceError::InvalidProgram)
+            ));
+        }
     }
     #[test]
     fn repeated_far_right_windows_keep_utf8_boundaries_and_bounded_debug() {

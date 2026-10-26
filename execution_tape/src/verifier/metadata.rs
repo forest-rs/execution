@@ -55,6 +55,11 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
                 .map_err(|_| invalid(T::Constants, index, DecodeError::OutOfBounds))?,
         );
         match constant {
+            ConstEntry::Decimal(_) => {
+                program
+                    .const_decimal(id)
+                    .map_err(|error| invalid(MetadataTable::Constants, index, error))?;
+            }
             ConstEntry::Bytes(_) => {
                 program
                     .const_bytes(id)
