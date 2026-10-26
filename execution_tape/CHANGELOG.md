@@ -17,6 +17,14 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Bound guest tuple/struct/array construction with `Limits::max_aggregate_work`, charging one
+  node plus each immediate field before allocation or payload copying. The default is 1,000,000
+  units per run, shared across guest calls. `AggregateWorkExceeded` reports limit/used/requested;
+  checked replay preserves this failure. This is a work budget, not a heap-residency limit.
+  Migration: add `max_aggregate_work` to exhaustive `Limits` literals (or use `..Limits::default()`),
+  handle the new `AggregateWorkExceeded`/`AggregateSizeOverflow` traps in exhaustive matches,
+  and explicitly raise the budget for trusted workloads that construct more nodes/fields.
+
 - Seed function bodies from their declared argument contracts with `ProgramBuilder::function_asm`
   and append typed temporaries with `Asm::alloc_register`. Emitters can remove their external
   register-kind vector/allocation callback; pre-numbered frontends can transfer their existing

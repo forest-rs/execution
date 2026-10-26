@@ -63,6 +63,17 @@ storage of previously retained results, nested host aggregate payloads, host all
 preparation, capture, and graph-adapter imports are outside it. Trusted workloads can explicitly
 raise the limit or select `u64::MAX`. Usage resets on each invocation and context clearing.
 
+`Limits::max_aggregate_work` separately bounds guest tuple, struct, and array construction,
+defaulting to 1,000,000 units per run. Each constructor charges one node plus its immediate
+field count before allocating field storage or copying payloads. Repeated fields each cost one;
+empty nodes cost one; nested handles cost one field without traversing their contents. Payload
+materialization still charges the byte/string budget separately. `AggregateWorkExceeded`
+reports the configured limit, charged work and rejected request without charging that request.
+`AggregateSizeOverflow` rejects an unrepresentable work calculation. Guest calls share the
+counter; each new invocation resets it. Failed invocations roll back their new aggregates as usual.
+Inputs and previously retained results, host allocations, graph imports, frame storage,
+preparation, and capture remain outside this construction-work budget. It is not a heap limit.
+
 ## Authoring register declarations
 
 Declare the function once with `ProgramBuilder::declare_function`, then create its

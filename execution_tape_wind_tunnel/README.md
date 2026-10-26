@@ -48,6 +48,39 @@ budgets, comparisons, slices, conversions, aggregate/root copies, borrowed
 projections, host admission, reset/rollback, and checked replay of budget traps.
 The work budget is not an allocation or resident-memory budget.
 
+## Aggregate construction work
+
+The `aggregate_work` benchmark constructs 128 temporary tuples, structs, or arrays per run,
+with either zero or 1,024 repeated integer fields per node. It returns the final length and
+checks both that result and the absence of retained aggregates before timing. Preparation is
+outside timing; the reused-context run includes construction, field materialization, and
+temporary cleanup. The output vector is cleared each iteration, retaining its capacity.
+
+A short macOS arm64 release probe compares `10c1748` with aggregate work accounting, using
+30 samples, 0.2 s warmup and 0.5 s measurement on 2026-10-26. Both use default limits; the
+wide fixture consumes 131,200 nodes/fields, below the new 1,000,000-unit default.
+
+| 128 constructions | Before | With budget |
+|---|---:|---:|
+| Empty tuple | 1.325 µs | 1.264 µs |
+| Empty struct | 1.278 µs | 1.281 µs |
+| Empty array | 1.273 µs | 1.266 µs |
+| Tuple, 1,024 fields | 790.5 µs | 780.0 µs |
+| Struct, 1,024 fields | 777.3 µs | 775.3 µs |
+| Array, 1,024 fields | 777.5 µs | 778.6 µs |
+
+An existing 1,024-integer-add control measured 5.194 µs before and 4.806 µs after. There is
+no aggregate debit on the scalar instruction path, but these short, unpaired runs include
+code-layout and machine-state effects. The empty-tuple baseline also has a broad interval.
+These observations support neither a general speedup nor a zero-overhead claim. They do
+not measure real application workloads, preparation, host allocation, or retained heap/RSS.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench aggregate_work -- \
+  --save-baseline before --warm-up-time 0.2 --measurement-time 0.5 --sample-size 30 --noplot
+# Repeat on the comparison revision with --baseline before instead of --save-baseline before.
+```
+
 ## Authoring and numeric baselines
 
 ```sh
