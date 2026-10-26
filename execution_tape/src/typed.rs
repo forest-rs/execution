@@ -51,8 +51,6 @@ impl RegClass {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UnitReg(pub u32);
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BoolReg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct I64Reg(pub u32);
@@ -78,7 +76,8 @@ pub(crate) struct ClosureReg(pub u32);
 /// A typed register reference (class + class-local index).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum VReg {
-    Unit(UnitReg),
+    /// A verified Unit value; it has no runtime location or payload.
+    Unit,
     Bool(BoolReg),
     I64(I64Reg),
     U64(U64Reg),
@@ -96,7 +95,7 @@ impl VReg {
     /// A function-local ordering for preparation indexes, never a wire identity.
     pub(crate) fn key(self) -> (u8, u32) {
         match self {
-            Self::Unit(reg) => (0, reg.0),
+            Self::Unit => unreachable!("Unit transfers are omitted before copy scheduling"),
             Self::Bool(reg) => (1, reg.0),
             Self::I64(reg) => (2, reg.0),
             Self::U64(reg) => (3, reg.0),
@@ -131,6 +130,7 @@ impl VRegSlice {
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RegCounts {
+    /// Logical source Unit declarations, without runtime payload storage or copy scratch.
     pub(crate) unit: usize,
     pub(crate) bools: usize,
     pub(crate) i64s: usize,
@@ -161,17 +161,13 @@ pub(crate) struct ExecDecoded {
 /// A verifier-produced instruction stream with typed register operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ExecInstr {
-    /// No-op.
+    /// No payload action. Source instruction, fuel and observations are preserved.
     Nop,
     /// Trap unconditionally with a trap code.
     Trap {
         code: u32,
     },
 
-    MovUnit {
-        dst: UnitReg,
-        src: UnitReg,
-    },
     MovBool {
         dst: BoolReg,
         src: BoolReg,
@@ -217,9 +213,6 @@ pub(crate) enum ExecInstr {
         src: ClosureReg,
     },
 
-    ConstUnit {
-        dst: UnitReg,
-    },
     ConstBool {
         dst: BoolReg,
         imm: bool,
@@ -245,10 +238,6 @@ pub(crate) enum ExecInstr {
         func_id: FuncId,
     },
 
-    ConstPoolUnit {
-        dst: UnitReg,
-        idx: ConstId,
-    },
     ConstPoolBool {
         dst: BoolReg,
         idx: ConstId,
@@ -541,12 +530,6 @@ pub(crate) enum ExecInstr {
         a: I64Reg,
     },
 
-    SelectUnit {
-        dst: UnitReg,
-        cond: BoolReg,
-        a: UnitReg,
-        b: UnitReg,
-    },
     SelectBool {
         dst: BoolReg,
         cond: BoolReg,
@@ -627,37 +610,28 @@ pub(crate) enum ExecInstr {
     },
 
     Call {
-        eff_out: UnitReg,
         func_id: FuncId,
-        eff_in: UnitReg,
         args: VRegSlice,
         rets: VRegSlice,
     },
     Ret {
-        eff_in: UnitReg,
         rets: VRegSlice,
     },
 
     HostCall {
-        eff_out: UnitReg,
         host_sig: HostSigId,
-        eff_in: UnitReg,
         args: VRegSlice,
         rets: VRegSlice,
     },
     CallIndirectFunc {
-        eff_out: UnitReg,
         call_sig: CallSigId,
         callee: FuncReg,
-        eff_in: UnitReg,
         args: VRegSlice,
         rets: VRegSlice,
     },
     CallIndirectClosure {
-        eff_out: UnitReg,
         call_sig: CallSigId,
         callee: ClosureReg,
-        eff_in: UnitReg,
         args: VRegSlice,
         rets: VRegSlice,
     },

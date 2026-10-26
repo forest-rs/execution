@@ -41,8 +41,7 @@ use crate::program::{
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
-    FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, UnitReg, VReg,
-    VRegSlice,
+    FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::FuncId;
 use crate::{analysis::bitset::BitSet, analysis::cfg};
@@ -1638,8 +1637,8 @@ fn verify_function_bytecode(
         }
     }
 
-    // Map each virtual register to one class-local index while lowering. Only frame counts and
-    // argument locations need to survive in the executable layout.
+    // Map payload-bearing registers to class-local indexes; Unit has no runtime location.
+    // Only counts and argument locations need to survive in the executable layout.
     let mut counts = RegCounts::default();
     let mut reg_map: Vec<VReg> = Vec::with_capacity(reg_count);
     for t in register_types.iter() {
@@ -1647,9 +1646,8 @@ fn verify_function_bytecode(
         let idx_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         let v = match class {
             RegClass::Unit => {
-                let r = UnitReg(idx_u32(counts.unit));
                 counts.unit += 1;
-                VReg::Unit(r)
+                VReg::Unit
             }
             RegClass::Bool => {
                 let r = BoolReg(idx_u32(counts.bools));
@@ -1712,10 +1710,7 @@ fn verify_function_bytecode(
 
     let mut arg_regs: Vec<VReg> = Vec::with_capacity(arg_types.len());
     for i in 0..arg_types.len() {
-        let r = reg_map
-            .get(1 + i)
-            .copied()
-            .unwrap_or(VReg::Unit(UnitReg(0)));
+        let r = reg_map.get(1 + i).copied().unwrap_or(VReg::Unit);
         arg_regs.push(r);
     }
     let mut reg_layout = RegLayout { counts, arg_regs };
@@ -1794,9 +1789,9 @@ fn verify_function_bytecode(
                 .expect("mapped register has a declared kind"),
             required,
         };
-        let map_unit = |reg: u32| -> Result<UnitReg, VerifyError> {
+        let check_unit = |reg: u32| -> Result<(), VerifyError> {
             match map(reg)? {
-                VReg::Unit(r) => Ok(r),
+                VReg::Unit => Ok(()),
                 _ => Err(mismatch(reg, ValueType::Unit)),
             }
         };
@@ -1878,7 +1873,7 @@ fn verify_function_bytecode(
             Instr::Trap { code } => ExecInstr::Trap { code: *code },
 
             Instr::Mov { dst, src } => match (map(*dst)?, map(*src)?) {
-                (VReg::Unit(d), VReg::Unit(s)) => ExecInstr::MovUnit { dst: d, src: s },
+                (VReg::Unit, VReg::Unit) => ExecInstr::Nop,
                 (VReg::Bool(d), VReg::Bool(s)) => ExecInstr::MovBool { dst: d, src: s },
                 (VReg::I64(d), VReg::I64(s)) => ExecInstr::MovI64 { dst: d, src: s },
                 (VReg::U64(d), VReg::U64(s)) => ExecInstr::MovU64 { dst: d, src: s },
@@ -1898,9 +1893,10 @@ fn verify_function_bytecode(
                 }
             },
 
-            Instr::ConstUnit { dst } => ExecInstr::ConstUnit {
-                dst: map_unit(*dst)?,
-            },
+            Instr::ConstUnit { dst } => {
+                check_unit(*dst)?;
+                ExecInstr::Nop
+            }
             Instr::ConstBool { dst, imm } => ExecInstr::ConstBool {
                 dst: map_bool(*dst)?,
                 imm: *imm,
@@ -1929,10 +1925,10 @@ fn verify_function_bytecode(
             Instr::ConstPool { dst, idx } => {
                 let c = &program.const_pool[idx.0 as usize];
                 match const_value_type(c) {
-                    ValueType::Unit => ExecInstr::ConstPoolUnit {
-                        dst: map_unit(*dst)?,
-                        idx: *idx,
-                    },
+                    ValueType::Unit => {
+                        check_unit(*dst)?;
+                        ExecInstr::Nop
+                    }
                     ValueType::Bool => ExecInstr::ConstPoolBool {
                         dst: map_bool(*dst)?,
                         idx: *idx,
@@ -2240,12 +2236,10 @@ fn verify_function_bytecode(
             },
 
             Instr::Select { dst, cond, a, b } => match (map(*dst)?, map(*a)?, map(*b)?) {
-                (VReg::Unit(d), VReg::Unit(aa), VReg::Unit(bb)) => ExecInstr::SelectUnit {
-                    dst: d,
-                    cond: map_bool(*cond)?,
-                    a: aa,
-                    b: bb,
-                },
+                (VReg::Unit, VReg::Unit, VReg::Unit) => {
+                    map_bool(*cond)?;
+                    ExecInstr::Nop
+                }
                 (VReg::Bool(d), VReg::Bool(aa), VReg::Bool(bb)) => ExecInstr::SelectBool {
                     dst: d,
                     cond: map_bool(*cond)?,
@@ -2387,30 +2381,36 @@ fn verify_function_bytecode(
                 eff_in,
                 args,
                 rets,
-            } => ExecInstr::Call {
-                eff_out: map_unit(*eff_out)?,
-                func_id: *callee,
-                eff_in: map_unit(*eff_in)?,
-                args: push_vregs(args)?,
-                rets: push_vregs(rets)?,
-            },
-            Instr::Ret { eff_in, rets } => ExecInstr::Ret {
-                eff_in: map_unit(*eff_in)?,
-                rets: push_vregs(rets)?,
-            },
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::Call {
+                    func_id: *callee,
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
+                }
+            }
+            Instr::Ret { eff_in, rets } => {
+                check_unit(*eff_in)?;
+                ExecInstr::Ret {
+                    rets: push_vregs(rets)?,
+                }
+            }
             Instr::HostCall {
                 eff_out,
                 host_sig,
                 eff_in,
                 args,
                 rets,
-            } => ExecInstr::HostCall {
-                eff_out: map_unit(*eff_out)?,
-                host_sig: *host_sig,
-                eff_in: map_unit(*eff_in)?,
-                args: push_vregs(args)?,
-                rets: push_vregs(rets)?,
-            },
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::HostCall {
+                    host_sig: *host_sig,
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
+                }
+            }
             Instr::CallIndirect {
                 eff_out,
                 call_sig,
@@ -2420,23 +2420,21 @@ fn verify_function_bytecode(
                 rets,
             } => {
                 let call_sig = CallSigId(*call_sig);
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
                 let callee = map(*callee_reg)?;
                 let args = push_vregs(args)?;
                 let rets = push_vregs(rets)?;
                 match callee {
                     VReg::Func(callee) => ExecInstr::CallIndirectFunc {
-                        eff_out: map_unit(*eff_out)?,
                         call_sig,
                         callee,
-                        eff_in: map_unit(*eff_in)?,
                         args,
                         rets,
                     },
                     VReg::Closure(callee) => ExecInstr::CallIndirectClosure {
-                        eff_out: map_unit(*eff_out)?,
                         call_sig,
                         callee,
-                        eff_in: map_unit(*eff_in)?,
                         args,
                         rets,
                     },

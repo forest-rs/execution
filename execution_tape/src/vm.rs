@@ -25,7 +25,7 @@ use crate::trace::{
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
-    I64Reg, ObjReg, StrReg, U64Reg, UnitReg, VReg, VRegSlice,
+    I64Reg, ObjReg, StrReg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
@@ -339,8 +339,6 @@ impl core::error::Error for TrapInfo {
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 struct RegBase {
-    /// Base offset for the `Unit` register bank.
-    unit: usize,
     /// Base offset for the `bool` register bank.
     bools: usize,
     /// Base offset for the `i64` register bank.
@@ -416,8 +414,6 @@ pub struct ExecutionContext {
     contract_scratch: ContractScratch,
 
     // Split register file by class (SoA).
-    /// Unit registers (`()`), currently stored as zero-valued `u32` bank elements.
-    units: Vec<u32>,
     /// Boolean registers.
     bools: Vec<bool>,
     /// `i64` registers.
@@ -462,7 +458,6 @@ impl ExecutionContext {
     /// the next run also clears the context automatically.
     pub fn clear(&mut self) {
         self.frames.clear();
-        self.units.clear();
         self.bools.clear();
         self.i64s.clear();
         self.u64s.clear();
@@ -1307,12 +1302,6 @@ impl<H: Host> Vm<H> {
                     return Err(ctx.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
                 }
 
-                ExecInstr::MovUnit { dst, src } => {
-                    let v = ctx.read_unit(base, *src);
-                    ctx.write_unit(base, *dst, v);
-                    ctx.frames[frame_index].pc = next_pc;
-                    ctx.frames[frame_index].instr_ix = next_instr_ix;
-                }
                 ExecInstr::MovBool { dst, src } => {
                     let v = ctx.read_bool(base, *src);
                     ctx.write_bool(base, *dst, v);
@@ -1380,11 +1369,6 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
-                ExecInstr::ConstUnit { dst } => {
-                    ctx.write_unit(base, *dst, 0);
-                    ctx.frames[frame_index].pc = next_pc;
-                    ctx.frames[frame_index].instr_ix = next_instr_ix;
-                }
                 ExecInstr::ConstBool { dst, imm } => {
                     ctx.write_bool(base, *dst, *imm);
                     ctx.frames[frame_index].pc = next_pc;
@@ -1416,17 +1400,6 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
 
-                ExecInstr::ConstPoolUnit { dst, idx } => {
-                    let ConstEntry::Unit = program_ref
-                        .const_pool
-                        .get(idx.0 as usize)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
-                    else {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
-                    };
-                    ctx.write_unit(base, *dst, 0);
-                    ctx.frames[frame_index].pc = next_pc;
-                }
                 ExecInstr::ConstPoolBool { dst, idx } => {
                     let ConstEntry::Bool(b) = program_ref
                         .const_pool
@@ -1780,15 +1753,6 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
-                ExecInstr::SelectUnit { dst, cond, a, b } => {
-                    let out = if ctx.read_bool(base, *cond) {
-                        ctx.read_unit(base, *a)
-                    } else {
-                        ctx.read_unit(base, *b)
-                    };
-                    ctx.write_unit(base, *dst, out);
-                    ctx.frames[frame_index].pc = next_pc;
-                }
                 ExecInstr::SelectBool { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_bool(base, *a)
@@ -1928,9 +1892,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::Call {
-                    eff_out,
                     func_id: callee,
-                    eff_in: _,
                     args,
                     rets: dst_rets,
                 } => {
@@ -1945,9 +1907,6 @@ impl<H: Host> Vm<H> {
                     let callee_vf = program
                         .verified(*callee)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-
-                    // v1: effect token is `Unit` (stored as 0).
-                    ctx.write_unit(base, *eff_out, 0);
 
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
@@ -1993,7 +1952,7 @@ impl<H: Host> Vm<H> {
                     );
                 }
 
-                ExecInstr::Ret { eff_in: _, rets } => {
+                ExecInstr::Ret { rets } => {
                     if ctx.frames.len() == 1 {
                         let rets = vf.vregs(*rets);
                         outputs.reserve(rets.len());
@@ -2080,9 +2039,7 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::HostCall {
-                    eff_out,
                     host_sig,
-                    eff_in: _,
                     args,
                     rets,
                 } => {
@@ -2122,7 +2079,6 @@ impl<H: Host> Vm<H> {
                         *slot = read_value_ref_at(
                             &ctx.arena,
                             sources,
-                            &ctx.units,
                             &ctx.bools,
                             &ctx.i64s,
                             &ctx.u64s,
@@ -2208,9 +2164,6 @@ impl<H: Host> Vm<H> {
                     })?;
                     ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
 
-                    // v1: effect token is `Unit`.
-                    ctx.write_unit(base, *eff_out, 0);
-
                     let rets = vf.vregs(*rets);
                     // The VM controls the slice size, so arity is guaranteed correct for
                     // verified programs. Keep the Trap variant (public API) but it's
@@ -2258,10 +2211,8 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::CallIndirectFunc {
-                    eff_out,
                     call_sig,
                     callee,
-                    eff_in: _,
                     args,
                     rets: dst_rets,
                 } => {
@@ -2286,9 +2237,6 @@ impl<H: Host> Vm<H> {
                         IndirectCalleeKind::Func,
                     )
                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-
-                    // v1: effect token is `Unit` (stored as 0).
-                    ctx.write_unit(base, *eff_out, 0);
 
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
@@ -2334,10 +2282,8 @@ impl<H: Host> Vm<H> {
                     );
                 }
                 ExecInstr::CallIndirectClosure {
-                    eff_out,
                     call_sig,
                     callee,
-                    eff_in: _,
                     args,
                     rets: dst_rets,
                 } => {
@@ -2362,9 +2308,6 @@ impl<H: Host> Vm<H> {
                         IndirectCalleeKind::Closure,
                     )
                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-
-                    // v1: effect token is `Unit` (stored as 0).
-                    ctx.write_unit(base, *eff_out, 0);
 
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
@@ -3205,7 +3148,6 @@ impl ExecutionContext {
     fn alloc_frame(&mut self, vf: &ExecFunc) -> RegBase {
         let counts = vf.reg_layout.counts;
         let base = RegBase {
-            unit: self.units.len(),
             bools: self.bools.len(),
             i64s: self.i64s.len(),
             u64s: self.u64s.len(),
@@ -3219,7 +3161,6 @@ impl ExecutionContext {
             closures: self.closures.len(),
         };
 
-        self.units.resize(base.unit + counts.unit, 0);
         self.bools.resize(base.bools + counts.bools, false);
         self.i64s.resize(base.i64s + counts.i64s, 0);
         self.u64s.resize(base.u64s + counts.u64s, 0);
@@ -3249,7 +3190,6 @@ impl ExecutionContext {
     }
 
     fn truncate_to(&mut self, base: RegBase) {
-        self.units.truncate(base.unit);
         self.bools.truncate(base.bools);
         self.i64s.truncate(base.i64s);
         self.u64s.truncate(base.u64s);
@@ -3320,10 +3260,7 @@ impl ExecutionContext {
 
     fn write_inline_value(&mut self, base: RegBase, dst: VReg, v: &Value) -> Result<(), Trap> {
         match (dst, v) {
-            (VReg::Unit(r), Value::Unit) => {
-                self.write_unit(base, r, 0);
-                Ok(())
-            }
+            (VReg::Unit, Value::Unit) => Ok(()),
             (VReg::Bool(r), Value::Bool(b)) => {
                 self.write_bool(base, r, *b);
                 Ok(())
@@ -3371,7 +3308,7 @@ impl ExecutionContext {
         sources: ValueSources<'_>,
     ) -> Result<Value, Trap> {
         Ok(match v {
-            VReg::Unit(_) => Value::Unit,
+            VReg::Unit => Value::Unit,
             VReg::Bool(r) => Value::Bool(self.read_bool(base, r)),
             VReg::I64(r) => Value::I64(self.read_i64(base, r)),
             VReg::U64(r) => Value::U64(self.read_u64(base, r)),
@@ -3419,11 +3356,7 @@ impl ExecutionContext {
         dst: VReg,
     ) -> Result<(), Trap> {
         match (src, dst) {
-            (VReg::Unit(s), VReg::Unit(d)) => {
-                let v = self.read_unit(src_base, s);
-                self.write_unit(dst_base, d, v);
-                Ok(())
-            }
+            (VReg::Unit, VReg::Unit) => Ok(()),
             (VReg::Bool(s), VReg::Bool(d)) => {
                 let v = self.read_bool(src_base, s);
                 self.write_bool(dst_base, d, v);
@@ -3481,16 +3414,6 @@ impl ExecutionContext {
             }
             _ => Err(Trap::InvalidPc),
         }
-    }
-
-    #[inline(always)]
-    #[must_use]
-    fn read_unit(&self, base: RegBase, r: UnitReg) -> u32 {
-        self.units[base.unit + r.0 as usize]
-    }
-    #[inline(always)]
-    fn write_unit(&mut self, base: RegBase, r: UnitReg, v: u32) {
-        self.units[base.unit + r.0 as usize] = v;
     }
 
     #[inline(always)]
@@ -3814,7 +3737,6 @@ fn validate_signature_types<'a>(
 fn read_value_ref_at<'a>(
     arena: &'a ValueArena,
     sources: ValueSources<'a>,
-    units: &'a [u32],
     bools: &'a [bool],
     i64s: &'a [i64],
     u64s: &'a [u64],
@@ -3830,10 +3752,7 @@ fn read_value_ref_at<'a>(
     v: VReg,
 ) -> Result<ValueRef<'a>, Trap> {
     Ok(match v {
-        VReg::Unit(r) => {
-            let _ = units[base.unit + r.0 as usize];
-            ValueRef::Unit
-        }
+        VReg::Unit => ValueRef::Unit,
         VReg::Bool(r) => ValueRef::Bool(bools[base.bools + r.0 as usize]),
         VReg::I64(r) => ValueRef::I64(i64s[base.i64s + r.0 as usize]),
         VReg::U64(r) => ValueRef::U64(u64s[base.u64s + r.0 as usize]),

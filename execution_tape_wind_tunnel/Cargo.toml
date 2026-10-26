@@ -64,3 +64,7 @@ harness = false
 [[bench]]
 name = "aggregate_work"
 harness = false
+
+[[bench]]
+name = "unit_registers"
+harness = false

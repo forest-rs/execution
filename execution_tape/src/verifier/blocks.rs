@@ -269,6 +269,10 @@ impl CopyScheduler {
         self.ready.clear();
     }
     pub(super) fn push(&mut self, dst: VReg, src: VReg) {
+        // Unit transfers carry no payload and must never enter the dependency graph.
+        if matches!((dst, src), (VReg::Unit, VReg::Unit)) {
+            return;
+        }
         if dst != src {
             self.nodes.push(CopyNode {
                 dst,
@@ -337,14 +341,7 @@ impl CopyScheduler {
                 reg
             } else {
                 let reg = match saved {
-                    VReg::Unit(_) => {
-                        let r = VReg::Unit(UnitReg(
-                            u32::try_from(counts.unit)
-                                .expect("source register count bounds scratch index"),
-                        ));
-                        counts.unit += 1;
-                        r
-                    }
+                    VReg::Unit => unreachable!("Unit transfers do not need scratch"),
                     VReg::Bool(_) => {
                         let r = VReg::Bool(BoolReg(
                             u32::try_from(counts.bools)
