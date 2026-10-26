@@ -113,7 +113,12 @@
 //!
 //! This is not a heap or process-memory limit. Storage of retained results, aggregate/frame storage, nested
 //! host aggregate payloads, host effects/allocations, preparation, recording, and graph imports
-//! need their own policies. See [`vm::Limits::max_payload_work`] for exact charging rules and
+//! need their own policies. Guest tuple/struct/array construction has a separate
+//! [`vm::Limits::max_aggregate_work`] budget (1,000,000 by default): one node plus its immediate
+//! field count, charged before field allocation or payload copying. Empty nodes cost one;
+//! nested handles do not traverse their contents. The counter is shared across guest calls and
+//! resets each run. Exhaustion reports [`vm::Trap::AggregateWorkExceeded`].
+//! See [`vm::Limits::max_payload_work`] for exact byte/string charging rules and
 //! [`vm::Trap::PayloadWorkExceeded`] for recoverable limit diagnostics.
 //!
 //! ## Inspecting Verifier Facts

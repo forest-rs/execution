@@ -30,6 +30,8 @@ use crate::typed::{
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
 
+#[cfg(test)]
+mod aggregate_tests;
 mod observations;
 #[cfg(test)]
 mod payload_tests;
@@ -46,6 +48,18 @@ pub struct Limits {
     /// Maximum aggregate contract work per run: visited value/contract pairs and child edges.
     /// Separate from guest instruction fuel; shared subgraphs reuse successful proofs.
     pub max_contract_work: u64,
+    /// Maximum guest aggregate construction work per run (1,000,000 by default).
+    ///
+    /// Each tuple, struct, or array construction charges one node plus its immediate field
+    /// count before allocating field storage or materializing payloads. Repeated fields charge
+    /// separately; nested aggregate handles cost one field without traversing their contents.
+    /// Empty aggregates cost one. Work accumulates across guest calls and resets every run.
+    ///
+    /// This bounds logical construction work, not live heap bytes. Existing input/retained
+    /// aggregates, host allocations, graph imports, frame storage, preparation, and capture
+    /// are outside this counter. Payload copies have their separate `max_payload_work` charge.
+    /// Set `u64::MAX` for the maximum supported budget.
+    pub max_aggregate_work: u64,
     /// Maximum logical byte/string work per run (64 MiB by default).
     ///
     /// Charges copied bytes for concatenation, slicing, string-to-bytes conversion, and each
@@ -69,6 +83,7 @@ impl Default for Limits {
             max_call_depth: 256,
             max_host_calls: 1_000_000,
             max_contract_work: 1_000_000,
+            max_aggregate_work: 1_000_000,
             max_payload_work: 64 * 1024 * 1024,
         }
     }
@@ -83,6 +98,17 @@ pub enum Trap {
     CallDepthExceeded,
     /// Host call count limit exceeded.
     HostCallLimitExceeded,
+    /// Guest aggregate construction would exceed the run's node-and-field work budget.
+    AggregateWorkExceeded {
+        /// Configured node-and-field work limit.
+        limit: u64,
+        /// Successfully charged work before this rejected construction.
+        used: u64,
+        /// Additional nodes and fields requested; rejected work is not charged.
+        requested: u64,
+    },
+    /// An aggregate's node-and-field work cannot be represented.
+    AggregateSizeOverflow,
     /// A payload operation would exceed the run's logical byte/string work budget.
     PayloadWorkExceeded {
         /// Configured logical byte limit.
@@ -184,6 +210,17 @@ impl fmt::Display for Trap {
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
+            Self::AggregateWorkExceeded {
+                limit,
+                used,
+                requested,
+            } => write!(
+                f,
+                "aggregate work limit exceeded: {used} of {limit} nodes and fields used; construction requires {requested} more; increase Limits::max_aggregate_work or reduce aggregate construction"
+            ),
+            Self::AggregateSizeOverflow => {
+                write!(f, "aggregate size or work calculation overflowed")
+            }
             Self::PayloadWorkExceeded {
                 limit,
                 used,
@@ -370,6 +407,9 @@ pub struct ExecutionContext {
     /// Successfully charged logical byte/string work and the current run's limit.
     payload_work: u64,
     payload_limit: u64,
+    /// Successfully charged guest aggregate nodes/fields and the current run's limit.
+    aggregate_work: u64,
+    aggregate_limit: u64,
 
     /// Arena backing bytes/strings and other out-of-line temporaries.
     arena: ValueArena,
@@ -441,6 +481,8 @@ impl ExecutionContext {
         self.host_calls = 0;
         self.payload_work = 0;
         self.payload_limit = 0;
+        self.aggregate_work = 0;
+        self.aggregate_limit = 0;
     }
 
     fn reset(&mut self, fuel: u64, payload_limit: u64) {
@@ -462,6 +504,22 @@ impl ExecutionContext {
             });
         }
         self.payload_work += requested;
+        Ok(())
+    }
+
+    fn charge_aggregate(&mut self, fields: usize) -> Result<(), Trap> {
+        let requested = u64::try_from(fields)
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(Trap::AggregateSizeOverflow)?;
+        if requested > self.aggregate_limit - self.aggregate_work {
+            return Err(Trap::AggregateWorkExceeded {
+                limit: self.aggregate_limit,
+                used: self.aggregate_work,
+                requested,
+            });
+        }
+        self.aggregate_work += requested;
         Ok(())
     }
 }
@@ -1128,6 +1186,7 @@ impl<H: Host> Vm<H> {
         let max_host_calls = self.limits.max_host_calls;
         let mut register_state = P::RegisterState::default();
         ctx.reset(self.limits.fuel, self.limits.max_payload_work);
+        ctx.aggregate_limit = self.limits.max_aggregate_work;
 
         let entry_fn = program_ref
             .functions
@@ -2441,6 +2500,8 @@ impl<H: Host> Vm<H> {
 
                 ExecInstr::TupleNew { dst, values } => {
                     let values = vf.vregs(*values);
+                    ctx.charge_aggregate(values.len())
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
@@ -2494,6 +2555,8 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::ArityMismatch));
                     }
 
+                    ctx.charge_aggregate(values.len())
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
@@ -2552,6 +2615,8 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::ArityMismatch));
                     }
 
+                    ctx.charge_aggregate(values.len())
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(

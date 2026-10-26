@@ -60,3 +60,7 @@ harness = false
 [[bench]]
 name = "numeric_baselines"
 harness = false
+
+[[bench]]
+name = "aggregate_work"
+harness = false
