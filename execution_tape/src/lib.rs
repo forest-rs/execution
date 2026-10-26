@@ -104,6 +104,12 @@
 //!
 //! ## Resource policy
 //!
+//! Unit/effect registers carry verifier facts without runtime payload storage. Their source
+//! declarations and initialization/effect checks still apply. Unit-only moves, constants and
+//! selects keep their instruction/fuel and observation boundaries; host/guest arguments and
+//! results still require the declared kinds. Inspection counts Unit declarations separately
+//! from the bytes occupied by payload-bearing register banks.
+//!
 //! [`vm::Limits`] separately bounds instruction fuel, call depth, host-call count, contract work,
 //! and logical byte/string work. `max_payload_work` defaults to 64 MiB per run: copying operations
 //! and owned result/aggregate-field materialization charge bytes before copying, while comparisons

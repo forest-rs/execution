@@ -48,6 +48,44 @@ budgets, comparisons, slices, conversions, aggregate/root copies, borrowed
 projections, host admission, reset/rollback, and checked replay of budget traps.
 The work budget is not an allocation or resident-memory budget.
 
+## Unit registers without payload storage
+
+The `unit_registers` fixture compares main `84cbb9b` with removal of the Unit bank on
+macOS arm64, Rust 1.99 release builds, 2026-10-27. Each run executes 16 move/select,
+simultaneous join, guest-call and host-call groups, returning two Unit values. Most of
+the wide fixture's declarations are unused: preparation must still validate/count them,
+while execution should not allocate a payload for them. Preparation and result checking
+are outside timing. Fresh-VM timing includes destruction; reused-context timing clears
+the output vector while retaining its capacity.
+
+Criterion uses 40 samples, 0.3 s warmup and 1 s measurement. Point estimates:
+
+| Workload | Main | Without Unit bank |
+|---|---:|---:|
+| 8 Unit declarations, fresh VM | 2.061 µs | 1.763 µs |
+| 8 Unit declarations, reused context | 1.892 µs | 1.674 µs |
+| 65,535 Unit declarations, fresh VM | 3.439 µs | 1.753 µs |
+| 65,535 Unit declarations, reused context | 3.151 µs | 1.665 µs |
+| 1,024 integer additions (control) | 4.874 µs | 4.802 µs |
+
+The integer-add control detects no statistically significant change. The Unit workloads
+are targeted microbenchmarks, not a claim about application speedups. `ExecutionContext`
+shrinks from 464 to 440 bytes on this target. Reported frame register elements drop from
+37 / 262,145 bytes to one byte in both fixtures (the Boolean condition). This removes the
+Unit bank and its allocation, not payload-bearing registers, result buffers, or frame vectors.
+Unit block cycles also stop creating prepared copy operands and scratch slots. Logical
+declaration counts remain visible; source instructions still consume fuel and emit events.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench unit_registers -- \
+  --save-baseline before --warm-up-time 0.3 --measurement-time 1 --sample-size 40 --noplot
+# Repeat on the comparison revision with --baseline before.
+```
+
+Earlier numeric-storage measurements below describe their stated revisions, which still
+had the Unit bank. Current numeric fixtures use four fewer frame-register bytes per effect
+declaration; their decimal representation and wire encoding are unchanged by this removal.
+
 ## Aggregate construction work
 
 The `aggregate_work` benchmark constructs 128 temporary tuples, structs, or arrays per run,

@@ -76,6 +76,13 @@ preparation, and capture remain outside this construction-work budget. It is not
 
 ## Authoring register declarations
 
+Unit/effect registers have no runtime payload bank. Their declarations and initialization
+requirements remain part of verification; host/guest boundaries still check their kinds.
+Unit-only constants, moves and selects prepare as no-ops that retain source PCs, fuel charges
+and trace/register observations. Unit join bindings need no parallel copies or cycle scratch.
+Inspection reports their logical declaration count, while `register_bytes` counts only
+payload-bearing banks. No wire-format or calling-convention change is required.
+
 Declare the function once with `ProgramBuilder::declare_function`, then create its
 body with `ProgramBuilder::function_asm`. The body owns declarations for r0 and
 arguments in signature order. `Asm::alloc_register(kind)` appends each temporary's

@@ -28,7 +28,7 @@ impl FunctionRegisters {
             let n = counts[index];
             counts[index] += 1;
             registers.push(match kind {
-                ValueType::Unit => VReg::Unit(UnitReg(n)),
+                ValueType::Unit => VReg::Unit,
                 ValueType::Bool => VReg::Bool(BoolReg(n)),
                 ValueType::I64 => VReg::I64(I64Reg(n)),
                 ValueType::U64 => VReg::U64(U64Reg(n)),
@@ -102,7 +102,6 @@ pub(super) fn emit(
         read_value_ref_at(
             &ctx.arena,
             sources,
-            &ctx.units,
             &ctx.bools,
             &ctx.i64s,
             &ctx.u64s,

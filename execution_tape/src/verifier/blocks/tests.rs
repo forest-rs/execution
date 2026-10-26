@@ -48,6 +48,49 @@ fn run(p: &VerifiedProgram, args: &[Value]) -> Vec<Value> {
 }
 
 #[test]
+fn unit_cycles_need_no_copies_or_scratch_alongside_scalar_cycles() {
+    let mut body = Asm::new();
+    body.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::Unit,
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+    ]);
+    let join = body.block(&[1, 2, 3, 4]);
+    body.jmp(join.with_args(&[2, 1, 4, 3]));
+    body.place(join).unwrap();
+    body.ret(0, &[1, 2, 3, 4]);
+    let types = [
+        ValueType::Unit,
+        ValueType::Unit,
+        ValueType::I64,
+        ValueType::I64,
+    ];
+    let program = verify(body, &types, &types);
+    assert_eq!(
+        run(
+            &program,
+            &[Value::Unit, Value::Unit, Value::I64(7), Value::I64(9)]
+        ),
+        [Value::Unit, Value::Unit, Value::I64(9), Value::I64(7)]
+    );
+    let executable = program.verified(FuncId(0)).unwrap();
+    assert_eq!(executable.reg_layout.counts.unit, 3);
+    assert_eq!(executable.reg_layout.counts.i64s, 3);
+    let ExecInstr::Jmp { copies, .. } = executable.instrs[0].instr else {
+        panic!("jump")
+    };
+    assert_eq!(copies.len, 6); // Save to scratch, then swap, with no Unit transfers.
+    assert!(
+        executable
+            .vregs(copies)
+            .iter()
+            .all(|reg| !matches!(reg, VReg::Unit))
+    );
+}
+
+#[test]
 fn parallel_edges_execute_every_three_register_cycle_and_fanout() {
     // All 27 assignments, including self edges, swaps, three-cycles, and fan-out. The source
     // registers are also parameter destinations, so sequential implementations give wrong values.

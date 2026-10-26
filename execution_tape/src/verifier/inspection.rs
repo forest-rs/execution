@@ -54,10 +54,10 @@ pub struct FunctionStats {
     pub operand_count: usize,
     /// Declared virtual register count, including the effect token and unused registers.
     pub virtual_registers: u32,
-    /// Total typed-bank slots needed by one frame, including unit registers.
+    /// Total class-local register slots, including Unit declarations and generated copy scratch.
     pub register_slots: usize,
     /// Bytes for the typed-bank elements of one frame; strings/bytes occupy handles only.
-    /// Unit registers currently occupy `u32` slots although their public value has no payload.
+    /// Unit registers have no runtime bank or payload storage.
     pub register_bytes: usize,
     /// Bytes occupied by populated elements of this function's prepared buffers.
     pub prepared_used_bytes: usize,
@@ -126,7 +126,8 @@ impl<'a> VerifiedFunction<'a> {
 
     /// Returns the number of slots in the register bank used by `value_type` for one frame.
     ///
-    /// All host object type IDs share one bank. Unit slots have zero element size. This is a
+    /// All host object type IDs share one bank. Unit counts describe declarations with no
+    /// runtime bank or payload storage. This is a
     /// bank requirement, not a mapping from source register numbers to physical locations.
     #[must_use]
     pub fn register_slots(self, value_type: ValueType) -> usize {
@@ -214,8 +215,7 @@ fn buffer_bytes<T>(buffer: &alloc::vec::Vec<T>) -> (usize, usize) {
 }
 
 fn register_bytes(counts: RegCounts) -> usize {
-    counts.unit * size_of::<u32>()
-        + counts.bools * size_of::<bool>()
+    counts.bools * size_of::<bool>()
         + counts.i64s * size_of::<i64>()
         + counts.u64s * size_of::<u64>()
         + counts.f64s * size_of::<f64>()
@@ -238,9 +238,9 @@ mod tests {
     use core::num::NonZeroU64;
 
     #[test]
-    fn unit_bank_storage_is_included_in_frame_bytes() {
+    fn unit_declarations_do_not_require_frame_payload_storage() {
         let mut body = Asm::new();
-        // Effect token, argument, and an unused declaration all reserve bank slots.
+        // Effect token, argument, and unused declaration remain visible without a payload bank.
         body.set_register_types(vec![ValueType::Unit; 3]);
         body.ret(0, &[1]);
         let mut builder = ProgramBuilder::new();
@@ -256,7 +256,7 @@ mod tests {
         let program = builder.build_verified().unwrap();
         let function = program.function(id).unwrap();
         assert_eq!(function.register_slots(ValueType::Unit), 3);
-        assert_eq!(function.stats().register_bytes, 3 * size_of::<u32>());
+        assert_eq!(function.stats().register_bytes, 0);
     }
 
     #[test]

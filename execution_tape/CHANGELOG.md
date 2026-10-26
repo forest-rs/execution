@@ -205,6 +205,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Remove the zero-filled runtime Unit/effect register bank and prepared Unit payload operations.
+  Verification, boundary kind checks, source PCs/fuel and observations are preserved. Unit block
+  transfers require no copy scratch. `FunctionStats::register_bytes` now excludes this removed
+  storage; logical Unit declaration counts remain inspectable. No tape regeneration is needed. ([#198][] by [@waywardmonkeys][])
+
 - Widen exact decimal mantissas from `i64` to the full signed `i128` range. Construct with
   `Decimal::new(mantissa, scale)` and read with `mantissa()` / `scale()` instead of public fields.
   `Asm::const_decimal` now accepts `i128`; widen existing `i64` variables with `i128::from`.
@@ -490,3 +495,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#190]: https://github.com/forest-rs/execution/pull/190
 
 [#192]: https://github.com/forest-rs/execution/pull/192
+
+[#198]: https://github.com/forest-rs/execution/pull/198
