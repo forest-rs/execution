@@ -340,6 +340,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Include the interpreter's current `u32` bank storage for unit/effect registers in
+  `FunctionStats::register_bytes`. Earlier counts treated those runtime slots as zero-sized.
+  Execution storage and behavior are unchanged.
+
 - Reject raw empty function bodies with `MissingTerminator` during verification and preparation,
   matching the executable-body requirement instead of deferring failure to VM instruction fetch. ([#164][] by [@waywardmonkeys][])
 

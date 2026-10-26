@@ -54,9 +54,10 @@ pub struct FunctionStats {
     pub operand_count: usize,
     /// Declared virtual register count, including the effect token and unused registers.
     pub virtual_registers: u32,
-    /// Total typed-bank slots needed by one frame, including zero-sized unit slots.
+    /// Total typed-bank slots needed by one frame, including unit registers.
     pub register_slots: usize,
     /// Bytes for the typed-bank elements of one frame; strings/bytes occupy handles only.
+    /// Unit registers currently occupy `u32` slots although their public value has no payload.
     pub register_bytes: usize,
     /// Bytes occupied by populated elements of this function's prepared buffers.
     pub prepared_used_bytes: usize,
@@ -213,7 +214,8 @@ fn buffer_bytes<T>(buffer: &alloc::vec::Vec<T>) -> (usize, usize) {
 }
 
 fn register_bytes(counts: RegCounts) -> usize {
-    counts.bools * size_of::<bool>()
+    counts.unit * size_of::<u32>()
+        + counts.bools * size_of::<bool>()
         + counts.i64s * size_of::<i64>()
         + counts.u64s * size_of::<u64>()
         + counts.f64s * size_of::<f64>()
@@ -234,6 +236,28 @@ mod tests {
     use crate::program::HostTypeId;
     use alloc::{format, vec, vec::Vec};
     use core::num::NonZeroU64;
+
+    #[test]
+    fn unit_bank_storage_is_included_in_frame_bytes() {
+        let mut body = Asm::new();
+        // Effect token, argument, and an unused declaration all reserve bank slots.
+        body.set_register_types(vec![ValueType::Unit; 3]);
+        body.ret(0, &[1]);
+        let mut builder = ProgramBuilder::new();
+        let id = builder
+            .push_function_checked(
+                body,
+                FunctionSig {
+                    arg_types: vec![ValueType::Unit],
+                    ret_types: vec![ValueType::Unit],
+                },
+            )
+            .unwrap();
+        let program = builder.build_verified().unwrap();
+        let function = program.function(id).unwrap();
+        assert_eq!(function.register_slots(ValueType::Unit), 3);
+        assert_eq!(function.stats().register_bytes, 3 * size_of::<u32>());
+    }
 
     #[test]
     fn signatures_and_bank_requirements_describe_one_function() {
