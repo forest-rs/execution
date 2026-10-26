@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Exercise generated typed guest programs against an independent expression evaluator in the
+  conformance suite, covering nested joins, integer extrema, aggregate aliases, guest calls,
+  wire roundtrips and malformed variants. Failures report deterministic seeds and reduced
+  expressions; the test-only structural shrinker is checked with an injected model defect.
+
 - Bound guest tuple/struct/array construction with `Limits::max_aggregate_work`, charging one
   node plus each immediate field before allocation or payload copying. The default is 1,000,000
   units per run, shared across guest calls. `AggregateWorkExceeded` reports limit/used/requested;
