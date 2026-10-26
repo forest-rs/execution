@@ -52,3 +52,11 @@ harness = false
 [[bench]]
 name = "observations"
 harness = false
+
+[[bench]]
+name = "authoring"
+harness = false
+
+[[bench]]
+name = "numeric_baselines"
+harness = false
