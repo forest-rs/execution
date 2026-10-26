@@ -63,9 +63,30 @@ storage of previously retained results, nested host aggregate payloads, host all
 preparation, capture, and graph-adapter imports are outside it. Trusted workloads can explicitly
 raise the limit or select `u64::MAX`. Usage resets on each invocation and context clearing.
 
+## Authoring register declarations
+
+Declare the function once with `ProgramBuilder::declare_function`, then create its
+body with `ProgramBuilder::function_asm`. The body owns declarations for r0 and
+arguments in signature order. `Asm::alloc_register(kind)` appends each temporary's
+known kind and returns its register ID. The assembler does not borrow the program
+builder, so emitters can continue registering constants, imports, and contracts.
+Finish with `define_function` and `build_verified`.
+
+Emitters can replace an external kind vector and allocation callback with the
+assembler's register allocator. For signatures discovered during emission, start
+with `Asm::new`: its first register allocation lazily reserves r0 as `Unit` and
+returns r1 for the first value register. Declare argument kinds in signature
+order before temporaries, or transfer a known r0/argument prefix. Supply the
+finished signature to `push_function_checked` afterward. Frontends that already number and type their
+lowered registers should transfer that ledger with `set_register_types`, then
+append any backend temporaries with `alloc_register`. No type inference pass is
+introduced. Declarations reserve storage; they do not initialize values or prove
+aggregate structure. Existing raw assembly and explicit ledgers remain supported.
+
 ## Typed joins
 
-Each function declares every register kind with `Asm::set_register_types`, including r0 (`Unit`),
+Each function supplies a complete register-kind ledger through allocation or
+`Asm::set_register_types`, including r0 (`Unit`),
 arguments and compiler temporaries. Record kinds when allocating registers. Declarations determine
 execution banks; the verifier checks definitions and operands against them without reconstructing
 scalar types at control-flow joins. Declarations do not initialize registers or prove aggregate shapes.

@@ -23,7 +23,7 @@
 //!
 //! use alloc::vec;
 //!
-//! use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+//! use execution_tape::asm::{FunctionSig, ProgramBuilder};
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
 //! use execution_tape::trace::TraceMask;
@@ -46,21 +46,17 @@
 //! }
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut asm = Asm::new();
-//!     asm.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64, ValueType::I64]);
-//!     asm.const_i64(2, 1);
-//!     asm.i64_add(3, 1, 2);
-//!     asm.ret(0, &[3]);
-//!
 //!     let mut builder = ProgramBuilder::new();
 //!     builder.set_program_name("add_one");
-//!     let entry = builder.push_function_checked(
-//!         asm,
-//!         FunctionSig {
-//!             arg_types: vec![ValueType::I64],
-//!             ret_types: vec![ValueType::I64],
-//!         },
-//!     )?;
+//!     let entry = builder.declare_function(FunctionSig {
+//!         arg_types: vec![ValueType::I64],
+//!         ret_types: vec![ValueType::I64],
+//!     })?;
+//!     let mut asm = builder.function_asm(entry)?;
+//!     let one = asm.alloc_register(ValueType::I64);
+//!     let result = asm.alloc_register(ValueType::I64);
+//!     asm.const_i64(one, 1).i64_add(result, 1, one).ret(0, &[result]);
+//!     builder.define_function(entry, asm)?;
 //!     builder.set_function_input_name(entry, 0, "x")?;
 //!     builder.set_function_output_name(entry, 0, "y")?;
 //!
