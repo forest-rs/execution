@@ -4,7 +4,7 @@
 //! Integration test that drives a real scope stream through the profiling adapter.
 //!
 //! Run with:
-//! `cargo test -p execution_tape_profiling`
+//! `cargo test -p execution_tape_tracy`
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,7 +17,7 @@ use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
 
-use execution_tape_profiling::{LabelResolver, ProfilingTraceSink};
+use execution_tape_tracy::{LabelResolver, ProfilingTraceSink};
 
 #[derive(Clone)]
 struct CountingResolver {

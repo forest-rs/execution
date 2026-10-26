@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "execution_graph"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "execution_tape",
  "hashbrown",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "execution_graph_examples"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "execution_graph",
  "execution_tape",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "execution_graph_wind_tunnel"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "execution_graph",
@@ -398,11 +398,11 @@ dependencies = [
 
 [[package]]
 name = "execution_tape"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "execution_tape_codegen"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "execution_tape_conformance"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "execution_graph",
  "execution_tape",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "execution_tape_footfall"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "execution_tape",
  "footfall",
@@ -427,15 +427,15 @@ dependencies = [
 
 [[package]]
 name = "execution_tape_observatory"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "execution_tape",
  "ratatui",
 ]
 
 [[package]]
-name = "execution_tape_profiling"
-version = "0.0.1"
+name = "execution_tape_tracy"
+version = "0.1.0"
 dependencies = [
  "execution_tape",
  "tracy-client",
@@ -443,14 +443,16 @@ dependencies = [
 
 [[package]]
 name = "execution_tape_wind_tunnel"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "execution_tape",
  "execution_tape_footfall",
  "execution_tape_observatory",
+ "execution_tape_tracy",
  "footfall",
  "ratatui",
+ "tracy-client",
 ]
 
 [[package]]

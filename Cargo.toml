@@ -8,13 +8,13 @@ members = [
   "execution_tape_conformance",
   "execution_tape_footfall",
   "execution_graph_wind_tunnel",
-  "execution_tape_profiling",
+  "execution_tape_tracy",
   "execution_tape_observatory",
   "execution_tape_wind_tunnel",
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
 # and with the MSRV in the `Unreleased` section of CHANGELOG.md.
@@ -25,10 +25,14 @@ repository = "https://github.com/forest-rs/execution"
 [workspace.dependencies]
 # Internal crates are centralized here so that their path dependencies also carry
 # the version requirements that `cargo package`/`cargo publish` need.
-execution_tape = { path = "execution_tape", version = "0.0.1" }
-execution_graph = { path = "execution_graph", version = "0.0.1" }
-execution_tape_observatory = { path = "execution_tape_observatory", version = "0.0.1" }
-execution_tape_footfall = { path = "execution_tape_footfall", version = "0.0.1" }
+execution_tape = { path = "execution_tape", version = "0.1.0" }
+execution_graph = { path = "execution_graph", version = "0.1.0" }
+execution_tape_observatory = { path = "execution_tape_observatory", version = "0.1.0" }
+execution_tape_footfall = { path = "execution_tape_footfall", version = "0.1.0" }
+execution_tape_tracy = { path = "execution_tape_tracy", version = "0.1.0" }
+
+# The adapter and its development executable share one client version.
+tracy-client = "0.19.0"
 
 # Benchmark tooling is shared by both wind-tunnel crates.
 criterion = "0.8.2"

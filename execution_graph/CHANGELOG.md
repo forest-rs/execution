@@ -60,6 +60,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Prepare Rust package version 0.1.0 and require the `execution_tape` 0.1 API when the `tape`
+  feature is enabled. Migration: upgrade the two core crates together for tape-backed graphs;
+  the native graph with default features disabled continues to omit the tape dependency. ([#199][] by [@waywardmonkeys][])
+
 - Reject zero-output node definitions with `GraphError::NoOutputs` instead of accepting work
   that never executes. Declare one completion output and return a unit value; tape entry
   functions must likewise return unit when they have no data result. ([#171][] by [@waywardmonkeys][])
@@ -175,3 +179,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#181]: https://github.com/forest-rs/execution/pull/181
 
 [#182]: https://github.com/forest-rs/execution/pull/182
+
+[#199]: https://github.com/forest-rs/execution/pull/199
