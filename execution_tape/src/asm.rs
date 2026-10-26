@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::contract::{Contract, ContractBuildError, ContractId, ContractTableBuilder};
-use crate::format::{write_sleb128_i64, write_uleb128_u64};
+use crate::format::{write_sleb128_i64, write_sleb128_i128, write_uleb128_u64};
 use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
@@ -1319,17 +1319,17 @@ impl Asm {
     }
 
     /// Encodes `const_decimal dst, mantissa_sleb, scale_u8`.
-    pub fn const_decimal(&mut self, dst: u32, mantissa: i64, scale: u8) -> &mut Self {
+    pub fn const_decimal(&mut self, dst: u32, mantissa: i128, scale: u8) -> &mut Self {
         self.opcode(Opcode::ConstDecimal);
         self.reg(dst);
-        write_sleb128_i64(&mut self.bytes, mantissa);
+        write_sleb128_i128(&mut self.bytes, mantissa);
         self.bytes.push(scale);
         self
     }
 
     /// Encodes `const_decimal ...` from a [`Decimal`].
     pub fn const_decimal_value(&mut self, dst: u32, v: Decimal) -> &mut Self {
-        self.const_decimal(dst, v.mantissa, v.scale)
+        self.const_decimal(dst, v.mantissa(), v.scale())
     }
 
     /// Encodes `const_pool dst, idx`.
@@ -2156,7 +2156,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `dec_to_i64 dst, a` (traps if `a.scale != 0`).
+    /// Encodes `dec_to_i64 dst, a` (traps if `a.scale != 0` or outside `i64`).
     pub fn dec_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
         self.opcode(Opcode::DecToI64);
         self.reg(dst);
@@ -2164,7 +2164,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `dec_to_u64 dst, a` (traps if `a.scale != 0` or `a.mantissa < 0`).
+    /// Encodes `dec_to_u64 dst, a` (traps if `a.scale != 0` or outside `u64`).
     pub fn dec_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
         self.opcode(Opcode::DecToU64);
         self.reg(dst);

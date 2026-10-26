@@ -130,7 +130,7 @@ reported buffer bytes are layout measurements, not allocator traffic or RSS.
 ## Values and types (v1)
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
-- `Decimal { mantissa: i64, scale: u8 }` (per-value scale; rounding/division TBD)
+- `Decimal::new(mantissa: i128, scale: u8)` (per-value scale; rounding/division are host policies)
 - `Bytes` and/or `Str` (owned public values; runtime registers use handles to owned or borrowed payloads)
 
 Within a run, byte/string handles resolve to immutable program constants, entry arguments,

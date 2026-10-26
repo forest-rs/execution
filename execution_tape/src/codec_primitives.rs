@@ -34,6 +34,18 @@ pub(crate) fn read_u8_raw(r: &mut Reader<'_>) -> Result<u8, DecodeError> {
     r.read_u8()
 }
 
+pub(crate) fn read_decimal(r: &mut Reader<'_>) -> Result<crate::value::Decimal, DecodeError> {
+    Ok(crate::value::Decimal::new(
+        r.read_sleb128_i128()?,
+        r.read_u8()?,
+    ))
+}
+
+pub(crate) fn write_decimal(out: &mut Vec<u8>, value: crate::value::Decimal) {
+    crate::format::write_sleb128_i128(out, value.mantissa());
+    out.push(value.scale());
+}
+
 pub(crate) fn read_i64_sleb(r: &mut Reader<'_>) -> Result<i64, DecodeError> {
     r.read_sleb128_i64()
 }

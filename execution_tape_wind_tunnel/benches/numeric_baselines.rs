@@ -61,10 +61,7 @@ fn numeric(c: &mut Criterion) {
                 }
                 ValueType::Decimal => {
                     body.const_decimal(2, 1, 2);
-                    Value::Decimal(Decimal {
-                        mantissa: 12345,
-                        scale: 2,
-                    })
+                    Value::Decimal(Decimal::new(12345, 2))
                 }
                 _ => unreachable!(),
             };
@@ -112,13 +109,7 @@ fn numeric(c: &mut Criterion) {
             match &outputs[0] {
                 Value::I64(value) => assert_eq!(*value, 12345 + count),
                 Value::Decimal(value) => {
-                    assert_eq!(
-                        *value,
-                        Decimal {
-                            mantissa: 12345 + count,
-                            scale: 2
-                        }
-                    )
+                    assert_eq!(*value, Decimal::new(i128::from(12345 + count), 2))
                 }
                 Value::F64(value) => {
                     assert!((*value - (123.45 + count as f64 * 0.01)).abs() < 1e-9)
@@ -152,10 +143,7 @@ fn boundaries(c: &mut Criterion) {
     let mut group = c.benchmark_group("numeric_boundaries");
     for kind in [ValueType::I64, ValueType::Decimal] {
         for path in ["inline", "pool", "host"] {
-            let decimal = Decimal {
-                mantissa: 12345,
-                scale: 2,
-            };
+            let decimal = Decimal::new(12345, 2);
             let expected = if kind == ValueType::I64 {
                 Value::I64(12345)
             } else {
@@ -165,10 +153,7 @@ fn boundaries(c: &mut Criterion) {
             let literal = builder.constant(if kind == ValueType::I64 {
                 Const::I64(12345)
             } else {
-                Const::Decimal {
-                    mantissa: decimal.mantissa,
-                    scale: decimal.scale,
-                }
+                Const::Decimal(decimal)
             });
             let host = builder.host_sig_for(
                 "echo",

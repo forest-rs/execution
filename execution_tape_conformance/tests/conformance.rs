@@ -450,7 +450,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
 }
 
 #[test]
-fn golden_program_bytes_v0_4() {
+fn golden_program_bytes_v0_5() {
     let mut p = Program::new(
         vec![],
         vec![],
@@ -501,10 +501,10 @@ fn golden_program_bytes_v0_4() {
         0x45,
         0x00,
         0x00,
-        // version_major=0, version_minor=4
+        // version_major=0, version_minor=5
         0x00,
         0x00,
-        0x04,
+        0x05,
         0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
         0x02,
@@ -1104,13 +1104,7 @@ fn roundtrip_verify_run_decimal_ops() {
     let out = vm
         .run(&back, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();
-    assert_eq!(
-        out,
-        vec![Value::Decimal(Decimal {
-            mantissa: 550,
-            scale: 2,
-        })]
-    );
+    assert_eq!(out, vec![Value::Decimal(Decimal::new(550, 2))]);
 }
 
 #[test]
@@ -2291,13 +2285,7 @@ fn roundtrip_verify_run_decimal_conversions_scale_0_only() {
     let mut vm = Vm::new(TestHost, Limits::default());
     let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
     assert_eq!(out[0], Value::I64(42));
-    assert_eq!(
-        out[1],
-        Value::Decimal(Decimal {
-            mantissa: 4200,
-            scale: 2
-        })
-    );
+    assert_eq!(out[1], Value::Decimal(Decimal::new(4200, 2)));
 }
 
 #[test]

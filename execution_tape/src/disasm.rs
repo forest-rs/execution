@@ -23,7 +23,7 @@ use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
 use crate::program::{CallSigId, ConstId, ElemTypeId, HostSigId, Program, TypeId, ValueType};
 pub use crate::register_operands::RegIter;
-use crate::value::FuncId;
+use crate::value::{Decimal, FuncId};
 use crate::verifier::VerifiedProgram;
 
 /// Disassembles `program` into a structured view.
@@ -479,12 +479,7 @@ impl<'a> InstrView<'a> {
             Instr::ConstI64 { imm, .. } => Some(ConstValue::I64(*imm)),
             Instr::ConstU64 { imm, .. } => Some(ConstValue::U64(*imm)),
             Instr::ConstF64 { bits, .. } => Some(ConstValue::F64Bits(*bits)),
-            Instr::ConstDecimal {
-                mantissa, scale, ..
-            } => Some(ConstValue::Decimal {
-                mantissa: *mantissa,
-                scale: *scale,
-            }),
+            Instr::ConstDecimal { value, .. } => Some(ConstValue::Decimal(*value)),
             Instr::ConstPool { idx, .. } => const_pool_value(self.program, *idx),
             _ => None,
         }
@@ -617,12 +612,7 @@ pub enum ConstValue<'a> {
     /// IEEE 754 bits for an `f64` constant.
     F64Bits(u64),
     /// Decimal literal.
-    Decimal {
-        /// Integer mantissa.
-        mantissa: i64,
-        /// Base-10 scale.
-        scale: u8,
-    },
+    Decimal(Decimal),
     /// Bytes constant (borrowed from the program constant pool).
     Bytes(&'a [u8]),
     /// UTF-8 string constant (borrowed from the program constant pool).
@@ -674,13 +664,9 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.dst = Some(dst);
             view.const_value = Some(ConstValue::F64Bits(bits));
         }
-        Instr::ConstDecimal {
-            dst,
-            mantissa,
-            scale,
-        } => {
+        Instr::ConstDecimal { dst, value } => {
             view.dst = Some(dst);
-            view.const_value = Some(ConstValue::Decimal { mantissa, scale });
+            view.const_value = Some(ConstValue::Decimal(value));
         }
         Instr::ConstPool { dst, idx } => {
             view.dst = Some(dst);
@@ -988,10 +974,9 @@ fn const_pool_value<'a>(program: &'a Program, id: ConstId) -> Option<ConstValue<
         crate::program::ConstEntry::I64(i) => Some(ConstValue::I64(*i)),
         crate::program::ConstEntry::U64(u) => Some(ConstValue::U64(*u)),
         crate::program::ConstEntry::F64(bits) => Some(ConstValue::F64Bits(*bits)),
-        crate::program::ConstEntry::Decimal { mantissa, scale } => Some(ConstValue::Decimal {
-            mantissa: *mantissa,
-            scale: *scale,
-        }),
+        crate::program::ConstEntry::Decimal(_) => {
+            program.const_decimal(id).ok().map(ConstValue::Decimal)
+        }
         crate::program::ConstEntry::Bytes(_) => program.const_bytes(id).ok().map(ConstValue::Bytes),
         crate::program::ConstEntry::Str(_) => program.const_str(id).ok().map(ConstValue::Str),
     }
@@ -1377,7 +1362,9 @@ fn fmt_const_value(f: &mut fmt::Formatter<'_>, v: ConstValue<'_>) -> fmt::Result
             let as_f = f64::from_bits(bits);
             write!(f, "{as_f} (bits=0x{bits:016X})")
         }
-        ConstValue::Decimal { mantissa, scale } => {
+        ConstValue::Decimal(value) => {
+            let mantissa = value.mantissa();
+            let scale = value.scale();
             write!(f, "dec(mantissa={mantissa}, scale={scale})")
         }
         ConstValue::Bytes(b) => {

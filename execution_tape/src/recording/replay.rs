@@ -190,7 +190,7 @@ impl State {
             (RecordedValue::I64(a), ValueRef::I64(b)) if *a == b => None,
             (RecordedValue::U64(a), ValueRef::U64(b)) if *a == b => None,
             (RecordedValue::F64(a), ValueRef::F64(b)) if *a == b.to_bits() => None,
-            (RecordedValue::Decimal(a), ValueRef::Decimal(b)) if *a == b => None,
+            (RecordedValue::Decimal(a), ValueRef::Decimal(b)) if a == b => None,
             (RecordedValue::Bytes(a), ValueRef::Bytes(b)) if a.as_ref() == b => None,
             (RecordedValue::Str(a), ValueRef::Str(b)) if a.as_ref() == b => None,
             (RecordedValue::Obj(a), ValueRef::Obj(b)) if *a == b => None,

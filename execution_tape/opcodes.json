@@ -182,7 +182,7 @@
       "byte": "0x15",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = Decimal { mantissa, scale }`.",
+      "doc": "`dst = decimal` (signed 128-bit mantissa and per-value scale).",
       "operands": [
         {
           "kind": "reg",
@@ -192,16 +192,10 @@
           "access": "write"
         },
         {
-          "kind": "imm_i64",
-          "role": "mantissa",
-          "encoding": "i64_sleb",
-          "field": "mantissa"
-        },
-        {
-          "kind": "imm_u8",
-          "role": "scale",
-          "encoding": "u8_raw",
-          "field": "scale"
+          "kind": "decimal",
+          "role": "imm",
+          "encoding": "decimal_sleb",
+          "field": "value"
         }
       ]
     },
@@ -2217,7 +2211,7 @@
       "byte": "0x74",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = a.mantissa` (`Decimal` to `i64`, traps if `scale != 0`).",
+      "doc": "`dst = a.mantissa` (`Decimal` to `i64`, traps if `scale != 0` or outside `i64`).",
       "operands": [
         {
           "kind": "reg",
@@ -2241,7 +2235,7 @@
       "byte": "0x75",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = a.mantissa` (`Decimal` to `u64`, traps if `scale != 0` or mantissa < 0).",
+      "doc": "`dst = a.mantissa` (`Decimal` to `u64`, traps if `scale != 0` or outside `u64`).",
       "operands": [
         {
           "kind": "reg",

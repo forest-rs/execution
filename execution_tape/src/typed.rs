@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use crate::program::{CallSigId, HostSigId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
-use crate::value::FuncId;
+use crate::value::{Decimal, FuncId};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RegClass {
@@ -238,8 +238,7 @@ pub(crate) enum ExecInstr {
     },
     ConstDecimal {
         dst: DecimalReg,
-        mantissa: i64,
-        scale: u8,
+        value: Decimal,
     },
     ConstFunc {
         dst: FuncReg,
@@ -264,10 +263,6 @@ pub(crate) enum ExecInstr {
     },
     ConstPoolF64 {
         dst: F64Reg,
-        idx: ConstId,
-    },
-    ConstPoolDecimal {
-        dst: DecimalReg,
         idx: ConstId,
     },
     ConstPoolBytes {

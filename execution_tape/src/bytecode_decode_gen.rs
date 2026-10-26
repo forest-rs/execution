@@ -67,12 +67,10 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
         },
         Opcode::ConstDecimal => {
             let dst = crate::codec_primitives::read_reg(r)?;
-            let mantissa = crate::codec_primitives::read_i64_sleb(r)?;
-            let scale = crate::codec_primitives::read_u8_raw(r)?;
+            let value = crate::codec_primitives::read_decimal(r)?;
             Instr::ConstDecimal {
                 dst,
-                mantissa,
-                scale,
+                value,
             }
         },
         Opcode::ConstPool => {

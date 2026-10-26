@@ -192,6 +192,22 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Widen exact decimal mantissas from `i64` to the full signed `i128` range. Construct with
+  `Decimal::new(mantissa, scale)` and read with `mantissa()` / `scale()` instead of public fields.
+  `Asm::const_decimal` now accepts `i128`; widen existing `i64` variables with `i128::from`.
+  `Const::Decimal` and `disasm::ConstValue::Decimal` hold a `Decimal`; packed `ConstEntry::Decimal`
+  holds a range read with `Program::const_decimal`. Operand codecs use one `Operand::Decimal`
+  instead of separate mantissa/scale operands. Host `ValueRef::Decimal` borrows `&Decimal`;
+  copy `*value` or use `to_value()` for an owned result. Scale-sensitive equality and equal-scale
+  addition/subtraction are preserved; rounding and division remain host policies. ([#192][] by [@waywardmonkeys][])
+
+- Decimal casts check both signed and unsigned 64-bit bounds. Integer-to-decimal conversion accepts
+  the full `u64` range where the scaled mantissa fits, and zero at every `u8` scale. ([#192][] by [@waywardmonkeys][])
+
+- Wire version 0.5 encodes decimal literal mantissas as signed 128-bit LEB128 (at most 19 bytes).
+  Earlier versions are rejected; regenerate serialized programs and source sidecars together. ([#192][] by [@waywardmonkeys][])
+
+
 - Bound logical byte/string work per invocation with `Limits::max_payload_work` (64 MiB by
   default). Copying, comparisons, conversions, direct host payload admission, and owned result
   materialization charge their documented work before performing it. Add the field to explicit
@@ -455,3 +471,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#185]: https://github.com/forest-rs/execution/pull/185
 
 [#190]: https://github.com/forest-rs/execution/pull/190
+
+[#192]: https://github.com/forest-rs/execution/pull/192

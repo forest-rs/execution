@@ -5,7 +5,10 @@
 
 mod leb128;
 
-pub use leb128::{read_sleb128_i64, read_uleb128_u64, write_sleb128_i64, write_uleb128_u64};
+pub use leb128::{
+    read_sleb128_i64, read_sleb128_i128, read_uleb128_u64, write_sleb128_i64, write_sleb128_i128,
+    write_uleb128_u64,
+};
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -163,6 +166,11 @@ impl<'a> Reader<'a> {
         read_sleb128_i64(self.bytes, &mut self.offset)
     }
 
+    /// Reads a signed LEB128 integer as `i128` (at most 19 bytes).
+    pub fn read_sleb128_i128(&mut self) -> Result<i128, DecodeError> {
+        read_sleb128_i128(self.bytes, &mut self.offset)
+    }
+
     /// Reads `len` raw bytes.
     pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
         self.take(len)
@@ -252,6 +260,11 @@ impl Writer {
     /// Appends a signed LEB128 integer (`i64`).
     pub fn write_sleb128_i64(&mut self, v: i64) {
         write_sleb128_i64(&mut self.bytes, v);
+    }
+
+    /// Appends a signed LEB128 integer (`i128`).
+    pub fn write_sleb128_i128(&mut self, v: i128) {
+        write_sleb128_i128(&mut self.bytes, v);
     }
 
     /// Appends raw bytes.

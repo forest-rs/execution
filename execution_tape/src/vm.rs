@@ -1346,19 +1346,8 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
-                ExecInstr::ConstDecimal {
-                    dst,
-                    mantissa,
-                    scale,
-                } => {
-                    ctx.write_decimal(
-                        base,
-                        *dst,
-                        Decimal {
-                            mantissa: *mantissa,
-                            scale: *scale,
-                        },
-                    );
+                ExecInstr::ConstDecimal { dst, value } => {
+                    ctx.write_decimal(base, *dst, *value);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
@@ -1423,24 +1412,6 @@ impl<H: Host> Vm<H> {
                     ctx.write_f64(base, *dst, f64::from_bits(*bits));
                     ctx.frames[frame_index].pc = next_pc;
                 }
-                ExecInstr::ConstPoolDecimal { dst, idx } => {
-                    let ConstEntry::Decimal { mantissa, scale } = program_ref
-                        .const_pool
-                        .get(idx.0 as usize)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?
-                    else {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
-                    };
-                    ctx.write_decimal(
-                        base,
-                        *dst,
-                        Decimal {
-                            mantissa: *mantissa,
-                            scale: *scale,
-                        },
-                    );
-                    ctx.frames[frame_index].pc = next_pc;
-                }
                 ExecInstr::ConstPoolBytes { dst, idx } => {
                     let h = ctx.arena.borrow_bytes(PayloadSource::Constant(*idx));
                     ctx.write_bytes_handle(base, *dst, h);
@@ -1455,54 +1426,40 @@ impl<H: Host> Vm<H> {
                 ExecInstr::DecAdd { dst, a, b } => {
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
-                    if da.scale != db.scale {
+                    if da.scale() != db.scale() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
                     let mantissa = da
-                        .mantissa
-                        .checked_add(db.mantissa)
+                        .mantissa()
+                        .checked_add(db.mantissa())
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(
-                        base,
-                        *dst,
-                        Decimal {
-                            mantissa,
-                            scale: da.scale,
-                        },
-                    );
+                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, da.scale()));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::DecSub { dst, a, b } => {
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
-                    if da.scale != db.scale {
+                    if da.scale() != db.scale() {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
                     let mantissa = da
-                        .mantissa
-                        .checked_sub(db.mantissa)
+                        .mantissa()
+                        .checked_sub(db.mantissa())
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(
-                        base,
-                        *dst,
-                        Decimal {
-                            mantissa,
-                            scale: da.scale,
-                        },
-                    );
+                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, da.scale()));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::DecMul { dst, a, b } => {
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
                     let mantissa = da
-                        .mantissa
-                        .checked_mul(db.mantissa)
+                        .mantissa()
+                        .checked_mul(db.mantissa())
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    let scale_u16 = u16::from(da.scale) + u16::from(db.scale);
+                    let scale_u16 = u16::from(da.scale()) + u16::from(db.scale());
                     let scale = u8::try_from(scale_u16)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(base, *dst, Decimal { mantissa, scale });
+                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, scale));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2789,64 +2746,42 @@ impl<H: Host> Vm<H> {
 
                 ExecInstr::DecToI64 { dst, a } => {
                     let a = ctx.read_decimal(base, *a);
-                    if a.scale != 0 {
+                    if a.scale() != 0 {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
-                    ctx.write_i64(base, *dst, a.mantissa);
+                    let value = i64::try_from(a.mantissa())
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_i64(base, *dst, value);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::DecToU64 { dst, a } => {
                     let a = ctx.read_decimal(base, *a);
-                    if a.scale != 0 {
+                    if a.scale() != 0 {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
                     }
-                    if a.mantissa < 0 {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
-                    }
-                    ctx.write_u64(base, *dst, u64::try_from(a.mantissa).unwrap_or(u64::MAX));
+                    let value = u64::try_from(a.mantissa())
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_u64(base, *dst, value);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::I64ToDec { dst, a, scale } => {
-                    let a = ctx.read_i64(base, *a);
-                    let mut factor: i64 = 1;
+                    let mut mantissa = i128::from(ctx.read_i64(base, *a));
                     for _ in 0..*scale {
-                        factor = factor
+                        mantissa = mantissa
                             .checked_mul(10)
                             .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     }
-                    let mantissa = a
-                        .checked_mul(factor)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(
-                        base,
-                        *dst,
-                        Decimal {
-                            mantissa,
-                            scale: *scale,
-                        },
-                    );
+                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, *scale));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::U64ToDec { dst, a, scale } => {
-                    let a = ctx.read_u64(base, *a);
-                    let mut factor: i64 = 1;
+                    let mut mantissa = i128::from(ctx.read_u64(base, *a));
                     for _ in 0..*scale {
-                        factor = factor
+                        mantissa = mantissa
                             .checked_mul(10)
                             .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     }
-                    let mantissa = i128::from(a)
-                        .checked_mul(i128::from(factor))
-                        .and_then(|x| i64::try_from(x).ok())
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(
-                        base,
-                        *dst,
-                        Decimal {
-                            mantissa,
-                            scale: *scale,
-                        },
-                    );
+                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, *scale));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -3224,13 +3159,8 @@ impl ExecutionContext {
         self.i64s.resize(base.i64s + counts.i64s, 0);
         self.u64s.resize(base.u64s + counts.u64s, 0);
         self.f64s.resize(base.f64s + counts.f64s, 0.0);
-        self.decimals.resize(
-            base.decimals + counts.decimals,
-            Decimal {
-                mantissa: 0,
-                scale: 0,
-            },
-        );
+        self.decimals
+            .resize(base.decimals + counts.decimals, Decimal::new(0, 0));
         self.bytes.resize(base.bytes + counts.bytes, BytesHandle(0));
         self.strs.resize(base.strs + counts.strs, StrHandle(0));
         self.objs.resize(
@@ -3843,7 +3773,7 @@ fn read_value_ref_at<'a>(
         VReg::I64(r) => ValueRef::I64(i64s[base.i64s + r.0 as usize]),
         VReg::U64(r) => ValueRef::U64(u64s[base.u64s + r.0 as usize]),
         VReg::F64(r) => ValueRef::F64(f64s[base.f64s + r.0 as usize]),
-        VReg::Decimal(r) => ValueRef::Decimal(decimals[base.decimals + r.0 as usize]),
+        VReg::Decimal(r) => ValueRef::Decimal(&decimals[base.decimals + r.0 as usize]),
         VReg::Bytes(r) => {
             let h = bytes[base.bytes + r.0 as usize];
             ValueRef::Bytes(arena.bytes(h, sources).ok_or(Trap::InvalidPc)?)

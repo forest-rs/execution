@@ -83,7 +83,7 @@ fn main() {
     assert_eq!(size_of::<Value>(), size_of::<models::Owned<Decimal>>());
     assert_eq!(
         size_of::<ValueRef<'_>>(),
-        size_of::<models::Borrowed<'_, Decimal>>()
+        size_of::<models::Borrowed<'_, &Decimal>>()
     );
     println!("\nCandidate layouts only (no arithmetic, allocator, or throughput measurement):");
     row::<models::WideNative>("native i128");

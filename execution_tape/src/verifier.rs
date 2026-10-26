@@ -1917,14 +1917,9 @@ fn verify_function_bytecode(
                 dst: map_f64(*dst)?,
                 bits: *bits,
             },
-            Instr::ConstDecimal {
-                dst,
-                mantissa,
-                scale,
-            } => ExecInstr::ConstDecimal {
+            Instr::ConstDecimal { dst, value } => ExecInstr::ConstDecimal {
                 dst: map_decimal(*dst)?,
-                mantissa: *mantissa,
-                scale: *scale,
+                value: *value,
             },
             Instr::ConstFunc { dst, func_id } => ExecInstr::ConstFunc {
                 dst: map_func(*dst)?,
@@ -1954,9 +1949,9 @@ fn verify_function_bytecode(
                         dst: map_f64(*dst)?,
                         idx: *idx,
                     },
-                    ValueType::Decimal => ExecInstr::ConstPoolDecimal {
+                    ValueType::Decimal => ExecInstr::ConstDecimal {
                         dst: map_decimal(*dst)?,
-                        idx: *idx,
+                        value: program.const_decimal(*idx)?,
                     },
                     ValueType::Bytes => ExecInstr::ConstPoolBytes {
                         dst: map_bytes(*dst)?,
@@ -2978,7 +2973,7 @@ fn const_value_type(c: &ConstEntry) -> ValueType {
         ConstEntry::I64(_) => ValueType::I64,
         ConstEntry::U64(_) => ValueType::U64,
         ConstEntry::F64(_) => ValueType::F64,
-        ConstEntry::Decimal { .. } => ValueType::Decimal,
+        ConstEntry::Decimal(_) => ValueType::Decimal,
         ConstEntry::Bytes(_) => ValueType::Bytes,
         ConstEntry::Str(_) => ValueType::Str,
     }

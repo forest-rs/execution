@@ -16,6 +16,7 @@ use core::num::{NonZeroU32, NonZeroU64};
 use crate::contract::{Contract, ContractId, ContractKinds, ContractTable, ContractTableBuilder};
 use crate::format::{DecodeError, Reader, Writer};
 use crate::host::{HostSig, SigHash, sig_hash};
+use crate::value::Decimal;
 
 #[cfg(doc)]
 use crate::verifier;
@@ -23,7 +24,7 @@ use crate::verifier;
 /// The `execution_tape` binary format version supported by this crate (draft).
 pub const VERSION_MAJOR: u16 = 0;
 /// The `execution_tape` binary format version supported by this crate (draft).
-pub const VERSION_MINOR: u16 = 4;
+pub const VERSION_MINOR: u16 = 5;
 
 const MAGIC: &[u8; 8] = b"EXTAPE\0\0";
 
@@ -54,13 +55,8 @@ pub enum Const {
     U64(u64),
     /// `f64` literal (IEEE 754 bits are serialized as little-endian).
     F64(u64),
-    /// Decimal literal (`mantissa: i64`, `scale: u8`).
-    Decimal {
-        /// Integer mantissa.
-        mantissa: i64,
-        /// Base-10 scale (number of fractional digits).
-        scale: u8,
-    },
+    /// Exact decimal literal, preserving its scale.
+    Decimal(Decimal),
     /// Raw byte string.
     Bytes(Vec<u8>),
     /// UTF-8 string.
@@ -386,7 +382,7 @@ pub struct Program {
     pub symbol_data: String,
     /// Constant pool.
     pub const_pool: Vec<ConstEntry>,
-    /// Packed blob arena for constant bytes.
+    /// Packed blob arena for byte constants and fixed-width decimal records.
     pub const_bytes_data: Vec<u8>,
     /// Packed UTF-8 string arena for constant strings.
     pub const_str_data: String,
@@ -463,13 +459,9 @@ pub enum ConstEntry {
     U64(u64),
     /// `f64` literal (IEEE 754 bits are serialized as little-endian).
     F64(u64),
-    /// Decimal literal (`mantissa: i64`, `scale: u8`).
-    Decimal {
-        /// Integer mantissa.
-        mantissa: i64,
-        /// Base-10 scale (number of fractional digits).
-        scale: u8,
-    },
+    /// Packed decimal literal (17 bytes in [`Program::const_bytes_data`]).
+    /// Use [`Program::const_decimal`] to read its value.
+    Decimal(ByteRange),
     /// Raw byte string (range into [`Program::const_bytes_data`]).
     Bytes(ByteRange),
     /// UTF-8 string (range into [`Program::const_str_data`]).
@@ -507,7 +499,7 @@ pub enum ValueType {
     U64,
     /// IEEE 754 64-bit float.
     F64,
-    /// Decimal (`i64` mantissa, per-value `u8` scale).
+    /// Decimal (`i128` mantissa, per-value `u8` scale).
     Decimal,
     /// Bytes.
     Bytes,
@@ -771,10 +763,11 @@ impl Program {
                 Const::I64(v) => packed_consts.push(ConstEntry::I64(*v)),
                 Const::U64(v) => packed_consts.push(ConstEntry::U64(*v)),
                 Const::F64(bits) => packed_consts.push(ConstEntry::F64(*bits)),
-                Const::Decimal { mantissa, scale } => packed_consts.push(ConstEntry::Decimal {
-                    mantissa: *mantissa,
-                    scale: *scale,
-                }),
+                Const::Decimal(value) => {
+                    let offset = u32::try_from(const_bytes_data.len()).unwrap_or(u32::MAX);
+                    const_bytes_data.extend_from_slice(&value.packed());
+                    packed_consts.push(ConstEntry::Decimal(ByteRange { offset, len: 17 }));
+                }
                 Const::Bytes(b) => {
                     let offset = u32::try_from(const_bytes_data.len()).unwrap_or(u32::MAX);
                     const_bytes_data.extend_from_slice(b);
@@ -1006,6 +999,16 @@ impl Program {
             .ok_or(DecodeError::InvalidUtf8)
     }
 
+    /// Returns an exact decimal literal from the packed constant pool.
+    ///
+    /// Rejects a non-decimal id, a malformed record length, or an out-of-bounds range.
+    pub fn const_decimal(&self, id: ConstId) -> Result<Decimal, DecodeError> {
+        let Some(ConstEntry::Decimal(range)) = self.const_pool.get(id.0 as usize) else {
+            return Err(DecodeError::OutOfBounds);
+        };
+        packed_decimal(&self.const_bytes_data, *range)
+    }
+
     /// Returns a byte slice for a [`ConstEntry::Bytes`] constant.
     pub fn const_bytes(&self, id: ConstId) -> Result<&[u8], DecodeError> {
         let Some(ConstEntry::Bytes(r)) = self.const_pool.get(id.0 as usize) else {
@@ -1139,7 +1142,8 @@ impl Program {
     /// # Panics
     ///
     /// Panics if a function's register declaration range, count or type ID is malformed, or if
-    /// required guest argument/result or indirect-call contract ranges or IDs are malformed.
+    /// required guest argument/result or indirect-call contract ranges or IDs are malformed,
+    /// or a decimal constant range does not identify a valid packed record.
     /// Verify manually edited programs before encoding them. In particular, required declarations
     /// are never silently omitted from the output.
     #[must_use]
@@ -1948,6 +1952,14 @@ impl ConstTag {
     }
 }
 
+fn packed_decimal(bytes: &[u8], range: ByteRange) -> Result<Decimal, DecodeError> {
+    let end = range.end()? as usize;
+    let bytes = bytes
+        .get(range.offset as usize..end)
+        .ok_or(DecodeError::OutOfBounds)?;
+    Decimal::from_packed(bytes).ok_or(DecodeError::OutOfBounds)
+}
+
 fn encode_const(w: &mut Writer, c: &ConstEntry, const_bytes: &[u8], const_str: &[u8]) {
     match c {
         ConstEntry::Unit => w.write_u8(ConstTag::Unit as u8),
@@ -1967,10 +1979,12 @@ fn encode_const(w: &mut Writer, c: &ConstEntry, const_bytes: &[u8], const_str: &
             w.write_u8(ConstTag::F64 as u8);
             w.write_u64_le(*bits);
         }
-        ConstEntry::Decimal { mantissa, scale } => {
+        ConstEntry::Decimal(range) => {
+            let value =
+                packed_decimal(const_bytes, *range).expect("invalid packed decimal constant");
             w.write_u8(ConstTag::Decimal as u8);
-            w.write_sleb128_i64(*mantissa);
-            w.write_u8(*scale);
+            w.write_sleb128_i128(value.mantissa());
+            w.write_u8(value.scale());
         }
         ConstEntry::Bytes(r) => {
             w.write_u8(ConstTag::Bytes as u8);
@@ -2007,10 +2021,13 @@ fn decode_const_pool(
             ConstTag::I64 => ConstEntry::I64(r.read_sleb128_i64()?),
             ConstTag::U64 => ConstEntry::U64(r.read_uleb128_u64()?),
             ConstTag::F64 => ConstEntry::F64(r.read_u64_le()?),
-            ConstTag::Decimal => ConstEntry::Decimal {
-                mantissa: r.read_sleb128_i64()?,
-                scale: r.read_u8()?,
-            },
+            ConstTag::Decimal => {
+                let value = Decimal::new(r.read_sleb128_i128()?, r.read_u8()?);
+                let offset =
+                    u32::try_from(const_bytes.len()).map_err(|_| DecodeError::OutOfBounds)?;
+                const_bytes.extend_from_slice(&value.packed());
+                ConstEntry::Decimal(ByteRange { offset, len: 17 })
+            }
             ConstTag::Bytes => {
                 let len = read_usize(&mut r)?;
                 let bytes = r.read_bytes(len)?;
@@ -2711,10 +2728,7 @@ mod tests {
                 Const::I64(-123),
                 Const::U64(456),
                 Const::F64(1.25_f64.to_bits()),
-                Const::Decimal {
-                    mantissa: 999,
-                    scale: 2,
-                },
+                Const::Decimal(Decimal::new(999, 2)),
                 Const::Bytes(vec![0, 1, 2, 3]),
                 Const::Str("hello".into()),
             ],

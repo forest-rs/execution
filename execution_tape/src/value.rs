@@ -46,13 +46,65 @@ pub struct Closure {
     pub env: AggHandle,
 }
 
-/// Decimal value with per-value scale.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// Exact decimal with a signed 128-bit mantissa and per-value scale.
+///
+/// Its numeric value is `mantissa × 10^(-scale)`. Construction preserves both parts:
+/// equality and hashing distinguish `1.0` from `1.00`. Addition and subtraction require
+/// equal scales; multiplication adds scales. Rounding and division remain host policies.
+///
+/// The mantissa uses byte-aligned storage to avoid imposing 16-byte alignment on
+/// [`Value`] and inspection records. This is an implementation detail, not a stable ABI.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Decimal {
-    /// Integer mantissa.
-    pub mantissa: i64,
-    /// Base-10 scale (fractional digits).
-    pub scale: u8,
+    mantissa: [u8; 16],
+    scale: u8,
+}
+
+impl Decimal {
+    /// Constructs a decimal without normalization or rounding.
+    #[must_use]
+    pub const fn new(mantissa: i128, scale: u8) -> Self {
+        Self {
+            mantissa: mantissa.to_le_bytes(),
+            scale,
+        }
+    }
+
+    /// Returns the signed integer mantissa.
+    #[must_use]
+    pub const fn mantissa(self) -> i128 {
+        i128::from_le_bytes(self.mantissa)
+    }
+
+    /// Returns the base-10 scale (number of fractional digits).
+    #[must_use]
+    pub const fn scale(self) -> u8 {
+        self.scale
+    }
+
+    pub(crate) fn packed(self) -> [u8; 17] {
+        let mut bytes = [0; 17];
+        bytes[..16].copy_from_slice(&self.mantissa);
+        bytes[16] = self.scale;
+        bytes
+    }
+
+    pub(crate) fn from_packed(bytes: &[u8]) -> Option<Self> {
+        let bytes: &[u8; 17] = bytes.try_into().ok()?;
+        Some(Self {
+            mantissa: bytes[..16].try_into().ok()?,
+            scale: bytes[16],
+        })
+    }
+}
+
+impl core::fmt::Debug for Decimal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Decimal")
+            .field("mantissa", &self.mantissa())
+            .field("scale", &self.scale())
+            .finish()
+    }
 }
 
 /// A runtime value.

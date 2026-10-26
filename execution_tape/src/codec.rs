@@ -20,7 +20,7 @@ use crate::format::{
 };
 use crate::opcode::{Opcode, OperandEncoding, OperandKind};
 use crate::program::{ConstId, ElemTypeId, HostSigId, TypeId};
-use crate::value::FuncId;
+use crate::value::{Decimal, FuncId};
 
 /// An operand value for encoding an instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +40,8 @@ pub enum Operand<'a> {
     ImmU32(u32),
     /// An immediate `i64`.
     ImmI64(i64),
+    /// A decimal literal, preserving mantissa and scale.
+    Decimal(Decimal),
     /// An immediate `u64`.
     ImmU64(u64),
 
@@ -67,6 +69,7 @@ impl Operand<'_> {
             Self::ImmU8(_) => OperandKind::ImmU8,
             Self::ImmU32(_) => OperandKind::ImmU32,
             Self::ImmI64(_) => OperandKind::ImmI64,
+            Self::Decimal(_) => OperandKind::Decimal,
             Self::ImmU64(_) => OperandKind::ImmU64,
             Self::ConstId(_) => OperandKind::ConstId,
             Self::FuncId(_) => OperandKind::FuncId,
@@ -95,6 +98,8 @@ pub enum DecodedOperand {
     ImmU32(u32),
     /// An immediate `i64`.
     ImmI64(i64),
+    /// A decimal literal, preserving mantissa and scale.
+    Decimal(Decimal),
     /// An immediate `u64`.
     ImmU64(u64),
 
@@ -122,6 +127,7 @@ impl DecodedOperand {
             Self::ImmU8(_) => OperandKind::ImmU8,
             Self::ImmU32(_) => OperandKind::ImmU32,
             Self::ImmI64(_) => OperandKind::ImmI64,
+            Self::Decimal(_) => OperandKind::Decimal,
             Self::ImmU64(_) => OperandKind::ImmU64,
             Self::ConstId(_) => OperandKind::ConstId,
             Self::FuncId(_) => OperandKind::FuncId,
@@ -319,6 +325,9 @@ pub fn encode_instruction(
             (Operand::ImmI64(v), OperandKind::ImmI64, OperandEncoding::I64Sleb) => {
                 write_sleb128_i64(out, v);
             }
+            (Operand::Decimal(v), OperandKind::Decimal, OperandEncoding::DecimalSleb) => {
+                crate::codec_primitives::write_decimal(out, v);
+            }
             (Operand::ImmU64(v), OperandKind::ImmU64, OperandEncoding::U64Uleb) => {
                 write_uleb128_u64(out, v);
             }
@@ -387,6 +396,9 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
             }
             (OperandKind::ImmI64, OperandEncoding::I64Sleb) => {
                 DecodedOperand::ImmI64(r.read_sleb128_i64()?)
+            }
+            (OperandKind::Decimal, OperandEncoding::DecimalSleb) => {
+                DecodedOperand::Decimal(crate::codec_primitives::read_decimal(&mut r)?)
             }
             (OperandKind::ImmU64, OperandEncoding::U64Uleb) => {
                 DecodedOperand::ImmU64(r.read_uleb128_u64()?)
@@ -466,6 +478,7 @@ pub fn canonicalize(bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
                 DecodedOperand::ImmU8(v) => Operand::ImmU8(*v),
                 DecodedOperand::ImmU32(v) => Operand::ImmU32(*v),
                 DecodedOperand::ImmI64(v) => Operand::ImmI64(*v),
+                DecodedOperand::Decimal(v) => Operand::Decimal(*v),
                 DecodedOperand::ImmU64(v) => Operand::ImmU64(*v),
                 DecodedOperand::ConstId(id) => Operand::ConstId(*id),
                 DecodedOperand::FuncId(id) => Operand::FuncId(*id),
