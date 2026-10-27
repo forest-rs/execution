@@ -1,6 +1,9 @@
-# `execution_tape` (v1) — design notes
+# `execution_tape` — execution design
 
-See also: [`v1_spec.md`](v1_spec.md).
+This document describes the Rust 0.1 API and wire format 0.5. See the
+[bytecode and execution specification](v1_spec.md) for encoding details; its filename is historical.
+Rust package versions and wire versions are independent. Decoding requires an exact wire-version
+match, so compiled programs must be regenerated when the wire format changes.
 
 ## Fence
 `execution_tape` owns how an already-lowered program runs: IR/bytecode shape, verification, execution (including limits), tracing hooks, and a narrow host-call ABI.
@@ -12,37 +15,42 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Portable, versioned bytecode serialization.
 - Verifiable programs (fail fast with good diagnostics).
 - `no_std + alloc` core by default; optional `std` feature.
-- Tracing/profiling first; interactive debugging later (including planned call-frame and host-call
-  scopes for external profilers).
+- Optional instruction and call/host scopes, owned boundary recording, checked replay, and
+  source-aware inspection. Interactive breakpoints and execution stepping remain future work.
 
-## Non-goals (v1)
-- Incremental recompute / dirty propagation (design should not preclude it).
-- Multi-lane effects (single linear effect token only).
-- Recoverable in-VM errors (`Result`/`Option`): v1 is trap-first.
+## VM non-goals
+- Incremental scheduling and dirty propagation: `execution_graph` owns these above the VM.
+- Multi-lane effects: calls currently use the single r0 convention described below.
+- Recoverable in-VM errors (`Result`/`Option`): execution is trap-first.
 
 ## Glossary
 - **`Program`**: serialized artifact containing constants, types, functions, and bytecode.
 - **`VerifiedProgram`**: a `Program` that has passed verifier checks and is safe to execute. In addition to the
   serialized `Program`, it includes verifier-produced, execution-ready function bodies (decoded/validated
   instruction stream + register layout) used by the VM.
-- **`Frame`**: a call instance with its own register base and program counter.
-- **Register**: a virtual slot with a statically verified `ValueType`. The VM may store registers in
-  per-`RegClass` arrays rather than as a tagged union to keep the hot loop monomorphic.
-- **`SpanId`**: stable identifier for tracing and source mapping (e.g. node GUID).
+- **`Frame`**: a call instance with bases into typed register banks and a program counter.
+- **Register**: a virtual slot with a statically verified `ValueType`. Payload-bearing kinds use
+  per-`RegClass` banks; Unit/effect registers have no runtime payload storage.
+- **`SpanId`**: a nonzero frontend-supplied identifier. Its meaning and stability belong to the
+  frontend; it is not itself a source range. Optional `source::SourceMap` metadata supplies ranges.
 - **Host call**: effectful operation implemented by the embedder.
 - Host-call arguments are passed as borrowed views (bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning).
 - Hosts also receive read-only VM context for program metadata, tuple/struct/array inspection, and optional incremental access recording.
-- **Effect token**: SSA-like value that enforces effect ordering.
+- **Effect token**: the initialized Unit register r0 required by call/return instructions.
 
-## Execution model (v1)
+## Execution model
 - Register-based VM with function frames and recursion.
 - The VM executes `VerifiedProgram` only (verification is a required pre-step).
 - Sync host calls only.
-- Limits: instruction fuel, host calls, call depth, contract work, and logical byte/string work;
+- Limits: instruction fuel, host calls, call depth, contract work, aggregate construction work,
+  and logical byte/string work;
   host calls may contribute additional fuel cost.
 - Errors are traps:
-  - VM traps: invalid bytecode, out-of-bounds, type mismatch at runtime boundary, fuel exceeded, stack overflow.
-  - Host traps: host call reports fatal error (no rollback semantics).
+  - Verification rejects malformed bytecode before execution. Runtime traps cover arithmetic,
+    indexing, boundary validation, and exhausted execution limits.
+  - A failed invocation discards its new aggregates and preserves the caller's existing output
+    buffer. Host effects already performed are not rolled back; typed host errors remain available
+    through the error source chain.
 
 `Limits::max_payload_work` defaults to 64 MiB per run. Concatenation, slices, string-to-bytes,
 and each owned payload materialization charge copied bytes before allocation/copying. Repeated
@@ -98,8 +106,9 @@ order before temporaries, or transfer a known r0/argument prefix. Supply the
 finished signature to `push_function_checked` afterward. Frontends that already number and type their
 lowered registers should transfer that ledger with `set_register_types`, then
 append any backend temporaries with `alloc_register`. No type inference pass is
-introduced. Declarations reserve storage; they do not initialize values or prove
-aggregate structure. Existing raw assembly and explicit ledgers remain supported.
+introduced. Declarations determine register kinds and payload-bank requirements; they do not
+initialize values or prove aggregate structure. Existing raw assembly and explicit ledgers remain
+supported.
 
 ## Typed joins
 
@@ -145,11 +154,11 @@ loops using explicit moves and block arguments, with prepared/frame statistics. 
 (fixture cloning excluded) and reused execution. Each case checks results before timing;
 reported buffer bytes are layout measurements, not allocator traffic or RSS.
 
-## Values and types (v1)
+## Values and types
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
 - `Decimal::new(mantissa: i128, scale: u8)` (per-value scale; rounding/division are host policies)
-- `Bytes` and/or `Str` (owned public values; runtime registers use handles to owned or borrowed payloads)
+- `Bytes` and `Str` (owned public values; runtime registers use handles to owned or borrowed payloads)
 
 Within a run, byte/string handles resolve to immutable program constants, entry arguments,
 aggregate fields, or owned computed payloads. The execution context stores source indices rather
@@ -184,30 +193,38 @@ uses full contract identity; opaque callable kinds establish no signature. Recur
 and variance/subtyping are separate capabilities.
 
 ## Host objects
-- `Obj { host_type: HostTypeId, handle: u64 }`
-- Opaque: no VM-level equality/hash/serialization in v1.
+- `Obj { host_type: HostTypeId, handle: ObjHandle }` carries an embedder-owned opaque token.
+- The VM provides no guest equality/hash operations or serialization of external object state.
+  In-memory snapshots and recordings can retain tokens, but cannot reconstruct the objects.
 
 ### Aggregates (structural, immutable, acyclic)
 - `Tuple` (heterogeneous, fixed arity)
 - `Struct(TypeId)` (named fields with stable ordering defined by `TypeId`)
 - `Array(ElemTypeId)` (homogeneous, ordered)
 - Aggregates are immutable heap values; handles refer to acyclic graphs.
-- Serialization is total for aggregates composed of serializable values; encountering `Obj` during serialization is a trap in v1.
+- Constructors and snapshot imports validate handles and preserve acyclicity. There is no runtime
+  aggregate serialization opcode or portable value archive. `Program::encode` serializes executable
+  metadata and constants, not a live VM heap.
 
 ### Functions and closures
 - `Func`: a first-class reference to a program function.
 - `Closure { func_id, env }`: a `Func` paired with a captured environment aggregate. When called via
   `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
-  only the caller-visible arguments (see [v1 spec](v1_spec.md)).
+  only the caller-visible arguments (see the [specification](v1_spec.md)).
+
+Function references and nominal type IDs belong to their program; aggregate handles belong to
+one heap. Raw `Value`s do not encode those ownership domains. The graph's `TapeValue` adapter owns
+snapshots and rejects program-local values transferred to a different program. It does not provide
+cross-program guest calls.
 
 ## Effects
-v1 uses a single linear effect token `eff`.
+Calls use a single reserved Unit register, r0. The verifier requires call/host-call `eff_in`
+and `eff_out` operands, and the return effect operand, to name r0. It is initialized on entry
+and has no runtime payload. Pure operations do not carry effect operands.
 
-Effectful operations consume `eff_in` and produce `eff_out`:
-- Pure op: `r3 = add(r1, r2)`
-- Effectful op: `(eff2, r_out...) = host_call(eff1, symbol, args...)`
-
-This provides an explicit sequencing mechanism that is easy to verify and extend to effect lanes later.
+Host effects execute synchronously in verified control-flow order. These operands express the
+calling convention; they do not implement distinct SSA effect values, independent effect lanes,
+or rollback of external effects.
 
 ## Prepared host bindings
 
@@ -244,7 +261,7 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 - Recursion via `call` and frames.
 - Typed block parameters express joins directly; edge transfers are simultaneous preparation details.
 
-## Serialization (portable)
+## Program serialization
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
 - Function table and constant pool indices are bounds-checked by the verifier.
 - Span mapping is stored as a compact side table (e.g. `pc_delta -> SpanId`) to avoid per-instruction payload bloat.
@@ -254,8 +271,11 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 - Control-flow integrity: valid jump targets, well-formed block boundaries.
 - Register discipline: init-before-use; bounded register count per function.
 - Type discipline: builtins + aggregate handles; host call signatures match ABI kinds; guest boundaries enforce compositional value contracts.
-- Resource bounds: max call depth and optional max blocks/instructions.
-- Structural constraints: aggregate graphs are acyclic (enforced by construction or validated when deserializing aggregates).
+- Preparation policy: `VerifyConfig::max_regs_per_function` bounds declarations (65,536 by
+  default). There is no general preparation-byte or instruction-count budget.
+- Runtime limits are supplied separately through `Limits`; verification does not impose a heap
+  residency or total-frame-storage cap.
+- Structural constraints: aggregate constructors and snapshot imports validate acyclic graphs.
 
 ## Prepared-program inspection
 
@@ -324,16 +344,20 @@ Combine `VALUES` with `RUN` for the final outcome. A candidate can still fail, a
 aggregate handles can change at commit. Values and their heap are borrowed for the callback;
 the sink chooses what to retain. Snapshotting an invalid graph returns an error independently
 of the eventual VM trap. Missing completion, including panic unwinding, is incomplete evidence.
-These are observation primitives: recording storage, program identity, sharing across events,
-opaque host values/errors and replay policy belong outside the VM.
 
-## Extension points (v2+)
-- Effect lanes (multiple tokens), plus rules for merging at control-flow joins.
-- Host-type capabilities (per-type eq/hash/serialization) and/or inline extern values.
-- Incremental recompute: cache pure regions; host-managed caching for effectful regions.
+`execution_tape::recording` builds owned boundary evidence and checked guest replay on these
+callbacks. Capture and replay are requested explicitly; ordinary runs do not retain recordings.
+Recordings preserve identity and sharing, but do not restore external object state or host effects
+and do not define a portable archive format.
 
-## Open questions
-- `Bytes`/`Str` representation and constant-pool encoding.
-- Aggregate allocation strategy (arena vs refcount) under `no_std + alloc`.
-- Precise instruction cost model and host cost reporting contract.
-- Span table format and stability guarantees relative to source graph ids.
+## Future possibilities
+
+Typed banks, borrowed payload sources, immutable aggregate DAGs, and explicit frontend source
+maps are current design choices. Extensions should preserve their small, predictable execution
+contract. Candidates include independent effect lanes, richer host-produced aggregate results,
+and limits for preparation, frame storage, and retained-value residency. None is promised by the
+current wire format.
+
+Incremental scheduling already belongs to `execution_graph`. Caching pure regions inside a tape
+would be a separate capability. Durable recording archives and externally persistent source identity
+also need explicit compatibility policies before they can be promised.

@@ -1,6 +1,9 @@
-# `execution_tape` v1 specification (draft)
+# `execution_tape` bytecode and execution specification
 
-This document is the concrete v1 spec to unblock implementation. It is intentionally biased toward a small, verifiable, `no_std + alloc` core.
+This document describes wire format 0.5 and the execution contract of the Rust 0.1 API.
+The filename is historical: it does not name a 1.0 format or promise durable interchange.
+Decoding requires an exact wire-version match; regenerate compiled programs when upgrading
+from an older format. The core remains `no_std + alloc`.
 
 See also: [`overview.md`](overview.md).
 
@@ -14,45 +17,44 @@ See also: [`overview.md`](overview.md).
 
 It does **not** own:
 - Node graph authoring UI/formats.
-- Domain node definitions (pricing, mesh generation, layout, etc.).
+- Domain node definitions (geometry, document layout, etc.).
 - Host object semantics beyond an opaque handle contract.
 
 ## Goals
 - Fast execution for mostly-static programs (hundreds of nodes/opcodes).
-- Portable bytecode with stable SpanIds.
-- Verifiable and bounded execution (fuel / depth / host call limits).
-- Trap-first error model for v1.
+- Portable bytecode with frontend-supplied SpanIds.
+- Verified execution with explicit instruction, depth, host-call, and data-work limits.
+- Trap-first error model.
 - Structural (deep) aggregates: `Tuple`, `Struct`, `Array`, immutable and acyclic.
 
-## Non-goals (v1)
-- Multi-lane effects (single linear effect token only).
+## VM non-goals
+- Multi-lane effects: calls use the single reserved r0 convention.
 - In-VM recoverable errors (`Result`/`Option` values).
-- Incremental recompute (pure-region caching is a v2+ topic).
+- Incremental scheduling and invalidation: these belong to `execution_graph` above the VM.
 
-> **Changed since the original draft:** closures/captures were initially a v1 non-goal but are now
-> supported. Function values remain first-class; a closure additionally pairs a function value with a
-> captured environment aggregate. See [Value kinds](#value-kinds), the `Closure` value type, the
-> `const_func`/`closure_new`/`call_indirect` opcodes, and the `call_sigs` section below.
+Function values and closures are supported. A closure pairs a function reference with a captured
+aggregate environment; `call_indirect` injects that environment as the body's first argument.
 
 ## Terminology
 - **Value**: runtime datum computed by the VM. Some values (notably `Bytes`/`Str`) may be stored indirectly by
   handle into a per-run arena while preserving the same observable semantics.
 - **Register**: a virtual slot; bytecode operands refer to registers by index.
-- **Frame**: one function activation containing `pc`, `base`, and per-frame register count.
+- **Frame**: one function activation with a `pc` and bases into typed payload banks.
 - **Program Counter (pc)**: byte offset into a function’s bytecode stream.
-- **SpanId**: stable identifier for tracing/source mapping.
+- **SpanId**: nonzero frontend-owned identifier for tracing/source mapping. Stability is the
+  frontend's responsibility; optional `source::SourceMap` metadata connects instructions to source snapshots.
 - **Host symbol**: stable identifier for a host-provided function.
 - **Sig hash**: hash of the host call signature (arguments and results).
 
 ## Determinism and portability
 - Numeric: `f64` follows platform IEEE behavior; float nondeterminism is acceptable.
 - Portable serialization: canonical little-endian, varint encoding for indices/immediates.
-- No pointer serialization. Host objects (`Obj`) are non-serializable by default.
+- No pointer serialization or serialization of external host-object state.
 
 ## Value model
 
 ### Value kinds
-The VM defines a closed set of value kinds. v1 requires these kinds:
+The VM defines a closed set of value kinds:
 - `Unit`
 - `Bool`
 - `I64`
@@ -66,9 +68,9 @@ The VM defines a closed set of value kinds. v1 requires these kinds:
 - `Func` (function reference)
 - `Closure` (function reference + captured environment aggregate)
 
-Implementation note: the VM may store registers in per-kind register files (`RegClass`) rather than as a tagged
-union `Value` in order to avoid runtime tag checks in the hot interpreter loop. This is safe because execution
-requires verification, and the producer declares each register's kind and the verifier enforces type correctness.
+The VM stores payload-bearing registers in per-kind banks (`RegClass`), rather than as tagged
+`Value`s. The producer declares each register's kind, and verification enforces it before preparing
+typed operands. Unit/effect registers have no runtime payload bank.
 
 ### `Decimal`
 - Per-value scale (`u8`) and mantissa (`i128`), including the full signed range.
@@ -77,9 +79,9 @@ requires verification, and the producer declares each register's kind and the ve
 - Decimal literal mantissas use signed LEB128, bounded to 19 bytes. Scale is one raw byte.
   The in-memory constant pool packs each decimal into 17 bytes in the shared blob arena;
   `Program::const_decimal` reads it without growing other constant entries.
-- v1 arithmetic requirements:
+- Arithmetic:
   - `dec_add`, `dec_sub`, `dec_mul` are defined only when the result scale is well-defined (e.g. add/sub require equal scale; mul defines scale = a.scale + b.scale).
-  - Division and rounding are host-provided in v1.
+  - Division and rounding are host-provided.
 
 ### Host objects (`Obj`)
 `Obj` is an opaque value:
@@ -87,8 +89,9 @@ requires verification, and the producer declares each register's kind and the ve
 - `handle: u64` (embedder-defined identity)
 
 Constraints:
-- No VM-level equality/hash/ordering in v1.
-- Any attempt to serialize an `Obj` traps.
+- No guest equality/hash/ordering operations on objects.
+- No portable runtime value archive is defined. Snapshots and recordings may retain opaque
+  tokens, but do not reconstruct external object state.
 - Host calls may accept/return `Obj` values, and the verifier checks that host signatures match.
 
 ### Aggregates (`Agg`)
@@ -100,53 +103,55 @@ Kinds:
 - `Array(ElemTypeId, [Value])` (homogeneous)
 
 Constraints:
-- No cycles in v1. Construction must not create cycles; deserialization must reject cycles.
-- Structural equality/hash are not required as v1 opcodes, but the representation must make them well-defined for v2.
-- Aggregates are serializable if (and only if) all contained values are serializable.
+- Construction and snapshot imports validate handles and preserve acyclicity.
+- There are no guest structural equality/hash operations or aggregate serialization opcodes.
+- Owned `ValueSnapshot`s retain aggregate DAGs in memory. `Program::encode` serializes executable
+  metadata and constants, not live aggregate storage.
 
 ## Type model
 
 ### Program type table
 The program contains a type table defining:
-- Builtin types (well-known ids).
 - Struct layouts (`TypeId` → ordered field list and field types).
 - Array element types (`ElemTypeId`).
 
-The verifier uses the type table to validate aggregate ops and (optionally) to type-check non-host bytecode more strongly.
-
-v1 note: the runtime may still be dynamically typed for primitives, but aggregate ops must be type-correct.
+The verifier requires a complete register-kind ledger and checks every instruction's operand and
+result kinds, including unreachable code. Reachable dataflow separately establishes initialization
+and structural facts. Program-owned compositional contracts refine function boundaries; unknown
+boundary values are checked at runtime. A storage kind such as `Agg` alone proves no nested shape.
 
 ## Effects model
-v1 uses a single linear effect token `eff` to sequence side effects.
+Call and host-call instructions carry `eff_in` and `eff_out` operands; returns carry an effect
+operand. The verifier requires all of them to name r0, declared as `Unit` and initialized at entry.
+Pure instructions do not carry effect operands. Unit has no runtime payload storage.
 
-Semantics:
-- Pure ops do not mention `eff`.
-- `host_call` consumes an `eff_in` register and produces an `eff_out` register.
-- Programs must thread `eff` through all effectful operations; the verifier enforces this by requiring `host_call` to take/return `eff` and by checking init-before-use.
-
-`eff` is represented at runtime as `Unit`; it exists for verification/ordering only.
+Host calls execute synchronously in verified control-flow order. The reserved register expresses
+a calling convention, not distinct SSA effect values or multiple effect lanes. Failed guest
+execution does not roll back external host effects.
 
 ## Control flow and functions
 
 ### Functions
-Programs contain a function table; each function entry includes:
-- `FuncId`
-- `arg_count` (value args; effect is threaded separately)
-- `ret_count` (value returns)
-- `reg_count` (number of declared registers, including r0 and unused registers)
-- `register_types[reg_count]` (required kind of each register; r0 is `Unit`, followed by argument kinds)
-- `bytecode_index` (index into the bytecode blob list)
-- `span_table_index` (index into the span table list)
+A function's position in the function table defines its `FuncId`. In memory, each entry includes:
+- `arg_count` and `ret_count` (value arguments/results; effect is separate).
+- `reg_count`, including r0 and unused declarations.
+- A range into the shared register-kind ledger; r0 is `Unit`, followed by argument kinds.
+- Ranges into packed bytecode and span-entry arenas.
+- Ranges of argument/result contract IDs and optional value-name IDs.
+
+The wire function table instead references indexed bytecode blobs and span tables, as described
+below. Decoding packs them into the shared arenas.
 
 ### Calls and frames
-The VM maintains a call stack of frames:
-- `func_id`
-- `pc` (bytecode index within the function)
-- `base` (start index into the global register file)
+Each frame holds the function, source PC, and bases into payload-bearing register banks.
+Preparation translates virtual register IDs into class-local operands. Runtime addressing uses
+the corresponding bank base and class-local index, not `base + virtual_register_id`. Unit needs
+no payload address. Arguments and results are explicit register lists in bytecode.
 
-Registers are frame-local via `base + reg_index`.
-
-Recursion is allowed. Limits enforce max depth.
+Recursion is allowed, subject to `Limits::max_call_depth`. Function references and nominal type
+IDs are program-local; aggregate handles are heap-local. Raw `Value`s carry no ownership domain.
+The graph adapter's owned `TapeValue` snapshots preserve that domain and reject incompatible
+program-local transfers; they do not enable cross-program guest invocation.
 
 ### Control flow invariants
 - All jump targets must point to instruction boundaries.
@@ -171,7 +176,7 @@ Recursion is allowed. Limits enforce max depth.
 
 ## Limits and traps
 
-### Limits (v1)
+### Limits
 
 `max_contract_work` bounds recursive aggregate obligations separately from guest instruction fuel.
 It counts each aggregate/contract pair visit (including cached visits), each scalar member visit,
@@ -180,30 +185,32 @@ handle and contract ID until the run ends; they never survive heap compaction or
 reset. Exceeding the budget traps with the function, argument/result position and configured limit.
 Traversals are iterative; sharing does not cause repeated expansion of proven subgraphs.
 
-- `fuel`: decremented by a per-instruction cost (default 1 unless overridden by opcode).
-- `max_call_depth`: hard stack limit.
-- `max_host_calls`: caps `host_call` count.
-- optional `max_regs_total`: caps `base + reg_count` growth to avoid memory blowups.
+- `fuel`: each executable instruction costs one; successful host calls may charge additional fuel.
+- `max_call_depth`: caps guest frames.
+- `max_host_calls`: caps executed host calls.
+- `max_contract_work`: bounds boundary-contract traversal as described above.
+- `max_payload_work`: bounds logical byte/string copying and comparison work (64 MiB by default).
+- `max_aggregate_work`: charges one node plus immediate field count for each guest aggregate
+  construction (1,000,000 units by default).
 
-### Traps (v1)
-Traps abort execution and return an error containing:
-- trap code (enum)
-- current `FuncId`
-- current `pc`
-- best-effort `SpanId` resolved from span table (if available)
-- host-call symbol, signature hash, and host error (for host-call failures)
+The [overview](overview.md#execution-model) specifies data-work charging and exclusions. These
+are work limits, not heap/RSS limits. Preparation, total frame storage, host allocations, graph
+imports, and previously retained results are not bounded by these data-work counters.
+`VerifyConfig::max_regs_per_function` separately caps declarations (65,536 by default); there
+are no configurable preparation-byte, instruction-count, or constant-size budgets.
 
-Trap codes (minimum):
-- `InvalidProgram` (failed verification; not a runtime trap)
-- `TypeMismatch`
-- `UninitializedRegister`
-- `OutOfBounds`
-- `InvalidJumpTarget`
-- `FuelExceeded`
-- `CallDepthExceeded`
-- `HostCallLimitExceeded`
-- `HostCallFailed`
-- `SerializationEncounteredObj`
+### Traps
+`TrapInfo` reports a `Trap`, function ID, source PC and best-effort SpanId. Host failures also carry
+the symbol, signature hash and owned `HostError`; custom host errors remain available through
+the standard error source chain.
+
+Runtime failures include exhausted fuel/depth/host/data-work limits, arithmetic and conversion
+errors, invalid indexing/UTF-8, guest contract mismatches, and rejected host returns. `TrapCode`
+represents an explicit guest trap. See `vm::Trap` for the complete variant set.
+
+Malformed containers and invalid bytecode fail decoding or verification before execution; they
+are not runtime `InvalidProgram` traps. A failed invocation discards newly allocated aggregates
+and preserves the caller's previous output buffer. It cannot undo host effects.
 
 ## Bytecode encoding
 
@@ -215,7 +222,7 @@ Trap codes (minimum):
   - Rationale: some producers (including the provided bytecode builder) reserve fixed-width windows
     for later patching (e.g. branch/jump targets) to avoid shifting the byte stream.
 
-### Instruction encoding (v1)
+### Instruction encoding
 Each instruction is:
 - `opcode: u8`
 - `operands: varint-encoded fields` (register indices, immediates, ids)
@@ -224,7 +231,7 @@ Register operands are ULEB128 indices (`Reg`).
 
 ### Program counter (PC)
 For control-flow instructions, `pc_*` operands are **byte offsets** into the function bytecode stream, and must
-point at an instruction boundary (or the end of the stream where allowed).
+point at a valid instruction boundary within that function.
 
 #### Note: labels and patching
 Most producers will want to write `br`/`jmp` targets using symbolic labels. There are two common ways to lower
@@ -240,11 +247,14 @@ fixed-width window (e.g. 5 bytes for a `u32` PC) and patch in-place without shif
 ### Span table encoding (compact)
 Per function, store a list of entries:
 - `pc_delta: ULEB128`
-- `span_id: ULEB128` (or fixed-width if needed)
+- `span_id: ULEB128` (nonzero)
 
 Meaning: starting at `pc += pc_delta`, current span becomes `span_id` until the next entry.
 
-SpanId stability is the compiler’s responsibility (typically derived from stable graph node GUIDs).
+SpanId meaning and stability are the frontend's responsibility. A SpanId alone is not a source
+range. Optional `source::SourceMap` metadata binds exact instruction locations to validated UTF-8
+ranges in frontend snapshots; its program identity must match before lookup. These maps are
+separate from the executable container and add no source storage to ordinary verification/runs.
 
 ## Container format (sections)
 The serialized program is:
@@ -257,23 +267,26 @@ The serialized program is:
   - `len: ULEB128`
   - `payload[len]`
 
-Unknown section tags are skipped by decoders (forward-compat). Known sections are rejected if duplicated.
+The header must match version 0.5 exactly. Within that version, unknown section tags are skipped;
+this does not imply compatibility with future wire versions. Known sections are rejected if duplicated.
 
 ## Tracing (hooks)
 
 The VM can optionally emit tracing events to a sink.
 
-v1 is intended to support:
+The tracing API supports:
 - run start/end events
 - instruction step events
 - scope events for profiling:
   - call frames (function enter/exit)
   - host calls (time spent in embedder code)
 
-The tracing API is designed so that profiler integrations (e.g. using the ecosystem `profiling`
-crate) can be built as adapters without adding any dependency to the `execution_tape` core crate.
+`TraceMask` selects callbacks. `execution_tape_footfall` and `execution_tape_tracy` implement
+profiler adapters without adding their backend dependencies to the core. Borrowed value events
+also support owned in-memory capture and checked replay through `execution_tape::recording`.
+Callbacks and recording are opt-in; source lookup is separate optional metadata.
 
-### Section tags (v1)
+### Section tags
 - `1 = symbols`
 - `2 = const_pool`
 - `3 = types`
@@ -287,8 +300,8 @@ crate) can be built as adapters without adding any dependency to the `execution_
 - `11` is retired
 - `12 = contracts`
 
-Sections `1..=8` and `12` are required in this draft; `9 = names` and `10 = call_sigs` are optional (each omitted
-entirely when empty). Unknown section tags are skipped for forward compatibility.
+Sections `1..=8` and `12` are required; `9 = names` and `10 = call_sigs` are optional (each omitted
+entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -305,12 +318,12 @@ The program constant pool stores immutable literals referenced by index:
 - `Bytes` (length + bytes)
 - `Str` (length + UTF-8 bytes)
 
-Aggregates are not required to be in the constant pool in v1 (they may be constructed at runtime), but may be added later.
+The constant pool contains no aggregate literals. Aggregate construction uses runtime instructions.
 
 ## Types
 The type table defines struct layouts and array element types.
 
-### ValueType encoding (v1)
+### ValueType encoding
 Value types are encoded as:
 - `tag: u8`
 - additional payload depending on `tag`
@@ -375,14 +388,14 @@ Stores per-function metadata and references into blob sections:
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
 
-The current draft wire version is 0.5. Older versions are rejected; rebuild serialized programs
+The current wire version is 0.5. Older versions are rejected; rebuild serialized programs
 from their producer. Each declaration is authoritative for the register's entire function lifetime.
 Every instruction definition and operand must match, including inactive instructions and unused
 results. A declaration does not initialize a register or supply a projection's aggregate shape proof.
 Scalar kinds need no dataflow inference; must-initialization and aggregate proofs remain separate.
 
 ## Function signatures (typed)
-Typed signatures are mandatory in v1 and stored separately from `function_table`:
+Typed signatures are mandatory and stored separately from `function_table`:
 - `count: ULEB128` (must match `function_table.count`)
 - repeated `count` times:
   - `arg_count: ULEB128`
@@ -488,14 +501,14 @@ Payload:
   - `pc: ULEB128` (byte offset within the function)
   - `name_symbol_id: ULEB128`
 
-## Opcode set (v1)
+## Opcode set
 This is the minimal set to support loops + recursion + host calls + aggregates.
 
 ### Conventions
 - `rX` denotes a register index.
 - All destination registers are written exactly once per dynamic execution of the instruction.
 - Unless specified, each instruction costs 1 fuel.
-- **Register convention (v1)**:
+- **Register convention**:
   - `r0` is the effect token register.
   - Value arguments (for a function with `arg_count = N`) are in `r1..=rN`.
   - Other registers are temporaries and/or outputs.
@@ -537,13 +550,13 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `dec_sub r_dst, r_a, r_b`
 - `dec_mul r_dst, r_a, r_b`
 
-#### Floating-point semantics (v1)
+#### Floating-point semantics
 - `f64_min`/`f64_max` propagate NaN: if either input is NaN, the result is NaN.
 - `f64_min_num`/`f64_max_num` are number-favoring: if exactly one input is NaN, the other is returned; if both are NaN, the result is NaN.
 - For `f64_min`/`f64_max`/`f64_min_num`/`f64_max_num`, when both inputs are zero with different signs, `min` returns `-0.0` and `max` returns `+0.0`.
-- `f64_rem` uses the IEEE remainder semantics of Rust's `%` operator.
+- `f64_rem` uses Rust's `%` semantics (remainder with a truncated quotient).
 - `f64_to_bits`/`f64_from_bits` preserve IEEE 754 bit patterns (including NaN payloads).
-- Rounding and transcendental functions are host-provided in v1 (e.g. `f64_round_even`, `f64_round_away`, `f64_floor`, `f64_ceil`, `f64_trunc`, `f64_sqrt`, `f64_log`, `f64_exp`).
+- Rounding and transcendental functions are host-provided (e.g. `f64_round_even`, `f64_round_away`, `f64_floor`, `f64_ceil`, `f64_trunc`, `f64_sqrt`, `f64_log`, `f64_exp`).
 
 ### Comparisons + branching
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
@@ -562,8 +575,8 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `call r_eff_out, func_id, r_eff_in, args... -> rets...`
   - The callee function signature defines arg/ret counts.
   - Call threads `eff` explicitly (even for pure callees, `eff` is forwarded unchanged).
-  - Fuel cost: base 1 + (optional) per-arg/ret cost (tbd).
-- `ret r_eff_out, r_eff_in, rets...`
+  - Fuel cost: one instruction; no additional per-argument/result charge.
+- `ret r_eff_in, rets...`
   - Returns values to caller-provided return registers.
 - `call_indirect r_eff_out, call_sig_id, r_callee, r_eff_in, args... -> rets...`
   - Calls a `Func` or `Closure` value held in `r_callee`, checked against `call_sigs[call_sig_id]`.
@@ -584,15 +597,10 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     - either success with return values and optional additional fuel cost
     - or failure, which becomes `HostCallFailed { symbol, sig_hash, error }`
 
-## Draft encoding for minimal implemented opcodes
-This section documents the encoding currently implemented by the verifier decoder (subject to change).
-
-The single authoritative mapping between instruction names and their opcode bytes lives in
-`execution_tape/src/opcode.rs` as `Opcode`.
-
-The single authoritative specification for operand schema (kinds/encodings/roles) lives in
-`execution_tape/opcodes.json`. For register operands (`reg` and `reg_list`), the JSON spec also
-includes an `access` field (`read` or `write`) used by analysis tooling (e.g. reads/writes sets).
+## Opcode encodings
+The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
+encodings. `execution_tape/src/opcode.rs` exposes the generated `Opcode` mapping. For register
+operands (`reg` and `reg_list`), the JSON spec also includes an `access` field (`read` or `write`) used by analysis tooling (e.g. reads/writes sets).
 
 All register indices and small integers are ULEB128 unless noted.
 
@@ -721,7 +729,7 @@ Projection:
 - `0x80 str_to_bytes dst, s`
 - `0x81 bytes_to_str dst, bytes` (traps on invalid UTF-8)
 
-v1 note: no mutation ops.
+There are no aggregate mutation operations.
 
 ## Host ABI
 
@@ -734,20 +742,24 @@ The program stores:
 - `symbol_id -> symbol` in the `symbols` section
 - `host_sig_id -> (symbol_id, sig_hash, arg_types, ret_types)` in the `host_sigs` section
 
-### Signature hashing (draft)
-Define `sig_hash = hash64("execution_tape:v1" ++ encode(sig))` where `encode(sig)` is a canonical byte encoding of:
-- arg count and tags (including aggregate type ids where relevant)
-- ret count and tags
-- effect token presence (always present in v1 host calls)
+### Signature hashing
+`SigHash` is FNV-1a 64-bit over this canonical byte sequence:
+- Prefix bytes `execution_tape:v1\0`, including the terminating zero byte. The `v1` here is the
+  hash-domain marker, independent of the program wire version.
+- Argument count as `u32le`, followed by each argument's one-byte ValueType tag.
+- Result count as `u32le`, followed by each result's one-byte ValueType tag.
+- Each `Obj` tag is immediately followed by its `HostTypeId` as `u64le`.
 
-Hash function should be stable and `no_std` friendly (e.g. a fixed, specified hash like xxhash64 or a small bespoke hash).
+Use offset basis `0xcbf29ce484222325` and prime `0x100000001b3`; for each byte, XOR then multiply
+with wrapping 64-bit arithmetic. Effect operands are not signature arguments and add no bytes.
+`host::sig_hash` and `sig_hash_slices` implement this encoding.
 
-### Host call interface (conceptual)
+### Host call interface
 The embedder provides a `Host` that can:
 - resolve symbols to callable handles (or reject)
 - execute a call with:
   - `symbol` + `sig_hash`
-  - argument `Value`s (passed as borrowed views; bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning)
+  - argument `ValueRef`s (borrowed views; bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning)
   - read-only VM context, including program metadata and tuple/struct/array reads for `Agg` arguments
   - optional access sink for incremental-execution dependency recording
   - ability to charge extra fuel
@@ -757,7 +769,7 @@ The embedder owns:
 - any external resource access
 - any in-host caching
 
-Re-entrancy: v1 host calls must be non-reentrant (no calling back into the same VM while executing a host call).
+Re-entrancy: host calls are non-reentrant (no calling back into the same VM while executing a host call).
 
 ## Verification (normative)
 Verification must run before execution for serialized programs.
@@ -767,28 +779,27 @@ Required checks:
 - **Function table integrity**: bytecode ranges in bounds; `reg_count` sane; arg/ret counts sane.
 - **CFG integrity**: `jmp`/`br` targets in bounds and on instruction boundaries.
 - **Register discipline**:
-  - init-before-use for all regs
+  - init-before-use on reachable paths
   - writes do not exceed `reg_count`
   - reads do not exceed `reg_count`
-- **Type discipline** (minimum):
-  - each opcode’s operands have required runtime tags (e.g. `i64_add` requires `I64`)
+- **Type discipline**:
+  - each opcode’s operands and results match their declared kinds (e.g. `i64_add` requires `I64`)
   - aggregate ops match aggregate kind and type ids
   - `call` matches callee signature counts and types
   - `ret` matches function return types
   - `host_call` matches the `host_sigs[host_sig_id]` types
-- **Limits sanity**: `reg_count`, instruction count, and constant sizes within configured verifier maxima.
+- **Declaration limit**: `reg_count` is within `VerifyConfig::max_regs_per_function`.
 - **Effect threading**:
-  - `host_call` and `call` must consume initialized `eff_in`
-  - `ret` must return an initialized `eff` register
+  - call/host-call `eff_in` and `eff_out` must be r0 (`Unit`, initialized at entry)
+  - `ret` must use r0 as its effect operand
 
-### Implemented verifier rules (v1, current)
-This subsection is a concrete subset that is implemented today and should stay stable unless the bytecode
-encoding or register conventions change.
+### Additional verifier details
+These checks apply alongside the structural and contract rules described above.
 
-- **Required sections present**: all v1 sections must exist exactly once (including `function_sigs` and `host_sigs`).
+- **Required sections present**: sections `1..=8` and `12` must exist exactly once; `names` and `call_sigs` are optional.
 - **Bytecode decode**: the function bytecode must decode cleanly as a sequence of opcodes.
 - **CFG targets**:
-  - all `br/jmp` targets must be within `[0, bytecode_len]`
+  - all `br/jmp` targets must be within `[0, bytecode_len)`
   - all `br/jmp` targets must be an instruction boundary (byte offset that starts an instruction)
 - **Reachability**: init-before-use is checked only on reachable blocks.
 - **Register bounds**: any register operand must be `< reg_count`.
@@ -804,8 +815,12 @@ encoding or register conventions change.
   - `host_sigs[i].sig_hash` must match the canonical hash of its `(arg_types, ret_types)`
 - **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types.
 
-## Open items to resolve during implementation
-- Finalize opcode numbers and exact operand encodings.
-- Decide whether `call`/`ret` use explicit arg/ret register lists vs implicit fixed conventions.
-- Choose aggregate heap strategy (`Rc`-like vs arena) under `no_std + alloc`.
-- Decide whether verifier requires host symbol resolution at verify time or allows unresolved symbols until runtime.
+## Implementation authority
+
+[`execution_tape/opcodes.json`](../execution_tape/opcodes.json) defines opcode bytes, operands,
+encodings and operand roles. `execution_tape_codegen` generates the opcode/codec/disassembly
+machinery from it. Calls and returns use explicit register lists; aggregates use an immutable
+arena-backed DAG. Verification validates declared host signatures without resolving host symbols;
+`HostFunctions::bind` can resolve all imports before execution, or a custom `Host` can handle them
+at runtime. Future capabilities are distinguished from current behavior in the
+[overview](overview.md#future-possibilities).
