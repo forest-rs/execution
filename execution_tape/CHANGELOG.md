@@ -8,10 +8,13 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 # Changelog
 
-The latest published Execution Tape release is [0.0.1](#001-2026-05-31) which was released on 2026-05-31.
-You can find its changes [documented below](#001-2026-05-31).
+Changes for Execution Tape [0.1.0](#010-2026-10-27), dated 2026-10-27, are documented below.
 
 ## [Unreleased][]
+
+This release has an [MSRV][] of 1.88.
+
+## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.
 
@@ -20,7 +23,7 @@ This release has an [MSRV][] of 1.88.
 - Exercise generated typed guest programs against an independent expression evaluator in the
   conformance suite, covering nested joins, integer extrema, aggregate aliases, guest calls,
   wire roundtrips and malformed variants. Failures report deterministic seeds and reduced
-  expressions; the test-only structural shrinker is checked with an injected model defect.
+  expressions; the test-only structural shrinker is checked with an injected model defect. ([#196][] by [@waywardmonkeys][])
 
 - Bound guest tuple/struct/array construction with `Limits::max_aggregate_work`, charging one
   node plus each immediate field before allocation or payload copying. The default is 1,000,000
@@ -28,7 +31,7 @@ This release has an [MSRV][] of 1.88.
   checked replay preserves this failure. This is a work budget, not a heap-residency limit.
   Migration: add `max_aggregate_work` to exhaustive `Limits` literals (or use `..Limits::default()`),
   handle the new `AggregateWorkExceeded`/`AggregateSizeOverflow` traps in exhaustive matches,
-  and explicitly raise the budget for trusted workloads that construct more nodes/fields.
+  and explicitly raise the budget for trusted workloads that construct more nodes/fields. ([#195][] by [@waywardmonkeys][])
 
 - Seed function bodies from their declared argument contracts with `ProgramBuilder::function_asm`
   and append typed temporaries with `Asm::alloc_register`. Emitters can remove their external
@@ -205,6 +208,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Align the design and bytecode documentation with typed execution, current limits, ownership,
+  recording, and authored source connections. ([#202][] by [@waywardmonkeys][])
+
 - Move frontend source maps and structured source queries from Observatory into
   `execution_tape::source` (`no_std + alloc`, no UI dependency). Observatory retains terminal
   rendering and accepts the same core map. Migration: import source types from the core module;
@@ -223,7 +229,7 @@ This release has an [MSRV][] of 1.88.
 - Remove the zero-filled runtime Unit/effect register bank and prepared Unit payload operations.
   Verification, boundary kind checks, source PCs/fuel and observations are preserved. Unit block
   transfers require no copy scratch. `FunctionStats::register_bytes` now excludes this removed
-  storage; logical Unit declaration counts remain inspectable. No tape regeneration is needed. ([#198][] by [@waywardmonkeys][])
+  storage; logical Unit declaration counts remain inspectable. No tape regeneration is needed. ([#194][] and [#198][] by [@waywardmonkeys][])
 
 - Widen exact decimal mantissas from `i64` to the full signed `i128` range. Construct with
   `Decimal::new(mantissa, scale)` and read with `mantissa()` / `scale()` instead of public fields.
@@ -373,10 +379,6 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
-- Include the interpreter's current `u32` bank storage for unit/effect registers in
-  `FunctionStats::register_bytes`. Earlier counts treated those runtime slots as zero-sized.
-  Execution storage and behavior are unchanged.
-
 - Reject raw empty function bodies with `MissingTerminator` during verification and preparation,
   matching the executable-body requirement instead of deferring failure to VM instruction fetch. ([#164][] by [@waywardmonkeys][])
 
@@ -456,7 +458,8 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#123]: https://github.com/forest-rs/execution/pull/123
 
-[Unreleased]: https://github.com/forest-rs/execution/compare/execution_tape-v0.0.1...HEAD
+[Unreleased]: https://github.com/forest-rs/execution/compare/execution_tape-v0.1.0...HEAD
+[0.1.0]: https://github.com/forest-rs/execution/compare/execution_tape-v0.0.1...execution_tape-v0.1.0
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_tape-v0.0.1
 
 [#144]: https://github.com/forest-rs/execution/pull/144
@@ -516,3 +519,8 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#200]: https://github.com/forest-rs/execution/pull/200
 
 [#199]: https://github.com/forest-rs/execution/pull/199
+
+[#194]: https://github.com/forest-rs/execution/pull/194
+[#195]: https://github.com/forest-rs/execution/pull/195
+[#196]: https://github.com/forest-rs/execution/pull/196
+[#202]: https://github.com/forest-rs/execution/pull/202

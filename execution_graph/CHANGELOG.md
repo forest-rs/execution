@@ -8,10 +8,13 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 # Changelog
 
-The latest published Execution Graph release is [0.0.1](#001-2026-05-31) which was released on 2026-05-31.
-You can find its changes [documented below](#001-2026-05-31).
+Changes for Execution Graph [0.1.0](#010-2026-10-27), dated 2026-10-27, are documented below.
 
 ## [Unreleased][]
+
+This release has an [MSRV][] of 1.88.
+
+## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.
 
@@ -164,7 +167,8 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 
 [#133]: https://github.com/forest-rs/execution/pull/133
 
-[Unreleased]: https://github.com/forest-rs/execution/compare/execution_graph-v0.0.1...HEAD
+[Unreleased]: https://github.com/forest-rs/execution/compare/execution_graph-v0.1.0...HEAD
+[0.1.0]: https://github.com/forest-rs/execution/compare/execution_graph-v0.0.1...execution_graph-v0.1.0
 [0.0.1]: https://github.com/forest-rs/execution/releases/tag/execution_graph-v0.0.1
 
 [MSRV]: README.md#minimum-supported-rust-version-msrv

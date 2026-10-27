@@ -7,9 +7,13 @@ Categories: added, changed, deprecated, removed, fixed, security.
 
 # Changelog
 
-This crate has not yet been published. Its first release is being prepared as 0.1.0.
+Changes for the initial Execution Tape Tracy [0.1.0](#010-2026-10-27) release, dated 2026-10-27, are documented below.
 
 ## [Unreleased][]
+
+This release has an [MSRV][] of 1.88.
+
+## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.
 
@@ -31,7 +35,8 @@ This release has an [MSRV][] of 1.88.
   Update dependency/import paths; the development executable is now
   `cargo run -p execution_tape_wind_tunnel --bin tracy_capture`. ([#199][] by [@waywardmonkeys][])
 
-[Unreleased]: https://github.com/forest-rs/execution/commits/main/
+[Unreleased]: https://github.com/forest-rs/execution/compare/execution_tape_tracy-v0.1.0...HEAD
+[0.1.0]: https://github.com/forest-rs/execution/releases/tag/execution_tape_tracy-v0.1.0
 [MSRV]: README.md
 [#199]: https://github.com/forest-rs/execution/pull/199
 [@waywardmonkeys]: https://github.com/waywardmonkeys
