@@ -20,7 +20,7 @@ Crates:
 
 Docs:
 - `docs/overview.md`: design notes for the tape VM and host boundary.
-- `docs/v1_spec.md`: current v1 bytecode/container draft.
+- `docs/v1_spec.md`: current bytecode and execution specification (wire 0.5).
 - `execution_tape/README.md`: crate overview and quick start.
 - `execution_graph/README.md`: graph model, dependency keys, and demo.
 
@@ -28,7 +28,7 @@ The workspace MSRV is Rust 1.88.
 
 ## Versions and compatibility
 
-The workspace prepares the core Rust API release `0.1.0`. The graph's optional `tape`
+The workspace Rust API version is `0.1.0`. The graph's optional `tape`
 feature requires the `execution_tape` 0.1 API; its default build cannot use the old published
 0.0.1 API. Building the native graph with default features disabled omits the tape dependency.
 `execution_tape`, `execution_graph`, `execution_tape_footfall` and `execution_tape_tracy` are

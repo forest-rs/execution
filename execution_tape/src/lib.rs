@@ -4,7 +4,7 @@
 // After you edit the crate's doc comment, regenerate README.md by running:
 // cargo rdme --workspace-project=execution_tape --heading-base-level=0
 
-//! Portable, verifiable bytecode container format and register VM runtime (draft).
+//! Portable, verifiable bytecode container and typed register VM.
 //!
 //! `execution_tape` is the low-level execution layer for already-lowered programs. It owns the
 //! portable program format, verifier, register VM, host-call ABI, aggregate values, tracing hooks,

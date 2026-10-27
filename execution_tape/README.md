@@ -7,7 +7,7 @@ Full documentation at https://github.com/orium/cargo-rdme -->
 
 <!-- cargo-rdme start -->
 
-Portable, verifiable bytecode container format and register VM runtime (draft).
+Portable, verifiable bytecode container and typed register VM.
 
 `execution_tape` is the low-level execution layer for already-lowered programs. It owns the
 portable program format, verifier, register VM, host-call ABI, aggregate values, tracing hooks,
