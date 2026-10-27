@@ -25,6 +25,14 @@ Context labels must identify the program and revision when combining programs. F
 import and PC identifiers are program-local. Keep the corresponding encoded program with
 the capture to resolve names, spans, typed joins and instruction operands later.
 
+For authored source, export the frontend's `execution_tape::source::SourceMap` sidecar beside
+that exact container and reference both in the context-to-program manifest. After capture,
+decode the map, bind it to the saved program, then look up `TraceLocation { func, pc }` from
+an observation. `text()`, `start()` and `end()` expose exact snapshot ranges and named byte
+coordinates without terminal dependencies. Missing mappings remain unknown; opaque span IDs
+are not authored line numbers. Source snapshots are an explicit export chosen by the application.
+The adapter's event schema and per-event costs do not change when a source sidecar is exported.
+
 The static event schema uses at most four inline fields:
 
 | Observation | Numeric fields |
@@ -50,8 +58,11 @@ cargo run -p execution_tape_wind_tunnel --bin footfall_capture -- .local/footfal
 ```
 
 It captures branches, a typed join, a guest call, host work, and guest/host failures. The output
-contains the exact program, a context-to-program manifest, the original Footfall capture,
-and a Perfetto trace. Host instrumentation shares the context and capture with VM events.
+contains the exact program, a context-to-program manifest with `program.sources`, the original
+Footfall capture and a Perfetto trace. The example's explicit source mappings point to the Rust
+statements constructing its tape; they are not inferred from its span IDs. Host instrumentation
+shares the context and capture with VM events. An independent artifact test resolves every
+recorded instruction against the saved source snapshot after the live VM has exited.
 
 Check Footfall's drop counts and event window before trusting an incomplete capture.
 Instruction tracing is deliberately opt-in and can produce substantial traffic. Explicit VM

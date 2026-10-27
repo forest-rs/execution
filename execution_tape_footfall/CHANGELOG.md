@@ -15,6 +15,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Resolve captured function/PC locations offline through core source maps. The capture example
+  exports an exact program/source pair and references its source sidecar in the manifest;
+  event emission performs no source lookup or source-text copying. ([#199][] by [@waywardmonkeys][])
+
 - Provide `FootfallSink` for VM run, guest-call, host-call and optional instruction observations.
   The adapter uses `no_std + alloc`; applications own runtime/export backends and program contexts.
   Capture-level admission and scope-token correlation preserve explicit incomplete-evidence semantics. ([#199][] by [@waywardmonkeys][])
