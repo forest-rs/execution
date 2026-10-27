@@ -15,6 +15,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Attach a validated core source map with `ProfilingTraceSink::sources` and inspect attribution
+  through `source_location`. Mapped boundaries use authored filenames/lines; unmapped or other
+  program instances use explicit bytecode locations. Binding occurs once; snapshot text is not
+  transferred to Tracy. Sink types now carry the source binding lifetime. ([#199][] by [@waywardmonkeys][])
+
+- Close active guards inner-to-outer when dropping the sink, including host panic unwinding. ([#199][] by [@waywardmonkeys][])
+
 - Provide `ProfilingTraceSink` and configurable program-symbol labels for Tracy call/host spans,
   keeping Tracy out of the core VM. The crate requires `std` and `tracy-client` 0.19.0. ([#199][] by [@waywardmonkeys][])
 

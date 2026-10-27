@@ -12,6 +12,11 @@
 //! any program/revision identity needed to resolve program-local IDs. Keep that context alive
 //! while using the sink. Host instrumentation can use the same context and backend.
 //!
+//! Authored source is resolved after capture using [`execution_tape::source::SourceMap`]. Export
+//! the exact program and optional source sidecar together, keyed by the application's context.
+//! Resolve recorded function/PC pairs through a map bound to that program; never interpret an
+//! opaque span ID as a line or byte range. No source text is copied or looked up by this sink.
+//!
 //! Footfall capture is bounded: inspect its loss/window metadata before drawing conclusions.
 //! These observations do not contain register values or complete host inputs and results;
 //! they are not a deterministic replay record. Panic unwinding closes active profiling scopes

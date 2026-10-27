@@ -6,7 +6,7 @@
 //! Run with:
 //! `cargo run -p execution_tape_wind_tunnel --bin tracy_capture`
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceSink;
@@ -98,22 +98,28 @@ fn build_program() -> (VerifiedProgram, FuncId, SigHash) {
     pb.set_function_output_name(main, 0, "result")
         .expect("set main output name");
 
-    let mut a_leaf = Asm::new();
+    let mut a_leaf = pb.function_asm(leaf).unwrap();
     a_leaf.ret(0, &[1]);
     pb.define_function(leaf, a_leaf).unwrap();
 
-    let mut a_stage_one = Asm::new();
+    let mut a_stage_one = pb.function_asm(stage_one).unwrap();
+    a_stage_one.alloc_register(ValueType::I64);
+    a_stage_one.alloc_register(ValueType::I64);
     a_stage_one.call(0, leaf, 0, &[1], &[2]);
     a_stage_one.host_call_sig_id(0, host_sig_id, 0, &[2], &[3]);
     a_stage_one.ret(0, &[3]);
     pb.define_function(stage_one, a_stage_one).unwrap();
 
-    let mut a_stage_two = Asm::new();
+    let mut a_stage_two = pb.function_asm(stage_two).unwrap();
+    a_stage_two.alloc_register(ValueType::I64);
     a_stage_two.call(0, stage_one, 0, &[1], &[2]);
     a_stage_two.ret(0, &[2]);
     pb.define_function(stage_two, a_stage_two).unwrap();
 
-    let mut a_main = Asm::new();
+    let mut a_main = pb.function_asm(main).unwrap();
+    for _ in 0..3 {
+        a_main.alloc_register(ValueType::I64);
+    }
     a_main.const_i64(1, 42);
     a_main.call(0, stage_two, 0, &[1], &[2]);
     a_main.host_call_sig_id(0, host_sig_id, 0, &[2], &[3]);
@@ -141,15 +147,112 @@ fn main() {
     }
 
     let (program, entry, expected_sig) = build_program();
+    let sources = source_map(&program);
 
     let host = EchoHost { expected_sig };
     let mut vm = Vm::new(host, Limits::default());
 
-    let mut sink = ProfilingTraceSink::with_resolver(ProgramSymbolResolver::default());
+    let mut sink = ProfilingTraceSink::with_resolver(ProgramSymbolResolver::default())
+        .sources(program.program(), &sources)
+        .expect("matching source map");
     let mask = sink.mask();
     let out = vm
         .run(&program, entry, &[], mask, Some(&mut sink))
         .expect("vm run failed");
 
     println!("result: {:?}", out);
+}
+
+// The demo maps explicit Rust construction statements, not inferred language spans.
+fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
+    use execution_tape::source::{
+        SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
+    };
+    use execution_tape::trace::TraceLocation;
+    let text = include_str!("tracy_capture.rs");
+    let statements: &[&[&str]] = &[
+        &["a_leaf.ret(0, &[1]);"],
+        &[
+            "a_stage_one.call(0, leaf, 0, &[1], &[2]);",
+            "a_stage_one.host_call_sig_id(0, host_sig_id, 0, &[2], &[3]);",
+            "a_stage_one.ret(0, &[3]);",
+        ],
+        &[
+            "a_stage_two.call(0, stage_one, 0, &[1], &[2]);",
+            "a_stage_two.ret(0, &[2]);",
+        ],
+        &[
+            "a_main.const_i64(1, 42);",
+            "a_main.call(0, stage_two, 0, &[1], &[2]);",
+            "a_main.host_call_sig_id(0, host_sig_id, 0, &[2], &[3]);",
+            "a_main.ret(0, &[3]);",
+        ],
+    ];
+    let mut mappings = Vec::new();
+    for (function, statements) in statements.iter().enumerate() {
+        let func = FuncId(u32::try_from(function).unwrap());
+        let instructions = program
+            .function(func)
+            .expect("demo function")
+            .instructions();
+        assert_eq!(
+            instructions.len(),
+            statements.len(),
+            "each demo instruction must have its construction source"
+        );
+        for (instruction, statement) in instructions.zip(*statements) {
+            let start = text.find(statement).expect("demo statement exists");
+            mappings.push(SourceMapping {
+                location: TraceLocation {
+                    func,
+                    pc: instruction.pc,
+                },
+                document: SourceId(0),
+                range: start..start + statement.len(),
+            });
+        }
+    }
+    SourceMap::new(
+        program.program(),
+        vec![SourceDocument {
+            name: file!().into(),
+            text: text.into(),
+        }],
+        mappings,
+        SourceLimits::default(),
+    )
+    .expect("demo source maps")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use execution_tape::trace::{TraceLocation, TraceMask};
+
+    #[test]
+    fn demo_executes_and_maps_every_instruction_without_a_tracy_client() {
+        let (program, entry, expected_sig) = build_program();
+        let sources = source_map(&program);
+        let bound = sources.bind(program.program()).unwrap();
+        for index in 0..program.program().functions.len() {
+            let func = FuncId(u32::try_from(index).unwrap());
+            for instruction in program.function(func).unwrap().instructions() {
+                assert!(
+                    !bound
+                        .lookup(TraceLocation {
+                            func,
+                            pc: instruction.pc
+                        })
+                        .unwrap()
+                        .text()
+                        .is_empty()
+                );
+            }
+        }
+        let mut vm = Vm::new(EchoHost { expected_sig }, Limits::default());
+        assert_eq!(
+            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            [Value::I64(42)]
+        );
+    }
 }

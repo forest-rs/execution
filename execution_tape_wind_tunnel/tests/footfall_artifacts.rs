@@ -4,6 +4,8 @@
 //! Read the tool's persisted artifacts as an independent consumer.
 
 use execution_tape::program::Program;
+use execution_tape::source::{SourceLimits, SourceMap};
+use execution_tape::trace::TraceLocation;
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use footfall::session::capture::CaptureReader;
@@ -23,6 +25,12 @@ fn saved_capture_resolves_instruction_locations_against_saved_program() {
         &VerifyConfig::default(),
     )
     .unwrap();
+    let sources = SourceMap::decode(
+        &fs::read(directory.join("program.sources")).unwrap(),
+        SourceLimits::default(),
+    )
+    .unwrap();
+    let bound = sources.bind(program.program()).unwrap();
     let mut reader =
         CaptureReader::new(File::open(directory.join("trace.footfall")).unwrap()).unwrap();
     let capture = reader.read_snapshot().unwrap().expect("one capture window");
@@ -63,6 +71,15 @@ fn saved_capture_resolves_instruction_locations_against_saved_program() {
                     .find(|instruction| instruction.pc == number("pc"))
                     .expect("captured PC is an instruction boundary");
                 assert_eq!(u32::from(instruction.opcode as u8), number("opcode"));
+                let source = bound
+                    .lookup(TraceLocation {
+                        func: function.id(),
+                        pc: instruction.pc,
+                    })
+                    .expect("captured location has an explicit source mapping");
+                assert_eq!(source.document().name, "footfall_demo.rs");
+                assert!(!source.text().is_empty());
+                assert!(source.start().line > 0);
                 let span = instruction
                     .span
                     .map(|span| OwnedLabelValue::Unsigned(span.get()));
@@ -81,7 +98,10 @@ fn saved_capture_resolves_instruction_locations_against_saved_program() {
     assert!(instructions > 0);
     assert!(sourced_instructions > 0 && sourced_instructions < instructions);
     let manifest = fs::read_to_string(directory.join("manifest.json")).unwrap();
-    assert!(manifest.contains("\"key\": 1, \"file\": \"program.extape\""));
+    assert!(
+        manifest
+            .contains("\"key\": 1, \"file\": \"program.extape\", \"sources\": \"program.sources\"")
+    );
     assert!(manifest.contains("\"replayable\": false"));
     assert!(
         !fs::read(directory.join("trace.pftrace"))
