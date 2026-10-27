@@ -9,11 +9,50 @@
 //! The frontend owns language rules and must supply the correct document and half-open UTF-8 byte
 //! range for each source instruction. Snapshots preserve their original contents; previews escape
 //! terminal controls and direction-changing characters. No host/native source is inferred.
+//!
+//! This optional API is `no_std + alloc` and has no UI or filesystem dependency. Construct a
+//! map once during compilation, bind it to an exact program, then resolve instruction locations:
+//!
+//! ```
+//! use execution_tape::{
+//!     asm::{FunctionSig, ProgramBuilder}, program::ValueType,
+//!     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping, SourcePosition},
+//!     trace::TraceLocation,
+//! };
+//! let mut builder = ProgramBuilder::new();
+//! let function = builder.declare_function(FunctionSig {
+//!     arg_types: vec![], ret_types: vec![ValueType::I64],
+//! })?;
+//! let mut body = builder.function_asm(function)?;
+//! let result = body.alloc_register(ValueType::I64);
+//! let location = TraceLocation { func: function, pc: body.pc() };
+//! body.const_i64(result, 42).ret(0, &[result]);
+//! builder.define_function(function, body)?;
+//! let program = builder.build_verified()?;
+//! let sources = SourceMap::new(program.program(), vec![SourceDocument {
+//!     name: "answer.expr".into(), text: "40 + 2".into(),
+//! }], vec![SourceMapping { location, document: SourceId(0), range: 0..6 }],
+//! SourceLimits::default())?;
+//! let bound = sources.bind(program.program())?;
+//! let source = bound.lookup(location).expect("frontend supplied this location");
+//! assert_eq!(source.text(), "40 + 2");
+//! assert_eq!(source.start(), SourcePosition { line: 1, byte_column: 1 });
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! [`SourceRange::text`], [`SourceRange::start`] and [`SourceRange::end`] borrow/query the
+//! validated snapshot without allocating previews. [`BoundSources::context`] additionally
+//! builds bounded, sanitized structured lines; terminal layout belongs to the caller.
+//! The standalone sidecar codec preserves supplied source contents and is separate from tape
+//! encoding. Source maps are never attached to [`Program`] or retained by verification/VM runs.
 
-use execution_tape::{
-    disasm::disassemble_function, program::Program, trace::TraceLocation, value::FuncId,
+use crate::{disasm::disassemble_function, program::Program, trace::TraceLocation, value::FuncId};
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    vec::Vec,
 };
-use std::{collections::BTreeMap, fmt, ops::Range};
+use core::{fmt, ops::Range};
 
 /// Index into one map's document snapshots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +147,7 @@ impl fmt::Display for SourceError {
         }
     }
 }
-impl std::error::Error for SourceError {}
+impl core::error::Error for SourceError {}
 
 /// Owned optional source sidecar. Use [`Self::bind`] before resolving program-local locations.
 #[derive(Clone)]
@@ -121,10 +160,10 @@ pub struct SourceMap {
 fn identity(program: &Program) -> Result<Vec<u8>, SourceError> {
     // These are the required ranges whose infallible writer has documented panic preconditions.
     for (index, constant) in program.const_pool.iter().enumerate() {
-        if matches!(constant, execution_tape::program::ConstEntry::Decimal(_)) {
+        if matches!(constant, crate::program::ConstEntry::Decimal(_)) {
             let id = u32::try_from(index).map_err(|_| SourceError::InvalidProgram)?;
             program
-                .const_decimal(execution_tape::program::ConstId(id))
+                .const_decimal(crate::program::ConstId(id))
                 .map_err(|_| SourceError::InvalidProgram)?;
         }
     }
@@ -224,7 +263,7 @@ impl SourceMap {
         let line_starts = documents
             .iter()
             .map(|d| {
-                std::iter::once(0)
+                core::iter::once(0)
                     .chain(d.text.match_indices('\n').map(|(i, _)| i + 1))
                     .collect()
             })
@@ -351,7 +390,7 @@ impl SourceMap {
     }
 }
 
-/// A map checked against an exact program. Cheap to copy and reusable across UI selections.
+/// A map checked against an exact program. Cheap to copy and reusable across headless queries and UI selections.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundSources<'a> {
     map: &'a SourceMap,
@@ -359,11 +398,61 @@ pub struct BoundSources<'a> {
 /// Borrowed exact mapped source range.
 #[derive(Clone)]
 pub struct SourceRange<'a> {
-    /// Snapshot label and original unescaped text.
-    pub document: &'a SourceDocument,
-    /// Exact half-open UTF-8 byte range.
-    pub range: Range<usize>,
+    document: &'a SourceDocument,
+    range: Range<usize>,
     lines: &'a [usize],
+}
+
+/// One-based coordinates in the original UTF-8 snapshot, independent of terminal layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourcePosition {
+    /// One-based source line.
+    pub line: usize,
+    /// One-based UTF-8 byte column, not a character, UTF-16 or display-cell column.
+    pub byte_column: usize,
+}
+
+impl<'a> SourceRange<'a> {
+    /// Borrows the original document snapshot and unescaped label.
+    #[must_use]
+    pub fn document(&self) -> &'a SourceDocument {
+        self.document
+    }
+
+    /// Returns the validated half-open UTF-8 byte range.
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        self.range.clone()
+    }
+
+    /// Borrows the exact selected text without copying or escaping it.
+    #[must_use]
+    pub fn text(&self) -> &'a str {
+        &self.document.text[self.range.clone()]
+    }
+
+    /// Returns the start coordinates without constructing preview lines.
+    #[must_use]
+    pub fn start(&self) -> SourcePosition {
+        self.position(self.range.start)
+    }
+
+    /// Returns the exclusive end coordinates without constructing preview lines.
+    #[must_use]
+    pub fn end(&self) -> SourcePosition {
+        self.position(self.range.end)
+    }
+
+    fn position(&self, offset: usize) -> SourcePosition {
+        let line = self
+            .lines
+            .partition_point(|&start| start <= offset)
+            .saturating_sub(1);
+        SourcePosition {
+            line: line + 1,
+            byte_column: offset - self.lines[line] + 1,
+        }
+    }
 }
 /// Sanitized bounded source line. The selected segments correspond to the exact original range.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -384,14 +473,14 @@ pub struct SourceLine {
 /// Bounded source context, retaining exact byte coordinates separately from display text.
 #[derive(Clone)]
 pub struct SourceContext<'a> {
-    /// Original document label; escape it before displaying outside [`BoundSources::context_lines`].
+    /// Original unescaped document label; escape controls before displaying it.
     pub name: &'a str,
     /// Exact half-open byte range in the original UTF-8 snapshot.
     pub range: Range<usize>,
-    /// One-based start line and byte column (not display cells or language-specific columns).
-    pub start: (usize, usize),
-    /// One-based end line and byte column.
-    pub end: (usize, usize),
+    /// Start coordinates in the original snapshot.
+    pub start: SourcePosition,
+    /// Exclusive end coordinates in the original snapshot.
+    pub end: SourcePosition,
     /// At most the requested/clamped number of lines.
     pub lines: Vec<SourceLine>,
     /// The source range continues beyond the displayed lines.
@@ -480,16 +569,9 @@ impl<'a> BoundSources<'a> {
         let source = self.lookup(location)?;
         let max_lines = max_lines.clamp(1, 12);
         let max_columns = max_columns.clamp(16, 240);
-        let position = |offset| {
-            let line = source
-                .lines
-                .partition_point(|&start| start <= offset)
-                .saturating_sub(1);
-            (line + 1, offset - source.lines[line] + 1)
-        };
-        let start = position(source.range.start);
-        let end = position(source.range.end);
-        let first = (start.0 - 1).saturating_sub(usize::from(max_lines > 1));
+        let start = source.start();
+        let end = source.end();
+        let first = (start.line - 1).saturating_sub(usize::from(max_lines > 1));
         let last = (first + max_lines).min(source.lines.len());
         let mut lines = Vec::new();
         for line in first..last {
@@ -501,7 +583,7 @@ impl<'a> BoundSources<'a> {
             let text = &source.document.text[begin..finish];
             let selected_start = source.range.start.saturating_sub(begin).min(text.len());
             let selected_end = source.range.end.saturating_sub(begin).min(text.len());
-            let focus = if line + 1 == start.0 {
+            let focus = if line + 1 == start.line {
                 selected_start
             } else {
                 0
@@ -562,66 +644,19 @@ impl<'a> BoundSources<'a> {
             start,
             end,
             lines,
-            continued: end.0 > last,
+            continued: end.line > last,
         })
-    }
-
-    /// Ready-to-render bounded context, with explicit absence and exact byte coordinates.
-    /// Original names/text are escaped so this helper cannot emit terminal control sequences.
-    pub fn context_lines(
-        self,
-        location: TraceLocation,
-        max_lines: usize,
-        max_columns: usize,
-    ) -> Vec<String> {
-        let Some(context) = self.context(location, max_lines, max_columns) else {
-            return vec![format!(
-                "Source: no frontend mapping for f{}:{}",
-                location.func.0, location.pc
-            )];
-        };
-        let mut out = vec![format!(
-            "Source: line {} byte {} · {} · bytes {}..{}",
-            context.start.0,
-            context.start.1,
-            safe_label(context.name),
-            context.range.start,
-            context.range.end
-        )];
-        for line in context.lines {
-            let left = if line.clipped_left { "…" } else { "" };
-            let right = if line.clipped_right { "…" } else { "" };
-            out.push(format!(
-                "{:>4} | {left}{}{}{}{right}",
-                line.number, line.before, line.selected, line.after
-            ));
-            if !line.selected.is_empty()
-                || (context.range.is_empty() && line.number == context.start.0)
-            {
-                out.push(format!(
-                    "     | {}{}",
-                    " ".repeat(
-                        ratatui::text::Line::from(line.before).width()
-                            + usize::from(line.clipped_left)
-                    ),
-                    "^".repeat(ratatui::text::Line::from(line.selected).width().max(1))
-                ));
-            }
-        }
-        if context.continued {
-            out.push("     … source range continues beyond this context".into());
-        }
-        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape::{
+    use crate::{
         asm::{Asm, FunctionSig, ProgramBuilder},
         program::ValueType,
     };
+    use alloc::{format, vec};
     fn fixture(value: i64) -> (Program, TraceLocation) {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
@@ -682,7 +717,7 @@ mod tests {
         let mut changed_pool = program.clone();
         changed_pool
             .const_pool
-            .push(execution_tape::program::ConstEntry::I64(9));
+            .push(crate::program::ConstEntry::I64(9));
         assert!(matches!(
             map.bind(&changed_pool),
             Err(SourceError::ProgramMismatch)
@@ -747,7 +782,7 @@ mod tests {
             ..loc
         };
         assert!(bound.lookup(other).is_none());
-        assert!(bound.context_lines(other, 4, 80)[0].contains("no frontend mapping"));
+        assert!(bound.context(other, 4, 80).is_none());
     }
     #[test]
     fn context_is_bounded_and_controls_are_visible() {
@@ -769,25 +804,39 @@ mod tests {
                 + context.lines[0].after.chars().count()
                 <= 48
         );
-        let shown = bound.context_lines(loc, 1, 80).join("\n");
+        let context = bound.context(loc, 1, 80).unwrap();
+        let shown = context
+            .lines
+            .iter()
+            .map(|line| format!("{}{}{}", line.before, line.selected, line.after))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(!shown.contains('\u{1b}'));
         assert!(!shown.contains('\t'));
         assert!(!shown.contains('\u{202e}'));
         assert!(shown.contains("\\u{1b}") || shown.contains("\\x1b"));
-        assert!(shown.contains("bytes"));
     }
     #[test]
     fn point_ranges_and_multiline_endpoints_keep_exact_coordinates() {
         let (p, loc) = fixture(42);
         let map = source(&p, loc, "ab\ncd\n", 4..4).unwrap();
         let context = map.bind(&p).unwrap().context(loc, 1, 40).unwrap();
-        assert_eq!(context.start, (2, 2));
+        assert_eq!(
+            context.start,
+            SourcePosition {
+                line: 2,
+                byte_column: 2
+            }
+        );
         assert_eq!(context.lines[0].before, "c");
         assert_eq!(context.lines[0].after, "d");
         let eof = source(&p, loc, "ab\n", 3..3).unwrap();
         assert_eq!(
             eof.bind(&p).unwrap().context(loc, 1, 40).unwrap().start,
-            (2, 1)
+            SourcePosition {
+                line: 2,
+                byte_column: 1
+            }
         );
         let map = source(&p, loc, "a\nb\nc\nd", 0..7).unwrap();
         assert!(map.bind(&p).unwrap().context(loc, 2, 40).unwrap().continued);
@@ -851,15 +900,13 @@ mod tests {
             Err(SourceError::InvalidProgram)
         ));
         let mut malformed = p;
-        malformed
-            .call_sigs
-            .push(execution_tape::program::CallSigEntry {
-                args: execution_tape::program::ByteRange {
-                    offset: u32::MAX,
-                    len: 1,
-                },
-                rets: execution_tape::program::ByteRange { offset: 0, len: 0 },
-            });
+        malformed.call_sigs.push(crate::program::CallSigEntry {
+            args: crate::program::ByteRange {
+                offset: u32::MAX,
+                len: 1,
+            },
+            rets: crate::program::ByteRange { offset: 0, len: 0 },
+        });
         assert!(matches!(
             map.bind(&malformed),
             Err(SourceError::InvalidProgram)
@@ -868,7 +915,7 @@ mod tests {
 
     #[test]
     fn malformed_decimal_storage_is_rejected_for_source_creation_and_binding() {
-        use execution_tape::program::{ByteRange, ConstEntry};
+        use crate::program::{ByteRange, ConstEntry};
 
         let (mut program, loc) = fixture(42);
         program.const_bytes_data.resize(17, 0);

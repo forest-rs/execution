@@ -151,7 +151,7 @@ The built-in recording demo enables a bounded history and explicit operand watch
 Use one configured browser for interactive and headless views:
 
 ```rust,no_run
-# fn example(program: &execution_tape::program::Program, sources: &execution_tape_observatory::sources::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
+# fn example(program: &execution_tape::program::Program, sources: &execution_tape::source::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
 use execution_tape_observatory::ProgramBrowser;
 let browser = ProgramBrowser::new(program).sources(sources)?;
 let text = browser.render_text(120, 36)?;
@@ -168,6 +168,12 @@ A frontend supplies `SourceDocument { name, text }` snapshots and explicit
 ranges are half-open UTF-8 byte ranges, with empty ranges representing a point. Source names are
 labels and never cause filesystem reads. Generated code can remain unmapped. Every selected
 instruction shows either its supplied context or an explicit missing-mapping message.
+
+These types live in `execution_tape::source`, a `no_std + alloc` API with no terminal dependency.
+Frontends can construct/export maps and headless tools can bind/query them using only the core.
+`bound.lookup(location)` returns a validated borrowed range: use `text()`, `document()`, `range()`,
+`start()` and `end()` without allocating previews. Positions have explicit `line` and
+`byte_column` fields. Observatory consumes the same map and adds terminal-cell layout.
 
 `SourceMap::new` validates documents/ranges, duplicate locations and exact instruction boundaries.
 `bind` compares the full canonical `Program::encode()` bytes, including constants, imports and
@@ -204,7 +210,7 @@ and executes through the ordinary VM. Its built-in expression returns 24. Input 
 Attach the same source bundle to an owned recording and open directly on captured instructions:
 
 ```rust,no_run
-# fn example(record: &execution_tape::recording::Recording, sources: &execution_tape_observatory::sources::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
+# fn example(record: &execution_tape::recording::Recording, sources: &execution_tape::source::SourceMap) -> Result<(), Box<dyn std::error::Error>> {
 use execution_tape_observatory::RecordingExplorer;
 let explorer = RecordingExplorer::new(record).sources(sources)?.instructions();
 let text = explorer.render_text(160, 60)?;

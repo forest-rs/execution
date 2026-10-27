@@ -808,9 +808,9 @@ fn entry_loops_disclose_invocation_seeds_separately_from_cfg_arms() {
 
 #[test]
 fn frontend_snapshot_is_visible_on_compact_screens_and_follows_diagnostics() {
-    use crate::{
-        ProgramBrowser,
-        sources::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
+    use crate::ProgramBrowser;
+    use execution_tape::source::{
+        SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
     use execution_tape::trace::TraceLocation;
     let (mut program, make, wrong) = nested_fixture(false);

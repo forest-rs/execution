@@ -34,7 +34,7 @@ pub(super) struct View<'a> {
     pub(super) step_condition: Option<u32>,
     pub(super) step_successors: Option<[Option<TraceLocation>; 2]>,
     step_location: Option<TraceLocation>,
-    sources: Option<super::sources::BoundSources<'a>>,
+    sources: Option<execution_tape::source::BoundSources<'a>>,
     fact_analysis: Option<execution_tape::verifier::FunctionAnalysis<'a>>,
     fact_function: Option<execution_tape::value::FuncId>,
     pub(super) page_rows: usize,
@@ -48,7 +48,7 @@ impl<'a> View<'a> {
 
     pub(super) fn with_options(
         record: &'a Recording,
-        sources: Option<super::sources::BoundSources<'a>>,
+        sources: Option<execution_tape::source::BoundSources<'a>>,
         instructions: bool,
     ) -> Self {
         let mut view = Self {
@@ -146,7 +146,7 @@ impl<'a> View<'a> {
         self.source_lines = self.sources.map_or_else(Vec::new, |sources| {
             location.map_or_else(
                 || vec!["Source: no captured instruction location".into()],
-                |location| sources.context_lines(location, 2, 48),
+                |location| super::source_context::context_lines(sources, location, 2, 48),
             )
         });
         let step_location = self

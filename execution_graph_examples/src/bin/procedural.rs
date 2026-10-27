@@ -773,10 +773,10 @@ fn explain(compiled: &Compiled, capture: &Captured) -> Result<(), Box<dyn Error>
 
 #[cfg(feature = "observatory")]
 fn explore(compiled: &Compiled, capture: &Captured, snapshot: bool) -> Result<(), Box<dyn Error>> {
-    use execution_tape_observatory::{
-        RecordingExplorer,
-        sources::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
+    use execution_tape::source::{
+        SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
+    use execution_tape_observatory::RecordingExplorer;
     let mappings = compiled
         .ranges
         .iter()

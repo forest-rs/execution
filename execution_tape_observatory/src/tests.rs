@@ -711,7 +711,7 @@ fn actual_instruction_navigation_shows_local_values_and_preserves_boundary_selec
 
 #[test]
 fn recorded_instructions_follow_exact_source_snapshots_and_reject_stale_bundles() {
-    use crate::sources::{
+    use execution_tape::source::{
         SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
     use execution_tape::trace::TraceLocation;
