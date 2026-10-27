@@ -278,6 +278,17 @@ for its signature, aggregate contracts, and prepared instruction locations:
 cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et 0
 ```
 
+## Source connections
+
+Frontend snapshots and instruction-to-source mappings live in `execution_tape::source`,
+independently of the terminal explorer. `SourceMap::new` validates exact instruction PCs,
+UTF-8 byte ranges and budgets; binding checks the full canonical program identity. A bound
+lookup returns a validated borrowed `SourceRange` with exact `text()`, `document()`, `range()`,
+and named `SourcePosition { line, byte_column }` endpoints. These queries allocate no preview
+strings. `context()` explicitly requests bounded sanitized structured lines; Observatory adds
+terminal-cell layout. Source maps and their sidecar encoding remain optional frontend metadata,
+with no source lookup or storage added to ordinary verification/execution.
+
 ## Optional instruction facts
 
 `ProgramAnalysis::new(&program, &config)` verifies a borrowed source once; `ProgramAnalysis::from(&prepared)`

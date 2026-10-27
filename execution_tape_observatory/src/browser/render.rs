@@ -559,7 +559,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
                         pc: instruction.pc(),
                     })
             })
-            .map(|source| source.range);
+            .map(|source| source.range());
         let block = panel(" FRONTEND SOURCE SNAPSHOT ", false).title_bottom(range.map_or_else(
             || " explicit mapping unavailable ".into(),
             |range| {

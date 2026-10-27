@@ -7,11 +7,12 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-use super::{Screen, describe, flow::Flow, sources::BoundSources};
+use super::{Screen, describe, flow::Flow};
 use execution_tape::disasm::{
     CallTarget, DisasmError, FunctionDisassembly, Operands, disassemble_function,
 };
 use execution_tape::program::{HostSigId, Program, SpanId};
+use execution_tape::source::BoundSources;
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{FunctionAnalysis, ProgramAnalysis, VerifyConfig, VerifyError};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -298,7 +299,8 @@ impl<'a> Browser<'a> {
         }
         self.fact_lines.clear();
         self.source_lines = self.source_map.map_or_else(Vec::new, |sources| {
-            sources.context_lines(
+            super::source_context::context_lines(
+                sources,
                 execution_tape::trace::TraceLocation {
                     func: self.function.expect("selected function"),
                     pc,

@@ -104,6 +104,15 @@ stay hidden from their exposed signature and are checked against the concrete bo
 Run `cargo run -p execution_tape_wind_tunnel --bin nested_contracts` for a complete example.
 Run `cargo run -p execution_tape_wind_tunnel --bin typed_callable` for an indirect nested result.
 
+## Source connections
+
+[`source::SourceMap`] owns optional frontend snapshots and exact instruction-to-source ranges.
+Bind a map to the exact program, then use [`source::BoundSources::lookup`] to borrow selected
+text and named line/byte coordinates without a terminal dependency. Structured bounded
+context and a standalone sidecar codec are available in the same `no_std + alloc` module.
+Source snapshots are frontend-owned metadata: ordinary verification/execution never retains
+a map or performs source lookup. Observatory consumes this API for its terminal panels.
+
 ## Resource policy
 
 Unit/effect registers carry verifier facts without runtime payload storage. Their source

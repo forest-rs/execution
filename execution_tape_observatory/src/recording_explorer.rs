@@ -1,8 +1,8 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{interact, model::View, render_screen, sources};
-use execution_tape::recording::Recording;
+use crate::{interact, model::View, render_screen};
+use execution_tape::{recording::Recording, source};
 use std::io;
 
 /// Configured recording explorer for the same interactive and headless presentation.
@@ -12,7 +12,7 @@ use std::io;
 /// observations or calls a live host. [`crate::explore`] and [`crate::render_text`] use defaults.
 pub struct RecordingExplorer<'a> {
     record: &'a Recording,
-    sources: Option<sources::BoundSources<'a>>,
+    sources: Option<source::BoundSources<'a>>,
     instructions: bool,
 }
 
@@ -46,7 +46,7 @@ impl<'a> RecordingExplorer<'a> {
 
     /// Attaches explicit frontend source snapshots after exact compiled-program identity checks.
     /// A stale map is rejected before entering terminal modes.
-    pub fn sources(mut self, map: &'a sources::SourceMap) -> Result<Self, sources::SourceError> {
+    pub fn sources(mut self, map: &'a source::SourceMap) -> Result<Self, source::SourceError> {
         self.sources = Some(map.bind(self.record.program().program())?);
         Ok(self)
     }

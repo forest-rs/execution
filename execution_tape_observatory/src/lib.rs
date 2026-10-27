@@ -6,7 +6,7 @@
 //! [`browse`] opens functions, instructions, imports, constants and aggregate types without a VM
 //! or host. Verification runs once on opening; rejected programs remain navigable. [`render_program`]
 //! provides the same initial view without terminal modes. [`ProgramBrowser`] attaches optional
-//! frontend source snapshots through [`sources::SourceMap`]. Span IDs remain opaque; static
+//! frontend source snapshots through [`execution_tape::source::SourceMap`]. Span IDs remain opaque; static
 //! register declarations are not runtime values.
 //!
 //! [`explore`] connects invocation/host-call/outcome navigation, immediate aggregate inspection,
@@ -30,14 +30,14 @@ mod model;
 mod palette;
 mod recording_explorer;
 mod render;
-pub mod sources;
+mod source_context;
 mod syntax;
 
 #[cfg(test)]
 mod tests;
 
-use execution_tape::program::Program;
 use execution_tape::recording::Recording;
+use execution_tape::{program::Program, source};
 use model::View;
 use ratatui::Terminal;
 use ratatui::backend::{CrosstermBackend, TestBackend};
@@ -73,7 +73,7 @@ pub fn browse(program: &Program) -> io::Result<()> {
 /// Use this builder to attach sources once, then choose interactive or headless presentation.
 pub struct ProgramBrowser<'a> {
     program: &'a Program,
-    sources: Option<sources::BoundSources<'a>>,
+    sources: Option<source::BoundSources<'a>>,
 }
 impl std::fmt::Debug for ProgramBrowser<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -95,7 +95,7 @@ impl<'a> ProgramBrowser<'a> {
 
     /// Attaches frontend source snapshots after comparing the full encoded program identity.
     /// A stale map is rejected before terminal modes are entered.
-    pub fn sources(mut self, map: &'a sources::SourceMap) -> Result<Self, sources::SourceError> {
+    pub fn sources(mut self, map: &'a source::SourceMap) -> Result<Self, source::SourceError> {
         self.sources = Some(map.bind(self.program)?);
         Ok(self)
     }

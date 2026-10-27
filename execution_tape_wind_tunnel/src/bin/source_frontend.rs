@@ -4,6 +4,7 @@
 //! A small arithmetic frontend demonstrating exact source connections without span-ID conventions.
 //! Grammar: signed integer literals, parentheses, +, -, *. All arithmetic wraps like the VM.
 
+use execution_tape::source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping};
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -13,10 +14,7 @@ use execution_tape::{
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
 };
-use execution_tape_observatory::{
-    ProgramBrowser, RecordingExplorer,
-    sources::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
-};
+use execution_tape_observatory::{ProgramBrowser, RecordingExplorer};
 use std::{
     error::Error,
     io::{Read, Write},
@@ -350,7 +348,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     step.location.pc,
                     execution_tape::opcode::Opcode::from_byte(step.opcode)
                         .expect("verified opcode"),
-                    &source.document.text[source.range.clone()]
+                    source.text()
                 );
                 for (label, observations) in [("before", step.inputs), ("after", step.outputs)] {
                     for (reg, value) in observations.iter() {
@@ -415,8 +413,8 @@ mod tests {
                     pc: instruction.pc(),
                 })
                 .unwrap();
-            assert!(!range.range.is_empty());
-            assert!(EXAMPLE.get(range.range).is_some());
+            assert!(!range.range().is_empty());
+            assert!(EXAMPLE.get(range.range()).is_some());
         }
         let map = SourceMap::decode(&sources.encode(), SourceLimits::default()).unwrap();
         let text = ProgramBrowser::new(&program)

@@ -205,6 +205,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Move frontend source maps and structured source queries from Observatory into
+  `execution_tape::source` (`no_std + alloc`, no UI dependency). Observatory retains terminal
+  rendering and accepts the same core map. Migration: import source types from the core module;
+  use `SourceRange::document()` / `range()` / `text()` and named `SourcePosition { line,
+  byte_column }` coordinates. `context()` remains structured; terminal `context_lines()` is now
+  private to Observatory. Existing source sidecar encoding and tape wire bytes are unchanged. ([#200][] by [@waywardmonkeys][])
+
 - Remove the zero-filled runtime Unit/effect register bank and prepared Unit payload operations.
   Verification, boundary kind checks, source PCs/fuel and observations are preserved. Unit block
   transfers require no copy scratch. `FunctionStats::register_bytes` now excludes this removed
@@ -497,3 +504,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#192]: https://github.com/forest-rs/execution/pull/192
 
 [#198]: https://github.com/forest-rs/execution/pull/198
+
+[#200]: https://github.com/forest-rs/execution/pull/200

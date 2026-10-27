@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use execution_tape::program::Program;
-use execution_tape_observatory::sources::{SourceLimits, SourceMap};
+use execution_tape::source::{SourceLimits, SourceMap};
 use std::{
     ffi::OsString,
     io::{self, Read},
