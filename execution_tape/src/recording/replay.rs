@@ -603,6 +603,11 @@ impl TraceSink for Check<'_> {
         let actual = match outcome {
             TraceOutcome::Ok => crate::recording::InstructionOutcome::Completed,
             TraceOutcome::Trap(_) => crate::recording::InstructionOutcome::Trapped,
+            TraceOutcome::Cancelled => {
+                state.boundary = ReplayBoundary::Instruction { index };
+                state.error = Some(state.mismatch(Divergence::Instruction));
+                return;
+            }
         };
         if step.outcome != crate::recording::InstructionOutcome::Pending
             && (step.location != location || step.next != next || step.outcome != actual)

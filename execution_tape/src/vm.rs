@@ -32,7 +32,9 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
+mod invocation;
 mod observations;
+pub use invocation::{Invocation, InvocationOptions, RunStatus};
 #[cfg(test)]
 mod payload_tests;
 
@@ -564,6 +566,15 @@ impl<'a> TraceCtx<'a> {
     }
 
     #[inline]
+    fn active(&self) -> bool {
+        self.enabled(TraceMask::INSTR)
+            || self.enabled(TraceMask::CALL)
+            || self.enabled(TraceMask::HOST)
+            || self.enabled(TraceMask::VALUES)
+            || self.enabled(TraceMask::REGISTERS)
+    }
+
+    #[inline]
     fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
         if self.mask != TraceMask::NONE
             && let Some(sink) = self.sink.as_mut()
@@ -745,37 +756,59 @@ impl<'a> TraceCtx<'a> {
         }
     }
 
+    fn unwind(
+        &mut self,
+        program: &Program,
+        location: TraceLocation,
+        span_id: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        // A host failure/cancellation closes the host scope before its instruction attempt.
+        if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
+            let (kind, depth) = self.scopes.pop().expect("open host scope");
+            if let Some(sink) = self.sink.as_mut() {
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location.func,
+                    location.pc,
+                    span_id,
+                    outcome,
+                );
+            }
+        }
+        self.instr_end(program, None, outcome);
+        while let Some((kind, depth)) = self.scopes.pop() {
+            if let Some(sink) = self.sink.as_mut() {
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location.func,
+                    location.pc,
+                    span_id,
+                    outcome,
+                );
+            }
+        }
+    }
+
+    fn cancel(&mut self, program: &Program, location: TraceLocation, span_id: Option<u64>) {
+        self.unwind(program, location, span_id, TraceOutcome::Cancelled);
+    }
+
     fn finish(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         if let TraceOutcome::Trap(error) = outcome {
-            // A host ABI failure belongs to the host scope, before the instruction completes.
-            if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
-                let (kind, depth) = self.scopes.pop().expect("open host scope");
-                if let Some(sink) = self.sink.as_mut() {
-                    sink.scope_exit(
-                        program,
-                        kind,
-                        depth,
-                        error.func,
-                        error.pc,
-                        error.span_id,
-                        outcome,
-                    );
-                }
-            }
-            self.instr_end(program, None, outcome);
-            while let Some((kind, depth)) = self.scopes.pop() {
-                if let Some(sink) = self.sink.as_mut() {
-                    sink.scope_exit(
-                        program,
-                        kind,
-                        depth,
-                        error.func,
-                        error.pc,
-                        error.span_id,
-                        outcome,
-                    );
-                }
-            }
+            self.unwind(
+                program,
+                TraceLocation {
+                    func: error.func,
+                    pc: error.pc,
+                },
+                error.span_id,
+                outcome,
+            );
         }
         debug_assert!(
             self.pending.is_none(),
@@ -1127,11 +1160,7 @@ impl<H: Host> Vm<H> {
 
         // Keep two interpreter-loop instantiations: one no-trace fast path and one trace-capable
         // path with per-mask checks, instead of specializing every trace-mask combination.
-        let trace_active = trace.enabled(TraceMask::INSTR)
-            || trace.enabled(TraceMask::CALL)
-            || trace.enabled(TraceMask::HOST)
-            || trace.enabled(TraceMask::VALUES)
-            || trace.enabled(TraceMask::REGISTERS);
+        let trace_active = trace.active();
 
         let result = if trace_active {
             trace.values(program_ref, || ValueEvent::Entry {
@@ -1178,7 +1207,7 @@ impl<H: Host> Vm<H> {
     ) -> Result<(), TrapInfo> {
         self.initialize_run::<P>(ctx, program, entry, args, trace)?;
         let mut register_state = P::RegisterState::default();
-        self.execute_loop::<P>(
+        self.execute_loop::<P, false>(
             ctx,
             program,
             entry,
@@ -1188,7 +1217,9 @@ impl<H: Host> Vm<H> {
             trace,
             access,
             &mut register_state,
+            &mut 0,
         )
+        .map(|_| ())
     }
 
     #[inline]
@@ -1250,7 +1281,7 @@ impl<H: Host> Vm<H> {
         Ok(())
     }
 
-    fn execute_loop<P: TracePolicy>(
+    fn execute_loop<P: TracePolicy, const YIELD: bool>(
         &mut self,
         ctx: &mut ExecutionContext,
         program: &VerifiedProgram,
@@ -1261,13 +1292,20 @@ impl<H: Host> Vm<H> {
         trace: &mut TraceCtx<'_>,
         mut access: Option<&mut dyn AccessSink>,
         register_state: &mut P::RegisterState,
-    ) -> Result<(), TrapInfo> {
+        remaining: &mut u64,
+    ) -> Result<RunStatus, TrapInfo> {
         let output_start = outputs.len();
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
 
         loop {
+            if YIELD {
+                if *remaining == 0 {
+                    return Ok(RunStatus::Suspended);
+                }
+                *remaining -= 1;
+            }
             if ctx.fuel == 0 {
                 return Err(ctx.trap(
                     ctx.cur_func(),
@@ -2027,7 +2065,7 @@ impl<H: Host> Vm<H> {
                             span_id,
                         );
                         P::instr_end(trace, program_ref, None);
-                        return Ok(());
+                        return Ok(RunStatus::Complete);
                     }
 
                     self.check_result_contracts(

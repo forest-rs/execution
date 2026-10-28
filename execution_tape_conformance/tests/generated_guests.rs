@@ -10,7 +10,7 @@ use execution_tape::{
     trace::TraceMask,
     value::{FuncId, Value},
     verifier::{VerifyConfig, verify_program_owned},
-    vm::{Limits, Vm},
+    vm::{InvocationOptions, Limits, RunStatus, Vm},
 };
 
 #[derive(Clone, Debug)]
@@ -259,6 +259,21 @@ fn check(expr: &Expr, input: i64) -> Result<(), String> {
                 None,
             )
             .map_err(|e| format!("run: {e:?}"))?;
+        for quantum in [1, 7, u64::MAX] {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let args = [Value::I64(input)];
+            let mut invocation = vm
+                .start(&verified, FuncId(0), &args, InvocationOptions::default())
+                .map_err(|e| format!("start: {e:?}"))?;
+            while invocation
+                .resume(quantum)
+                .map_err(|e| format!("resume: {e:?}"))?
+                == RunStatus::Suspended
+            {}
+            if invocation.take_outputs().unwrap() != output {
+                return Err(format!("scheduled execution differed at quantum {quantum}"));
+            }
+        }
         if output != [Value::I64(expr.eval(input))] {
             return Err(format!("expected {}, got {output:?}", expr.eval(input)));
         }
