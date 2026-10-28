@@ -1164,6 +1164,7 @@ impl<H: Host> Vm<H> {
         result
     }
 
+    #[inline]
     fn run_body<P: TracePolicy>(
         &mut self,
         ctx: &mut ExecutionContext,
@@ -1173,13 +1174,34 @@ impl<H: Host> Vm<H> {
         outputs: &mut Vec<Value>,
         checkpoint: Checkpoint,
         trace: &mut TraceCtx<'_>,
-        mut access: Option<&mut dyn AccessSink>,
+        access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        let output_start = outputs.len();
+        self.initialize_run::<P>(ctx, program, entry, args, trace)?;
+        let mut register_state = P::RegisterState::default();
+        self.execute_loop::<P>(
+            ctx,
+            program,
+            entry,
+            args,
+            outputs,
+            checkpoint,
+            trace,
+            access,
+            &mut register_state,
+        )
+    }
+
+    #[inline]
+    fn initialize_run<P: TracePolicy>(
+        &mut self,
+        ctx: &mut ExecutionContext,
+        program: &VerifiedProgram,
+        entry: FuncId,
+        args: &[Value],
+        trace: &mut TraceCtx<'_>,
+    ) -> Result<(), TrapInfo> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
-        let max_host_calls = self.limits.max_host_calls;
-        let mut register_state = P::RegisterState::default();
         ctx.reset(self.limits.fuel, self.limits.max_payload_work);
         ctx.aggregate_limit = self.limits.max_aggregate_work;
 
@@ -1224,6 +1246,26 @@ impl<H: Host> Vm<H> {
             entry_vf.span_at_ix(0).map(|id| id.get()),
             None,
         );
+
+        Ok(())
+    }
+
+    fn execute_loop<P: TracePolicy>(
+        &mut self,
+        ctx: &mut ExecutionContext,
+        program: &VerifiedProgram,
+        entry: FuncId,
+        args: &[Value],
+        outputs: &mut Vec<Value>,
+        checkpoint: Checkpoint,
+        trace: &mut TraceCtx<'_>,
+        mut access: Option<&mut dyn AccessSink>,
+        register_state: &mut P::RegisterState,
+    ) -> Result<(), TrapInfo> {
+        let output_start = outputs.len();
+        let program_ref = program.program();
+        let max_call_depth = self.limits.max_call_depth;
+        let max_host_calls = self.limits.max_host_calls;
 
         loop {
             if ctx.fuel == 0 {
@@ -1286,7 +1328,7 @@ impl<H: Host> Vm<H> {
 
             let sources = ValueSources::new(program_ref, args, self.memory.aggs());
             P::registers(
-                &mut register_state,
+                register_state,
                 trace,
                 program_ref,
                 ctx,
@@ -3009,7 +3051,7 @@ impl<H: Host> Vm<H> {
                 }
             }
             P::registers(
-                &mut register_state,
+                register_state,
                 trace,
                 program_ref,
                 ctx,
