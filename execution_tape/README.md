@@ -215,6 +215,22 @@ incomplete and cannot be replayed as a finished invocation. Logical profiling sc
 suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 use the unbounded dispatch specialization without scheduling checks.
 
+## Paused frames and host-object roots
+
+`Invocation::inspect` borrows live state at a safe instruction boundary. Frames have
+invocation-scoped `ActivationId`s that remain stable across resumes and reject foreign or
+retired identities. Waiting callers point at their pending call instruction; their results
+are not reported before the callee returns. Register queries retain declared kinds and
+return explicit unavailability when initialization is not established. Source maps resolve
+the same exact frame locations used by recording and disassembly.
+
+Register mapping and verifier facts are constructed only when requested for a function.
+`visit_objects` inventories conservative references in initialized registers, arguments,
+outputs and all VM aggregate fields, including retained results and temporary nodes. The
+embedding collector must add its globals, snapshots and other external roots and trace its
+own object graph. The VM does not choose collection, identity or relocation policy. Inspection
+borrows prevent resumption or host mutation while those views are being read.
+
 ## Design Docs
 
 The repository-level design notes live outside the packaged crate:

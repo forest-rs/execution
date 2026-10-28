@@ -498,6 +498,27 @@ impl<'a> AggOverlay<'a> {
 }
 
 impl AggHeap {
+    /// Enumerates immediate opaque object references in all allocated aggregate nodes.
+    ///
+    /// Each item is `(heap-local node, field/element index, object token)`. All nodes are
+    /// included, so no graph expansion or deduplication is necessary. This is a conservative
+    /// inventory, not a minimal root set or a collection operation; object lifetimes and other
+    /// roots remain the embedding runtime's responsibility.
+    pub fn object_references(
+        &self,
+    ) -> impl Iterator<Item = (AggHandle, usize, crate::value::Obj)> + '_ {
+        self.nodes.iter().enumerate().flat_map(|(index, node)| {
+            let handle = AggHandle(u32::try_from(index).expect("aggregate handles are bounded"));
+            node.values()
+                .iter()
+                .enumerate()
+                .filter_map(move |(field, value)| match value {
+                    Value::Obj(object) => Some((handle, field, *object)),
+                    _ => None,
+                })
+        })
+    }
+
     /// Creates an empty heap.
     #[must_use]
     pub fn new() -> Self {

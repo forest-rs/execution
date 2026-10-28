@@ -20,28 +20,7 @@ impl FunctionRegisters {
     fn new(program: &Program, func: FuncId) -> Option<Self> {
         let function = program.functions.get(func.0 as usize)?;
         let instructions = decode_instructions(function.bytecode(program).ok()?).ok()?;
-        let mut counts = [0_u32; 12];
-        let mut registers = Vec::with_capacity(function.reg_count as usize);
-        for kind in function.register_types(program).ok()?.iter() {
-            let class = crate::typed::RegClass::of(kind);
-            let index = class as usize;
-            let n = counts[index];
-            counts[index] += 1;
-            registers.push(match kind {
-                ValueType::Unit => VReg::Unit,
-                ValueType::Bool => VReg::Bool(BoolReg(n)),
-                ValueType::I64 => VReg::I64(I64Reg(n)),
-                ValueType::U64 => VReg::U64(U64Reg(n)),
-                ValueType::F64 => VReg::F64(F64Reg(n)),
-                ValueType::Decimal => VReg::Decimal(DecimalReg(n)),
-                ValueType::Bytes => VReg::Bytes(BytesReg(n)),
-                ValueType::Str => VReg::Str(StrReg(n)),
-                ValueType::Obj(_) => VReg::Obj(ObjReg(n)),
-                ValueType::Agg => VReg::Agg(AggReg(n)),
-                ValueType::Func => VReg::Func(FuncReg(n)),
-                ValueType::Closure => VReg::Closure(ClosureReg(n)),
-            });
-        }
+        let registers = register_map(program, func)?;
         Some(Self {
             instructions,
             registers,
@@ -130,4 +109,32 @@ pub(super) fn emit(
             aggregates: sources.aggregates(),
         },
     );
+}
+
+/// Source-to-bank mapping requested by optional tracing or paused inspection.
+pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>> {
+    let function = program.functions.get(func.0 as usize)?;
+    let mut counts = [0_u32; 12];
+    let mut registers = Vec::with_capacity(function.reg_count as usize);
+    for kind in function.register_types(program).ok()?.iter() {
+        let class = crate::typed::RegClass::of(kind);
+        let index = class as usize;
+        let n = counts[index];
+        counts[index] += 1;
+        registers.push(match kind {
+            ValueType::Unit => VReg::Unit,
+            ValueType::Bool => VReg::Bool(BoolReg(n)),
+            ValueType::I64 => VReg::I64(I64Reg(n)),
+            ValueType::U64 => VReg::U64(U64Reg(n)),
+            ValueType::F64 => VReg::F64(F64Reg(n)),
+            ValueType::Decimal => VReg::Decimal(DecimalReg(n)),
+            ValueType::Bytes => VReg::Bytes(BytesReg(n)),
+            ValueType::Str => VReg::Str(StrReg(n)),
+            ValueType::Obj(_) => VReg::Obj(ObjReg(n)),
+            ValueType::Agg => VReg::Agg(AggReg(n)),
+            ValueType::Func => VReg::Func(FuncReg(n)),
+            ValueType::Closure => VReg::Closure(ClosureReg(n)),
+        });
+    }
+    Some(registers)
 }

@@ -66,6 +66,7 @@ pub struct Invocation<'a, H: Host> {
     pub(super) entry: FuncId,
     pub(super) args: &'a [Value],
     pub(super) ctx: ExecutionContext,
+    pub(super) control: ExecutionControl,
     checkpoint: Checkpoint,
     trace: TraceCtx<'a>,
     access: Option<&'a mut dyn AccessSink>,
@@ -105,6 +106,7 @@ impl<H: Host> Vm<H> {
             entry,
             args,
             ctx: ExecutionContext::new(),
+            control: ExecutionControl::default(),
             checkpoint,
             trace: TraceCtx::new(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access,
@@ -144,6 +146,7 @@ impl<H: Host> Vm<H> {
             invocation.finish(Err(error.clone()));
             return Err(error);
         }
+        invocation.control = ExecutionControl::start();
         Ok(invocation)
     }
 }
@@ -159,7 +162,7 @@ impl<H: Host> Invocation<'_, H> {
         if let Some(outcome) = &self.outcome {
             return outcome.clone().map(|()| RunStatus::Complete);
         }
-        let mut remaining = quantum;
+        self.control.remaining = quantum;
         let access = self
             .access
             .as_mut()
@@ -175,7 +178,7 @@ impl<H: Host> Invocation<'_, H> {
                 &mut self.trace,
                 access,
                 &mut self.register_state,
-                &mut remaining,
+                &mut self.control,
             )
         } else {
             self.vm.execute_loop::<NoTracePolicy, true>(
@@ -188,7 +191,7 @@ impl<H: Host> Invocation<'_, H> {
                 &mut self.trace,
                 access,
                 &mut (),
-                &mut remaining,
+                &mut self.control,
             )
         };
         match &result {
