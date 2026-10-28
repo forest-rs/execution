@@ -11,7 +11,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::Value;
-use execution_tape::vm::{Limits, Vm};
+use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
 use execution_tape_footfall::FootfallSink;
 use footfall::runtime::{Observation, Runtime, Snapshot};
 use footfall::{InstrumentationLevel, LabelKey, RegisteredContext};
@@ -207,6 +207,41 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     ));
 
     vm.host_mut().behavior = Behavior::Success;
+    // A suspended nested call owns logical scopes across quanta. Cancellation closes them
+    // with a distinct outcome, and this same sink can immediately observe a subsequent run.
+    for mask in [all, sink.mask(), TraceMask::RUN, TraceMask::INSTR] {
+        let start = runtime.snapshot().next_cursor();
+        let mut invocation = vm
+            .start(
+                &program,
+                ENTRY,
+                &arguments,
+                InvocationOptions::default().trace(mask, &mut sink),
+            )
+            .unwrap();
+        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+        assert_eq!(invocation.resume(1).unwrap(), RunStatus::Suspended);
+        drop(invocation);
+        let cancelled = runtime.snapshot_since(start);
+        balanced(&cancelled);
+        assert_eq!(
+            count(&cancelled, "execution_tape.run_end"),
+            usize::from(mask.contains(TraceMask::RUN))
+        );
+        assert_eq!(
+            count(&cancelled, "execution_tape.scope_end"),
+            2 * usize::from(mask.contains(TraceMask::CALL))
+        );
+        assert_eq!(count(&cancelled, "execution_tape.run_trap"), 0);
+        assert_eq!(count(&cancelled, "execution_tape.scope_trap"), 0);
+        for event in cancelled.events() {
+            if let Observation::Message { name, text, .. } = event.observation()
+                && matches!(*name, "execution_tape.run_end" | "execution_tape.scope_end")
+            {
+                assert_eq!(text, "cancelled");
+            }
+        }
+    }
     for mask in [
         TraceMask::CALL | TraceMask::HOST,
         TraceMask::HOST,
