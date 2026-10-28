@@ -56,3 +56,7 @@ bytecode PC. Bind again for a different instance, even if its encoded contents m
 lookup happens only when a Tracy client is running; ordinary VM execution is unchanged.
 Active Tracy guards close inner-to-outer when the sink is dropped, including after a host panic.
 After catching a host panic, drop and recreate the sink before another run.
+
+Resumable invocations keep logical call scopes open while suspended; their span
+duration includes that waiting time. Dropping a pending invocation closes its
+scopes without claiming a successful return.

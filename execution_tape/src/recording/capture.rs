@@ -426,6 +426,10 @@ impl TraceSink for Recorder {
         step.outcome = match outcome {
             TraceOutcome::Ok => InstructionOutcome::Completed,
             TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
+            TraceOutcome::Cancelled => {
+                history.status = InstructionStatus::Incomplete;
+                InstructionOutcome::Pending
+            }
         };
     }
 
@@ -564,6 +568,7 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
+            TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),
             TraceOutcome::Ok => {
                 if self.entry.is_none() && self.fault.is_none() {
                     self.fail(CaptureFault::MissingEntry);

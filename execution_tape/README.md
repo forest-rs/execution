@@ -189,6 +189,32 @@ Ordinary verification, preparation and execution retain no inspection data.
 - `recording`: owned bounded observations, instruction histories and checked replay.
 - `disasm`: human-readable disassembly for verified programs.
 
+## Resumable execution
+
+`Vm::start` validates an invocation and returns a handle that borrows its VM, program, inputs,
+and optional observers. `Invocation::resume` executes a scheduling quantum at complete
+instruction boundaries. Hard fuel and data-work budgets accumulate across resumes; a quantum
+is separate from these limits. Host calls run synchronously within one step.
+
+```rust
+use execution_tape::{host::Host, verifier::VerifiedProgram, value::{FuncId, Value},
+    vm::{InvocationOptions, RunStatus, TrapInfo, Vm}};
+fn scheduled<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
+    args: &[Value]) -> Result<Vec<Value>, TrapInfo> {
+    let mut invocation = vm.start(program, entry, args, InvocationOptions::default())?;
+    while invocation.resume(1024)? == RunStatus::Suspended {
+        // Return control to the application's scheduler between quanta.
+    }
+    Ok(invocation.take_outputs().expect("successful root return"))
+}
+```
+
+Dropping an unfinished invocation cancels it and rolls back its new aggregates. Host effects
+remain performed. Trace scopes close with `TraceOutcome::Cancelled`; a cancelled recording is
+incomplete and cannot be replayed as a finished invocation. Logical profiling scopes include
+suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
+use the unbounded dispatch specialization without scheduling checks.
+
 ## Design Docs
 
 The repository-level design notes live outside the packaged crate:

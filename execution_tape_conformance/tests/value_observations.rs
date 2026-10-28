@@ -86,6 +86,7 @@ impl TraceSink for Observe {
         self.outcome = Some(match outcome {
             TraceOutcome::Ok => Ok(()),
             TraceOutcome::Trap(error) => Err(error.clone()),
+            TraceOutcome::Cancelled => panic!("run-to-completion cannot cancel"),
         });
     }
 }

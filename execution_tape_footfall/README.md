@@ -71,3 +71,7 @@ These observations contain no register values or complete host inputs/results an
 replay record**.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+
+Resumable VM invocations keep logical scopes open across scheduling quanta, so
+these scopes include suspended time. Cancellation closes scopes with a
+`cancelled` outcome message and does not imply a guest trap or undo host effects.

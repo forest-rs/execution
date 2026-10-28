@@ -14,6 +14,20 @@ Changes for Execution Tape [0.1.0](#010-2026-10-27), dated 2026-10-27, are docum
 
 This release has an [MSRV][] of 1.88.
 
+### Added
+
+- Add borrow-scoped resumable execution with `Vm::start`, `InvocationOptions`,
+  `Invocation::resume`, and `RunStatus`. Scheduling quanta preserve cumulative hard
+  budgets and ordinary host/value/recording semantics. Dropping an unfinished
+  invocation rolls back new aggregates while preserving already performed host effects.
+
+### Changed
+
+- Add `TraceOutcome::Cancelled` for abandoned invocations and close their outstanding
+  scopes. Migration: handle the new variant in exhaustive trace-outcome matches.
+  Recordings of cancelled runs report `MissingCompletion` and reject checked replay.
+  Existing `run`/`run_with_ctx` signatures, normal outcomes, and wire version are unchanged.
+
 ## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.

@@ -182,7 +182,7 @@ pub enum CaptureResource {
 pub enum CaptureFault {
     /// The sink did not observe invocation values.
     MissingEntry,
-    /// The sink did not observe the final run outcome.
+    /// The invocation never returned or trapped: completion was missing or execution was cancelled.
     MissingCompletion,
     /// One recorder was used for more than one invocation.
     MultipleRuns,

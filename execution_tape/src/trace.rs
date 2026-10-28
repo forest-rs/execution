@@ -167,6 +167,9 @@ pub enum ScopeKind {
 pub enum TraceOutcome<'a> {
     /// Completed successfully.
     Ok,
+    /// The invocation was dropped before returning or trapping. Host effects are not undone.
+    /// An interrupted instruction attempt has no successful completion.
+    Cancelled,
     /// Trapped.
     Trap(&'a TrapInfo),
 }
