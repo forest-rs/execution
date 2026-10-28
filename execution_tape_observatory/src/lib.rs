@@ -3,6 +3,10 @@
 
 //! Browse a compiled program or explore a borrowed in-memory VM recording in a terminal.
 //!
+//! [`LiveExplorer`] steps a real borrow-scoped invocation with an embedding-supplied host.
+//! It shows live activations, initialized values and exact authored source, with instruction
+//! breakpoints and cooperative continuation. Host calls perform real effects when executed.
+//!
 //! [`browse`] opens functions, instructions, imports, constants and aggregate types without a VM
 //! or host. Verification runs once on opening; rejected programs remain navigable. [`render_program`]
 //! provides the same initial view without terminal modes. [`ProgramBrowser`] attaches optional
@@ -26,6 +30,7 @@
 mod browser;
 mod describe;
 mod flow;
+mod live;
 mod model;
 mod palette;
 mod recording_explorer;
@@ -44,6 +49,7 @@ use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::crossterm::{event, execute, terminal};
 use std::io;
 
+pub use live::LiveExplorer;
 pub use recording_explorer::RecordingExplorer;
 
 /// Opens the recording explorer on standard output until the user quits.
@@ -118,6 +124,25 @@ impl<'a> ProgramBrowser<'a> {
 trait Screen {
     fn draw(&mut self, frame: &mut ratatui::Frame<'_>);
     fn key(&mut self, key: event::KeyEvent) -> bool;
+    fn running(&self) -> bool {
+        false
+    }
+    fn tick(&mut self) {}
+}
+
+impl<S: Screen + ?Sized> Screen for &mut S {
+    fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
+        (**self).draw(frame);
+    }
+    fn key(&mut self, key: event::KeyEvent) -> bool {
+        (**self).key(key)
+    }
+    fn running(&self) -> bool {
+        (**self).running()
+    }
+    fn tick(&mut self) {
+        (**self).tick();
+    }
 }
 
 impl Screen for View<'_> {
@@ -137,12 +162,14 @@ fn interact(mut screen: impl Screen) -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     loop {
         terminal.draw(|frame| screen.draw(frame))?;
-        if let event::Event::Key(key) = event::read()?
+        if (!screen.running() || event::poll(std::time::Duration::from_millis(16))?)
+            && let event::Event::Key(key) = event::read()?
             && key.is_press()
             && !screen.key(key)
         {
             break;
         }
+        screen.tick();
     }
     drop(terminal);
     drop(guard);
@@ -182,13 +209,22 @@ fn render_screen<S: Screen>(
     width: u16,
     height: u16,
 ) -> io::Result<String> {
+    validate_dimensions(width, height)?;
+    render_current(&mut screen(), width, height)
+}
+
+fn validate_dimensions(width: u16, height: u16) -> io::Result<()> {
     if !(40..=240).contains(&width) || !(12..=100).contains(&height) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "view dimensions outside 40..=240 by 12..=100",
         ));
     }
-    let mut screen = screen();
+    Ok(())
+}
+
+fn render_current(screen: &mut impl Screen, width: u16, height: u16) -> io::Result<String> {
+    validate_dimensions(width, height)?;
     let mut terminal =
         Terminal::new(TestBackend::new(width, height)).unwrap_or_else(|never| match never {});
     terminal
