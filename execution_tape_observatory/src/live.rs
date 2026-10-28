@@ -1,0 +1,589 @@
+// Copyright 2026 the Execution Tape Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Live UI policy over the VM's borrow-scoped scheduling and inspection contract.
+
+use super::{Screen, describe, flow::Flow, palette::*, render, source_context, syntax};
+use execution_tape::{
+    disasm::disassemble_function,
+    host::{Host, ValueRef},
+    source::{BoundSources, SourceError, SourceMap},
+    trace::TraceLocation,
+    value::{AggHandle, AggType, Value},
+    vm::{ActivationId, Invocation, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo},
+};
+mod view;
+
+use ratatui::{
+    Frame,
+    crossterm::event::{KeyCode, KeyEvent},
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
+};
+use std::{collections::BTreeSet, fmt, io};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Stack,
+    Code,
+    Values,
+    Source,
+}
+impl Focus {
+    fn next(self) -> Self {
+        match self {
+            Self::Stack => Self::Code,
+            Self::Code => Self::Values,
+            Self::Values => Self::Source,
+            Self::Source => Self::Stack,
+        }
+    }
+}
+
+enum Motion {
+    Continue,
+    Over(ActivationId),
+    Out(ActivationId),
+}
+
+/// A live debugger for an explicitly supplied invocation and host.
+///
+/// The VM owns execution, resource limits and rollback. This view owns stepping policy,
+/// instruction breakpoints and presentation. It never fabricates a host for an arbitrary tape.
+/// Host calls execute synchronously, including their real effects, when stepped or continued.
+/// Quitting pauses the invocation; dropping the explorer cancels unfinished execution.
+///
+/// Paused values are read-only and shown only when definitely initialized. Selecting a caller
+/// displays its pending call, not hypothetical return values. Source snapshots are optional and
+/// must match the complete program identity. This is live execution, not recording replay.
+///
+/// ```no_run
+/// # use execution_tape::{host::Host, source::SourceMap, value::FuncId,
+/// #     verifier::VerifiedProgram, vm::{Vm, InvocationOptions}};
+/// # use execution_tape_observatory::LiveExplorer;
+/// # fn debug<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
+/// #     sources: &SourceMap) -> Result<(), Box<dyn std::error::Error>> {
+/// let invocation = vm.start(program, entry, &[], InvocationOptions::default())?;
+/// let mut debugger = LiveExplorer::new(invocation).sources(sources)?;
+/// debugger.run()?;
+/// if let Some(result) = debugger.result() {
+///     println!("{result:?}");
+/// }
+/// // Leaving the UI preserves the handle. Dropping it cancels unfinished guest execution.
+/// # Ok(()) }
+/// ```
+pub struct LiveExplorer<'a, H: Host> {
+    invocation: Invocation<'a, H>,
+    sources: Option<BoundSources<'a>>,
+    frames: Vec<PausedFrame>,
+    selected_frame: usize,
+    focus: Focus,
+    code: Vec<(u32, String)>,
+    code_func: Option<execution_tape::value::FuncId>,
+    code_selected: usize,
+    flow: Flow,
+    values: Vec<String>,
+    aggregate_values: Vec<Option<AggHandle>>,
+    aggregate_path: Vec<AggHandle>,
+    values_offset: usize,
+    source_lines: Vec<String>,
+    source_offset: usize,
+    roots: bool,
+    breakpoints: BTreeSet<(u32, u32)>,
+    motion: Option<Motion>,
+    skip_breakpoint: bool,
+    status: String,
+}
+impl<H: Host> fmt::Debug for LiveExplorer<'_, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiveExplorer")
+            .field("invocation", &self.invocation)
+            .field("frames", &self.frames.len())
+            .field("breakpoints", &self.breakpoints)
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, H: Host> LiveExplorer<'a, H> {
+    /// Opens at the invocation's current safe boundary without executing an instruction.
+    #[must_use]
+    pub fn new(invocation: Invocation<'a, H>) -> Self {
+        let mut view = Self {
+            invocation,
+            sources: None,
+            frames: Vec::new(),
+            selected_frame: 0,
+            focus: Focus::Code,
+            code: Vec::new(),
+            code_func: None,
+            code_selected: 0,
+            flow: Flow::default(),
+            values: Vec::new(),
+            aggregate_values: Vec::new(),
+            aggregate_path: Vec::new(),
+            values_offset: 0,
+            source_lines: Vec::new(),
+            source_offset: 0,
+            roots: false,
+            breakpoints: BTreeSet::new(),
+            motion: None,
+            skip_breakpoint: false,
+            status: "PAUSED · before next instruction".into(),
+        };
+        view.refresh();
+        view
+    }
+
+    /// Attaches exact frontend source snapshots, rejecting stale maps before terminal entry.
+    pub fn sources(mut self, map: &'a SourceMap) -> Result<Self, SourceError> {
+        self.sources = Some(map.bind(self.invocation.program().program())?);
+        self.refresh_source();
+        Ok(self)
+    }
+
+    /// Opens the terminal UI. On return, the invocation remains available to inspect or resume.
+    ///
+    /// `s`: step into, `n`: step over, `u`: step out, `c`: continue, Space: pause,
+    /// `b`: toggle the selected instruction's breakpoint, `g`: current instruction,
+    /// `o`: toggle conservative host-object references, Tab: next pane, `q`: leave.
+    /// Continued execution polls input between bounded quanta. A synchronous host call can still
+    /// block the UI; no host effects are rolled back by pausing or cancellation.
+    pub fn run(&mut self) -> io::Result<()> {
+        super::interact(self)
+    }
+
+    /// Renders the current view without advancing execution or changing terminal modes.
+    /// Dimensions follow [`super::render_text`]. Inspection allocates only on view refresh.
+    pub fn render_text(&mut self, width: u16, height: u16) -> io::Result<String> {
+        super::render_current(self, width, height)
+    }
+
+    /// Executes one guest instruction, entering callees and treating host calls as indivisible.
+    pub fn step(&mut self) -> Result<RunStatus, TrapInfo> {
+        self.resume(1)
+    }
+
+    /// Executes a bounded quantum directly, ignoring UI breakpoints and stepping policy.
+    /// Hard budgets remain cumulative. Use the terminal's continue command for breakpoints.
+    pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
+        self.motion = None;
+        self.aggregate_path.clear();
+        let result = self.invocation.resume(quantum);
+        self.status = "PAUSED · before next instruction".into();
+        self.selected_frame = 0;
+        self.refresh();
+        result
+    }
+
+    /// Borrows committed outputs or the actual terminal trap; `None` means still paused/running.
+    #[must_use]
+    pub fn result(&self) -> Option<Result<&[Value], &TrapInfo>> {
+        self.invocation.result()
+    }
+
+    /// Takes successful owned outputs. Aggregate handles belong to the original borrowed VM.
+    pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
+        let values = self.invocation.take_outputs();
+        self.refresh();
+        values
+    }
+
+    fn location(&self) -> Option<TraceLocation> {
+        self.code_func.and_then(|func| {
+            self.code
+                .get(self.code_selected)
+                .map(|&(pc, _)| TraceLocation { func, pc })
+        })
+    }
+
+    fn refresh_source(&mut self) {
+        self.source_offset = 0;
+        self.source_lines = match (self.sources, self.location()) {
+            (Some(map), Some(loc)) => source_context::context_lines(map, loc, 6, 100),
+            _ => vec![
+                "No frontend source attached.".into(),
+                "Attach an exact SourceMap; span IDs alone are not source locations.".into(),
+            ],
+        };
+    }
+
+    fn show_location(&mut self, location: TraceLocation) {
+        if self.code_func != Some(location.func) {
+            let program = self.invocation.program().program();
+            self.code.clear();
+            if let Ok(source) = disassemble_function(program, location.func) {
+                self.flow = Flow::new(&source);
+                self.code = source
+                    .instrs()
+                    .map(|i| (i.pc(), describe::instruction(program, i)))
+                    .collect();
+            }
+            self.code_func = Some(location.func);
+        }
+        self.code_selected = self
+            .code
+            .iter()
+            .position(|&(pc, _)| pc == location.pc)
+            .unwrap_or(0);
+        self.refresh_source();
+    }
+
+    fn refresh(&mut self) {
+        self.frames = self.invocation.inspect().frames().collect();
+        self.selected_frame = self.selected_frame.min(self.frames.len().saturating_sub(1));
+        self.values.clear();
+        self.aggregate_values.clear();
+        self.values_offset = 0;
+        if let Some(result) = self.invocation.result() {
+            match result {
+                Ok(outputs) => {
+                    self.status = "RETURNED · committed VM outputs".into();
+                    self.values = outputs
+                        .iter()
+                        .enumerate()
+                        .take(256)
+                        .map(|(i, v)| {
+                            format!("Output[{i}] = {}", value_text(ValueRef::from_value(v)))
+                        })
+                        .collect();
+                    if outputs.is_empty() {
+                        self.values.push("Returned without values.".into());
+                    }
+                    self.aggregate_values = outputs
+                        .iter()
+                        .take(256)
+                        .map(|v| aggregate(ValueRef::from_value(v)))
+                        .collect();
+                    if outputs.len() > 256 {
+                        self.values.push("… further outputs omitted".into());
+                    }
+                }
+                Err(trap) => {
+                    self.status = format!("TRAPPED · {}", render::trap_text(&trap.trap));
+                    let location = TraceLocation {
+                        func: trap.func,
+                        pc: trap.pc,
+                    };
+                    self.values.push(
+                        "No live frames after failure; uncommitted values were discarded.".into(),
+                    );
+                    self.show_location(location);
+                }
+            }
+        } else if let Some(frame) = self.frames.get(self.selected_frame).cloned() {
+            self.show_location(frame.location);
+            let mut inspection = self.invocation.inspect();
+            if !self.roots
+                && let Some(registers) = inspection.registers(&frame.activation)
+            {
+                for reg in registers.take(256) {
+                    self.aggregate_values.push(reg.value.and_then(aggregate));
+                    self.values.push(format!(
+                        "r{} · {} = {}",
+                        reg.register,
+                        describe::type_name(reg.storage_kind),
+                        reg.value.map_or_else(
+                            || "unavailable (not definitely initialized)".into(),
+                            value_text
+                        )
+                    ));
+                }
+                if frame.register_count > 256 {
+                    self.values.push("… further registers omitted".into());
+                }
+            }
+        }
+        if self.roots {
+            self.values.clear();
+            self.aggregate_values.clear();
+            let mut inspection = self.invocation.inspect();
+            let mut count = 0_usize;
+            inspection.visit_objects(|root| {
+                count += 1;
+                if self.values.len() < 256 {
+                    let origin = match root.origin {
+                        ObjectRootOrigin::Register {
+                            activation,
+                            register,
+                        } => format!("frame #{} r{register}", activation.ordinal()),
+                        ObjectRootOrigin::Argument { index } => format!("argument[{index}]"),
+                        ObjectRootOrigin::Output { index } => format!("output[{index}]"),
+                        ObjectRootOrigin::Aggregate { aggregate, index } => {
+                            format!("aggregate @{} field[{index}]", aggregate.0)
+                        }
+                    };
+                    self.values.push(format!(
+                        "{} ← {origin}",
+                        value_text(ValueRef::Obj(root.object))
+                    ));
+                }
+            });
+            self.values.insert(
+                0,
+                format!("{count} references · conservative, duplicates possible"),
+            );
+            if count > 256 {
+                self.values.push("… further references omitted".into());
+            }
+            self.values
+                .push("Add host heap/globals/external roots before collection.".into());
+        }
+        if let Some(&handle) = self.aggregate_path.last() {
+            let heap = self.invocation.aggregates();
+            self.values.clear();
+            self.aggregate_values.clear();
+            let kind = match heap.agg_type(handle) {
+                Ok(kind) => kind,
+                Err(error) => {
+                    self.values
+                        .push(format!("Cannot inspect aggregate @{}: {error}", handle.0));
+                    return;
+                }
+            };
+            let count = match kind {
+                AggType::Tuple { .. } => heap.tuple_len(handle),
+                AggType::Struct { .. } => heap.struct_field_count(handle),
+                AggType::Array { .. } => heap.array_len(handle),
+            }
+            .expect("validated aggregate kind");
+            for index in 0..count.min(256) {
+                let value = match kind {
+                    AggType::Tuple { .. } => heap.tuple_get_ref(handle, index),
+                    AggType::Struct { .. } => heap.struct_get_ref(handle, index),
+                    _ => heap.array_get_ref(handle, index),
+                }
+                .expect("validated aggregate field");
+                self.aggregate_values
+                    .push(aggregate(ValueRef::from_value(value)));
+                self.values.push(format!(
+                    "Item[{index}] = {}",
+                    value_text(ValueRef::from_value(value))
+                ));
+            }
+            if count == 0 {
+                self.values.push("Empty aggregate.".into());
+            }
+            if count > 256 {
+                self.values.push("… further items omitted".into());
+            }
+        }
+    }
+
+    fn start_motion(&mut self, kind: KeyCode) {
+        if self.invocation.result().is_some() {
+            return;
+        }
+        self.aggregate_path.clear();
+        let origin = self
+            .frames
+            .first()
+            .expect("suspended leaf")
+            .activation
+            .clone();
+        self.motion = Some(match kind {
+            KeyCode::Char('n') => Motion::Over(origin),
+            KeyCode::Char('u') => Motion::Out(origin),
+            _ => Motion::Continue,
+        });
+        self.skip_breakpoint = true;
+        self.status = "RUNNING · Space pauses between instructions".into();
+    }
+
+    fn advance(&mut self) {
+        if self.motion.is_none() {
+            return;
+        }
+        let precise =
+            !self.breakpoints.is_empty() || !matches!(self.motion, Some(Motion::Continue));
+        for _ in 0..if precise { 512 } else { 1 } {
+            let leaf = self.invocation.inspect().frames().next();
+            let Some(leaf) = leaf else {
+                self.motion = None;
+                break;
+            };
+            if !self.skip_breakpoint
+                && self
+                    .breakpoints
+                    .contains(&(leaf.location.func.0, leaf.location.pc))
+            {
+                self.motion = None;
+                self.status = "PAUSED · instruction breakpoint (before execution)".into();
+                break;
+            }
+            self.skip_breakpoint = false;
+            if !matches!(
+                self.invocation.resume(if precise { 1 } else { 512 }),
+                Ok(RunStatus::Suspended)
+            ) {
+                self.motion = None;
+                break;
+            }
+            let now = self.invocation.inspect();
+            let stop = match &self.motion {
+                Some(Motion::Over(id)) => {
+                    now.frames().next().is_some_and(|f| &f.activation == id)
+                        || !now.frames().any(|f| &f.activation == id)
+                }
+                Some(Motion::Out(id)) => !now.frames().any(|f| &f.activation == id),
+                _ => false,
+            };
+            if stop {
+                self.motion = None;
+                self.status = "PAUSED · step completed".into();
+                break;
+            }
+        }
+        self.selected_frame = 0;
+        self.refresh();
+    }
+
+    fn move_selection(&mut self, down: bool, amount: usize) {
+        let move_by = |value: &mut usize, count: usize| {
+            *value = if down {
+                value.saturating_add(amount).min(count.saturating_sub(1))
+            } else {
+                value.saturating_sub(amount)
+            };
+        };
+        match self.focus {
+            Focus::Stack => {
+                self.aggregate_path.clear();
+                move_by(&mut self.selected_frame, self.frames.len());
+                self.refresh();
+            }
+            Focus::Code => {
+                move_by(&mut self.code_selected, self.code.len());
+                self.refresh_source();
+            }
+            Focus::Values => move_by(&mut self.values_offset, self.values.len()),
+            Focus::Source => move_by(&mut self.source_offset, self.source_lines.len()),
+        }
+    }
+}
+
+fn value_text(value: ValueRef<'_>) -> String {
+    match value {
+        ValueRef::Str(text) => format!(
+            "\"{}\" · {} UTF-8 bytes",
+            describe::preview(text, 80),
+            text.len()
+        ),
+        ValueRef::Bytes(bytes) => format!(
+            "{:02x?}{} · {} bytes",
+            &bytes[..bytes.len().min(16)],
+            if bytes.len() > 16 { "…" } else { "" },
+            bytes.len()
+        ),
+        ValueRef::Unit => "()".into(),
+        ValueRef::Bool(value) => value.to_string(),
+        ValueRef::I64(value) => value.to_string(),
+        ValueRef::U64(value) => value.to_string(),
+        ValueRef::F64(value) => value.to_string(),
+        ValueRef::Decimal(value) => format!("{}e-{}", value.mantissa(), value.scale()),
+        ValueRef::Obj(object) => format!(
+            "object #{} · host type {}",
+            object.handle.0, object.host_type.0
+        ),
+        ValueRef::Agg(handle) => format!("aggregate @{} · Enter to inspect", handle.0),
+        ValueRef::Func(func) => format!("function f{}", func.0),
+        ValueRef::Closure(closure) => format!(
+            "closure f{} · environment @{}",
+            closure.func.0, closure.env.0
+        ),
+    }
+}
+
+fn aggregate(value: ValueRef<'_>) -> Option<AggHandle> {
+    match value {
+        ValueRef::Agg(handle) => Some(handle),
+        ValueRef::Closure(c) => Some(c.env),
+        _ => None,
+    }
+}
+
+impl<H: Host> Screen for LiveExplorer<'_, H> {
+    fn running(&self) -> bool {
+        self.motion.is_some()
+    }
+    fn tick(&mut self) {
+        self.advance();
+    }
+    fn key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.motion = None;
+                if self.invocation.result().is_none() {
+                    self.status = "PAUSED · left terminal view".into();
+                }
+                return false;
+            }
+            KeyCode::Tab => self.focus = self.focus.next(),
+            KeyCode::BackTab => self.focus = self.focus.next().next().next(),
+            KeyCode::Char('s') => {
+                let _ = self.step();
+            }
+            KeyCode::Char('c' | 'n' | 'u') => self.start_motion(key.code),
+            KeyCode::Char(' ') => {
+                self.motion = None;
+                if self.invocation.result().is_none() {
+                    self.status = "PAUSED · requested by user".into();
+                }
+            }
+            KeyCode::Char('o') => {
+                self.aggregate_path.clear();
+                self.roots = !self.roots;
+                self.refresh();
+            }
+            KeyCode::Enter if self.focus == Focus::Values => {
+                if let Some(Some(handle)) = self.aggregate_values.get(self.values_offset) {
+                    self.aggregate_path.push(*handle);
+                    self.refresh();
+                }
+            }
+            KeyCode::Backspace if self.focus == Focus::Values => {
+                self.aggregate_path.pop();
+                self.refresh();
+            }
+            KeyCode::Char('b') => {
+                if let Some(loc) = self.location() {
+                    if !self
+                        .invocation
+                        .program()
+                        .function(loc.func)
+                        .is_some_and(|f| f.instructions().any(|i| i.pc == loc.pc))
+                    {
+                        self.motion = None;
+                        if self.invocation.result().is_none() {
+                            self.status = "PAUSED · join declaration has no execution step; choose next instruction".into();
+                        }
+                        return true;
+                    }
+                    let point = (loc.func.0, loc.pc);
+                    if !self.breakpoints.remove(&point) {
+                        self.breakpoints.insert(point);
+                    }
+                }
+            }
+            KeyCode::Char('g') => {
+                if let Some(frame) = self.frames.get(self.selected_frame) {
+                    self.show_location(frame.location);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(true, 1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(false, 1),
+            KeyCode::PageDown => self.move_selection(true, 10),
+            KeyCode::PageUp => self.move_selection(false, 10),
+            _ => {}
+        }
+        true
+    }
+    fn draw(&mut self, frame: &mut Frame<'_>) {
+        self.draw_view(frame);
+    }
+}
+
+#[cfg(test)]
+mod tests;
