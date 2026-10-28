@@ -16,7 +16,7 @@ This release has an [MSRV][] of 1.88.
 ### Added
 
 - Report cancelled resumable invocations distinctly and close logical scopes across quanta.
-  Elapsed scope time includes suspension; already performed host effects remain.
+  Elapsed scope time includes suspension; already performed host effects remain. ([#205][] by [@waywardmonkeys][])
 
 ## [0.1.0][] (2026-10-27)
 
@@ -36,4 +36,5 @@ This release has an [MSRV][] of 1.88.
 [0.1.0]: https://github.com/forest-rs/execution/releases/tag/execution_tape_footfall-v0.1.0
 [MSRV]: README.md
 [#199]: https://github.com/forest-rs/execution/pull/199
+[#205]: https://github.com/forest-rs/execution/pull/205
 [@waywardmonkeys]: https://github.com/waywardmonkeys

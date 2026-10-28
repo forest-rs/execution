@@ -16,7 +16,7 @@ This release has an [MSRV][] of 1.88.
 ### Added
 
 - Close profiling scopes when a resumable invocation is cancelled. Logical scopes span scheduling
-  quanta, so elapsed time includes suspension.
+  quanta, so elapsed time includes suspension. ([#205][] by [@waywardmonkeys][])
 
 ## [0.1.0][] (2026-10-27)
 
@@ -44,4 +44,5 @@ This release has an [MSRV][] of 1.88.
 [0.1.0]: https://github.com/forest-rs/execution/releases/tag/execution_tape_tracy-v0.1.0
 [MSRV]: README.md
 [#199]: https://github.com/forest-rs/execution/pull/199
+[#205]: https://github.com/forest-rs/execution/pull/205
 [@waywardmonkeys]: https://github.com/waywardmonkeys
