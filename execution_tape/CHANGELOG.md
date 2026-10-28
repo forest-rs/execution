@@ -19,19 +19,19 @@ This release has an [MSRV][] of 1.88.
 - Inspect paused frames and initialized register values with invocation-scoped activation
   identities. Waiting callers expose their pending source call and exclude not-yet-returned
   results. Enumerate conservative opaque-object roots for an embedding collector; analysis
-  and source-register maps remain outside ordinary preparation/execution artifacts.
+  and source-register maps remain outside ordinary preparation/execution artifacts. ([#206][] by [@waywardmonkeys][])
 
 - Add borrow-scoped resumable execution with `Vm::start`, `InvocationOptions`,
   `Invocation::resume`, and `RunStatus`. Scheduling quanta preserve cumulative hard
   budgets and ordinary host/value/recording semantics. Dropping an unfinished
-  invocation rolls back new aggregates while preserving already performed host effects.
+  invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
 
 - Add `TraceOutcome::Cancelled` for abandoned invocations and close their outstanding
   scopes. Migration: handle the new variant in exhaustive trace-outcome matches.
   Recordings of cancelled runs report `MissingCompletion` and reject checked replay.
-  Existing `run`/`run_with_ctx` signatures, normal outcomes, and wire version are unchanged.
+  Existing `run`/`run_with_ctx` signatures, normal outcomes, and wire version are unchanged. ([#205][] by [@waywardmonkeys][])
 
 ## [0.1.0][] (2026-10-27)
 
@@ -543,3 +543,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#195]: https://github.com/forest-rs/execution/pull/195
 [#196]: https://github.com/forest-rs/execution/pull/196
 [#202]: https://github.com/forest-rs/execution/pull/202
+[#205]: https://github.com/forest-rs/execution/pull/205
+[#206]: https://github.com/forest-rs/execution/pull/206
