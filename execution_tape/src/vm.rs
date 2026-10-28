@@ -32,7 +32,12 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
+mod inspection;
 mod invocation;
+use inspection::ExecutionControl;
+pub use inspection::{
+    ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
+};
 mod observations;
 pub use invocation::{Invocation, InvocationOptions, RunStatus};
 #[cfg(test)]
@@ -1217,7 +1222,7 @@ impl<H: Host> Vm<H> {
             trace,
             access,
             &mut register_state,
-            &mut 0,
+            &mut ExecutionControl::default(),
         )
         .map(|_| ())
     }
@@ -1292,7 +1297,7 @@ impl<H: Host> Vm<H> {
         trace: &mut TraceCtx<'_>,
         mut access: Option<&mut dyn AccessSink>,
         register_state: &mut P::RegisterState,
-        remaining: &mut u64,
+        control: &mut ExecutionControl,
     ) -> Result<RunStatus, TrapInfo> {
         let output_start = outputs.len();
         let program_ref = program.program();
@@ -1301,10 +1306,10 @@ impl<H: Host> Vm<H> {
 
         loop {
             if YIELD {
-                if *remaining == 0 {
+                if control.remaining == 0 {
                     return Ok(RunStatus::Suspended);
                 }
-                *remaining -= 1;
+                control.remaining -= 1;
             }
             if ctx.fuel == 0 {
                 return Err(ctx.trap(
@@ -2016,6 +2021,9 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
+                    if YIELD {
+                        control.enter(TraceLocation { func: func_id, pc });
+                    }
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -2082,6 +2090,9 @@ impl<H: Host> Vm<H> {
                         .pop()
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
+                    if YIELD {
+                        control.leave();
+                    }
                     let Some(ret) = finished.return_to else {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
@@ -2346,6 +2357,9 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
+                    if YIELD {
+                        control.enter(TraceLocation { func: func_id, pc });
+                    }
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -2455,6 +2469,9 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
+                    if YIELD {
+                        control.enter(TraceLocation { func: func_id, pc });
+                    }
                     P::call_scope_enter(
                         trace,
                         program_ref,

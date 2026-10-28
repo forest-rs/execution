@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Inspect paused frames and initialized register values with invocation-scoped activation
+  identities. Waiting callers expose their pending source call and exclude not-yet-returned
+  results. Enumerate conservative opaque-object roots for an embedding collector; analysis
+  and source-register maps remain outside ordinary preparation/execution artifacts.
+
 - Add borrow-scoped resumable execution with `Vm::start`, `InvocationOptions`,
   `Invocation::resume`, and `RunStatus`. Scheduling quanta preserve cumulative hard
   budgets and ordinary host/value/recording semantics. Dropping an unfinished
