@@ -290,6 +290,8 @@ fn rejected_entry_emits_its_trap_without_a_cancellation_or_host_call() {
 }
 
 #[test]
+// Panic-abort targets, including default WASI, cannot catch a host panic or run its cleanup.
+#[cfg(panic = "unwind")]
 fn host_panic_unwinding_cancels_scopes_and_restores_the_vm() {
     let (p, entry) = fixture();
     let args = [Value::Str("value".into())];
