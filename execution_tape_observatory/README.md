@@ -1,8 +1,50 @@
 # Execution Tape Observatory
 
-A terminal browser for compiled Execution Tape programs and real, owned recordings. The optional `std` UI borrows a
+A terminal browser for compiled Execution Tape programs, live invocations and real, owned recordings. The optional `std` UI borrows a
 recording; capture, immutable value ownership, completeness and replay remain in
 `execution_tape::recording`. The core VM and recorder have no terminal dependencies.
+
+Try live execution with real host objects and authored source:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin live_debugger -- --color=always
+cargo run -p execution_tape_wind_tunnel --bin live_debugger -- --snapshot
+cargo run -p execution_tape_wind_tunnel --bin live_debugger -- --snapshot --complete
+```
+
+The live demo opens inside `double`, before its first host call. Its caller `main` is waiting
+for that call to return. `Counter.read` reads a real host-owned receiver; `Counter.publish`
+records the result. Source snapshots show the small example's exact assembly-to-source mappings;
+the example assembles this source directly rather than providing a language compiler.
+Use `--steps N` to select another initial instruction boundary.
+
+`s` steps into a guest call; `n` steps over; `u` steps out of the active leaf, even when a caller
+is selected for inspection. `c` continues, Space pauses, `b` toggles an instruction breakpoint,
+and `g` selects the current instruction. Breakpoints stop **before** executing the instruction;
+continuing from one intentionally passes that breakpoint once. Stepping over/out also honors
+breakpoints inside callees. `Tab`/`Shift+Tab` cycle the live stack, instructions, values and authored
+source. Focus uses a green double border. `Enter` opens the first visible value's aggregate or
+closure environment; `Backspace` goes up. Values and source scroll with arrows or `j`/`k`.
+
+The `▸` instruction marker is the next instruction for a leaf or the pending call for a waiting
+caller; the highlighted browsing row is independent. `●` marks a breakpoint. Caller return
+destinations remain unavailable until results arrive, unless they held an earlier initialized
+value. Unavailable values are never presented as zero or false. `o` switches to conservative
+host-object references, including VM aggregate fields; this is not a minimal liveness set or
+a complete root set for an embedding language. The host still owns its objects and collection.
+
+Embed `LiveExplorer::new(vm.start(...)?).sources(&source_map)?` with your actual host and program.
+`run(&mut self)` leaves the invocation available on return; dropping an unfinished explorer cancels
+guest work. `step`, bounded `resume`, `result`, `take_outputs` and `render_text` also work without
+terminal modes. Direct `resume` uses VM quanta and ignores UI breakpoints. Hard resource budgets
+accumulate across quanta. Continuation polls input between bounded batches; host calls are
+synchronous and indivisible and can block input. **Host effects are real and are not rolled back.**
+Trace scopes measure logical elapsed latency, including time paused. This does not edit registers,
+replace running code, rewind effects or reconstruct a post-trap frame. Traps show their actual
+location and clear live values; recordings remain the separate route to retained evidence.
+
+The program-file browser below opens arbitrary tapes without a host; executing them requires
+the embedding's actual bindings and state.
 
 From the workspace, run:
 
