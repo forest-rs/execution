@@ -70,3 +70,7 @@ harness = false
 [[bench]]
 name = "unit_registers"
 harness = false
+
+[[bench]]
+name = "stepping"
+harness = false

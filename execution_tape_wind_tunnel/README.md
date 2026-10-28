@@ -5,6 +5,67 @@ aggregate operations, and byte/string boundaries. The `recording` benchmark
 measures capture/replay work separately. Run them with `cargo bench -p
 execution_tape_wind_tunnel`; use `--bench vm -- --list` to inspect individual cases.
 
+## Resumable execution and optional inspection
+
+`stepping` separates ordinary execution, reusable contexts, scheduling quanta, frame metadata,
+verifier-backed register queries and conservative host-object traversal. Its scalar fixture
+executes 1,000 additions with an opaque receiver argument. Programs are prepared outside timing;
+execution cases include return/destruction and reuse the VM. Scheduled runs own fresh scratch
+and activation identities. Inspection starts at a fixed suspension; cached queries reuse one
+inspection view. Root traversal includes an existing 1,024-field aggregate without growing it
+between samples. No UI drawing, recording or application object-graph traversal is timed.
+
+On macOS arm64, Rust 1.99 release builds, 2026-10-28, a repeat with 30 samples, 1 s warmup and
+3 s measurement gave these point estimates:
+
+| Case | Time |
+|---|---:|
+| Ordinary `run`, 1,000 additions | 4.750 µs |
+| Ordinary reused context, 1,000 additions | 4.751 µs |
+| Scheduled, quantum 1 | 11.504 µs |
+| Scheduled, quantum 64 | 4.475 µs |
+| Scheduled, one uninterrupted quantum | 4.239 µs |
+| One frame's metadata | 5.34 ns |
+| Fresh register query, including analysis and drop | 31.47 µs |
+| Cached register query | 61.48 ns |
+| Cached inventory, 1,026 object references | 1.056 µs |
+
+This small scalar fixture does not establish that scheduling is generally faster than ordinary
+execution. Different interpreter specializations and code layout can affect dispatch. Single
+steps pay a resume call per instruction; optional analysis and object inventory remain explicit
+inspection costs. Metadata alone does not build register facts. A short initial run was noisy,
+especially for scheduled execution; the repeat above is the more stable observation.
+
+The ordinary `vm` suite was also compared with main `48284bd`, using the same release toolchain
+and fixtures. The initial main baseline used 10 samples with 1 s warmup/measurement; the initial
+candidate used 30 samples with 1 s warmup and 3 s measurement. Both sides were then rebuilt and
+repeated with the longer candidate settings:
+
+| Ordinary workload | Main initial | Candidate initial | Main repeat | Candidate repeat |
+|---|---:|---:|---:|---:|
+| 10 additions | 161.2 ns | 159.4 ns | 176.9 ns | 163.5 ns |
+| 1,000 additions | 6.159 µs | 4.940 µs | 5.960 µs | 5.281 µs |
+| 1,000 guest-call iterations | 86.12 µs | 76.78 µs | 89.66 µs | 77.27 µs |
+| 10,000 branch-loop iterations | 440.4 µs | 464.7 µs | 495.6 µs | 460.1 µs |
+| 1,000 host-call iterations | 74.12 µs | 75.98 µs | 82.32 µs | 75.63 µs |
+
+These are unpaired local observations, not a general speedup or zero-overhead claim. The initial
+roughly 6% branch-loop and 3% host-loop regressions reversed in the repeat; baseline variation is
+large enough that neither sign establishes a robust workload-wide conclusion. Ordinary execution
+has no scheduling test or activation bookkeeping in its per-instruction specialization, and
+prepared programs retain no debugger indexes; refactoring still changes generated code.
+Forcing interpreter inlining traded better branch timing for worse host/call timing and was
+reverted. These probes exclude preparation, retained-memory/RSS and real host work.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench stepping -- \
+  --warm-up-time 1 --measurement-time 3 --sample-size 30 --noplot
+```
+
+Use the ordinary `vm` cases with `--save-baseline <name>` on main, then `--baseline <name>` on
+the candidate. Keep benchmark output in a locally ignored directory; do not compare a candidate
+only against an older optimization branch.
+
 ## Payload-work accounting probe
 
 The initial budget probe compares main `f9aaa54` with logical payload-work
