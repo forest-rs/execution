@@ -13,6 +13,11 @@ Changes for the initial Execution Tape Tracy [0.1.0](#010-2026-10-27) release, d
 
 This release has an [MSRV][] of 1.88.
 
+### Added
+
+- Close profiling scopes when a resumable invocation is cancelled. Logical scopes span scheduling
+  quanta, so elapsed time includes suspension.
+
 ## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.

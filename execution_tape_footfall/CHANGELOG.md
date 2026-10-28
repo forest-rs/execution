@@ -13,6 +13,11 @@ Changes for the initial Execution Tape Footfall [0.1.0](#010-2026-10-27) release
 
 This release has an [MSRV][] of 1.88.
 
+### Added
+
+- Report cancelled resumable invocations distinctly and close logical scopes across quanta.
+  Elapsed scope time includes suspension; already performed host effects remain.
+
 ## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.
