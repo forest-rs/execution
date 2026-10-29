@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! An embedding-owned method table, object store and minimal single-task executor.
+//! An embedding-owned method table and shared object store.
 
 use super::model::{CELL, Compiled, Failure, Result, receiver};
 use execution_tape::{
@@ -12,16 +12,7 @@ use execution_tape::{
     },
     value::{Obj, Value},
 };
-use std::{
-    cell::RefCell,
-    error::Error,
-    fmt,
-    future::{Future, poll_fn},
-    rc::Rc,
-    sync::Arc,
-    task::{Context, Poll, Wake, Waker},
-    thread,
-};
+use std::{cell::RefCell, error::Error, fmt, rc::Rc, sync::Arc};
 
 pub(super) const METHODS: SigHash = SigHash(0x4D45_5448_4F44);
 const CELLS: SigHash = SigHash(0x4345_4C4C);
@@ -191,39 +182,4 @@ impl Methods {
         }
         Ok(())
     }
-}
-
-struct ThreadWake(thread::Thread);
-impl Wake for ThreadWake {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.unpark();
-    }
-}
-/// Only the example owns this executor. Wake-before-park is retained by the thread's token.
-pub(super) fn drive<F: Future>(future: F) -> F::Output {
-    let waker: Waker = Arc::new(ThreadWake(thread::current())).into();
-    let mut context = Context::from_waker(&waker);
-    let mut future = std::pin::pin!(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(value) => return value,
-            Poll::Pending => thread::park(),
-        }
-    }
-}
-pub(super) async fn next_turn() {
-    let mut yielded = false;
-    poll_fn(move |context| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            context.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await;
 }
