@@ -89,6 +89,65 @@ Use the ordinary `vm` cases with `--save-baseline <name>` on main, then `--basel
 the candidate. Keep benchmark output in a locally ignored directory; do not compare a candidate
 only against an older optimization branch.
 
+## Yielded host-request costs
+
+`host_requests` compares the same 100 dependent host calls through ordinary execution, a
+scheduled invocation using the native host, yielded native dispatch, external return slots,
+and an immediately ready async producer. Every call adds the length of a borrowed constant
+string to the previous reply. Each iteration checks the final answer. Preparation is outside
+timing; invocation setup, result handling and destruction are included, with a reused VM.
+There is no tracing, UI, host I/O or thread scheduling in these measurements.
+
+On macOS arm64, Rust 1.99 release builds, 2026-10-29, 30 samples with 1 s warmup and 3 s
+measurement gave these point estimates for the **whole 100-call invocation**:
+
+| Delivery | 16-byte input | 4,096-byte input |
+|---|---:|---:|
+| Ordinary native host | 4.13 µs | 4.11 µs |
+| Scheduled native host | 4.26 µs | 4.23 µs |
+| Yield then dispatch native host | 7.81 µs | 7.66 µs |
+| Yield then complete stack slots | 9.06 µs | 9.09 µs |
+| Yield then complete ready async producer | 9.75 µs | 9.93 µs |
+
+The external cases query the symbol and iterate borrowed arguments; dispatch reconstructs the
+normal host ABI internally. The ready producer also allocates its owned reply vector. These
+are different delivery mechanisms, not interchangeable costs for a real async application.
+Longer inputs here expose payload-copy regressions, not string-processing throughput: the host
+only reads the length. Borrowed-input and moved-return pointer identity are separately checked
+by conformance tests. Yielding has a measurable cost; it is explicitly opt-in.
+
+Ordinary and scheduled probes were compared with main `9c2e006`, using frozen main executables
+and the host-request implementation from `2c66b85` with its UI/example follow-ups. The later
+cancellation-observer fix only changes terminal cancellation ordering. Initial and alternating
+main/candidate passes were noisy: the scheduled quantum-64 candidate measured 8.58 µs initially
+and 8.81 µs in the alternating repeat, versus main 4.45 µs and 6.28 µs. Other cases changed sign;
+for example, the 1,000-addition repeat ranged from main 13.92 µs to candidate 7.55 µs. Concurrent
+CPU activity was observed. These runs do not establish either a general speedup or no regression.
+
+A further main/candidate/candidate/main pass used 30 samples, 1 s warmup and 4 s measurement:
+
+| Workload | Main first | Candidate first | Candidate second | Main last |
+|---|---:|---:|---:|---:|
+| 1,000 host-loop iterations | 75.82 µs | 79.01 µs | 80.09 µs | 74.17 µs |
+| 10,000 branch-loop iterations | 432.60 µs | 363.15 µs | 376.62 µs | 471.74 µs |
+| Scheduled 1,000 additions, quantum 64 | 4.93 µs | 4.61 µs | 4.81 µs | 5.03 µs |
+| Scheduled 1,000 additions, uninterrupted | 4.87 µs | 4.37 µs | 4.32 µs | 4.84 µs |
+
+The large scheduling regression did not persist, while the ordinary host-loop regression
+remained roughly 4–8% in this pass. Retain that as a limitation of this change, rather than
+claiming free synchronous execution. Ordinary execution still compiles without a yielding test
+in its instruction loop; shared admission and code layout can affect generated machine code.
+These probes exclude preparation, allocation counts, retained memory, and real host work.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench host_requests -- --noplot
+cargo bench -p execution_tape_wind_tunnel --bench vm -- \
+  '^(i64_add_chain/(10|1000)|call_loop/1000|branch_hot_loop/10000|host_call_loop/1000)$' \
+  --warm-up-time 1 --measurement-time 3 --sample-size 30 --noplot
+cargo bench -p execution_tape_wind_tunnel --bench stepping -- \
+  '^live_execution/' --warm-up-time 1 --measurement-time 3 --sample-size 30 --noplot
+```
+
 ## Guest-driven messages and method replacement
 
 `message_dispatch` demonstrates embedding-controlled method lookup and live replacement.
