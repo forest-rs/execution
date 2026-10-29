@@ -22,6 +22,12 @@ These are boundary/ownership costs, not interpreter dispatch speedups. Compare o
 cases independently against current main when evaluating the default execution path. Avoid
 running measurements concurrently with workspace checks or other compilation jobs.
 
+`code_publication` in that same suite measures retained lookup snapshots, explicit no-op updates,
+and compatible updates between two functions in one prepared program. A compatible-update
+iteration contains **two** publications and destruction of their reports; it ends at the original
+target. It includes signature comparison and revision allocation, without executing a guest or
+retaining a publication-history chain. Cross-program rich-contract preparation can cost more.
+
 ## Resumable execution and optional inspection
 
 `stepping` separates ordinary execution, reusable contexts, scheduling quanta, frame metadata,

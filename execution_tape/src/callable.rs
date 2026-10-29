@@ -8,6 +8,11 @@
 //! tokens remain host-owned; retaining a callable does not retain external objects or their state.
 //! Class/selector lookup and publication policy belong to the embedding language.
 
+mod publication;
+pub use publication::{
+    CodeSlot, CodeUpdate, CodeUpdateError, CodeVersion, SignatureDifference, SignaturePath,
+};
+
 use alloc::sync::Arc;
 use core::fmt;
 
