@@ -266,6 +266,9 @@ fn missing_inspector_and_omitted_fields_are_explicit_and_root_rows_navigate_corr
     );
     key(&mut view, KeyCode::Backspace);
     assert!(view.roots);
+    view.inspect_object(object(42));
+    assert!(matches!(view.focus, Focus::Values));
+    assert!(view.render_text(140, 42).unwrap().contains("Wide"));
     assert_eq!(view.invocation.host().calls, 0);
 }
 fn finish_motion(view: &mut LiveExplorer<'_, Counter>) {

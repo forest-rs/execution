@@ -166,6 +166,17 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         self
     }
 
+    /// Opens an embedding-selected host object without executing guest code or retaining it.
+    ///
+    /// This is also available through `Enter` on an object-valued row. A missing inspector or
+    /// unavailable projection is displayed explicitly. `Backspace` returns to paused values.
+    pub fn inspect_object(&mut self, object: Obj) {
+        self.value_path.clear();
+        self.value_path.push(ValueTarget::Object(object));
+        self.focus = Focus::Values;
+        self.refresh();
+    }
+
     /// Opens the terminal UI. On return, the invocation remains available to inspect or resume.
     ///
     /// `s`: step into, `n`: step over, `u`: step out, `c`: continue, Space: pause,

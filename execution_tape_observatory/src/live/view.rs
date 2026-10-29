@@ -25,7 +25,7 @@ impl<H: Host> LiveExplorer<'_, H> {
         };
         frame.render_widget(
             Paragraph::new(format!(
-                "LIVE · {} · {}\nFuel remaining: {} · data work: {} aggregate / {} payload bytes · {} breakpoints",
+                "LIVE · {} · {}\nFuel: {} · work: {} aggregate units / {} payload bytes · {} breakpoints",
                 self.status,
                 describe::preview(self.invocation.program().program().name().unwrap_or("unnamed program"), 80),
                 self.invocation.remaining_fuel(),
