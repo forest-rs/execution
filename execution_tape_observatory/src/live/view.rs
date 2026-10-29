@@ -11,7 +11,7 @@ impl<H: Host> LiveExplorer<'_, H> {
             return;
         }
         let rows = Layout::vertical([
-            Constraint::Length(2),
+            Constraint::Length(if self.origin.is_some() { 3 } else { 2 }),
             Constraint::Min(12),
             Constraint::Length(2),
         ])
@@ -23,17 +23,38 @@ impl<H: Host> LiveExplorer<'_, H> {
         } else {
             GREEN
         };
-        frame.render_widget(
-            Paragraph::new(format!(
-                "LIVE · {} · {}\nFuel: {} · work: {} aggregate units / {} payload bytes · {} breakpoints",
+        let mut header = vec![
+            Line::raw(format!(
+                "LIVE · {} · {}",
                 self.status,
-                describe::preview(self.invocation.program().program().name().unwrap_or("unnamed program"), 80),
+                describe::preview(
+                    self.invocation
+                        .program()
+                        .program()
+                        .name()
+                        .unwrap_or("unnamed program"),
+                    80
+                ),
+            )),
+            Line::raw(format!(
+                "Fuel: {} · work: {} aggregate units / {} payload bytes · {} breakpoints",
                 self.invocation.remaining_fuel(),
                 self.invocation.data_work().aggregate,
                 self.invocation.data_work().payload,
                 self.breakpoints.len()
-            ))
-            .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            )),
+        ];
+        if let Some(origin) = &self.origin {
+            header.push(Line::styled(
+                format!(
+                    "CALLER WAITING · {} · controls run this invocation",
+                    describe::preview(&origin.symbol, 24)
+                ),
+                Style::default().fg(GOLD),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(header).style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
             rows[0],
         );
         let columns = Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)])
@@ -100,7 +121,7 @@ impl<H: Host> LiveExplorer<'_, H> {
         if let Some(origin) = &self.origin {
             items.push(ListItem::new(vec![
                 Line::styled(
-                    "external caller · awaiting this invocation",
+                    "external caller · waiting for host reply",
                     Style::default().fg(GOLD),
                 ),
                 Line::styled(

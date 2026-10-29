@@ -42,6 +42,11 @@ overlapping local function IDs do not imply the same code. Foreign handles are n
 the child's heap or host. This is one causal link across independent invocations, without a
 synthetic guest activation or a scheduler-wide task graph. Stepping still controls the child;
 breakpoints in the external caller belong to its own invocation. `g` returns to current code.
+The gold **CALLER WAITING** header remains visible while browsing either program. The main
+status describes the controlled invocation: it can be `PAUSED` or `RETURNED` while its caller
+still awaits the embedding's host reply. Selecting a caller does not transfer execution control.
+Yielding hands a request to the embedding; it does not imply an asynchronous operation or an
+I/O wait. An embedding can answer immediately, run another invocation, or await external work.
 
 Attach `LiveExplorer::object_inspector` with an `ObjectInspector<H>` (or a closure) to project
 actual host state as an `ObjectView`. It runs on demand while an object view is open, between
