@@ -3,11 +3,125 @@
 
 use super::*;
 use crate::{ExecutionGraph, TapeExecutor};
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
+use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{StructTypeDef, ValueType};
 use execution_tape::value::{Closure, FuncId};
-use execution_tape::vm::Limits;
+use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
+
+#[test]
+fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
+    let mut builder = ProgramBuilder::new();
+    let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let environment = builder.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+    let body = builder
+        .declare_function(FunctionAbi {
+            args: vec![environment.into(), integer.into()],
+            rets: vec![integer.into()],
+        })
+        .unwrap();
+    let mut a = builder.function_asm(body).unwrap();
+    let captured = a.alloc_register(ValueType::I64);
+    let answer = a.alloc_register(ValueType::I64);
+    a.tuple_get(captured, 1, 0)
+        .i64_add(answer, captured, 2)
+        .ret(0, &[answer]);
+    builder.define_function(body, a).unwrap();
+    let maker = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::Closure],
+        })
+        .unwrap();
+    let mut a = builder.function_asm(maker).unwrap();
+    let env = a.alloc_register(ValueType::Agg);
+    let target = a.alloc_register(ValueType::Func);
+    let result = a.alloc_register(ValueType::Closure);
+    a.tuple_new(env, &[1])
+        .const_func(target, body)
+        .closure_new(result, target, env)
+        .ret(0, &[result]);
+    builder.define_function(maker, a).unwrap();
+    let program = Arc::new(builder.build_verified().unwrap());
+    let weak = Arc::downgrade(&program);
+    let mut graph = ExecutionGraph::new(TapeExecutor::new(HostProbe::default(), Limits::default()));
+    let node = graph
+        .add_tape_node(program, maker, vec!["x".into()])
+        .unwrap();
+    graph
+        .set_input_value(node, "x", Value::I64(40).into())
+        .unwrap();
+    graph.run_node(node).unwrap();
+    let output = graph.node_outputs(node).unwrap().get("ret0").unwrap();
+    let Repr::Shared { bundle, .. } = &output.repr else {
+        panic!("owned output")
+    };
+    let weak_bundle = Arc::downgrade(bundle);
+    let callable = output.retain_callable().unwrap();
+    drop(graph.remove_node(node).unwrap());
+    drop(graph);
+    assert!(
+        weak_bundle.upgrade().is_none(),
+        "export does not retain unrelated publication roots"
+    );
+    assert!(weak.upgrade().is_some(), "export owns its code");
+    let mut vm = Vm::new(HostProbe::default(), Limits::default());
+    let mut call = callable
+        .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
+        .unwrap();
+    drop(callable);
+    while call.resume(1).unwrap() == RunStatus::Suspended {}
+    assert_eq!(call.take_outputs(), Some(vec![Value::I64(42)]));
+    drop(call);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(vm.aggregates().len_u32(), 0);
+    assert_eq!(vm.host().calls, 0);
+}
+
+#[test]
+fn exported_function_uses_original_program_and_raw_values_explain_missing_ownership() {
+    let (program, entries) = program(11);
+    let mut graph = ExecutionGraph::new(TapeExecutor::new(HostProbe::default(), Limits::default()));
+    let node = graph
+        .add_tape_node(program, entries.function, vec![])
+        .unwrap();
+    graph.run_node(node).unwrap();
+    let callable = graph
+        .node_outputs(node)
+        .unwrap()
+        .get("ret0")
+        .unwrap()
+        .retain_callable()
+        .unwrap();
+    drop(graph);
+    let mut vm = Vm::new(HostProbe::default(), Limits::default());
+    let mut call = callable
+        .start(&mut vm, vec![], InvocationOptions::default())
+        .unwrap();
+    call.resume(u64::MAX).unwrap();
+    assert_eq!(call.take_outputs(), Some(vec![Value::I64(11)]));
+    assert_eq!(
+        TapeValue::from(Value::I64(42))
+            .retain_callable()
+            .unwrap_err(),
+        CallableError::NotCallable {
+            actual: ValueType::I64
+        }
+    );
+    for value in [
+        Value::Func(entries.value),
+        Value::Closure(Closure {
+            func: entries.value,
+            env: AggHandle(0),
+        }),
+    ] {
+        assert_eq!(
+            TapeValue::from(value).retain_callable().unwrap_err(),
+            CallableError::MissingCodeOwner
+        );
+    }
+}
 
 #[derive(Default)]
 struct HostProbe {

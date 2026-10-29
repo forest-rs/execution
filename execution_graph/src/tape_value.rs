@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use execution_tape::aggregates::{AggError, AggHeap, AggRemap, ValueSnapshot};
+use execution_tape::callable::{Callable, CallableError};
 use execution_tape::program::{ElemTypeId, TypeId};
 use execution_tape::value::{AggHandle, AggType, Value};
 use execution_tape::verifier::VerifiedProgram;
@@ -239,6 +240,34 @@ impl TapeValue {
         match &self.repr {
             Repr::Shared { bundle, .. } => Some(bundle.snapshot.aggregates()),
             _ => None,
+        }
+    }
+
+    /// Retains an executable function or closure with this value's exact code owner.
+    ///
+    /// The result survives graph edits, node removal, and executor destruction. Closure
+    /// retention copies only its reachable immutable environment, preserving sharing within
+    /// that copy; cloning the returned callable then shares its storage. This explicit
+    /// preparation is outside guest execution limits. Host object tokens still need the
+    /// embedding's retention policy; they do not retain external objects.
+    ///
+    /// Plain values return [`CallableError::NotCallable`]. Raw function/closure values without
+    /// a prepared-program owner return [`CallableError::MissingCodeOwner`]; obtain them from
+    /// a tape node or [`Self::from_snapshot`] with their actual original program instead.
+    pub fn retain_callable(&self) -> Result<Callable, CallableError> {
+        match self.value() {
+            Value::Func(function) => Callable::function(
+                Arc::clone(self.program().ok_or(CallableError::MissingCodeOwner)?),
+                *function,
+            ),
+            Value::Closure(closure) => Callable::retain(
+                Arc::clone(self.program().ok_or(CallableError::MissingCodeOwner)?),
+                self.aggregates().ok_or(CallableError::MissingCodeOwner)?,
+                execution_tape::host::ValueRef::Closure(*closure),
+            ),
+            other => Err(CallableError::NotCallable {
+                actual: other.value_type(),
+            }),
         }
     }
 

@@ -37,8 +37,8 @@ pub enum CallableError {
         /// Number of successful result values.
         count: usize,
     },
-    /// Raw `Vm::start` borrowed its program without retaining an owning handle. Start a
-    /// `Callable::function` instead when returned callables need independent code ownership.
+    /// The value has no retained prepared-program owner. Obtain an owned result from a
+    /// callable invocation or tape graph node, or explicitly retain its original program.
     MissingCodeOwner,
     /// The selected value is neither a function nor a closure.
     NotCallable {
@@ -72,7 +72,7 @@ impl fmt::Display for CallableError {
         match self {
             Self::NoSuccessfulResult => f.write_str("callable retention requires a successful invocation result"),
             Self::OutputIndex { index, count } => write!(f, "cannot retain callable output {index}: invocation returned {count} values"),
-            Self::MissingCodeOwner => f.write_str("invocation has no retained code owner; start through Callable::function(program, entry) to retain callable results"),
+            Self::MissingCodeOwner => f.write_str("callable value has no retained code owner; retain its original prepared program before exporting it"),
             Self::NotCallable { actual } => {
                 write!(f, "expected a function or closure, got {actual:?}")
             }
