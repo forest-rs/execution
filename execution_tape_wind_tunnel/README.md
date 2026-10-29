@@ -5,6 +5,23 @@ aggregate operations, and byte/string boundaries. The `recording` benchmark
 measures capture/replay work separately. Run them with `cargo bench -p
 execution_tape_wind_tunnel`; use `--bench vm -- --list` to inspect individual cases.
 
+## Retained executable callable costs
+
+The `callables` suite includes `retained_callable` cases that separate capturing an environment,
+cloning its retained owner, and importing/executing it in another VM. The fixture returns a scalar
+and captures a tuple of 0, 8 or 1,024 sixteen-byte strings. Each completed invocation discards its
+unused imported captures, so the timed loop does not grow retained storage. Program preparation
+and source-heap construction are outside timing; capture/import timings include destruction.
+Cloning shares the immutable snapshot instead of recopying its payloads.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench callables -- retained_callable
+```
+
+These are boundary/ownership costs, not interpreter dispatch speedups. Compare ordinary `vm`
+cases independently against current main when evaluating the default execution path. Avoid
+running measurements concurrently with workspace checks or other compilation jobs.
+
 ## Resumable execution and optional inspection
 
 `stepping` separates ordinary execution, reusable contexts, scheduling quanta, frame metadata,

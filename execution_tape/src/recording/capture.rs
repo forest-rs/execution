@@ -163,6 +163,7 @@ impl Recorder {
                 args,
                 aggregates,
                 limits,
+                work,
             } => {
                 if self.entry.is_some() || self.end.is_some() {
                     return Err(CaptureFault::MultipleRuns);
@@ -175,6 +176,7 @@ impl Recorder {
                     func: entry,
                     args,
                     limits: limits.clone(),
+                    work,
                 });
             }
             ValueEvent::HostCall {

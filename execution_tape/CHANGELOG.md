@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Retain executable functions and escaped closures with `callable::Callable`, including their
+  exact code owner and independent captures. Start through the callable and use
+  `Invocation::retain_callable` to retain returned callbacks without assigning a program domain
+  manually. Capture imports are transactional and share the guest's data-work budgets.
+
 - Inspect paused frames and initialized register values with invocation-scoped activation
   identities. Waiting callers expose their pending source call and exclude not-yet-returned
   results. Enumerate conservative opaque-object roots for an embedding collector; analysis
@@ -27,6 +32,11 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Record prepaid input work in `ValueEvent::Entry::work` and `recording::Invocation::work` so
+  checked replay preserves owned-callable copy debits. Migration: add `work` to explicit entry
+  event construction/destructuring, or use `..` when inspecting unrelated fields. Raw borrowed
+  entries use `DataWork::default()`. The tape wire format and crate versions are unchanged.
 
 - Add `TraceOutcome::Cancelled` for abandoned invocations and close their outstanding
   scopes. Migration: handle the new variant in exhaustive trace-outcome matches.

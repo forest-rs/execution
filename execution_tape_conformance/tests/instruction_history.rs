@@ -447,6 +447,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
             args: &[],
             aggregates: &heap,
             limits: &limits,
+            work: execution_tape::vm::DataWork::default(),
         },
     );
     recorder.instr(

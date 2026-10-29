@@ -187,5 +187,67 @@ fn callables(c: &mut Criterion) {
     }
     group.finish();
 }
-criterion_group! {name=benches; config=Criterion::default().warm_up_time(Duration::from_millis(300)).measurement_time(Duration::from_millis(1200)).sample_size(40); targets=callables}
+criterion_group! {name=benches; config=Criterion::default().warm_up_time(Duration::from_millis(300)).measurement_time(Duration::from_millis(1200)).sample_size(40); targets=callables,retained_callables}
 criterion_main!(benches);
+
+fn retained_callables(c: &mut Criterion) {
+    use execution_tape::{
+        aggregates::AggHeap,
+        callable::Callable,
+        vm::{InvocationOptions, RunStatus},
+    };
+    use std::sync::Arc;
+    let mut group = c.benchmark_group("retained_callable");
+    for fields in [0, 8, 1024] {
+        let mut b = ProgramBuilder::new();
+        let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::Agg, ValueType::I64]);
+        a.const_i64(2, 42).ret(0, &[2]);
+        let body = b
+            .push_function_checked(
+                a,
+                FunctionAbi {
+                    args: vec![ValueType::Agg.into()],
+                    rets: vec![ValueType::I64.into()],
+                },
+            )
+            .unwrap();
+        let program = Arc::new(b.build_verified().unwrap());
+        let mut heap = AggHeap::new();
+        let env = heap
+            .tuple_new(vec![Value::Str("sixteen bytes!!!".into()); fields])
+            .unwrap();
+        let value = Closure { func: body, env };
+        group.bench_function(BenchmarkId::new("retain_capture", fields), |b| {
+            b.iter(|| {
+                black_box(
+                    Callable::retain(Arc::clone(&program), &heap, ValueRef::Closure(value))
+                        .unwrap(),
+                );
+            })
+        });
+        let callable =
+            Callable::retain(Arc::clone(&program), &heap, ValueRef::Closure(value)).unwrap();
+        group.bench_function(BenchmarkId::new("clone", fields), |b| {
+            b.iter(|| {
+                black_box(black_box(&callable).clone());
+            })
+        });
+        let mut vm = Vm::new(NoHost, Limits::default());
+        group.bench_function(BenchmarkId::new("import_and_execute", fields), |b| {
+            b.iter(|| {
+                let mut invocation = callable
+                    .start(&mut vm, &[], InvocationOptions::default())
+                    .unwrap();
+                assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+                black_box(invocation.result().unwrap().unwrap());
+            })
+        });
+        assert_eq!(
+            vm.aggregates().len_u32(),
+            0,
+            "unused imported captures retire after every call"
+        );
+    }
+    group.finish();
+}

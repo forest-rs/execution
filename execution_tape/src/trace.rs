@@ -19,7 +19,7 @@ use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, SymbolId};
 use crate::value::{FuncId, Value};
-use crate::vm::{Limits, TrapInfo};
+use crate::vm::{DataWork, Limits, TrapInfo};
 
 /// A set of trace events requested by a [`TraceSink`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -220,6 +220,8 @@ pub enum ValueEvent<'a> {
         aggregates: &'a AggHeap,
         /// Limits governing this invocation.
         limits: &'a Limits,
+        /// Input preparation already debited against these limits.
+        work: DataWork,
     },
     /// Raw host outcome after the call, before fuel debit and return validation.
     ///
@@ -261,12 +263,14 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 args,
                 aggregates,
                 limits,
+                work,
             } => f
                 .debug_struct("Entry")
                 .field("entry", entry)
                 .field("args", args)
                 .field("aggregate_count", &aggregates.len_u32())
                 .field("limits", limits)
+                .field("work", work)
                 .finish(),
             Self::HostCall {
                 location,

@@ -498,6 +498,10 @@ impl<'a> AggOverlay<'a> {
 }
 
 impl AggHeap {
+    pub(crate) fn node_values(&self) -> impl Iterator<Item = &[Value]> {
+        self.nodes.iter().map(AggNode::values)
+    }
+
     /// Enumerates immediate opaque object references in all allocated aggregate nodes.
     ///
     /// Each item is `(heap-local node, field/element index, object token)`. All nodes are
