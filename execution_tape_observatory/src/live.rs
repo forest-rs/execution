@@ -13,6 +13,8 @@ use execution_tape::{
     vm::{ActivationId, Invocation, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo},
 };
 mod objects;
+mod origin;
+use origin::RequestOrigin;
 mod view;
 pub use objects::{ObjectInspector, ObjectView};
 
@@ -60,7 +62,8 @@ enum ValueTarget {
 ///
 /// The VM owns execution, resource limits and rollback. This view owns stepping policy,
 /// instruction breakpoints and presentation. It never fabricates a host for an arbitrary tape.
-/// Host calls execute synchronously, including their real effects, when stepped or continued.
+/// Default host calls execute synchronously, including their real effects, when stepped or
+/// continued. Yielded calls wait for explicit `h` dispatch or embedding-supplied completion.
 /// Quitting pauses the invocation; dropping the explorer cancels unfinished execution.
 ///
 /// Paused values are read-only and shown only when definitely initialized. Selecting a caller
@@ -85,6 +88,9 @@ enum ValueTarget {
 pub struct LiveExplorer<'a, H: Host> {
     invocation: Invocation<'a, H>,
     sources: Option<BoundSources<'a>>,
+    origin: Option<RequestOrigin<'a>>,
+    origin_selected: bool,
+    showing_origin: bool,
     frames: Vec<PausedFrame>,
     selected_frame: usize,
     focus: Focus,
@@ -123,6 +129,9 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         let mut view = Self {
             invocation,
             sources: None,
+            origin: None,
+            origin_selected: false,
+            showing_origin: false,
             frames: Vec::new(),
             selected_frame: 0,
             focus: Focus::Code,
@@ -171,6 +180,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     /// This is also available through `Enter` on an object-valued row. A missing inspector or
     /// unavailable projection is displayed explicitly. `Backspace` returns to paused values.
     pub fn inspect_object(&mut self, object: Obj) {
+        self.origin_selected = false;
         self.value_path.clear();
         self.value_path.push(ValueTarget::Object(object));
         self.focus = Focus::Values;
@@ -181,6 +191,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     ///
     /// `s`: step into, `n`: step over, `u`: step out, `c`: continue, Space: pause,
     /// `b`: toggle the selected instruction's breakpoint, `g`: current instruction,
+    /// `h`: dispatch a pending host request through the actual host,
     /// `o`: toggle conservative host-object references, Tab: next pane, `q`: leave.
     /// Continued execution polls input between bounded quanta. A synchronous host call can still
     /// block the UI; no host effects are rolled back by pausing or cancellation.
@@ -203,6 +214,12 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     /// Hard budgets remain cumulative. Use the terminal's continue command for breakpoints.
     pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         self.motion = None;
+        self.origin_selected = false;
+        if self.showing_origin
+            && let Some(frame) = self.frames.first()
+        {
+            self.show_location(frame.location);
+        }
         self.value_path.clear();
         let result = self.invocation.resume(quantum);
         self.status = "PAUSED · before next instruction".into();
@@ -234,7 +251,12 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
 
     fn refresh_source(&mut self) {
         self.source_offset = 0;
-        self.source_lines = match (self.sources, self.location()) {
+        let sources = if self.showing_origin {
+            self.origin.as_ref().and_then(|origin| origin.sources)
+        } else {
+            self.sources
+        };
+        self.source_lines = match (sources, self.location()) {
             (Some(map), Some(loc)) => source_context::context_lines(map, loc, 6, 100),
             _ => vec![
                 "No frontend source attached.".into(),
@@ -244,16 +266,27 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     }
 
     fn show_location(&mut self, location: TraceLocation) {
-        if self.code_func != Some(location.func) {
-            let program = self.invocation.program().program();
-            self.code.clear();
-            if let Ok(source) = disassemble_function(program, location.func) {
-                self.flow = Flow::new(&source);
-                self.code = source
-                    .instrs()
-                    .map(|i| (i.pc(), describe::instruction(program, i)))
-                    .collect();
-            }
+        self.show_location_in(location, false);
+    }
+    fn show_location_in(&mut self, location: TraceLocation, origin: bool) {
+        let changed = self.code_func != Some(location.func) || self.showing_origin != origin;
+        self.showing_origin = origin;
+        if changed {
+            let (flow, code) = {
+                let program = self.code_program();
+                match disassemble_function(program, location.func) {
+                    Ok(source) => (
+                        Flow::new(&source),
+                        source
+                            .instrs()
+                            .map(|i| (i.pc(), describe::instruction(program, i)))
+                            .collect(),
+                    ),
+                    Err(_) => (Flow::default(), Vec::new()),
+                }
+            };
+            self.flow = flow;
+            self.code = code;
             self.code_func = Some(location.func);
         }
         self.code_selected = self
@@ -270,6 +303,26 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         self.values.clear();
         self.value_targets.clear();
         self.values_offset = 0;
+        if let Some(result) = self.invocation.result() {
+            self.status = match result {
+                Ok(_) => "RETURNED · committed VM outputs".into(),
+                Err(error) => format!("TRAPPED · {}", render::trap_text(&error.trap)),
+            };
+        }
+        if let Some(request) = self.invocation.pending_host_call() {
+            self.status = format!(
+                "AWAITING HOST · {} · h dispatch",
+                describe::preview(request.symbol(), 60)
+            );
+        }
+        if self.origin_selected {
+            let origin = self.origin.as_mut().expect("selected caller");
+            let location = origin.location;
+            self.values = origin.values();
+            self.value_targets = vec![None; self.values.len()];
+            self.show_location_in(location, true);
+            return;
+        }
         if let Some(result) = self.invocation.result() {
             match result {
                 Ok(outputs) => {
@@ -467,8 +520,18 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     }
 
     fn start_motion(&mut self, kind: KeyCode) {
+        if self.invocation.pending_host_call().is_some() {
+            self.refresh();
+            return;
+        }
         if self.invocation.result().is_some() {
             return;
+        }
+        self.origin_selected = false;
+        if self.showing_origin
+            && let Some(frame) = self.frames.first()
+        {
+            self.show_location(frame.location);
         }
         self.value_path.clear();
         let origin = self
@@ -531,6 +594,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
             }
         }
         self.selected_frame = 0;
+        self.origin_selected = false;
         self.refresh();
     }
 
@@ -545,7 +609,19 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         match self.focus {
             Focus::Stack => {
                 self.value_path.clear();
-                move_by(&mut self.selected_frame, self.frames.len());
+                let mut selected = if self.origin_selected {
+                    self.frames.len()
+                } else {
+                    self.selected_frame
+                };
+                move_by(
+                    &mut selected,
+                    self.frames.len() + usize::from(self.origin.is_some()),
+                );
+                self.origin_selected = self.origin.is_some() && selected == self.frames.len();
+                if !self.origin_selected {
+                    self.selected_frame = selected;
+                }
                 self.refresh();
             }
             Focus::Code => {
@@ -611,7 +687,11 @@ impl<H: Host> Screen for LiveExplorer<'_, H> {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.motion = None;
                 if self.invocation.result().is_none() {
-                    self.status = "PAUSED · left terminal view".into();
+                    self.status = if self.invocation.pending_host_call().is_some() {
+                        "AWAITING HOST · left terminal view; completion required".into()
+                    } else {
+                        "PAUSED · left terminal view".into()
+                    };
                 }
                 return false;
             }
@@ -624,10 +704,15 @@ impl<H: Host> Screen for LiveExplorer<'_, H> {
             KeyCode::Char(' ') => {
                 self.motion = None;
                 if self.invocation.result().is_none() {
-                    self.status = "PAUSED · requested by user".into();
+                    self.status = if self.invocation.pending_host_call().is_some() {
+                        "AWAITING HOST · completion required; h dispatch".into()
+                    } else {
+                        "PAUSED · requested by user".into()
+                    };
                 }
             }
             KeyCode::Char('o') => {
+                self.origin_selected = false;
                 self.value_path.clear();
                 self.roots = !self.roots;
                 self.refresh();
@@ -643,6 +728,12 @@ impl<H: Host> Screen for LiveExplorer<'_, H> {
                 self.refresh();
             }
             KeyCode::Char('b') => {
+                if self.showing_origin {
+                    self.status =
+                        "External caller belongs to another invocation; g returns to this code."
+                            .into();
+                    return true;
+                }
                 if let Some(loc) = self.location() {
                     if !self
                         .invocation
@@ -663,9 +754,29 @@ impl<H: Host> Screen for LiveExplorer<'_, H> {
                 }
             }
             KeyCode::Char('g') => {
-                if let Some(frame) = self.frames.get(self.selected_frame) {
+                self.origin_selected = false;
+                self.selected_frame = 0;
+                if let Some(frame) = self.frames.first() {
                     self.show_location(frame.location);
+                } else if let Some(Err(trap)) = self.invocation.result() {
+                    self.show_location(TraceLocation {
+                        func: trap.func,
+                        pc: trap.pc,
+                    });
                 }
+                self.refresh();
+            }
+            KeyCode::Char('h') => {
+                if let Some(request) = self.invocation.pending_host_call() {
+                    let _ = request.dispatch();
+                } else {
+                    return true;
+                }
+                self.status = "PAUSED · host instruction completed".into();
+                self.motion = None;
+                self.origin_selected = false;
+                self.value_path.clear();
+                self.refresh();
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(true, 1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(false, 1),
@@ -680,5 +791,7 @@ impl<H: Host> Screen for LiveExplorer<'_, H> {
     }
 }
 
+#[cfg(test)]
+mod request_tests;
 #[cfg(test)]
 mod tests;
