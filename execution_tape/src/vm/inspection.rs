@@ -190,7 +190,7 @@ impl<H: Host> Invocation<'_, H> {
         InvocationInspection {
             program: self.program,
             ctx: &self.ctx,
-            args: self.args,
+            args: &self.args,
             outputs: self.result().and_then(Result::ok).unwrap_or(&[]),
             aggregates: self.vm.memory.aggs(),
             control: &self.control,

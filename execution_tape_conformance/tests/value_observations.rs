@@ -43,7 +43,13 @@ impl TraceSink for Observe {
                 args,
                 aggregates,
                 limits,
+                work,
             } => {
+                assert_eq!(
+                    work,
+                    execution_tape::vm::DataWork::default(),
+                    "borrowed entry arguments have no preparation debit"
+                );
                 self.order.push("entry");
                 self.entry = Some((entry, args.to_vec(), aggregates.len_u32(), limits.clone()));
             }

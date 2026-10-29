@@ -55,12 +55,13 @@ pub struct Limits {
     /// Maximum aggregate contract work per run: visited value/contract pairs and child edges.
     /// Separate from guest instruction fuel; shared subgraphs reuse successful proofs.
     pub max_contract_work: u64,
-    /// Maximum guest aggregate construction work per run (1,000,000 by default).
+    /// Maximum aggregate construction/import work per run (1,000,000 by default).
     ///
     /// Each tuple, struct, or array construction charges one node plus its immediate field
     /// count before allocating field storage or materializing payloads. Repeated fields charge
     /// separately; nested aggregate handles cost one field without traversing their contents.
-    /// Empty aggregates cost one. Work accumulates across guest calls and resets every run.
+    /// Empty aggregates cost one. Owned callable entry imports charge the same units before
+    /// copying their captures. Work accumulates across entry preparation and guest calls.
     ///
     /// This bounds logical construction work, not live heap bytes. Existing input/retained
     /// aggregates, host allocations, graph imports, frame storage, preparation, and capture
@@ -76,11 +77,46 @@ pub struct Limits {
     /// UTF-8 validation, before either operation. Direct successful host return slots containing
     /// bytes/strings charge their lengths before adoption, after all return kinds are validated.
     ///
+    /// Owned callable entry imports also charge copied capture payloads and root arguments.
     /// Borrowed arguments/constants/projections and guest-call transfers cost zero. This is not
     /// a heap or RSS limit: aggregate slots, frames, storage of retained results, nested host aggregate
     /// payloads, host allocations/effects, preparation, tracing/recording, and graph-adapter
     /// imports are outside this budget. Set `u64::MAX` for the maximum supported budget.
     pub max_payload_work: u64,
+}
+
+/// Logical aggregate and byte/string work, separate from instruction fuel and contract checks.
+///
+/// Captured environments and copied root payloads are admitted before allocation, then charged
+/// against the same limits as guest work. Ordinary borrowed entry arguments spend zero here.
+/// Entry observations report the preparation debit; [`Invocation::data_work`] includes guest
+/// work as well. Recorders preserve the debit so replay cannot replenish remaining budgets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DataWork {
+    /// Copied aggregate nodes plus their immediate fields.
+    pub aggregate: u64,
+    /// Copied byte/string payload bytes.
+    pub payload: u64,
+}
+
+impl DataWork {
+    pub(crate) fn check(self, limits: &Limits) -> Result<(), Trap> {
+        if self.aggregate > limits.max_aggregate_work {
+            return Err(Trap::AggregateWorkExceeded {
+                limit: limits.max_aggregate_work,
+                used: 0,
+                requested: self.aggregate,
+            });
+        }
+        if self.payload > limits.max_payload_work {
+            return Err(Trap::PayloadWorkExceeded {
+                limit: limits.max_payload_work,
+                used: 0,
+                requested: self.payload,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for Limits {
@@ -1173,6 +1209,7 @@ impl<H: Host> Vm<H> {
                 args,
                 aggregates: self.memory.aggs(),
                 limits: &self.limits,
+                work: DataWork::default(),
             });
             self.run_body::<WithTracePolicy>(
                 ctx, program, entry, args, outputs, checkpoint, &mut trace, access,

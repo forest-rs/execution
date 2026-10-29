@@ -690,10 +690,7 @@ impl Recording {
             record: self,
             state: Rc::clone(&state),
         };
-        let result = vm.run(
-            &self.program,
-            entry.func,
-            &args,
+        let options = crate::vm::InvocationOptions::default().trace(
             TraceMask::INSTR
                 | TraceMask::VALUES
                 | if self
@@ -710,8 +707,14 @@ impl Recording {
                 } else {
                     TraceMask::CALL
                 },
-            Some(&mut check),
+            &mut check,
         );
+        let result = vm
+            .start_prepaid(&self.program, entry.func, &args, options, entry.work)
+            .and_then(|mut invocation| {
+                while invocation.resume(u64::MAX)? == crate::vm::RunStatus::Suspended {}
+                Ok(invocation.take_outputs().expect("completed replay outputs"))
+            });
         let mut state = state.borrow_mut();
         if let Some(error) = &state.error {
             return Err(error.clone());

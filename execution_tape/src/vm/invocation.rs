@@ -4,6 +4,8 @@
 //! Borrow-scoped, cooperatively scheduled execution.
 
 use super::*;
+use crate::callable::{Callable, CallableError};
+use alloc::borrow::Cow;
 
 /// Progress after executing an invocation's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +65,9 @@ impl<'a> InvocationOptions<'a> {
 pub struct Invocation<'a, H: Host> {
     pub(super) vm: &'a mut Vm<H>,
     pub(super) program: &'a VerifiedProgram,
+    owner: Option<alloc::sync::Arc<VerifiedProgram>>,
     pub(super) entry: FuncId,
-    pub(super) args: &'a [Value],
+    pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: ExecutionContext,
     pub(super) control: ExecutionControl,
     checkpoint: Checkpoint,
@@ -99,10 +102,41 @@ impl<H: Host> Vm<H> {
         args: &'a [Value],
         options: InvocationOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
+        self.start_prepaid(program, entry, args, options, DataWork::default())
+    }
+
+    pub(crate) fn start_prepaid<'a>(
+        &'a mut self,
+        program: &'a VerifiedProgram,
+        entry: FuncId,
+        args: &'a [Value],
+        options: InvocationOptions<'a>,
+        work: DataWork,
+    ) -> Result<Invocation<'a, H>, TrapInfo> {
         let checkpoint = self.memory.checkpoint();
+        self.start_with_inputs(
+            program,
+            entry,
+            Cow::Borrowed(args),
+            options,
+            checkpoint,
+            work,
+        )
+    }
+
+    pub(crate) fn start_with_inputs<'a>(
+        &'a mut self,
+        program: &'a VerifiedProgram,
+        entry: FuncId,
+        args: Cow<'a, [Value]>,
+        options: InvocationOptions<'a>,
+        checkpoint: Checkpoint,
+        work: DataWork,
+    ) -> Result<Invocation<'a, H>, TrapInfo> {
         let mut invocation = Invocation {
             vm: self,
             program,
+            owner: None,
             entry,
             args,
             ctx: ExecutionContext::new(),
@@ -116,36 +150,44 @@ impl<H: Host> Vm<H> {
         };
         invocation
             .trace
-            .run_start(program.program(), entry, args.len());
+            .run_start(program.program(), entry, invocation.args.len());
         invocation
             .trace
             .values(program.program(), || ValueEvent::Entry {
                 entry,
-                args,
+                args: &invocation.args,
                 aggregates: invocation.vm.memory.aggs(),
                 limits: &invocation.vm.limits,
+                work,
             });
-        let result = if invocation.trace.active() {
-            invocation.vm.initialize_run::<WithTracePolicy>(
-                &mut invocation.ctx,
-                program,
-                entry,
-                args,
-                &mut invocation.trace,
-            )
-        } else {
-            invocation.vm.initialize_run::<NoTracePolicy>(
-                &mut invocation.ctx,
-                program,
-                entry,
-                args,
-                &mut invocation.trace,
-            )
-        };
+        let result = work
+            .check(&invocation.vm.limits)
+            .map_err(|trap| invocation.ctx.trap(entry, 0, None, trap))
+            .and_then(|()| {
+                if invocation.trace.active() {
+                    invocation.vm.initialize_run::<WithTracePolicy>(
+                        &mut invocation.ctx,
+                        program,
+                        entry,
+                        &invocation.args,
+                        &mut invocation.trace,
+                    )
+                } else {
+                    invocation.vm.initialize_run::<NoTracePolicy>(
+                        &mut invocation.ctx,
+                        program,
+                        entry,
+                        &invocation.args,
+                        &mut invocation.trace,
+                    )
+                }
+            });
         if let Err(error) = result {
             invocation.finish(Err(error.clone()));
             return Err(error);
         }
+        invocation.ctx.aggregate_work = work.aggregate;
+        invocation.ctx.payload_work = work.payload;
         invocation.control = ExecutionControl::start();
         Ok(invocation)
     }
@@ -172,7 +214,7 @@ impl<H: Host> Invocation<'_, H> {
                 &mut self.ctx,
                 self.program,
                 self.entry,
-                self.args,
+                &self.args,
                 &mut self.outputs,
                 self.checkpoint,
                 &mut self.trace,
@@ -185,7 +227,7 @@ impl<H: Host> Invocation<'_, H> {
                 &mut self.ctx,
                 self.program,
                 self.entry,
-                self.args,
+                &self.args,
                 &mut self.outputs,
                 self.checkpoint,
                 &mut self.trace,
@@ -216,10 +258,49 @@ impl<H: Host> Invocation<'_, H> {
         matches!(self.outcome, Some(Ok(()))).then(|| core::mem::take(&mut self.outputs))
     }
 
+    /// Retains one successful function/closure result with its exact code and captures.
+    ///
+    /// Start through [`Callable::start`] to supply the owning program handle. A raw `Vm::start`
+    /// only borrows its program and returns [`CallableError::MissingCodeOwner`]. The result
+    /// remains in the invocation; retention explicitly copies its reachable immutable captures
+    /// outside guest work budgets. The retained callable survives this invocation and VM.
+    pub fn retain_callable(&self, index: usize) -> Result<Callable, CallableError> {
+        let outputs = self
+            .result()
+            .and_then(Result::ok)
+            .ok_or(CallableError::NoSuccessfulResult)?;
+        let value = outputs.get(index).ok_or(CallableError::OutputIndex {
+            index,
+            count: outputs.len(),
+        })?;
+        if !matches!(value, Value::Func(_) | Value::Closure(_)) {
+            return Err(CallableError::NotCallable {
+                actual: value.value_type(),
+            });
+        }
+        let program = self.owner.as_ref().ok_or(CallableError::MissingCodeOwner)?;
+        Callable::retain(
+            alloc::sync::Arc::clone(program),
+            self.aggregates(),
+            ValueRef::from_value(value),
+        )
+    }
+
     /// Remaining hard instruction/host fuel, including after completion or a trap.
     #[must_use]
     pub fn remaining_fuel(&self) -> u64 {
         self.ctx.fuel
+    }
+
+    /// Aggregate/payload work spent so far, including owned-input preparation and root returns.
+    /// Counters accumulate across quanta and remain available after a return or trap. These are
+    /// logical work units, not retained heap bytes; contract work and host allocations are separate.
+    #[must_use]
+    pub fn data_work(&self) -> DataWork {
+        DataWork {
+            aggregate: self.ctx.aggregate_work,
+            payload: self.ctx.payload_work,
+        }
     }
 
     /// The immutable verified program whose local identities this invocation uses.
@@ -296,5 +377,87 @@ impl<H: Host> Drop for Invocation<'_, H> {
         self.trace.cancel(self.program.program(), location, span);
         self.trace
             .run_end(self.program.program(), TraceOutcome::Cancelled);
+    }
+}
+
+impl Callable {
+    /// Starts this exact retained target in a VM, without executing a guest instruction.
+    ///
+    /// User arguments exclude the hidden environment. Like `Vm::start`, raw argument handles
+    /// must belong to the destination VM and this program's identity domain. A plain function
+    /// borrows its arguments. A closure imports its retained graph and owns an argument buffer
+    /// with the environment prepended; root string/byte arguments are copied into that buffer.
+    /// All copy work is admitted before import and debited against the invocation's normal
+    /// aggregate/payload limits. Preparation rejection emits no run observations or host effects.
+    ///
+    /// Dropping, trapping, or rejecting entry rolls back imported captures as well as guest
+    /// allocations. Success retains only captures reachable from returned values. Recordings
+    /// include the hidden environment and the entry-work debit, so checked replay uses the
+    /// ordinary body signature with the same budgets. Host object validity remains the host's
+    /// responsibility; use `visit_objects` to enumerate retained capture references.
+    pub fn start<'a, H: Host>(
+        &'a self,
+        vm: &'a mut Vm<H>,
+        args: &'a [Value],
+        options: InvocationOptions<'a>,
+    ) -> Result<Invocation<'a, H>, TrapInfo> {
+        let program = self.program();
+        let entry = self.function_id();
+        let Some(capture) = self.capture() else {
+            let mut invocation = vm.start(program, entry, args, options)?;
+            invocation.owner = Some(alloc::sync::Arc::clone(program));
+            return Ok(invocation);
+        };
+        let trap = |trap| TrapInfo {
+            func: entry,
+            pc: 0,
+            span_id: None,
+            trap,
+        };
+        let signature = self.signature();
+        if args.len() != signature.arg_contracts().len() {
+            return Err(trap(Trap::ArityMismatch));
+        }
+        for (value, kind) in args.iter().zip(signature.arg_types()) {
+            value.check_type(*kind).map_err(trap)?;
+        }
+        let mut work = DataWork {
+            aggregate: capture.aggregate_work,
+            payload: capture.payload_work,
+        };
+        for value in args {
+            let bytes = match value {
+                Value::Bytes(b) => b.len(),
+                Value::Str(s) => s.len(),
+                _ => 0,
+            };
+            work.payload = work
+                .payload
+                .checked_add(u64::try_from(bytes).map_err(|_| trap(Trap::PayloadSizeOverflow))?)
+                .ok_or_else(|| trap(Trap::PayloadSizeOverflow))?;
+        }
+        work.check(&vm.limits).map_err(trap)?;
+        let checkpoint = vm.memory.checkpoint();
+        let imported = vm
+            .memory
+            .aggs_mut()
+            .import(&capture.snapshot)
+            .map_err(|error| trap(Trap::AggError(error)))?;
+        let [Value::Closure(closure)] = imported.as_slice() else {
+            unreachable!("retained closure root");
+        };
+        let mut inputs = Vec::with_capacity(args.len().saturating_add(1));
+        inputs.push(Value::Agg(closure.env));
+        inputs.extend_from_slice(args);
+        let mut invocation = vm.start_with_inputs(
+            program,
+            entry,
+            Cow::Owned(inputs),
+            options,
+            checkpoint,
+            work,
+        )?;
+        invocation.owner = Some(alloc::sync::Arc::clone(program));
+        Ok(invocation)
     }
 }

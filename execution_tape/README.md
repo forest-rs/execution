@@ -215,6 +215,33 @@ incomplete and cannot be replayed as a finished invocation. Logical profiling sc
 suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 use the unbounded dispatch specialization without scheduling checks.
 
+## Owned executable callables
+
+[`callable::Callable`] retains an exact prepared program and an optional independent closure
+environment. Start through the callable, then retain a returned closure directly from the
+successful invocation. That returned callable survives its creator's frames and VM:
+
+```rust
+use std::sync::Arc;
+use execution_tape::{callable::Callable, host::Host, value::{FuncId, Value},
+    verifier::VerifiedProgram, vm::{InvocationOptions, RunStatus, Vm}};
+fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory: FuncId,
+    args: &[Value]) -> Result<Callable, Box<dyn std::error::Error>> {
+    let factory = Callable::function(program, factory)?;
+    let mut invocation = factory.start(vm, args, InvocationOptions::default())?;
+    while invocation.resume(1024)? == RunStatus::Suspended {}
+    Ok(invocation.retain_callable(0)?)
+}
+```
+
+Closure calls import captures transactionally, prepend the hidden environment, and check the
+concrete body's contracts. Copying captures and owned argument payloads is admitted against
+aggregate/payload work limits before allocation. The debit remains in effect across quanta
+and checked replay. Cancellation/traps discard imports; success retains only returned roots.
+`Callable::visit_objects` exposes captured object tokens for the host's own collector.
+Captured environments remain immutable; shared mutable variables can refer to host-owned cells.
+A callable pins code, without replacing running code or translating IDs across programs.
+
 ## Paused frames and host-object roots
 
 `Invocation::inspect` borrows live state at a safe instruction boundary. Frames have

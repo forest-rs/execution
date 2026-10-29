@@ -220,6 +220,8 @@ pub struct Invocation<'a> {
     pub args: &'a [RecordedValue],
     /// Execution limits used by the original invocation.
     pub limits: &'a Limits,
+    /// Input preparation already debited before guest execution began.
+    pub work: crate::vm::DataWork,
 }
 
 /// Recorded return values and extra fuel, or the original typed host error.
@@ -283,6 +285,7 @@ struct Entry {
     func: FuncId,
     args: Range<usize>,
     limits: Limits,
+    work: crate::vm::DataWork,
 }
 #[derive(Debug)]
 struct Call {
@@ -401,6 +404,7 @@ impl Recording {
             entry: entry.func,
             args: self.arena.slice(&entry.args),
             limits: &entry.limits,
+            work: entry.work,
         })
     }
 
