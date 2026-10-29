@@ -19,7 +19,7 @@ This release has an [MSRV][] of 1.88.
 - Yield admitted host requests with `InvocationOptions::yield_host_calls` and
   `Invocation::pending_host_call`. Borrowed requests support external completion, asynchronous
   producers with cancellation tracking, and dispatch through the original host. Return
-  validation, work/fuel budgets, source inspection and checked replay share normal semantics.
+  validation, work/fuel budgets, source inspection and checked replay share normal semantics. ([#216][] by [@waywardmonkeys][])
 
 - Publish compatible callable updates through `CodeSlot` while retained `CodeVersion`s and
   active invocations keep their original code. No-ops and rejected changes are explicit;
@@ -46,7 +46,7 @@ This release has an [MSRV][] of 1.88.
 - Add `RunStatus::AwaitingHost` and `Trap::HostCallAbandoned`. Migration: handle the new variants
   in exhaustive matches; yielding drivers must complete or dispatch a pending request before
   resuming. Abandoning a started async producer prevents redispatch and cancels its evidence.
-  Default synchronous hosts, ordinary run APIs, crate versions and the wire format are unchanged.
+  Default synchronous hosts, ordinary run APIs, crate versions and the wire format are unchanged. ([#216][] by [@waywardmonkeys][])
 
 - Record prepaid input work in `ValueEvent::Entry::work` and `recording::Invocation::work` so
   checked replay preserves owned-callable copy debits. Migration: add `work` to explicit entry
@@ -573,3 +573,4 @@ runtime, host-call ABI, tracing API, and disassembler.
 
 [#209]: https://github.com/forest-rs/execution/pull/209
 [#210]: https://github.com/forest-rs/execution/pull/210
+[#216]: https://github.com/forest-rs/execution/pull/216
