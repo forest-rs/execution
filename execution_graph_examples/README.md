@@ -3,6 +3,47 @@
 - `tax`: tape nodes, host-state invalidation and dependency reports.
 - `transforms`: native nodes with dynamic dependencies, scoped queries and fresh-evaluation checks.
 - `procedural`: mixed tape/native geometry, owned viewport/undo results and selected VM recordings.
+- `live_code`: graph-exported closures, shared mutable cells, versioned lookup and paused old code.
+
+## Shared cells and live code
+
+```sh
+cargo run -p execution_graph_examples --bin live_code
+cargo run -p execution_graph_examples --features observatory --bin live_code -- --snapshot
+cargo run -p execution_graph_examples --features observatory --bin live_code -- --interactive
+cargo run -p execution_graph_examples --features observatory --bin live_code -- --snapshot --capture .local/live-counter
+```
+
+The graph builds two closures capturing the same host-owned `CounterCell`, then exports them
+with `TapeValue::retain_callable` and drops the graph. One old `+1` closure pauses before its
+host call. `CodeSlot` publishes a compatible `+10` factory; a new lookup creates a callback
+that returns **10**. Resuming the paused old callback returns **11**; the second old closure
+returns **12**. Code and immutable environments are retained independently; the mutable cell
+is shared through its opaque host object token. No active frame or escaped closure is patched.
+
+The live view opens on that paused old call **after** the new callback ran. The program header
+and authored source show increment `1`, while the object inspector shows the current cell value
+`10`. Use `Backspace` to return to registers, `Tab` to select code, and `s` to execute the real
+host call. `--snapshot` renders this boundary and then finishes. `--interactive` leaves control
+with you: quitting cancels unfinished work; host effects that already happened remain real.
+
+The example visits callable and paused-invocation object references before collecting an
+unreachable second cell. This is a tiny embedding-owned heap, not a general guest collector;
+real languages must also account for heap edges, globals and external roots. Three independent
+recordings replay the completed callbacks without mutating the live cell. A cancelled callback
+has no fabricated result or checked replay. Stale source maps are explicitly rejected.
+
+Capture mode creates a new directory containing `story.json`, both exact programs, their source
+sidecars, and the pre-resumption `paused.txt` view. It refuses an existing directory. These are
+inspectable inputs and a result survey, not a portable heap or recording archive. For example:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/live-counter/old.tape --sources .local/live-counter/old.sources
+```
+
+The embedding owns selector/class lookup, publication synchronization, cache invalidation and
+object retention. Guest calls still stay inside one prepared program; this example does not
+provide cross-program guest calls, non-local returns, a language compiler or register editing.
 
 ## Procedural surface
 
