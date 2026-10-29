@@ -354,8 +354,8 @@ impl Callable {
             .map(|capture| (capture.environment, capture.snapshot.aggregates()))
     }
     /// Logical work to import the immutable captures once, without performing the import.
-    /// Plain functions cost zero. A closure start additionally copies root byte/string user
-    /// arguments into its owned input buffer; those argument bytes are not included here.
+    /// Plain functions cost zero. User arguments move into the invocation without cloning their
+    /// byte/string payloads; this reports only the retained environment's copy debit.
     #[must_use]
     pub fn capture_work(&self) -> crate::vm::DataWork {
         self.capture()

@@ -83,7 +83,7 @@ fn escaped() -> Callable {
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(40)];
     let mut invocation = factory
-        .start(&mut vm, &args, InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), InvocationOptions::default())
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     invocation.retain_callable(0).unwrap()
@@ -92,7 +92,7 @@ fn escaped() -> Callable {
 fn finish(callable: &Callable, args: &[Value]) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut invocation = callable
-        .start(&mut vm, args, InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), InvocationOptions::default())
         .unwrap();
     while invocation.resume(1).unwrap() == RunStatus::Suspended {}
     invocation.take_outputs().unwrap()
@@ -140,7 +140,7 @@ fn invocation_imports_are_transactional_and_do_not_accumulate_in_a_long_lived_vm
     for cancel in [true, false, false, true] {
         let args = [Value::I64(2)];
         let mut invocation = callable
-            .start(&mut vm, &args, InvocationOptions::default())
+            .start(&mut vm, args.to_vec(), InvocationOptions::default())
             .unwrap();
         assert_eq!(invocation.aggregates().len_u32(), 2);
         if !cancel {
@@ -171,7 +171,7 @@ fn capture_import_work_is_admitted_before_allocation_and_preserved_in_replay() {
         let args = [Value::I64(2)];
         let result = callable.start(
             &mut vm,
-            &args,
+            args.to_vec(),
             InvocationOptions::default().trace(recorder.mask(), &mut recorder),
         );
         if limit == 1 {
@@ -240,7 +240,7 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
         let mut invocation = callable
             .start(
                 &mut vm,
-                &[],
+                vec![],
                 InvocationOptions::default().trace(recorder.mask(), &mut recorder),
             )
             .unwrap();
@@ -300,14 +300,14 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
     let args = [Value::I64(2)];
     let mut vm = Vm::new(NoHost, Limits::default());
     let error = bad
-        .start(&mut vm, &args, InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), InvocationOptions::default())
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractMismatch { .. }));
     assert_eq!(vm.aggregates().len_u32(), 0);
 }
 
 #[test]
-fn copied_payload_arguments_and_captures_share_the_guest_budget_and_replay_debit() {
+fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments() {
     let mut b = ProgramBuilder::new();
     let body = b
         .declare_function(signature(
@@ -329,7 +329,7 @@ fn copied_payload_arguments_and_captures_share_the_guest_budget_and_replay_debit
     .unwrap();
     drop(heap);
     let args = [Value::Str("abcde".into())];
-    for limit in [6, 11, 12] {
+    for limit in [1, 6, 7] {
         let mut vm = Vm::new(
             NoHost,
             Limits {
@@ -340,15 +340,15 @@ fn copied_payload_arguments_and_captures_share_the_guest_budget_and_replay_debit
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
         let started = callable.start(
             &mut vm,
-            &args,
+            args.to_vec(),
             InvocationOptions::default().trace(recorder.mask(), &mut recorder),
         );
-        if limit == 6 {
+        if limit == 1 {
             assert!(matches!(
                 started.unwrap_err().trap,
                 Trap::PayloadWorkExceeded {
                     used: 0,
-                    requested: 7,
+                    requested: 2,
                     ..
                 }
             ));
@@ -359,11 +359,11 @@ fn copied_payload_arguments_and_captures_share_the_guest_budget_and_replay_debit
         let mut invocation = started.unwrap();
         assert_eq!(invocation.resume(0).unwrap(), RunStatus::Suspended);
         let result = invocation.resume(1);
-        if limit == 11 {
+        if limit == 6 {
             assert!(matches!(
                 result.unwrap_err().trap,
                 Trap::PayloadWorkExceeded {
-                    used: 7,
+                    used: 2,
                     requested: 5,
                     ..
                 }
@@ -374,17 +374,17 @@ fn copied_payload_arguments_and_captures_share_the_guest_budget_and_replay_debit
         }
         drop(invocation);
         let record = recorder.finish();
-        assert_eq!(record.invocation().unwrap().work.payload, 7);
+        assert_eq!(record.invocation().unwrap().work.payload, 2);
         match (limit, record.replay().unwrap()) {
-            (11, ReplayOutcome::Trapped(error)) => assert!(matches!(
+            (6, ReplayOutcome::Trapped(error)) => assert!(matches!(
                 error.trap,
                 Trap::PayloadWorkExceeded {
-                    used: 7,
+                    used: 2,
                     requested: 5,
                     ..
                 }
             )),
-            (12, ReplayOutcome::Returned(values)) => assert_eq!(values.values(), args),
+            (7, ReplayOutcome::Returned(values)) => assert_eq!(values.values(), args),
             _ => panic!("wrong payload replay outcome"),
         }
     }
@@ -429,7 +429,7 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     drop(heap);
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = callable
-        .start(&mut vm, &[], InvocationOptions::default())
+        .start(&mut vm, vec![], InvocationOptions::default())
         .unwrap();
     let mut inspection = run.inspect();
     let root = inspection.frames().next().unwrap().activation;
@@ -487,7 +487,7 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     drop(heap);
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = outer
-        .start(&mut vm, &[], InvocationOptions::default())
+        .start(&mut vm, vec![], InvocationOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     let inner = run.retain_callable(0).unwrap();
@@ -504,7 +504,7 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     let args = [Value::I64(40)];
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = bound
-        .start(&mut vm, &args, InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), InvocationOptions::default())
         .unwrap();
     assert_eq!(
         run.retain_callable(0).unwrap_err(),
@@ -519,7 +519,7 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     drop(run);
     let args = [Value::I64(2)];
     let mut run = closure
-        .start(&mut vm, &args, InvocationOptions::default())
+        .start(&mut vm, args.to_vec(), InvocationOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     assert_eq!(
@@ -563,4 +563,101 @@ fn snapshot_adoption_rejects_ambiguous_roots_and_non_environment_bodies() {
             ..
         })
     ));
+}
+
+#[test]
+fn an_owned_invocation_outlives_a_discarded_or_temporary_lookup_handle() {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let lookup = escaped();
+    let weak = Arc::downgrade(lookup.program());
+    let mut invocation = lookup
+        .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
+        .unwrap();
+    drop(lookup);
+    assert!(
+        weak.upgrade().is_some(),
+        "the paused invocation owns its code independently"
+    );
+    invocation.resume(u64::MAX).unwrap();
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(42)]);
+    drop(invocation);
+    assert!(
+        weak.upgrade().is_none(),
+        "completion alone does not leave a hidden code owner in the VM"
+    );
+    let mut invocation = escaped()
+        .start(&mut vm, vec![Value::I64(3)], InvocationOptions::default())
+        .unwrap();
+    invocation.resume(u64::MAX).unwrap();
+    assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(43)]);
+}
+
+#[test]
+fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_guest_work() {
+    #[derive(Default)]
+    struct InputProbe {
+        pointer: usize,
+        work: DataWork,
+    }
+    impl TraceSink for InputProbe {
+        fn values(
+            &mut self,
+            _: &execution_tape::program::Program,
+            event: execution_tape::trace::ValueEvent<'_>,
+        ) {
+            if let execution_tape::trace::ValueEvent::Entry { args, work, .. } = event {
+                let Some(Value::Str(value)) = args.last() else {
+                    panic!("expected string input");
+                };
+                self.pointer = value.as_ptr() as usize;
+                self.work = work;
+            }
+        }
+    }
+    let mut b = ProgramBuilder::new();
+    let body = b
+        .declare_function(signature(
+            &[ValueType::Agg, ValueType::Str],
+            &[ValueType::Str],
+        ))
+        .unwrap();
+    let mut a = b.function_asm(body).unwrap();
+    a.ret(0, &[2]);
+    b.define_function(body, a).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+    let mut heap = AggHeap::new();
+    let env = heap.tuple_new(vec![Value::Str("xy".into())]).unwrap();
+    let callable = Callable::retain(
+        program,
+        &heap,
+        ValueRef::Closure(Closure { func: body, env }),
+    )
+    .unwrap();
+    let payload = String::from("abcde");
+    let pointer = payload.as_ptr() as usize;
+    let mut probe = InputProbe::default();
+    let mut vm = Vm::new(
+        NoHost,
+        Limits {
+            max_payload_work: 7,
+            ..Limits::default()
+        },
+    );
+    let mut invocation = callable
+        .start(
+            &mut vm,
+            vec![Value::Str(payload)],
+            InvocationOptions::default()
+                .trace(execution_tape::trace::TraceMask::VALUES, &mut probe),
+        )
+        .unwrap();
+    assert_eq!(invocation.data_work(), callable.capture_work());
+    invocation.resume(u64::MAX).unwrap();
+    assert_eq!(invocation.data_work().payload, 7);
+    drop(invocation);
+    assert_eq!(
+        probe.pointer, pointer,
+        "prep must move the user's payload, not clone it"
+    );
+    assert_eq!(probe.work.payload, 2);
 }

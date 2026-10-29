@@ -237,7 +237,7 @@ fn retained_callables(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("import_and_execute", fields), |b| {
             b.iter(|| {
                 let mut invocation = callable
-                    .start(&mut vm, &[], InvocationOptions::default())
+                    .start(&mut vm, vec![], InvocationOptions::default())
                     .unwrap();
                 assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
                 black_box(invocation.result().unwrap().unwrap());
