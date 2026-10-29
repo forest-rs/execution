@@ -32,6 +32,7 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
+mod host_call;
 mod inspection;
 mod invocation;
 use inspection::ExecutionControl;
@@ -2278,53 +2279,20 @@ impl<H: Host> Vm<H> {
                         },
                         aggregates: self.memory.aggs(),
                     });
-                    let extra_fuel = host_result.map_err(|error| {
-                        ctx.trap(
-                            func_id,
-                            pc,
-                            span_id,
-                            Trap::HostCallFailed {
-                                symbol: Box::from(sym),
-                                sig_hash: hs.sig_hash,
-                                error,
-                            },
-                        )
-                    })?;
-                    ctx.fuel = ctx.fuel.saturating_sub(extra_fuel);
-
-                    let rets = vf.vregs(*rets);
-                    // The VM controls the slice size, so arity is guaranteed correct for
-                    // verified programs. Keep the Trap variant (public API) but it's
-                    // unreachable from verified programs.
-                    debug_assert_eq!(
-                        ret_slots.len(),
-                        rets.len(),
-                        "HostReturnArityMismatch: expected {}, got {}",
-                        rets.len(),
-                        ret_slots.len()
-                    );
-                    for (v, &expected) in ret_slots.iter().zip(ret_types.iter()) {
-                        v.check_type(expected)
-                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                    }
-                    let payload_bytes = ret_slots
-                        .iter()
-                        .try_fold(0_usize, |total, value| {
-                            let len = match value {
-                                Value::Bytes(bytes) => bytes.len(),
-                                Value::Str(s) => s.len(),
-                                _ => 0,
-                            };
-                            total.checked_add(len).ok_or(Trap::PayloadSizeOverflow)
-                        })
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                    ctx.charge_payload_bytes(payload_bytes, 1)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                    for (dst, v) in rets.iter().copied().zip(ret_slots.iter_mut()) {
-                        let val = core::mem::replace(v, Value::Unit);
-                        ctx.write_owned_value(base, dst, val)
-                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
-                    }
+                    host_call::admit_return(
+                        ctx,
+                        host_call::HostReturnSite {
+                            location: TraceLocation { func: func_id, pc },
+                            span: span_id,
+                            base,
+                            symbol: sym,
+                            signature: hs.sig_hash,
+                            expected: ret_types,
+                            destinations: vf.vregs(*rets),
+                        },
+                        ret_slots,
+                        host_result,
+                    )?;
                     P::host_scope_exit(
                         trace,
                         program_ref,
