@@ -19,12 +19,12 @@ This release has an [MSRV][] of 1.88.
 - Publish compatible callable updates through `CodeSlot` while retained `CodeVersion`s and
   active invocations keep their original code. No-ops and rejected changes are explicit;
   diagnostics retain both code owners and exact signature paths. Nominal IDs from different
-  preparations remain distinct. Class/selector lookup and cache invalidation stay with hosts.
+  preparations remain distinct. Class/selector lookup and cache invalidation stay with hosts. ([#210][] by [@waywardmonkeys][])
 
 - Retain executable functions and escaped closures with `callable::Callable`, including their
   exact code owner and independent captures. Start through the callable and use
   `Invocation::retain_callable` to retain returned callbacks without assigning a program domain
-  manually. Capture imports are transactional and share the guest's data-work budgets.
+  manually. Capture imports are transactional and share the guest's data-work budgets. ([#209][] by [@waywardmonkeys][])
 
 - Inspect paused frames and initialized register values with invocation-scoped activation
   identities. Waiting callers expose their pending source call and exclude not-yet-returned
@@ -41,7 +41,7 @@ This release has an [MSRV][] of 1.88.
 - Record prepaid input work in `ValueEvent::Entry::work` and `recording::Invocation::work` so
   checked replay preserves owned-callable copy debits. Migration: add `work` to explicit entry
   event construction/destructuring, or use `..` when inspecting unrelated fields. Raw borrowed
-  entries use `DataWork::default()`. The tape wire format and crate versions are unchanged.
+  entries use `DataWork::default()`. The tape wire format and crate versions are unchanged. ([#209][] by [@waywardmonkeys][])
 
 - Add `TraceOutcome::Cancelled` for abandoned invocations and close their outstanding
   scopes. Migration: handle the new variant in exhaustive trace-outcome matches.
@@ -560,3 +560,6 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#202]: https://github.com/forest-rs/execution/pull/202
 [#205]: https://github.com/forest-rs/execution/pull/205
 [#206]: https://github.com/forest-rs/execution/pull/206
+
+[#209]: https://github.com/forest-rs/execution/pull/209
+[#210]: https://github.com/forest-rs/execution/pull/210

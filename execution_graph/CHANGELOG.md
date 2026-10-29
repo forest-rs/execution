@@ -17,7 +17,7 @@ This release has an [MSRV][] of 1.88.
 ### Added
 
 - Export a published function or closure through `TapeValue::retain_callable`, retaining its
-  exact code and immutable captures for execution after graph edits or executor destruction.
+  exact code and immutable captures for execution after graph edits or executor destruction. ([#211][] by [@waywardmonkeys][])
 
 ## [0.1.0][] (2026-10-27)
 
@@ -190,3 +190,5 @@ dirty-tracked re-execution of verified `execution_tape` programs.
 [#182]: https://github.com/forest-rs/execution/pull/182
 
 [#199]: https://github.com/forest-rs/execution/pull/199
+
+[#211]: https://github.com/forest-rs/execution/pull/211
