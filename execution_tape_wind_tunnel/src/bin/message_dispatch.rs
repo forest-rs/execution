@@ -1,14 +1,14 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Guest-driven typed message sends, asynchronous delivery and live method replacement.
+//! Embedding-controlled typed message dispatch and live method replacement.
 
 #[path = "message_dispatch/driver.rs"]
 mod driver;
 #[path = "message_dispatch/model.rs"]
 mod model;
 
-use driver::{Cells, DispatchError, Ledger, METHODS, MethodFailure, Methods, drive, next_turn};
+use driver::{Cells, DispatchError, Ledger, METHODS, MethodFailure, Methods};
 use execution_tape::{
     callable::CodeVersion,
     host::{HostError, ResourceKeyRef, ValueRef},
@@ -133,7 +133,8 @@ fn execute_method<'a, 'world: 'a>(
             .push((format!("method-{index}-start.txt"), text));
         if selected && context.options.view == View::Interactive {
             eprintln!(
-                "Guest Object.send selected method revision {}. Lookup now publishes revision 1.\nSelect the external caller row to see who sent it. c finishes the method; q cancels unfinished work.",
+                "Send {} of 2 selected method revision {}. Lookup now publishes revision 1.\nThe caller handed Object.send to the embedding for method lookup; no I/O is pending.\nYou control the paused method. The external caller is waiting for its reply.\nc finishes the method; q leaves the view and cancels unfinished work.",
+                index + 1,
                 publication.revision()
             );
             view.run()?;
@@ -203,6 +204,46 @@ fn run_method(
     result
 }
 
+fn deliver(
+    request: &mut PendingHostCall<'_, '_, Cells>,
+    context: &mut MethodContext<'_>,
+    link: &mut Link,
+    index: usize,
+    fuel: u64,
+) -> std::result::Result<(i64, u64), HostError> {
+    request.context().record_read(ResourceKeyRef::HostState {
+        op: METHODS,
+        key: 0,
+    });
+    let publication = {
+        let mut args = request.arguments();
+        let (Some(ValueRef::Obj(object)), Some(ValueRef::Str(selector)), None) =
+            (args.next(), args.next(), args.next())
+        else {
+            return Err(HostError::SignatureMismatch);
+        };
+        context.methods.lookup(object, selector).map_err(|error| {
+            HostError::custom(MethodFailure {
+                revision: context.methods.increment.current().revision(),
+                cause: error,
+            })
+        })?
+    };
+    link.revision = Some(publication.revision());
+    link.method_record = Some(context.records.len());
+    let revision = publication.revision();
+    let (reply, spent) =
+        run_method(request, publication, context, index, fuel).map_err(|error| {
+            HostError::custom(MethodFailure {
+                revision,
+                cause: error,
+            })
+        })?;
+    link.reply = Some(reply);
+    link.method_fuel = Some(spent);
+    Ok((reply, spent))
+}
+
 fn run(options: &Options) -> Result<Report> {
     let caller = model::caller(&options.selector)?;
     let old = model::method(1)?;
@@ -255,7 +296,7 @@ fn run(options: &Options) -> Result<Report> {
             }
             Ok(RunStatus::AwaitingHost) => {
                 let fuel = call.remaining_fuel();
-                let request = call.pending_host_call().expect("yielded caller request");
+                let mut request = call.pending_host_call().expect("yielded caller request");
                 let index = links.len();
                 let mut link = Link {
                     location: request.location(),
@@ -264,54 +305,25 @@ fn run(options: &Options) -> Result<Report> {
                     method_fuel: None,
                     method_record: None,
                 };
-                let result = drive(request.complete_with(async |request| {
-                    let mut args = request.arguments();
-                    let (Some(ValueRef::Obj(object)), Some(ValueRef::Str(selector)), None) =
-                        (args.next(), args.next(), args.next())
-                    else {
-                        return Err(HostError::SignatureMismatch);
+                // Yielding gives the embedding control of lookup and nested execution.
+                // This example answers immediately; it does not need an async executor.
+                let mut context = MethodContext {
+                    caller: &caller,
+                    old: &old,
+                    new: &new,
+                    methods: &mut methods,
+                    host: &host,
+                    ledger: &ledger,
+                    options,
+                    records: &mut records,
+                    snapshots: &mut snapshots,
+                };
+                let (mut slots, outcome) =
+                    match deliver(&mut request, &mut context, &mut link, index, fuel) {
+                        Ok((reply, spent)) => ([Value::I64(reply)], Ok(spent)),
+                        Err(error) => ([Value::Unit], Err(error)),
                     };
-                    drop(args);
-                    // The selector remains borrowed from pinned guest code across a real Pending poll.
-                    next_turn().await;
-                    let selector = selector.to_owned();
-                    request.context().record_read(ResourceKeyRef::HostState {
-                        op: METHODS,
-                        key: 0,
-                    });
-                    let publication = methods.lookup(object, &selector).map_err(|error| {
-                        HostError::custom(MethodFailure {
-                            revision: methods.increment.current().revision(),
-                            cause: error,
-                        })
-                    })?;
-                    link.revision = Some(publication.revision());
-                    link.method_record = Some(records.len());
-                    let revision = publication.revision();
-                    let mut context = MethodContext {
-                        caller: &caller,
-                        old: &old,
-                        new: &new,
-                        methods: &mut methods,
-                        host: &host,
-                        ledger: &ledger,
-                        options,
-                        records: &mut records,
-                        snapshots: &mut snapshots,
-                    };
-                    let (reply, spent) =
-                        run_method(request, publication, &mut context, index, fuel).map_err(
-                            |error| {
-                                HostError::custom(MethodFailure {
-                                    revision,
-                                    cause: error,
-                                })
-                            },
-                        )?;
-                    link.reply = Some(reply);
-                    link.method_fuel = Some(spent);
-                    Ok((vec![Value::I64(reply)], spent))
-                }));
+                let result = request.complete(&mut slots, outcome);
                 links.push(link);
                 if let Err(error) = result {
                     break Err(error);
@@ -495,7 +507,7 @@ fn entry() -> Result<()> {
             "--color=always" => ratatui::crossterm::style::force_color_output(true),
             "--help" | "-h" => {
                 println!(
-                    "message_dispatch [--snapshot | --interactive] [--request 0|1] [--capture NEW_DIR]\n                 [--fuel N] [--selector NAME] [--color=always]\n\nA guest sends increment twice. Its first method keeps +1 while lookup publishes +10;\nreplies are 1 and 11. Each delivery yields one executor turn.\nThe live method view links to its actual pending caller and source.\nc finishes the method; q cancels unfinished work and preserves performed effects.\n--snapshot prints method and caller views, then completes. --capture creates a new\ndirectory of exact tapes, source sidecars, text views and a result survey.\nThese are example artifacts; recording views are not portable replay archives."
+                    "message_dispatch [--snapshot | --interactive] [--request 0|1] [--capture NEW_DIR]\n                 [--fuel N] [--selector NAME] [--color=always]\n\nA guest sends increment twice. Its first method keeps +1 while lookup publishes +10;\nreplies are 1 and 11. The caller yields Object.send so the embedding can select and\nrun a method. Delivery is immediate: this example has no I/O wait or async executor.\n--request 0 opens the original +1 method; --request 1 opens the replacement +10.\nThe caller waits while you control the paused method. Select the external caller\nto inspect its send and source; stepping still controls the method.\ns executes one instruction; c finishes the method; q leaves the view. Leaving\nbefore return cancels unfinished work and preserves performed effects.\nFuel remaining is this method's execution budget, not elapsed time. Each guest\ninstruction costs one unit; successful callback work is also charged to the caller.\nPausing costs no fuel. Exhaustion terminates execution rather than pausing it.\n--snapshot prints method and caller views, then completes. --capture creates a new\ndirectory of exact tapes, source sidecars, text views and a result survey.\nThese are example artifacts; recording views are not portable replay archives."
                 );
                 return Ok(());
             }

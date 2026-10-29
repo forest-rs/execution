@@ -58,6 +58,8 @@ fn method_and_caller_snapshots_explain_the_actual_second_guest_send() {
     assert!(method.contains("external caller"));
     assert!(method.contains("main → host Object.send"));
     assert!(method.contains("CounterCell.add(receiver, 10)"));
+    assert!(method.contains("CALLER WAITING · Object.send · controls run this invocation"));
+    assert!(method.contains("Fuel remaining: 93"));
     let caller = &report
         .snapshots
         .iter()

@@ -37,7 +37,7 @@ impl<H: Host> LiveExplorer<'_, H> {
                 ),
             )),
             Line::raw(format!(
-                "Fuel: {} · work: {} aggregate units / {} payload bytes · {} breakpoints",
+                "Fuel remaining: {} · work: {} aggregate units / {} payload bytes · {} breakpoints",
                 self.invocation.remaining_fuel(),
                 self.invocation.data_work().aggregate,
                 self.invocation.data_work().payload,
