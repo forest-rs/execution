@@ -236,12 +236,19 @@ fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory
 ```
 
 Closure calls import captures transactionally, prepend the hidden environment, and check the
-concrete body's contracts. Copying captures is admitted against
-aggregate/payload work limits before allocation. The debit remains in effect across quanta
+concrete body's contracts. Capture copies are admitted against aggregate/payload work limits
+before allocation. The debit remains in effect across quanta
 and checked replay. Cancellation/traps discard imports; success retains only returned roots.
 `Callable::visit_objects` exposes captured object tokens for the host's own collector.
 Captured environments remain immutable; shared mutable variables can refer to host-owned cells.
 A callable pins code, without replacing running code or translating IDs across programs.
+
+[`callable::CodeSlot`] publishes replaceable bindings with exact exposed-signature checks.
+`current()` returns an owned `CodeVersion` snapshot. A call started from that snapshot owns
+its code, so replacement does not borrow or patch an active frame. Unchanged identities are
+explicit no-ops; rejection retains both code owners and a structured signature difference.
+Signature comparison is iterative/memoized and preserves program-local nominal identities.
+The embedding owns class/selector lookup, synchronization, cache invalidation and host objects.
 
 ## Paused frames and host-object roots
 

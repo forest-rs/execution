@@ -187,7 +187,7 @@ fn callables(c: &mut Criterion) {
     }
     group.finish();
 }
-criterion_group! {name=benches; config=Criterion::default().warm_up_time(Duration::from_millis(300)).measurement_time(Duration::from_millis(1200)).sample_size(40); targets=callables,retained_callables}
+criterion_group! {name=benches; config=Criterion::default().warm_up_time(Duration::from_millis(300)).measurement_time(Duration::from_millis(1200)).sample_size(40); targets=callables,retained_callables,publications}
 criterion_main!(benches);
 
 fn retained_callables(c: &mut Criterion) {
@@ -249,5 +249,52 @@ fn retained_callables(c: &mut Criterion) {
             "unused imported captures retire after every call"
         );
     }
+    group.finish();
+}
+
+fn publications(c: &mut Criterion) {
+    use execution_tape::callable::{Callable, CodeSlot, CodeUpdate};
+    use std::sync::Arc;
+    let mut b = ProgramBuilder::new();
+    let mut functions = Vec::new();
+    for number in [11, 99] {
+        let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
+        a.const_i64(1, number).ret(0, &[1]);
+        functions.push(
+            b.push_function_checked(
+                a,
+                FunctionAbi {
+                    args: vec![],
+                    rets: vec![ValueType::I64.into()],
+                },
+            )
+            .unwrap(),
+        );
+    }
+    let program = Arc::new(b.build_verified().unwrap());
+    let first = Callable::function(Arc::clone(&program), functions[0]).unwrap();
+    let second = Callable::function(program, functions[1]).unwrap();
+    let mut slot = CodeSlot::new(first.clone());
+    let mut group = c.benchmark_group("code_publication");
+    group.bench_function("snapshot", |b| {
+        b.iter(|| black_box(black_box(&slot).current()))
+    });
+    group.bench_function("unchanged", |b| {
+        b.iter(|| {
+            let CodeUpdate::Unchanged(version) = slot.replace(black_box(first.clone())).unwrap()
+            else {
+                panic!("same target");
+            };
+            black_box(version);
+        })
+    });
+    group.bench_function("compatible_same_program", |b| {
+        b.iter(|| {
+            black_box(slot.replace(black_box(second.clone())).unwrap());
+            black_box(slot.replace(black_box(first.clone())).unwrap());
+        })
+    });
+    // One benchmark iteration above includes two publications and report destruction.
     group.finish();
 }

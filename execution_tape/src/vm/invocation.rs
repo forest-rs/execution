@@ -268,6 +268,9 @@ impl<H: Host> Invocation<'_, H> {
 
     /// Takes committed owned outputs, leaving an empty result buffer. Returns `None` before a
     /// successful return. Aggregate handles remain owned by the borrowed VM's heap.
+    /// These are raw ABI values: function/closure/nominal IDs still need their original code
+    /// owner. Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
+    /// invocation when its lookup handle has already been discarded.
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
         matches!(self.outcome, Some(Ok(()))).then(|| core::mem::take(&mut self.outputs))
     }

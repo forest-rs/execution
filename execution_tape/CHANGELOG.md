@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Publish compatible callable updates through `CodeSlot` while retained `CodeVersion`s and
+  active invocations keep their original code. No-ops and rejected changes are explicit;
+  diagnostics retain both code owners and exact signature paths. Nominal IDs from different
+  preparations remain distinct. Class/selector lookup and cache invalidation stay with hosts.
+
 - Retain executable functions and escaped closures with `callable::Callable`, including their
   exact code owner and independent captures. Start through the callable and use
   `Invocation::retain_callable` to retain returned callbacks without assigning a program domain
