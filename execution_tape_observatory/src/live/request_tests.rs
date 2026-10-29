@@ -210,11 +210,13 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     assert!(text.contains("real_caller → host Object.send"));
     assert!(text.contains("method.expr"));
     assert!(text.contains("Child code"));
+    assert!(text.contains("CALLER WAITING · Object.send · controls run this invocation"));
     view.focus = Focus::Stack;
     key(&mut view, KeyCode::Down);
     assert!(view.origin_selected);
     let text = view.render_text(160, 48).unwrap();
     assert!(text.contains("CALLER INSTRUCTIONS"));
+    assert!(text.contains("controls run this invocation"));
     assert!(text.contains("caller.expr"));
     assert!(text.contains("receiver.increment()"));
     assert!(text.contains("host Object.send"));
@@ -258,6 +260,12 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     assert!(!view.showing_origin);
     view.step().unwrap();
     assert_eq!(view.result().unwrap().unwrap(), &[Value::I64(42)]);
+    let text = view.render_text(160, 48).unwrap();
+    assert!(text.contains("RETURNED"));
+    assert!(
+        text.contains("CALLER WAITING"),
+        "the embedding has not supplied the method's reply yet"
+    );
     drop(view);
     request.complete(&mut [Value::I64(42)], Ok(0)).unwrap();
     assert_eq!(parent.resume(u64::MAX).unwrap(), RunStatus::Complete);
