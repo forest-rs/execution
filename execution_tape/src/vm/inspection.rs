@@ -188,7 +188,7 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
         InvocationInspection {
-            program: self.program,
+            program: &self.program,
             ctx: &self.ctx,
             args: &self.args,
             outputs: self.result().and_then(Result::ok).unwrap_or(&[]),

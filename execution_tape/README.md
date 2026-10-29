@@ -218,7 +218,8 @@ use the unbounded dispatch specialization without scheduling checks.
 ## Owned executable callables
 
 [`callable::Callable`] retains an exact prepared program and an optional independent closure
-environment. Start through the callable, then retain a returned closure directly from the
+environment. An owned invocation retains its code and arguments independently of the lookup
+handle. Start through the callable, then retain a returned closure directly from the
 successful invocation. That returned callable survives its creator's frames and VM:
 
 ```rust
@@ -226,7 +227,7 @@ use std::sync::Arc;
 use execution_tape::{callable::Callable, host::Host, value::{FuncId, Value},
     verifier::VerifiedProgram, vm::{InvocationOptions, RunStatus, Vm}};
 fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory: FuncId,
-    args: &[Value]) -> Result<Callable, Box<dyn std::error::Error>> {
+    args: Vec<Value>) -> Result<Callable, Box<dyn std::error::Error>> {
     let factory = Callable::function(program, factory)?;
     let mut invocation = factory.start(vm, args, InvocationOptions::default())?;
     while invocation.resume(1024)? == RunStatus::Suspended {}
@@ -235,7 +236,7 @@ fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory
 ```
 
 Closure calls import captures transactionally, prepend the hidden environment, and check the
-concrete body's contracts. Copying captures and owned argument payloads is admitted against
+concrete body's contracts. Copying captures is admitted against
 aggregate/payload work limits before allocation. The debit remains in effect across quanta
 and checked replay. Cancellation/traps discard imports; success retains only returned roots.
 `Callable::visit_objects` exposes captured object tokens for the host's own collector.

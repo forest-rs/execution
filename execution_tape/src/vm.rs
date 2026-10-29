@@ -77,7 +77,7 @@ pub struct Limits {
     /// UTF-8 validation, before either operation. Direct successful host return slots containing
     /// bytes/strings charge their lengths before adoption, after all return kinds are validated.
     ///
-    /// Owned callable entry imports also charge copied capture payloads and root arguments.
+    /// Owned callable entry imports also charge copied capture payloads. Moved arguments cost zero.
     /// Borrowed arguments/constants/projections and guest-call transfers cost zero. This is not
     /// a heap or RSS limit: aggregate slots, frames, storage of retained results, nested host aggregate
     /// payloads, host allocations/effects, preparation, tracing/recording, and graph-adapter
@@ -87,7 +87,7 @@ pub struct Limits {
 
 /// Logical aggregate and byte/string work, separate from instruction fuel and contract checks.
 ///
-/// Captured environments and copied root payloads are admitted before allocation, then charged
+/// Captured environments and their payloads are admitted before allocation, then charged
 /// against the same limits as guest work. Ordinary borrowed entry arguments spend zero here.
 /// Entry observations report the preparation debit; [`Invocation::data_work`] includes guest
 /// work as well. Recorders preserve the debit so replay cannot replenish remaining budgets.
