@@ -359,11 +359,13 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         self.ctx.contract_scratch.clear_proofs();
         self.outputs.clear();
         self.control.pending_host = None;
+        // Install the terminal state before invoking observers, as in normal finish.
+        // Unwinding from cancellation must not expose the fallthrough continuation.
+        self.outcome = Some(Err(error.clone()));
         self.trace
             .cancel(self.program.program(), pending.location, span);
         self.trace
             .run_end(self.program.program(), TraceOutcome::Cancelled);
-        self.outcome = Some(Err(error.clone()));
         error
     }
 }

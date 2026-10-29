@@ -902,3 +902,79 @@ fn unwound_host_delivery_cannot_retry_effects_and_records_cancellation_instead_o
         Err(CaptureFault::MissingCompletion)
     ));
 }
+
+#[cfg(panic = "unwind")]
+#[test]
+fn abandonment_is_terminal_even_when_a_cancellation_observer_panics() {
+    use std::{
+        cell::Cell,
+        future::{Future, pending},
+        panic::{AssertUnwindSafe, catch_unwind},
+        task::{Context, Waker},
+    };
+    struct PanicOnCancellation(Rc<Cell<usize>>);
+    impl TraceSink for PanicOnCancellation {
+        fn instr_end(
+            &mut self,
+            _: &Program,
+            _: TraceLocation,
+            _: Option<TraceLocation>,
+            outcome: TraceOutcome<'_>,
+        ) {
+            if matches!(outcome, TraceOutcome::Cancelled) {
+                self.0.set(self.0.get() + 1);
+                panic!("injected cancellation observer panic");
+            }
+        }
+    }
+    let f = fixture(1, false);
+    let args = args();
+    let cancellations = Rc::new(Cell::new(0));
+    let mut observer = PanicOnCancellation(Rc::clone(&cancellations));
+    let mut vm = Vm::new(Echo::default(), Limits::default());
+    let mut call = vm
+        .start(
+            &f.program,
+            f.entry,
+            &args,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace(TraceMask::INSTR, &mut observer),
+        )
+        .unwrap();
+    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let mut producer = Box::pin(call.pending_host_call().unwrap().complete_with(async |_| {
+        pending::<()>().await;
+        Ok((Vec::new(), 0))
+    }));
+    assert!(
+        producer
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(producer);
+    let budget = (call.remaining_fuel(), call.data_work());
+    assert!(catch_unwind(AssertUnwindSafe(|| call.resume(1))).is_err());
+    assert!(matches!(
+        call.result()
+            .expect("terminal before notifying observers")
+            .unwrap_err()
+            .trap,
+        Trap::HostCallAbandoned
+    ));
+    assert!(matches!(
+        call.resume(u64::MAX).unwrap_err().trap,
+        Trap::HostCallAbandoned
+    ));
+    assert_eq!((call.remaining_fuel(), call.data_work()), budget);
+    assert_eq!(call.host().calls, 0);
+    assert_eq!(cancellations.get(), 1);
+    drop(call);
+    assert_eq!(vm.aggregates().len_u32(), 0);
+    assert_eq!(
+        cancellations.get(),
+        1,
+        "drop cannot re-notify the panicking observer"
+    );
+}
