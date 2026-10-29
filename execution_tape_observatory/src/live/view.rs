@@ -4,6 +4,7 @@
 use super::*;
 impl<H: Host> LiveExplorer<'_, H> {
     pub(super) fn draw_view(&mut self, frame: &mut Frame<'_>) {
+        self.refresh_object();
         let area = frame.area();
         frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
         if render::too_small(frame) {
@@ -24,9 +25,12 @@ impl<H: Host> LiveExplorer<'_, H> {
         };
         frame.render_widget(
             Paragraph::new(format!(
-                "LIVE · {}\nHard fuel remaining: {} · {} breakpoints",
+                "LIVE · {} · {}\nFuel remaining: {} · data work: {} aggregate / {} payload bytes · {} breakpoints",
                 self.status,
+                describe::preview(self.invocation.program().program().name().unwrap_or("unnamed program"), 80),
                 self.invocation.remaining_fuel(),
+                self.invocation.data_work().aggregate,
+                self.invocation.data_work().payload,
                 self.breakpoints.len()
             ))
             .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
@@ -105,7 +109,9 @@ impl<H: Host> LiveExplorer<'_, H> {
         }
     }
     fn draw_values(&self, frame: &mut Frame<'_>, area: Rect) {
-        let title = if !self.aggregate_path.is_empty() {
+        let title = if matches!(self.value_path.last(), Some(ValueTarget::Object(_))) {
+            " HOST OBJECT · read-only "
+        } else if !self.value_path.is_empty() {
             " AGGREGATE CONTENTS "
         } else if self.roots {
             " HOST OBJECT REFERENCES "
@@ -114,7 +120,9 @@ impl<H: Host> LiveExplorer<'_, H> {
         } else {
             " PAUSED REGISTERS "
         };
-        let note = if self.roots {
+        let note = if matches!(self.value_path.last(), Some(ValueTarget::Object(_))) {
+            "host owns state/lifetime · Backspace up"
+        } else if self.roots {
             "conservative inventory · host owns collection"
         } else {
             "Enter open · Backspace up · read-only"
@@ -123,9 +131,10 @@ impl<H: Host> LiveExplorer<'_, H> {
             .values
             .iter()
             .skip(self.values_offset)
-            .map(|v| {
+            .enumerate()
+            .map(|(i, v)| {
                 Line::styled(
-                    v.as_str(),
+                    format!("{}{}", if i == 0 { "▸ " } else { "  " }, v),
                     Style::default().fg(if v.contains("unavailable") {
                         MUTED
                     } else {

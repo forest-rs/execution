@@ -103,8 +103,170 @@ fn program(trap: bool) -> (VerifiedProgram, FuncId, u32, SourceMap) {
     .unwrap();
     (p, entry, publish, sources)
 }
-fn key(view: &mut LiveExplorer<'_, Counter>, key: KeyCode) {
+fn key<H: Host>(view: &mut LiveExplorer<'_, H>, key: KeyCode) {
     assert!(view.key(KeyEvent::new(key, KeyModifiers::NONE)));
+}
+
+fn object_program() -> (VerifiedProgram, FuncId) {
+    let mut b = ProgramBuilder::new();
+    b.set_program_name("Object inspection boundary");
+    let kind = ValueType::Obj(execution_tape::program::HostTypeId(1));
+    let entry = b
+        .declare_function(FunctionSig {
+            arg_types: vec![kind],
+            ret_types: vec![kind],
+        })
+        .unwrap();
+    let mut a = b.function_asm(entry).unwrap();
+    a.ret(0, &[1]);
+    b.define_function(entry, a).unwrap();
+    (b.build_verified().unwrap(), entry)
+}
+fn object(handle: u64) -> Obj {
+    Obj {
+        host_type: execution_tape::program::HostTypeId(1),
+        handle: execution_tape::value::ObjHandle(handle),
+    }
+}
+
+#[test]
+fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_handles() {
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    struct Objects {
+        cells: Rc<RefCell<std::collections::BTreeMap<u64, i64>>>,
+    }
+    impl Host for Objects {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            _: &[ValueRef<'_>],
+            _: &mut [Value],
+            _: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            panic!("inspection must not evaluate methods");
+        }
+    }
+    let (p, entry) = object_program();
+    let cells = Rc::new(RefCell::new([(42, 10), (43, 77)].into()));
+    let queries = Rc::new(Cell::new(0));
+    let mut vm = Vm::new(
+        Objects {
+            cells: Rc::clone(&cells),
+        },
+        Limits::default(),
+    );
+    // Deliberately provide a valid VM-local aggregate @0. A host preview of @0 still must not
+    // be resolved against this heap: it carries no declaration that this is its owner.
+    vm.aggregates_mut()
+        .tuple_new(vec![Value::I64(999)])
+        .unwrap();
+    let args = [Value::Obj(object(42))];
+    let invocation = vm
+        .start(&p, entry, &args, InvocationOptions::default())
+        .unwrap();
+    let reads = Rc::clone(&queries);
+    let mut view =
+        LiveExplorer::new(invocation).object_inspector(move |host: &Objects, obj: Obj, limit| {
+            assert_eq!(limit, 256);
+            reads.set(reads.get() + 1);
+            let value = *host.cells.borrow().get(&obj.handle.0)?;
+            Some(ObjectView {
+                name: "CounterCell\n\x1b[2J".into(),
+                fields: vec![
+                    ("value".into(), Value::I64(value)),
+                    ("peer".into(), Value::Obj(object(43))),
+                    ("local aggregate".into(), Value::Agg(AggHandle(0))),
+                    ("local function".into(), Value::Func(FuncId(0))),
+                    (
+                        "local closure".into(),
+                        Value::Closure(execution_tape::value::Closure {
+                            func: FuncId(0),
+                            env: AggHandle(0),
+                        }),
+                    ),
+                    ("missing".into(), Value::Obj(object(99))),
+                    ("label\n".into(), Value::Str("hi\x1b[2J\n".into())),
+                ],
+                total_fields: Some(7),
+            })
+        });
+    view.render_text(140, 42).unwrap();
+    assert_eq!(queries.get(), 0, "no projection before opening an object");
+    let fuel = view.invocation.remaining_fuel();
+    let work = view.invocation.data_work();
+    let location = view.frames[0].location;
+    view.focus = Focus::Values;
+    view.values_offset = 1; // receiver argument, after unit effect token
+    key(&mut view, KeyCode::Enter);
+    let text = view.render_text(140, 42).unwrap();
+    assert!(text.contains("HOST OBJECT · read-only"));
+    assert!(text.contains("value = 10"));
+    assert!(text.contains("Object inspection boundary"));
+    assert!(!text.contains('\x1b'));
+    for index in 3..=5 {
+        assert!(view.values[index].contains("no ownership context"));
+        assert!(view.value_targets[index].is_none());
+    }
+    assert!(!view.values.iter().any(|v| v.contains("999")));
+    cells.borrow_mut().insert(42, 11);
+    assert!(view.render_text(140, 42).unwrap().contains("value = 11"));
+    view.values_offset = 2; // peer
+    key(&mut view, KeyCode::Enter);
+    assert!(view.render_text(140, 42).unwrap().contains("value = 77"));
+    key(&mut view, KeyCode::Backspace);
+    assert!(view.values.iter().any(|v| v == "value = 11"));
+    view.values_offset = 6;
+    key(&mut view, KeyCode::Enter);
+    assert!(view.values[0].contains("unavailable from the host inspector"));
+    assert!(!view.values[0].contains("collected"));
+    assert_eq!(view.invocation.remaining_fuel(), fuel);
+    assert_eq!(view.invocation.data_work(), work);
+    assert_eq!(view.frames[0].location, location);
+}
+
+#[test]
+fn missing_inspector_and_omitted_fields_are_explicit_and_root_rows_navigate_correctly() {
+    let (p, entry) = object_program();
+    let mut vm = Vm::new(Counter::default(), Limits::default());
+    let args = [Value::Obj(object(42))];
+    let invocation = vm
+        .start(&p, entry, &args, InvocationOptions::default())
+        .unwrap();
+    let mut view = LiveExplorer::new(invocation);
+    view.focus = Focus::Values;
+    key(&mut view, KeyCode::Char('o'));
+    key(&mut view, KeyCode::Enter); // inventory heading is not an object
+    assert!(view.value_path.is_empty());
+    view.values_offset = 1;
+    key(&mut view, KeyCode::Enter);
+    assert!(view.values[0].contains("no host ObjectInspector attached"));
+    view = view.object_inspector(|_: &Counter, _: Obj, limit| {
+        Some(ObjectView {
+            name: "Wide".into(),
+            // An adapter should honor the limit before allocating. Even a misbehaving adapter
+            // cannot make the UI render an unbounded list.
+            fields: (0..limit + 10)
+                .map(|i| (format!("field{i}"), Value::I64(i as i64)))
+                .collect(),
+            total_fields: Some(limit + 10),
+        })
+    });
+    view.render_text(140, 42).unwrap();
+    assert_eq!(view.value_targets.len(), 257); // header + 256 bounded fields
+    assert_eq!(view.values.len(), 258); // plus omission notice
+    assert!(
+        view.values
+            .last()
+            .unwrap()
+            .contains("further fields omitted (256 shown)")
+    );
+    key(&mut view, KeyCode::Backspace);
+    assert!(view.roots);
+    assert_eq!(view.invocation.host().calls, 0);
 }
 fn finish_motion(view: &mut LiveExplorer<'_, Counter>) {
     for _ in 0..20 {
@@ -121,7 +283,7 @@ fn live_frames_source_stepping_and_aggregate_contents_are_real() {
     let (p, entry, _, sources) = program(false);
     let mut vm = Vm::new(Counter::default(), Limits::default());
     vm.aggregates_mut()
-        .tuple_new(vec![Value::Obj(execution_tape::value::Obj {
+        .tuple_new(vec![Value::Obj(Obj {
             host_type: execution_tape::program::HostTypeId(1),
             handle: execution_tape::value::ObjHandle(42),
         })])
