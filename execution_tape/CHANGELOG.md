@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Yield admitted host requests with `InvocationOptions::yield_host_calls` and
+  `Invocation::pending_host_call`. Borrowed requests support external completion, asynchronous
+  producers with cancellation tracking, and dispatch through the original host. Return
+  validation, work/fuel budgets, source inspection and checked replay share normal semantics.
+
 - Publish compatible callable updates through `CodeSlot` while retained `CodeVersion`s and
   active invocations keep their original code. No-ops and rejected changes are explicit;
   diagnostics retain both code owners and exact signature paths. Nominal IDs from different
@@ -37,6 +42,11 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Add `RunStatus::AwaitingHost` and `Trap::HostCallAbandoned`. Migration: handle the new variants
+  in exhaustive matches; yielding drivers must complete or dispatch a pending request before
+  resuming. Abandoning a started async producer prevents redispatch and cancels its evidence.
+  Default synchronous hosts, ordinary run APIs, crate versions and the wire format are unchanged.
 
 - Record prepaid input work in `ValueEvent::Entry::work` and `recording::Invocation::work` so
   checked replay preserves owned-callable copy debits. Migration: add `work` to explicit entry

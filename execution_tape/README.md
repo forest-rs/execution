@@ -194,7 +194,7 @@ Ordinary verification, preparation and execution retain no inspection data.
 `Vm::start` validates an invocation and returns a handle that borrows its VM, program, inputs,
 and optional observers. `Invocation::resume` executes a scheduling quantum at complete
 instruction boundaries. Hard fuel and data-work budgets accumulate across resumes; a quantum
-is separate from these limits. Host calls run synchronously within one step.
+is separate from these limits. Host calls run synchronously by default.
 
 ```rust
 use execution_tape::{host::Host, verifier::VerifiedProgram, value::{FuncId, Value},
@@ -214,6 +214,42 @@ remain performed. Trace scopes close with `TraceOutcome::Cancelled`; a cancelled
 incomplete and cannot be replayed as a finished invocation. Logical profiling scopes include
 suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 use the unbounded dispatch specialization without scheduling checks.
+
+## Yielded host requests
+
+Opt into `InvocationOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
+a host instruction is admitted. `pending_host_call()` exclusively borrows that invocation:
+query its import, source location, borrowed arguments and aggregate context, then `dispatch`
+through the existing host or `complete` with return slots and a fuel/error outcome. Stack
+return arrays and reusable buffers work with the same ABI as `Host::call`.
+
+For asynchronous producers, `complete_with` keeps borrowed inputs alive across `await` and
+tracks cancellation. This example delegates a one-string request to an embedding service:
+
+```rust
+extern crate alloc;
+use alloc::{string::String, vec};
+use execution_tape::{host::{Host, HostError, ValueRef}, value::Value,
+    vm::{Invocation, TrapInfo}};
+async fn answer<H: Host>(invocation: &mut Invocation<'_, H>,
+    service: impl AsyncFnOnce(&str) -> Result<String, HostError>) -> Result<(), TrapInfo> {
+    invocation.pending_host_call().expect("AwaitingHost")
+        .complete_with(async move |request| {
+            let Some(ValueRef::Str(text)) = request.arguments().next() else {
+                return Err(HostError::SignatureMismatch);
+            };
+            let reply = service(text).await?;
+            Ok((vec![Value::Str(reply)], 0))
+        }).await
+}
+```
+
+The embedding owns the async executor, message lookup, effects and external object retention.
+Waiting spends no additional fuel or host-call count; completion validates the raw outcome
+before continuing and does not execute the next guest instruction. Match all three run
+statuses in a yielding driver. A polled producer abandoned before completion cannot be
+redispatched: resumption reports `HostCallAbandoned` and recording remains incomplete.
+Ordinary runs and `Host` implementations keep their existing signatures and behavior.
 
 ## Owned executable callables
 

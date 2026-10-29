@@ -352,12 +352,12 @@ struct RecordedHost<'a> {
     state: Rc<RefCell<State>>,
 }
 impl RecordedHost<'_> {
-    fn invoke(
+    fn invoke<'a>(
         &mut self,
-        args: &[ValueRef<'_>],
-        rets: &mut [Value],
-        ctx: HostContext<'_, '_>,
-    ) -> Result<u64, ReplayError> {
+        import: HostSigId,
+        args: impl ExactSizeIterator<Item = ValueRef<'a>>,
+        heap: &'a AggHeap,
+    ) -> Result<Result<(Vec<Value>, u64), HostError>, ReplayError> {
         let mut state = self.state.borrow_mut();
         if let Some(error) = &state.error {
             return Err(error.clone());
@@ -379,56 +379,36 @@ impl RecordedHost<'_> {
         if !self.record.frames.is_empty() && call.frame != state.top {
             return Err(state.mismatch(Divergence::CallStack));
         }
-        if ctx.host_sig_id() != call.import {
+        if import != call.import {
             return Err(state.mismatch(Divergence::Import {
                 expected: call.import,
-                actual: ctx.host_sig_id(),
+                actual: import,
             }));
         }
-        state.matches(
-            self.record,
-            self.record.arena.slice(&call.args),
-            args.iter().copied(),
-            ctx.aggregates(),
-        )?;
+        state.matches(self.record, self.record.arena.slice(&call.args), args, heap)?;
         state.calls += 1;
         match &call.outcome {
-            CallOutcome::Failed(_) => Ok(0),
+            CallOutcome::Failed(error) => Ok(Err(error.clone())),
             CallOutcome::Returned { values, fuel } => {
-                if values.len() != rets.len() {
-                    return Err(state.mismatch(Divergence::Arity {
-                        expected: values.len(),
-                        actual: rets.len(),
-                    }));
-                }
-                for (slot, value) in rets.iter_mut().zip(self.record.arena.slice(values)) {
-                    *slot = state.materialize_value(self.record, value, ctx.aggregates())?;
-                }
-                Ok(*fuel)
+                let values =
+                    state.materialize(self.record, self.record.arena.slice(values), heap)?;
+                Ok(Ok((values, *fuel)))
             }
         }
     }
 }
-impl Host for RecordedHost<'_> {
+
+struct NoReplayEffects;
+impl Host for NoReplayEffects {
     fn call(
         &mut self,
         _: &str,
         _: SigHash,
-        args: &[ValueRef<'_>],
-        rets: &mut [Value],
-        ctx: HostContext<'_, '_>,
+        _: &[ValueRef<'_>],
+        _: &mut [Value],
+        _: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
-        let index = self.state.borrow().calls;
-        match self.invoke(args, rets, ctx) {
-            Err(error) => {
-                self.state.borrow_mut().error = Some(error);
-                Err(HostError::Failed)
-            }
-            Ok(fuel) => match &self.record.calls[index].outcome {
-                CallOutcome::Failed(error) => Err(error.clone()),
-                CallOutcome::Returned { .. } => Ok(fuel),
-            },
-        }
+        unreachable!("checked replay delivers recorded outcomes through yielded host requests")
     }
 }
 
@@ -659,13 +639,11 @@ impl Recording {
             .map_err(|fault| ReplayError::Incomplete(fault.clone()))?;
         let entry = self.entry.as_ref().expect("complete recording entry");
         let state = Rc::new(RefCell::new(State::default()));
-        let mut vm = Vm::new(
-            RecordedHost {
-                record: self,
-                state: Rc::clone(&state),
-            },
-            entry.limits.clone(),
-        );
+        let mut recorded_host = RecordedHost {
+            record: self,
+            state: Rc::clone(&state),
+        };
+        let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
         for &id in &self.initial {
             let node = self.aggregate(id).expect("complete initial node");
             let values = state
@@ -690,31 +668,56 @@ impl Recording {
             record: self,
             state: Rc::clone(&state),
         };
-        let options = crate::vm::InvocationOptions::default().trace(
-            TraceMask::INSTR
-                | TraceMask::VALUES
-                | if self
-                    .history
-                    .as_ref()
-                    .is_some_and(|h| !h.config.watches.is_empty())
-                {
-                    TraceMask::REGISTERS
-                } else {
-                    TraceMask::NONE
+        let options = crate::vm::InvocationOptions::default()
+            .yield_host_calls()
+            .trace(
+                TraceMask::INSTR
+                    | TraceMask::VALUES
+                    | if self
+                        .history
+                        .as_ref()
+                        .is_some_and(|h| !h.config.watches.is_empty())
+                    {
+                        TraceMask::REGISTERS
+                    } else {
+                        TraceMask::NONE
+                    }
+                    | if self.frames.is_empty() {
+                        TraceMask::NONE
+                    } else {
+                        TraceMask::CALL
+                    },
+                &mut check,
+            );
+        let result = match vm.start_prepaid(&self.program, entry.func, &args, options, entry.work) {
+            Err(error) => Err(error),
+            Ok(mut invocation) => loop {
+                match invocation.resume(u64::MAX) {
+                    Err(error) => break Err(error),
+                    Ok(crate::vm::RunStatus::Suspended) => {}
+                    Ok(crate::vm::RunStatus::Complete) => {
+                        break Ok(invocation.take_outputs().expect("completed replay outputs"));
+                    }
+                    Ok(crate::vm::RunStatus::AwaitingHost) => {
+                        let request = invocation
+                            .pending_host_call()
+                            .expect("yielded replay request");
+                        let outcome = recorded_host.invoke(
+                            request.import(),
+                            request.arguments(),
+                            request.aggregates(),
+                        )?;
+                        let (mut values, outcome) = match outcome {
+                            Ok((values, fuel)) => (values, Ok(fuel)),
+                            Err(error) => (Vec::new(), Err(error)),
+                        };
+                        if let Err(error) = request.complete(&mut values, outcome) {
+                            break Err(error);
+                        }
+                    }
                 }
-                | if self.frames.is_empty() {
-                    TraceMask::NONE
-                } else {
-                    TraceMask::CALL
-                },
-            &mut check,
-        );
-        let result = vm
-            .start_prepaid(&self.program, entry.func, &args, options, entry.work)
-            .and_then(|mut invocation| {
-                while invocation.resume(u64::MAX)? == crate::vm::RunStatus::Suspended {}
-                Ok(invocation.take_outputs().expect("completed replay outputs"))
-            });
+            },
+        };
         let mut state = state.borrow_mut();
         if let Some(error) = &state.error {
             return Err(error.clone());

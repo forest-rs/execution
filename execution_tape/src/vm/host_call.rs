@@ -5,6 +5,13 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PendingHost {
+    pub(super) location: TraceLocation,
+    pub(super) instruction: usize,
+    pub(super) abandoned: bool,
+}
+
 pub(super) struct HostReturnSite<'a> {
     pub(super) location: TraceLocation,
     pub(super) span: Option<u64>,
@@ -36,12 +43,16 @@ pub(super) fn admit_return(
         )
     })?;
     ctx.fuel = ctx.fuel.saturating_sub(fuel);
-    // Ordinary hosts fill a VM-sized slice; verified destinations match that declaration.
-    debug_assert_eq!(
-        values.len(),
-        site.destinations.len(),
-        "verified host return arity"
-    );
+    // Ordinary hosts fill a VM-sized slice; external deliveries supply an owned vector.
+    if values.len() != site.expected.len() {
+        return Err(trap(
+            ctx,
+            Trap::HostReturnArityMismatch {
+                expected: u32::try_from(site.expected.len()).expect("verified ABI arity"),
+                actual: u32::try_from(values.len()).unwrap_or(u32::MAX),
+            },
+        ));
+    }
     for (value, &expected) in values.iter().zip(site.expected) {
         value
             .check_type(expected)

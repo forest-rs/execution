@@ -57,14 +57,18 @@ struct Activation {
 #[derive(Default)]
 pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
+    pub(super) yield_host_calls: bool,
+    pub(super) pending_host: Option<host_call::PendingHost>,
     owner: Option<Arc<()>>,
     frames: Vec<Activation>,
     last: u64,
 }
 impl ExecutionControl {
-    pub(super) fn start() -> Self {
+    pub(super) fn start(yield_host_calls: bool) -> Self {
         Self {
             remaining: 0,
+            yield_host_calls,
+            pending_host: None,
             owner: Some(Arc::new(())),
             frames: vec![Activation {
                 ordinal: 0,
@@ -96,7 +100,7 @@ pub struct PausedFrame {
     pub location: TraceLocation,
     /// Instruction that entered this activation; `None` for the root.
     pub caller: Option<TraceLocation>,
-    /// Whether a child is still executing and this frame's call results have not arrived.
+    /// Whether a guest callee or yielded host operation has not returned yet.
     pub waiting_for_return: bool,
     /// Number of source register declarations, including r0 and unused registers.
     pub register_count: u32,
@@ -211,11 +215,15 @@ impl<'a> InvocationInspection<'a> {
     fn frame_at(&self, index: usize) -> PausedFrame {
         let frame = &self.ctx.frames[index];
         let activation = self.control.frames[index];
-        let waiting = index + 1 < self.ctx.frames.len();
-        let location = if waiting {
+        let child = index + 1 < self.ctx.frames.len();
+        let pending = self.control.pending_host.filter(|_| !child);
+        let waiting = child || pending.is_some();
+        let location = if child {
             self.control.frames[index + 1]
                 .caller
                 .expect("nested activation has caller")
+        } else if let Some(pending) = pending {
+            pending.location
         } else {
             TraceLocation {
                 func: frame.func,

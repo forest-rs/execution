@@ -8,6 +8,9 @@ use crate::callable::{Callable, CallableError};
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
+mod host_request;
+pub use host_request::PendingHostCall;
+
 pub(super) enum ProgramRef<'a> {
     Borrowed(&'a VerifiedProgram),
     Owned(Arc<VerifiedProgram>),
@@ -27,6 +30,9 @@ impl core::ops::Deref for ProgramRef<'_> {
 pub enum RunStatus {
     /// A safe instruction boundary was reached with the invocation still active.
     Suspended,
+    /// An admitted host instruction is waiting for embedding-supplied completion.
+    /// Query [`Invocation::pending_host_call`]; resuming alone does not invoke the host.
+    AwaitingHost,
     /// The root returned and its results were committed.
     Complete,
 }
@@ -37,6 +43,7 @@ pub enum RunStatus {
 /// invocation, including time spent suspended; they measure elapsed latency, not active CPU time.
 #[derive(Default)]
 pub struct InvocationOptions<'a> {
+    pub(super) yield_host_calls: bool,
     pub(super) mask: Option<TraceMask>,
     pub(super) trace: Option<&'a mut dyn TraceSink>,
     pub(super) access: Option<&'a mut dyn AccessSink>,
@@ -46,12 +53,23 @@ impl fmt::Debug for InvocationOptions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InvocationOptions")
             .field("mask", &self.mask)
+            .field("yield_host_calls", &self.yield_host_calls)
             .field("access_recording", &self.access.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl<'a> InvocationOptions<'a> {
+    /// Yields admitted host calls for the embedding to complete or dispatch explicitly.
+    ///
+    /// This preserves the ordinary host ABI and adds no async runtime. A pending request
+    /// exclusively borrows its invocation; the embedding owns scheduling and external effects.
+    /// Default invocations continue to invoke their host synchronously.
+    #[must_use]
+    pub fn yield_host_calls(mut self) -> Self {
+        self.yield_host_calls = true;
+        self
+    }
     /// Requests the existing VM observation callbacks for the entire logical invocation.
     #[must_use]
     pub fn trace(mut self, mask: TraceMask, sink: &'a mut dyn TraceSink) -> Self {
@@ -68,11 +86,12 @@ impl<'a> InvocationOptions<'a> {
     }
 }
 
-/// One invocation that may suspend between complete guest instructions.
+/// One invocation that may suspend between instructions or at an admitted host request.
 ///
 /// Borrows its VM and observers. Raw entries borrow code/inputs; owned callable entries retain
 /// their code and inputs independently of the lookup handle. These ownership domains remain
-/// intact while suspended. Host calls are synchronous and indivisible scheduling operations.
+/// intact while suspended. Host calls dispatch synchronously by default; opting into yielded
+/// requests retains an admitted host instruction until the embedding supplies its completion.
 /// Dropping an active invocation cancels it, discards its new aggregates, and closes trace scopes
 /// with [`TraceOutcome::Cancelled`]. External host effects are not rolled back.
 ///
@@ -148,6 +167,7 @@ impl<H: Host> Vm<H> {
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
+        let yield_host_calls = options.yield_host_calls;
         let mut invocation = Invocation {
             vm: self,
             program,
@@ -202,21 +222,30 @@ impl<H: Host> Vm<H> {
         }
         invocation.ctx.aggregate_work = work.aggregate;
         invocation.ctx.payload_work = work.payload;
-        invocation.control = ExecutionControl::start();
+        invocation.control = ExecutionControl::start(yield_host_calls);
         Ok(invocation)
     }
 }
 
 impl<H: Host> Invocation<'_, H> {
-    /// Executes at most `quantum` guest instructions, or returns the terminal result again.
+    /// Admits at most `quantum` guest instructions, or returns the terminal result again.
     ///
     /// A quantum of zero observes the current suspension without executing. Hard fuel, host-call,
     /// contract, payload and aggregate-work usage accumulate across resumes; quanta reset none of
     /// these. Host extra fuel is charged against hard fuel, not against the instruction quantum.
     /// Prepared block declarations take no steps; an edge transfer belongs to its branch step.
+    /// A yielded host call spends its instruction/host-call debit once and returns
+    /// [`RunStatus::AwaitingHost`]. Resuming while it waits spends nothing and never dispatches
+    /// the host. Completing the request finishes that instruction without admitting another.
     pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         if let Some(outcome) = &self.outcome {
             return outcome.clone().map(|()| RunStatus::Complete);
+        }
+        if let Some(pending) = self.control.pending_host {
+            if pending.abandoned {
+                return Err(self.finish_abandoned_host(pending));
+            }
+            return Ok(RunStatus::AwaitingHost);
         }
         self.control.remaining = quantum;
         let access = self
@@ -251,7 +280,7 @@ impl<H: Host> Invocation<'_, H> {
             )
         };
         match &result {
-            Ok(RunStatus::Suspended) => {}
+            Ok(RunStatus::Suspended | RunStatus::AwaitingHost) => {}
             Ok(RunStatus::Complete) => self.finish(Ok(())),
             Err(error) => self.finish(Err(error.clone())),
         }
@@ -365,6 +394,7 @@ impl<H: Host> Drop for Invocation<'_, H> {
         let location = self
             .trace
             .pending
+            .or_else(|| self.control.pending_host.map(|pending| pending.location))
             .or_else(|| {
                 self.ctx.frames.last().map(|frame| {
                     let pc = if matches!(
