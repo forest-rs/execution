@@ -143,6 +143,14 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn aggregates(&self) -> &AggHeap {
         self.invocation.vm.memory.aggs()
     }
+    /// Borrows the actual caller's frames and initialized registers while this request waits.
+    ///
+    /// Analysis is lazy and read-only, as with [`Invocation::inspect`]. The pending call is
+    /// shown before its result, preserving uninitialized destinations as unavailable.
+    #[must_use]
+    pub fn inspect(&self) -> InvocationInspection<'_> {
+        self.invocation.inspect()
+    }
     /// Declared host symbol, without allocating a label.
     #[must_use]
     pub fn symbol(&self) -> &str {

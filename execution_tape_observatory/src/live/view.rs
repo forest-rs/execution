@@ -64,16 +64,20 @@ impl<H: Host> LiveExplorer<'_, H> {
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
                 .block(render::panel(
-                    " AUTHORED SOURCE · selected instruction ",
+                    if self.showing_origin {
+                        " AUTHORED SOURCE · external caller "
+                    } else {
+                        " AUTHORED SOURCE · selected instruction "
+                    },
                     self.focus == Focus::Source,
                 )),
             right[1],
         );
-        frame.render_widget(Paragraph::new("s step into  n over  u out  c continue  Space pause  b breakpoint  g current\nTab pane  ↑↓/jk scroll  o object roots/registers  q leave (drop cancels unfinished execution)")
+        frame.render_widget(Paragraph::new("s into  n over  u out  c continue  h dispatch host  Space pause  b breakpoint  g current\nTab pane  ↑↓/jk scroll  o object roots/registers  q leave (drop cancels unfinished execution)")
             .style(Style::default().fg(MUTED)), rows[2]);
     }
     fn draw_stack(&self, frame: &mut Frame<'_>, area: Rect) {
-        let items: Vec<_> = self
+        let mut items: Vec<_> = self
             .frames
             .iter()
             .enumerate()
@@ -93,8 +97,29 @@ impl<H: Host> LiveExplorer<'_, H> {
                 ))
             })
             .collect();
-        let block = render::panel(" LIVE STACK ", self.focus == Focus::Stack)
-            .title_bottom("root ← Application");
+        if let Some(origin) = &self.origin {
+            items.push(ListItem::new(vec![
+                Line::styled(
+                    "external caller · awaiting this invocation",
+                    Style::default().fg(GOLD),
+                ),
+                Line::styled(
+                    format!(
+                        "{} → host {}",
+                        describe::function(origin.program.program(), origin.location.func),
+                        origin.symbol
+                    ),
+                    Style::default().fg(BLUE),
+                ),
+            ]));
+        }
+        let block = render::panel(" LIVE STACK ", self.focus == Focus::Stack).title_bottom(
+            if self.origin.is_some() {
+                "root ← external host request"
+            } else {
+                "root ← Application"
+            },
+        );
         if items.is_empty() {
             frame.render_widget(Paragraph::new("No active guest frames.").block(block), area);
         } else {
@@ -104,12 +129,20 @@ impl<H: Host> LiveExplorer<'_, H> {
                     .highlight_symbol("▸ ")
                     .highlight_style(Style::default().bg(Color::Indexed(23))),
                 area,
-                &mut ListState::default().with_selected(Some(self.selected_frame)),
+                &mut ListState::default().with_selected(if self.origin_selected {
+                    Some(self.frames.len())
+                } else if self.frames.is_empty() {
+                    None
+                } else {
+                    Some(self.selected_frame)
+                }),
             );
         }
     }
     fn draw_values(&self, frame: &mut Frame<'_>, area: Rect) {
-        let title = if matches!(self.value_path.last(), Some(ValueTarget::Object(_))) {
+        let title = if self.origin_selected {
+            " EXTERNAL CALLER · values "
+        } else if matches!(self.value_path.last(), Some(ValueTarget::Object(_))) {
             " HOST OBJECT · read-only "
         } else if !self.value_path.is_empty() {
             " AGGREGATE CONTENTS "
@@ -161,19 +194,22 @@ impl<H: Host> LiveExplorer<'_, H> {
             .take(height)
             .next_back()
             .map_or(first, |i| i.0);
-        let current = self
-            .frames
-            .get(self.selected_frame)
-            .map(|f| f.location)
-            .or_else(|| {
-                self.invocation
-                    .result()
-                    .and_then(Result::err)
-                    .map(|t| TraceLocation {
-                        func: t.func,
-                        pc: t.pc,
-                    })
-            });
+        let current = if self.showing_origin {
+            self.origin.as_ref().map(|origin| origin.location)
+        } else {
+            self.frames
+                .get(self.selected_frame)
+                .map(|f| f.location)
+                .or_else(|| {
+                    self.invocation
+                        .result()
+                        .and_then(Result::err)
+                        .map(|t| TraceLocation {
+                            func: t.func,
+                            pc: t.pc,
+                        })
+                })
+        };
         let lines: Vec<_> = self
             .code
             .iter()
@@ -182,9 +218,10 @@ impl<H: Host> LiveExplorer<'_, H> {
             .take(height)
             .map(|(index, (pc, text))| {
                 let active = current.is_some_and(|l| Some(l.func) == self.code_func && l.pc == *pc);
-                let point = self
-                    .code_func
-                    .is_some_and(|f| self.breakpoints.contains(&(f.0, *pc)));
+                let point = !self.showing_origin
+                    && self
+                        .code_func
+                        .is_some_and(|f| self.breakpoints.contains(&(f.0, *pc)));
                 let mut spans = vec![Span::styled(
                     format!(
                         "{}{} {:06} ",
@@ -213,15 +250,26 @@ impl<H: Host> LiveExplorer<'_, H> {
             .collect();
         let function = self.code_func.map_or_else(
             || "no function".into(),
-            |f| describe::function(self.invocation.program().program(), f),
+            |f| describe::function(self.code_program(), f),
         );
         frame.render_widget(
             Paragraph::new(lines).block(
                 render::panel(
-                    format!(" INSTRUCTIONS · {function} "),
+                    format!(
+                        " {} · {function} ",
+                        if self.showing_origin {
+                            "CALLER INSTRUCTIONS"
+                        } else {
+                            "INSTRUCTIONS"
+                        }
+                    ),
                     self.focus == Focus::Code,
                 )
-                .title_bottom("▸ next/pending · ● breakpoint · static flow"),
+                .title_bottom(if self.showing_origin {
+                    "external request · breakpoints belong to its own invocation"
+                } else {
+                    "▸ next/pending · ● breakpoint · static flow"
+                }),
             ),
             area,
         );

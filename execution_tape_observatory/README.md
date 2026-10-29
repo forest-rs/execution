@@ -27,6 +27,22 @@ source. Focus uses a green double border. `Enter` opens the first visible value'
 closure environment, or follows a host object through an attached inspector; `Backspace` goes up.
 The `▸` row in Values is the value Enter will open. Values and source scroll with arrows or `j`/`k`.
 
+Invocations started with `InvocationOptions::yield_host_calls()` show **AWAITING HOST** at an
+admitted request. Stepping/continuing does not silently invoke it. `h` explicitly dispatches
+through the embedding's existing host and finishes that instruction, including its real effects.
+`LiveExplorer::into_invocation` leaves presentation while preserving the pending handle for an
+external or asynchronous completion. Dropping an unfinished explorer still cancels its guest.
+
+When a host request initiates another invocation, attach
+`LiveExplorer::requested_by(&request, Some(&caller_sources))`. The stack gains a selectable
+**external caller** row. Select it to inspect the requesting instruction, its exact authored
+source, and bounded arguments/initialized registers. Caller register analysis is built on first selection;
+unreturned destinations remain unavailable. Caller and child maps are validated independently;
+overlapping local function IDs do not imply the same code. Foreign handles are not opened in
+the child's heap or host. This is one causal link across independent invocations, without a
+synthetic guest activation or a scheduler-wide task graph. Stepping still controls the child;
+breakpoints in the external caller belong to its own invocation. `g` returns to current code.
+
 Attach `LiveExplorer::object_inspector` with an `ObjectInspector<H>` (or a closure) to project
 actual host state as an `ObjectView`. It runs on demand while an object view is open, between
 execution quanta. It must be read-only, respect the requested field limit before materializing
