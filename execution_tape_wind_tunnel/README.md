@@ -89,6 +89,42 @@ Use the ordinary `vm` cases with `--save-baseline <name>` on main, then `--basel
 the candidate. Keep benchmark output in a locally ignored directory; do not compare a candidate
 only against an older optimization branch.
 
+## Guest-driven messages and method replacement
+
+`message_dispatch` assembles a guest that sends `counter.increment()` twice. The embedding
+yields each `Object.send` request, borrows its selector across an asynchronous suspension, and
+selects an independently owned callable from a method table. Once the first method has entered
+and loaded `+1`, lookup publishes a compatible `+10` replacement. The first invocation keeps
+its original code and returns `1`; the second lookup returns `11` using the same host cell.
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin message_dispatch
+cargo run -p execution_tape_wind_tunnel --bin message_dispatch -- --snapshot --request 1
+cargo run -p execution_tape_wind_tunnel --bin message_dispatch -- --interactive --color=always
+cargo run -p execution_tape_wind_tunnel --bin message_dispatch -- --capture /tmp/message-story
+cargo run -p execution_tape_wind_tunnel --bin observatory -- \
+  --program /tmp/message-story/caller.tape --sources /tmp/message-story/caller.sources --snapshot
+```
+
+The live method view links to the actual pending sender, its initialized registers and its
+own source map. Select the external caller in the stack to inspect that code; stepping still
+controls the method. `c` runs to completion; `q` leaves the view and cancels unfinished work.
+Already performed host effects and the method publication survive cancellation. `--request 1`
+opens the replacement invocation, with the first reply visible in its caller.
+
+The headless result is JSON. `--capture` requires a new directory and writes a result survey,
+exact tapes and source sidecars, caller/method snapshots, and boundary-recording views. Each
+complete recording is checked by replay without running method lookup or touching live host
+state. These separate recordings describe separate invocations; their text views are not a
+portable replay archive. The sources are direct assembly fixtures, not a new language compiler.
+
+Use `--selector missing` to inspect an owned domain error at the guest send, or `--fuel 4` to
+observe a method exhausting fuel after a cell write. The caller's remaining fuel bounds each
+callback, and successful callback work is charged as host extra fuel. This is one serial
+embedding policy, not a general scheduler or a shared resource quota across arbitrary tasks.
+The executor uses only the standard library and yields one real pending poll per delivery;
+it does not pretend to perform external I/O.
+
 ## Payload-work accounting probe
 
 The initial budget probe compares main `f9aaa54` with logical payload-work
