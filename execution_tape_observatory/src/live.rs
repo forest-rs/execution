@@ -9,10 +9,12 @@ use execution_tape::{
     host::{Host, ValueRef},
     source::{BoundSources, SourceError, SourceMap},
     trace::TraceLocation,
-    value::{AggHandle, AggType, Value},
+    value::{AggHandle, AggType, Obj, Value},
     vm::{ActivationId, Invocation, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo},
 };
+mod objects;
 mod view;
+pub use objects::{ObjectInspector, ObjectView};
 
 use ratatui::{
     Frame,
@@ -46,6 +48,12 @@ enum Motion {
     Continue,
     Over(ActivationId),
     Out(ActivationId),
+}
+
+#[derive(Clone, Copy)]
+enum ValueTarget {
+    Aggregate(AggHandle),
+    Object(Obj),
 }
 
 /// A live debugger for an explicitly supplied invocation and host.
@@ -85,8 +93,9 @@ pub struct LiveExplorer<'a, H: Host> {
     code_selected: usize,
     flow: Flow,
     values: Vec<String>,
-    aggregate_values: Vec<Option<AggHandle>>,
-    aggregate_path: Vec<AggHandle>,
+    value_targets: Vec<Option<ValueTarget>>,
+    value_path: Vec<ValueTarget>,
+    object_inspector: Option<Box<dyn ObjectInspector<H> + 'a>>,
     values_offset: usize,
     source_lines: Vec<String>,
     source_offset: usize,
@@ -122,8 +131,9 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
             code_selected: 0,
             flow: Flow::default(),
             values: Vec::new(),
-            aggregate_values: Vec::new(),
-            aggregate_path: Vec::new(),
+            value_targets: Vec::new(),
+            value_path: Vec::new(),
+            object_inspector: None,
             values_offset: 0,
             source_lines: Vec::new(),
             source_offset: 0,
@@ -142,6 +152,18 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         self.sources = Some(map.bind(self.invocation.program().program())?);
         self.refresh_source();
         Ok(self)
+    }
+
+    /// Adds read-only, on-demand inspection of host objects from the actual invocation host.
+    ///
+    /// `Enter` follows an object in the Values pane; `Backspace` returns. The inspector runs
+    /// only while an object view is open and receives a 256-field limit. Displaying fields
+    /// never executes guest instructions or automatically calls host methods. See
+    /// [`ObjectInspector`] for lifetime, effect and bounded-materialization requirements.
+    #[must_use]
+    pub fn object_inspector(mut self, inspector: impl ObjectInspector<H> + 'a) -> Self {
+        self.object_inspector = Some(Box::new(inspector));
+        self
     }
 
     /// Opens the terminal UI. On return, the invocation remains available to inspect or resume.
@@ -170,7 +192,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     /// Hard budgets remain cumulative. Use the terminal's continue command for breakpoints.
     pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         self.motion = None;
-        self.aggregate_path.clear();
+        self.value_path.clear();
         let result = self.invocation.resume(quantum);
         self.status = "PAUSED · before next instruction".into();
         self.selected_frame = 0;
@@ -235,7 +257,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         self.frames = self.invocation.inspect().frames().collect();
         self.selected_frame = self.selected_frame.min(self.frames.len().saturating_sub(1));
         self.values.clear();
-        self.aggregate_values.clear();
+        self.value_targets.clear();
         self.values_offset = 0;
         if let Some(result) = self.invocation.result() {
             match result {
@@ -252,10 +274,10 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
                     if outputs.is_empty() {
                         self.values.push("Returned without values.".into());
                     }
-                    self.aggregate_values = outputs
+                    self.value_targets = outputs
                         .iter()
                         .take(256)
-                        .map(|v| aggregate(ValueRef::from_value(v)))
+                        .map(|v| value_target(ValueRef::from_value(v)))
                         .collect();
                     if outputs.len() > 256 {
                         self.values.push("… further outputs omitted".into());
@@ -280,7 +302,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
                 && let Some(registers) = inspection.registers(&frame.activation)
             {
                 for reg in registers.take(256) {
-                    self.aggregate_values.push(reg.value.and_then(aggregate));
+                    self.value_targets.push(reg.value.and_then(value_target));
                     self.values.push(format!(
                         "r{} · {} = {}",
                         reg.register,
@@ -298,7 +320,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         }
         if self.roots {
             self.values.clear();
-            self.aggregate_values.clear();
+            self.value_targets.clear();
             let mut inspection = self.invocation.inspect();
             let mut count = 0_usize;
             inspection.visit_objects(|root| {
@@ -315,12 +337,15 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
                             format!("aggregate @{} field[{index}]", aggregate.0)
                         }
                     };
+                    self.value_targets
+                        .push(Some(ValueTarget::Object(root.object)));
                     self.values.push(format!(
                         "{} ← {origin}",
                         value_text(ValueRef::Obj(root.object))
                     ));
                 }
             });
+            self.value_targets.insert(0, None);
             self.values.insert(
                 0,
                 format!("{count} references · conservative, duplicates possible"),
@@ -331,10 +356,10 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
             self.values
                 .push("Add host heap/globals/external roots before collection.".into());
         }
-        if let Some(&handle) = self.aggregate_path.last() {
+        if let Some(&ValueTarget::Aggregate(handle)) = self.value_path.last() {
             let heap = self.invocation.aggregates();
             self.values.clear();
-            self.aggregate_values.clear();
+            self.value_targets.clear();
             let kind = match heap.agg_type(handle) {
                 Ok(kind) => kind,
                 Err(error) => {
@@ -356,8 +381,8 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
                     _ => heap.array_get_ref(handle, index),
                 }
                 .expect("validated aggregate field");
-                self.aggregate_values
-                    .push(aggregate(ValueRef::from_value(value)));
+                self.value_targets
+                    .push(value_target(ValueRef::from_value(value)));
                 self.values.push(format!(
                     "Item[{index}] = {}",
                     value_text(ValueRef::from_value(value))
@@ -370,13 +395,71 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
                 self.values.push("… further items omitted".into());
             }
         }
+        self.refresh_object();
+    }
+
+    fn refresh_object(&mut self) {
+        let Some(&ValueTarget::Object(object)) = self.value_path.last() else {
+            return;
+        };
+        self.values.clear();
+        self.value_targets.clear();
+        let Some(inspector) = self.object_inspector.as_mut() else {
+            self.values
+                .push("Object state unavailable: no host ObjectInspector attached.".into());
+            return;
+        };
+        let Some(view) = inspector.inspect(self.invocation.host(), object, 256) else {
+            self.values
+                .push("Object state unavailable from the host inspector.".into());
+            return;
+        };
+        self.values.push(format!(
+            "{} · object #{} · host type {}",
+            describe::preview(&view.name, 80),
+            object.handle.0,
+            object.host_type.0
+        ));
+        self.value_targets.push(None);
+        let supplied = view.fields.len();
+        for (name, value) in view.fields.into_iter().take(256) {
+            let local = matches!(value, Value::Agg(_) | Value::Func(_) | Value::Closure(_));
+            self.value_targets.push(if local {
+                None
+            } else {
+                value_target(ValueRef::from_value(&value))
+            });
+            self.values.push(format!(
+                "{} = {}",
+                describe::preview(&name, 80),
+                if local {
+                    "unavailable (VM-local value has no ownership context)".into()
+                } else {
+                    value_text(ValueRef::from_value(&value))
+                }
+            ));
+        }
+        if supplied == 0 && view.total_fields == Some(0) {
+            self.values.push("No fields.".into());
+        }
+        if view
+            .total_fields
+            .is_some_and(|total| total > supplied.min(256))
+            || supplied > 256
+        {
+            self.values.push(format!(
+                "… further fields omitted ({} shown)",
+                supplied.min(256)
+            ));
+        }
+        self.values_offset = self.values_offset.min(self.values.len().saturating_sub(1));
     }
 
     fn start_motion(&mut self, kind: KeyCode) {
         if self.invocation.result().is_some() {
             return;
         }
-        self.aggregate_path.clear();
+        self.value_path.clear();
         let origin = self
             .frames
             .first()
@@ -450,7 +533,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
         };
         match self.focus {
             Focus::Stack => {
-                self.aggregate_path.clear();
+                self.value_path.clear();
                 move_by(&mut self.selected_frame, self.frames.len());
                 self.refresh();
             }
@@ -484,7 +567,7 @@ fn value_text(value: ValueRef<'_>) -> String {
         ValueRef::F64(value) => value.to_string(),
         ValueRef::Decimal(value) => format!("{}e-{}", value.mantissa(), value.scale()),
         ValueRef::Obj(object) => format!(
-            "object #{} · host type {}",
+            "object #{} · host type {} · Enter to inspect",
             object.handle.0, object.host_type.0
         ),
         ValueRef::Agg(handle) => format!("aggregate @{} · Enter to inspect", handle.0),
@@ -496,10 +579,11 @@ fn value_text(value: ValueRef<'_>) -> String {
     }
 }
 
-fn aggregate(value: ValueRef<'_>) -> Option<AggHandle> {
+fn value_target(value: ValueRef<'_>) -> Option<ValueTarget> {
     match value {
-        ValueRef::Agg(handle) => Some(handle),
-        ValueRef::Closure(c) => Some(c.env),
+        ValueRef::Agg(handle) => Some(ValueTarget::Aggregate(handle)),
+        ValueRef::Closure(c) => Some(ValueTarget::Aggregate(c.env)),
+        ValueRef::Obj(object) => Some(ValueTarget::Object(object)),
         _ => None,
     }
 }
@@ -533,18 +617,18 @@ impl<H: Host> Screen for LiveExplorer<'_, H> {
                 }
             }
             KeyCode::Char('o') => {
-                self.aggregate_path.clear();
+                self.value_path.clear();
                 self.roots = !self.roots;
                 self.refresh();
             }
             KeyCode::Enter if self.focus == Focus::Values => {
-                if let Some(Some(handle)) = self.aggregate_values.get(self.values_offset) {
-                    self.aggregate_path.push(*handle);
+                if let Some(Some(handle)) = self.value_targets.get(self.values_offset) {
+                    self.value_path.push(*handle);
                     self.refresh();
                 }
             }
             KeyCode::Backspace if self.focus == Focus::Values => {
-                self.aggregate_path.pop();
+                self.value_path.pop();
                 self.refresh();
             }
             KeyCode::Char('b') => {

@@ -24,7 +24,18 @@ and `g` selects the current instruction. Breakpoints stop **before** executing t
 continuing from one intentionally passes that breakpoint once. Stepping over/out also honors
 breakpoints inside callees. `Tab`/`Shift+Tab` cycle the live stack, instructions, values and authored
 source. Focus uses a green double border. `Enter` opens the first visible value's aggregate or
-closure environment; `Backspace` goes up. Values and source scroll with arrows or `j`/`k`.
+closure environment, or follows a host object through an attached inspector; `Backspace` goes up.
+The `▸` row in Values is the value Enter will open. Values and source scroll with arrows or `j`/`k`.
+
+Attach `LiveExplorer::object_inspector` with an `ObjectInspector<H>` (or a closure) to project
+actual host state as an `ObjectView`. It runs on demand while an object view is open, between
+execution quanta. It must be read-only, respect the requested field limit before materializing
+fields, and bound payload previews at their source. The UI escapes text and displays at most
+256 fields. Scalars and host object references are supported; VM-local aggregate/callable
+handles from this adapter have no owner and are explicitly unavailable. An absent projection
+does not imply an empty or collected object. Browsing never retains objects or adds GC roots.
+The live header names the actual prepared program and reports cumulative aggregate/payload
+work, including owned-capture import work. Recorded evidence cannot inspect later live host state.
 
 The `▸` instruction marker is the next instruction for a leaf or the pending call for a waiting
 caller; the highlighted browsing row is independent. `●` marks a breakpoint. Caller return

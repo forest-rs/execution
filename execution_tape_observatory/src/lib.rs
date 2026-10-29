@@ -49,7 +49,7 @@ use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::crossterm::{event, execute, terminal};
 use std::io;
 
-pub use live::LiveExplorer;
+pub use live::{LiveExplorer, ObjectInspector, ObjectView};
 pub use recording_explorer::RecordingExplorer;
 
 /// Opens the recording explorer on standard output until the user quits.
