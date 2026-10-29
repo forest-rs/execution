@@ -167,7 +167,8 @@ pub enum ScopeKind {
 pub enum TraceOutcome<'a> {
     /// Completed successfully.
     Ok,
-    /// The invocation was dropped before returning or trapping. Host effects are not undone.
+    /// The invocation or an admitted host delivery was cancelled before guest completion.
+    /// Host effects are not undone; abandoned deliveries produce incomplete evidence.
     /// An interrupted instruction attempt has no successful completion.
     Cancelled,
     /// Trapped.

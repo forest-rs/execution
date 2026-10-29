@@ -249,6 +249,9 @@ fn hard_limits_accumulate_across_resumes_and_terminal_traps_do_not_repeat_effect
                 match invocation.resume(quantum) {
                     Err(error) => break error,
                     Ok(RunStatus::Suspended) => {}
+                    Ok(RunStatus::AwaitingHost) => {
+                        panic!("default invocations dispatch their host synchronously")
+                    }
                     Ok(RunStatus::Complete) => panic!("expected the same hard limit"),
                 }
             };
@@ -363,6 +366,9 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
     let error = loop {
         match invocation.resume(1) {
             Ok(RunStatus::Suspended) => {}
+            Ok(RunStatus::AwaitingHost) => {
+                panic!("default invocations dispatch their host synchronously")
+            }
             Ok(RunStatus::Complete) => {
                 panic!("the second cached visit must still consume contract work")
             }

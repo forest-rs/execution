@@ -40,7 +40,7 @@ pub use inspection::{
     ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
 };
 mod observations;
-pub use invocation::{Invocation, InvocationOptions, RunStatus};
+pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
 #[cfg(test)]
 mod payload_tests;
 
@@ -223,9 +223,13 @@ pub enum Trap {
     HostReturnArityMismatch {
         /// Expected number of return values.
         expected: u32,
-        /// Actual number of return values.
+        /// Actual number of return values, capped at `u32::MAX` for external replies.
         actual: u32,
     },
+    /// A yielded host delivery was started but abandoned before producing a complete outcome.
+    /// This includes panic unwinding and cancellation of a polled asynchronous producer.
+    /// Its external effects are unknown and cannot safely be retried.
+    HostCallAbandoned,
     /// Integer cast overflow (e.g. `u64_to_i64` out of range).
     IntCastOverflow,
     /// Decimal scales did not match where required (e.g. `dec_add`/`dec_sub`).
@@ -324,6 +328,7 @@ impl fmt::Display for Trap {
                     "host return arity mismatch (expected {expected}, got {actual})"
                 )
             }
+            Self::HostCallAbandoned => f.write_str("host call delivery was abandoned; discard the invocation rather than retrying its effects"),
             Self::IntCastOverflow => write!(f, "int cast overflow"),
             Self::DecimalScaleMismatch => write!(f, "decimal scale mismatch"),
             Self::DecimalOverflow => write!(f, "decimal overflow"),
@@ -2238,6 +2243,15 @@ impl<H: Host> Vm<H> {
                         pc,
                         span_id,
                     );
+
+                    if YIELD && control.yield_host_calls {
+                        control.pending_host = Some(host_call::PendingHost {
+                            location: TraceLocation { func: func_id, pc },
+                            instruction: instr_ix,
+                            abandoned: false,
+                        });
+                        return Ok(RunStatus::AwaitingHost);
+                    }
 
                     // Stack buffer for the common case (0–8 rets); Vec fallback for the rest.
                     // Value is Clone but not Copy, so use `from_fn` instead of repeat syntax.

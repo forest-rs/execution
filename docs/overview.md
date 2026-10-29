@@ -16,7 +16,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Verifiable programs (fail fast with good diagnostics).
 - `no_std + alloc` core by default; optional `std` feature.
 - Optional instruction and call/host scopes, owned boundary recording, checked replay, and
-  source-aware inspection. Interactive breakpoints and execution stepping remain future work.
+  source-aware inspection. Observatory provides live stepping and instruction breakpoints.
 
 ## VM non-goals
 - Incremental scheduling and dirty propagation: `execution_graph` owns these above the VM.
@@ -41,7 +41,8 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 ## Execution model
 - Register-based VM with function frames and recursion.
 - The VM executes `VerifiedProgram` only (verification is a required pre-step).
-- Sync host calls only.
+- Synchronous host dispatch by default, with optional borrow-scoped requests for externally
+  completed or asynchronous host operations. The embedding owns scheduling and async runtimes.
 - Limits: instruction fuel, host calls, call depth, contract work, aggregate construction work,
   and logical byte/string work;
   host calls may contribute additional fuel cost.
@@ -260,6 +261,23 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 - Loops + conditionals.
 - Recursion via `call` and frames.
 - Typed block parameters express joins directly; edge transfers are simultaneous preparation details.
+
+`InvocationOptions::yield_host_calls()` admits a host instruction and returns `AwaitingHost`.
+The pending request exposes exact code/import/source identity and borrowed arguments, while
+inspection shows the call awaiting a return and excludes uninitialized destinations. Request
+completion uses the ordinary return ABI, fuel debit and payload checks, recording the raw outcome
+before rejection. It finishes that one instruction; the next `resume` admits further guest work.
+Waiting and repeated queries neither execute effects nor refill budgets. Trace scopes describe
+logical latency, including the external wait; they do not measure active host CPU time.
+
+An embedding may complete reusable return slots directly, dispatch through its existing host,
+or use `complete_with` for an asynchronous producer borrowing the request. Abandoning a polled
+producer or unwinding during delivery prevents retry: subsequent resumption reports
+`HostCallAbandoned`, and recording is cancelled/incomplete. Unpolled futures and unused request
+views leave the call pending. Completed callbacks remain ordinary recorded host outcomes, so
+checked replay reproduces rejected arities, kinds and budgets without calling a live host.
+This boundary does not create cross-program guest frames, a language method dictionary or
+recoverable guest exceptions.
 
 ## Program serialization
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
