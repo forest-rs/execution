@@ -14,6 +14,11 @@ Changes for Execution Graph [0.1.0](#010-2026-10-27), dated 2026-10-27, are docu
 
 This release has an [MSRV][] of 1.88.
 
+### Added
+
+- Export a published function or closure through `TapeValue::retain_callable`, retaining its
+  exact code and immutable captures for execution after graph edits or executor destruction.
+
 ## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.

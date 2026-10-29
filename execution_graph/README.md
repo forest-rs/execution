@@ -211,6 +211,9 @@ Use [`TapeValue::value`] and [`TapeValue::aggregates`] for borrowed inspection. 
 can adopt portable tuple snapshots through [`TapeValue::from_snapshot`] without a program.
 Function, closure and nominal aggregate IDs require their exact original prepared program,
 including IDs nested inside tuples. Foreign and unowned IDs fail before VM or host execution.
+Use [`TapeValue::retain_callable`] to keep a published function/closure independently executable
+after its graph and executor disappear. It retains the exact code and copies reachable
+immutable captures; host object lifetimes remain the embedding's responsibility.
 
 Edge clones share storage. At invocation ingress, the adapter copies only selected reachable
 input graphs into VM storage, preserving shared node identity across publications. Returned
