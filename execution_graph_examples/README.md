@@ -4,6 +4,68 @@
 - `transforms`: native nodes with dynamic dependencies, scoped queries and fresh-evaluation checks.
 - `procedural`: mixed tape/native geometry, owned viewport/undo results and selected VM recordings.
 - `live_code`: graph-exported closures, shared mutable cells, versioned lookup and paused old code.
+- `deferred_assets`: real pending I/O, owned guest tasks, native results, cancellation and source-linked explanations.
+
+## Deferred assets and owned results
+
+```sh
+cargo run -p execution_graph_examples --bin deferred_assets
+cargo run -p execution_graph_examples --bin deferred_assets -- --json
+cargo run -p execution_graph_examples --features observatory --bin deferred_assets -- --snapshot
+cargo run -p execution_graph_examples --features observatory --bin deferred_assets -- --observatory
+cargo run -p execution_graph_examples --features observatory --bin deferred_assets -- --snapshot --capture .local/deferred-assets
+```
+
+The guest compiles `points = asset.load_points(asset); return points` to a host call and return.
+Its owned invocation yields at the call. An application-owned worker reads a real loopback socket;
+the graph task keeps the guest and request across queries. Independent gain edits publish while
+the guest waits, without restarting the request or consuming more guest fuel. The script supplies
+responses and joins workers outside graph execution, so it needs no runtime or timed sleeps.
+
+The edit history queues an obsolete response, rebinds the input before the guest admits it, and
+checks that the queued point buffer drops. A replacement publishes a 32 by 32 point grid. A
+malformed replacement preserves that cache as pending, with the typed decoder failure available
+through the graph/VM error chain. Recovery publishes a new cloud. Native bounds match the earlier
+bounds, so the caption node is cut off; geometry identity still changes.
+
+Coordinates stay in a packed native `Vec<i64>`. The host constructs a small, contract-checked guest
+record containing an opaque object token, vertex count, first-point preview and source name.
+`Invocation::into_snapshot` moves the reachable guest result out of its VM; the graph value owns
+both its retained `TapeValue` metadata and the native buffer. Removing the node and dropping the
+returned `RemovedNode` releases the newest buffer. Explicit viewport and undo roots keep the older
+one valid until those roots drop. Recordings keep metadata and tokens, never native coordinates.
+
+The explanation joins graph attempts, pending/committed reads, publication/cutoff reports, host
+requests, guest outcomes, exact authored source, native bounds source, work debits and explicit
+ownership checkpoints. Graph publication and recorded guest completion are separate evidence.
+Checked replay reproduces successful guest metadata and the failed guest trap; the cancelled
+capture remains incomplete and refuses replay. It reconstructs neither native geometry nor I/O
+or whole-graph execution.
+
+`--snapshot` shows the actual guest awaiting its first response, then finishes the script.
+`--observatory` opens the completed recovery recording after execution; it is an immutable guest
+view, not a live asset editor. Both attach the exact `points.scene` source map. Capture mode creates
+a new directory, refusing an existing one, with `report.txt`, `report.json`, `asset.tape`,
+`asset.sources`, the authored `points.scene`, a native source snapshot `native.rs`, and optional
+`pending-0.txt`. Recordings remain in memory; these files are not a portable recording archive.
+For example, inspect the exact compiled input separately:
+
+```sh
+cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/deferred-assets/asset.tape --sources .local/deferred-assets/asset.sources
+```
+
+This finite, four-request service demonstrates an embedding policy. Admission synchronously opens
+a local socket pair and starts a worker; response reading/decoding happen on that worker. Responses
+are limited to 1 MiB with nonempty XYZ triples; a 10-second read timeout is a failure bound, not a
+simulated delay. Tests require permission to open loopback sockets. A production service would
+also manage worker slots, scheduling, shutdown, object namespaces and domain-specific limits.
+The example's JSON schema and formatted resource keys are explanatory example data, not a stable
+library interchange format.
+
+Query wall time includes scheduling and body work. Poll wall time includes guest resumption and
+native result admission; task lifetime also includes waiting and caller scheduling. These metrics
+overlap and are not CPU or isolated I/O latency measurements. Buffer counts track coordinate
+`Vec` capacities, excluding VM metadata, allocator overhead and RSS.
 
 ## Shared cells and live code
 
