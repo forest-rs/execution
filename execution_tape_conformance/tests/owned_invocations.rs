@@ -576,3 +576,118 @@ fn owning_the_vm_does_not_require_host_resources_to_be_static() {
     }
     assert_eq!(calls.get(), 1);
 }
+
+fn pack_text() -> Callable {
+    let mut builder = ProgramBuilder::new();
+    let entry = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::Str],
+            ret_types: vec![ValueType::Agg],
+        })
+        .unwrap();
+    let mut body = builder.function_asm(entry).unwrap();
+    let packed = body.alloc_register(ValueType::Agg);
+    body.tuple_new(packed, &[1]).ret(0, &[packed]);
+    builder.define_function(entry, body).unwrap();
+    Callable::function(Arc::new(builder.build_verified().unwrap()), entry).unwrap()
+}
+
+#[test]
+fn consume_owned_results_without_copying_their_nested_payloads() {
+    let target = pack_text();
+    let code = Arc::downgrade(target.program());
+    let effects = Rc::new(Effects::default());
+    let mut call = target
+        .start_owned(
+            Vm::new(Echo(effects.clone()), Limits::default()),
+            vec![Value::Str("packed".into())],
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    drop(target);
+    call.resume(u64::MAX).unwrap();
+    let owner = call
+        .program_owner()
+        .cloned()
+        .expect("callable code retained");
+    assert!(Arc::ptr_eq(&owner, &code.upgrade().unwrap()));
+    let Value::Agg(root) = call.result().unwrap().unwrap()[0] else {
+        panic!("root")
+    };
+    let Value::Str(text) = call.aggregates().tuple_get_ref(root, 0).unwrap() else {
+        panic!("text")
+    };
+    let pointer = text.as_ptr();
+    let snapshot = call.into_snapshot().unwrap().unwrap();
+    assert_eq!(effects.drops.get(), 1, "retirement releases the VM/host");
+    let Value::Agg(root) = snapshot.values()[0] else {
+        panic!("snapshot root")
+    };
+    let Value::Str(text) = snapshot.aggregates().tuple_get_ref(root, 0).unwrap() else {
+        panic!("snapshot text")
+    };
+    assert_eq!(
+        text.as_ptr(),
+        pointer,
+        "owned aggregate payload moved without a copy"
+    );
+    drop(owner);
+    assert!(
+        code.upgrade().is_none(),
+        "unscoped snapshots require explicit code retention"
+    );
+    assert_eq!(
+        text, "packed",
+        "payload remains owned after VM/code retirement"
+    );
+}
+
+#[test]
+fn consume_borrowed_results_preserves_raw_handles_and_unfinished_consumption_cancels() {
+    let target = pack_text();
+    let mut vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
+    let args = [Value::Str("borrowed".into())];
+    let mut call = vm
+        .start(
+            target.program(),
+            target.function_id(),
+            &args,
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    assert!(
+        call.program_owner().is_none(),
+        "raw entry only borrows its code"
+    );
+    call.resume(u64::MAX).unwrap();
+    let Value::Agg(original) = call.result().unwrap().unwrap()[0] else {
+        panic!("root")
+    };
+    let snapshot = call.into_snapshot().unwrap().unwrap();
+    let Value::Agg(retained) = snapshot.values()[0] else {
+        panic!("retained root")
+    };
+    assert_eq!(
+        vm.aggregates().tuple_get(original, 0),
+        Ok(Value::Str("borrowed".into()))
+    );
+    assert_eq!(
+        snapshot.aggregates().tuple_get(retained, 0),
+        Ok(Value::Str("borrowed".into()))
+    );
+    let effects = Rc::new(Effects::default());
+    let call = target
+        .start_owned(
+            Vm::new(Echo(effects.clone()), Limits::default()),
+            args.to_vec(),
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    assert!(call.into_snapshot().unwrap().is_none());
+    assert_eq!(effects.drops.get(), 1);
+    assert_eq!(
+        effects.calls.get(),
+        0,
+        "consuming an unfinished invocation cancels without execution"
+    );
+}

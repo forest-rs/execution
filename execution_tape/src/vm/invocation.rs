@@ -344,6 +344,34 @@ impl<H: Host> Invocation<'_, H> {
         matches!(self.outcome, Some(Ok(()))).then(|| core::mem::take(&mut self.outputs))
     }
 
+    /// Consumes a successful invocation and retains its result independently of the VM.
+    ///
+    /// An owned VM transfers its reachable aggregate graph without copying byte/string payloads.
+    /// A borrowed VM copies reachable aggregates, leaving its existing retained handles valid.
+    /// Both paths move root payloads, preserve sharing and discard unreachable snapshot nodes.
+    /// Function/closure/nominal IDs still need their original program; clone [`Self::program_owner`]
+    /// before consumption to retain that exact owner. Host objects stay host-owned. Snapshot work
+    /// is explicit embedding work outside guest budgets.
+    ///
+    /// Returns `None` after a trap or before successful completion; consuming an unfinished
+    /// invocation cancels it. Inspect [`Self::result`] first to preserve a trap diagnostic.
+    /// If outputs were already taken, the snapshot is empty.
+    pub fn into_snapshot(mut self) -> Result<Option<crate::aggregates::ValueSnapshot>, AggError> {
+        if !matches!(self.outcome, Some(Ok(()))) {
+            return Ok(None);
+        }
+        let outputs = core::mem::take(&mut self.outputs);
+        let snapshot = match &mut self.vm {
+            BorrowedOrOwned::Borrowed(vm) => vm.memory.aggs().snapshot_owned(outputs)?,
+            BorrowedOrOwned::Owned(vm) => {
+                core::mem::take(vm.memory.aggs_mut())
+                    .into_snapshot(outputs)?
+                    .0
+            }
+        };
+        Ok(Some(snapshot))
+    }
+
     /// Retains one successful function/closure result with its exact code and captures.
     ///
     /// Start through [`Callable::start`] to supply the owning program handle. A raw `Vm::start`
@@ -395,6 +423,20 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn program(&self) -> &VerifiedProgram {
         &self.program
+    }
+
+    /// Exact retained code owner for callable entries, including independently owned executions.
+    ///
+    /// Clone this handle before consuming the invocation when a retained aggregate snapshot
+    /// contains function, closure or nominal type IDs. It remains available after the original
+    /// callable lookup is dropped. Raw `Vm::start` entries only borrow code and return `None`;
+    /// their embedding remains responsible for that program's lifetime and identity.
+    #[must_use]
+    pub fn program_owner(&self) -> Option<&Arc<VerifiedProgram>> {
+        match &self.program {
+            ProgramRef::Borrowed(_) => None,
+            ProgramRef::Owned(program) => Some(program),
+        }
     }
 
     /// Borrows aggregate storage. Values observed while suspended belong to this heap.
