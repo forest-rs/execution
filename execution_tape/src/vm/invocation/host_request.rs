@@ -46,7 +46,7 @@ fn site<'a>(
     let signature = p.host_sig(*host_sig).expect("verified host signature");
     Site {
         pending,
-        base: ctx.frames.last().expect("pending frame").base,
+        base: ctx.frames[pending.depth - 1].base,
         span: body.span_at_ix(pending.instruction).map(|span| span.get()),
         import: *host_sig,
         symbol: p
@@ -104,8 +104,9 @@ fn arguments<'a>(
 /// If delivery or an observer panics, the invocation cannot retry that operation. Drop it, or
 /// observe [`Trap::HostCallAbandoned`] on resumption; cancelled trace evidence is incomplete.
 pub struct PendingHostCall<'request, 'vm, H: Host> {
-    invocation: &'request mut Invocation<'vm, H>,
-    delivering: bool,
+    pub(super) invocation: &'request mut Invocation<'vm, H>,
+    pub(super) delivering: bool,
+    original: PendingHost,
 }
 impl<H: Host> fmt::Debug for PendingHostCall<'_, '_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -271,9 +272,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
 }
 impl<H: Host> Drop for PendingHostCall<'_, '_, H> {
     fn drop(&mut self) {
-        if self.delivering
-            && let Some(pending) = &mut self.invocation.control.pending_host
-        {
+        if self.delivering && self.invocation.outcome.is_none() {
+            let pending = self
+                .invocation
+                .control
+                .pending_host
+                .get_or_insert(self.original);
             pending.abandoned = true;
         }
     }
@@ -285,10 +289,14 @@ impl<'vm, H: Host> Invocation<'vm, H> {
     /// The guard prevents resuming or completing another invocation by accident. Repeated
     /// queries and dropped views do not execute the host or replenish hard budgets.
     pub fn pending_host_call(&mut self) -> Option<PendingHostCall<'_, 'vm, H>> {
+        if self.outcome.is_some() {
+            return None;
+        }
         self.control
             .pending_host
             .filter(|pending| !pending.abandoned)?;
         Some(PendingHostCall {
+            original: self.control.pending_host.expect("pending guard"),
             invocation: self,
             delivering: false,
         })
@@ -343,6 +351,9 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         values: &mut [Value],
         outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
+        if let Some(callbacks) = &mut self.control.callbacks {
+            callbacks.returned = None;
+        }
         let mut results = self
             .host_results
             .take()
@@ -411,6 +422,12 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         self.outcome = Some(Err(error.clone()));
         self.trace
             .cancel(self.program.program(), pending.location, span);
+        callback::finish_instructions(
+            &mut self.control,
+            &mut self.trace,
+            self.program.program(),
+            TraceOutcome::Cancelled,
+        );
         self.trace
             .run_end(self.program.program(), TraceOutcome::Cancelled);
         error

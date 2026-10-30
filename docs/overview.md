@@ -287,6 +287,28 @@ checked replay reproduces rejected arities, kinds and budgets without calling a 
 This boundary does not create cross-program guest frames, a language method dictionary or
 recoverable guest exceptions.
 
+An admitted host request can explicitly reenter a same-program guest function or closure with
+`call_guest`. It retains the host instruction, original frames, heap, activation identities and
+all hard budgets. The same invocation driver handles nested host waits and further callbacks.
+When a callback returns, `AwaitingHost` identifies the original request again; its callback
+result slots are available separately from the host operation's eventual return. The callback
+may have a different result signature. Arguments, closure environments and results undergo the
+ordinary boundary checks. Bad admission or a guest trap terminates the whole invocation.
+
+Reentry first promotes all previous host staging with unchanged handles, avoiding collisions
+with callback allocations. Previously spent work stays charged and future contexts use the
+updated heap/budgets. Unused promoted nodes survive until root commit/rollback. The embedding
+owns scheduling and callback selection; no native Rust stack is captured. Cancellation executes
+no guest code. This establishes nested guest execution; dynamic condition dispatch, restarts,
+non-local exits, protected cleanup and typed delimited operations are not implemented yet.
+
+Callback entry/return are explicit value events and guest frames have their actual host call
+sites as callers. The parent host instruction remains outstanding while child attempts execute.
+Callback return goes to embedding code, with no next guest instruction; it does not complete the
+parent host instruction. On failure/cancellation all outstanding attempts and scopes close.
+The boundary recorder currently reports `UnsupportedCallback` rather than pretending host
+outcomes alone can reproduce an embedding-driven callback. These captures refuse checked replay.
+
 ## Program serialization
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
 - Function table and constant pool indices are bounds-checked by the verifier.

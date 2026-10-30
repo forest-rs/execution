@@ -158,6 +158,9 @@ impl Recorder {
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
+            ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
+                return Err(CaptureFault::UnsupportedCallback);
+            }
             ValueEvent::Entry {
                 entry,
                 args,
@@ -444,6 +447,8 @@ impl TraceSink for Recorder {
         let location = match event {
             ValueEvent::Entry { .. } => None,
             ValueEvent::HostCall { location, .. }
+            | ValueEvent::CallbackEnter { location, .. }
+            | ValueEvent::CallbackReturn { location, .. }
             | ValueEvent::ReturnCandidate { location, .. } => Some(location),
         };
         if self.check(program)

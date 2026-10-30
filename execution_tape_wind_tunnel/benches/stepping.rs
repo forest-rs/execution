@@ -164,9 +164,57 @@ fn stepping(c: &mut Criterion) {
     });
     group.finish();
 }
+
+fn callback_free_calls(c: &mut Criterion) {
+    let mut b = ProgramBuilder::new();
+    let caller = b
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let callee = b
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let mut a = b.function_asm(caller).unwrap();
+    let value = a.alloc_register(ValueType::I64);
+    a.const_i64(value, 42);
+    for _ in 0..1000 {
+        a.call(0, callee, 0, &[value], &[value]);
+    }
+    a.ret(0, &[value]);
+    b.define_function(caller, a).unwrap();
+    let mut a = b.function_asm(callee).unwrap();
+    a.ret(0, &[1]);
+    b.define_function(callee, a).unwrap();
+    let program = b.build_verified().unwrap();
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let mut group = c.benchmark_group("callback_free_calls");
+    group.bench_function("ordinary_1000", |b| {
+        b.iter(|| {
+            black_box(
+                vm.run(&program, caller, &[], TraceMask::NONE, None)
+                    .unwrap(),
+            );
+        })
+    });
+    group.bench_function("scheduled_1000", |b| {
+        b.iter(|| {
+            let mut invocation = vm
+                .start(&program, caller, &[], InvocationOptions::default())
+                .unwrap();
+            assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+            black_box(invocation.result().unwrap().unwrap());
+        })
+    });
+    group.finish();
+}
 criterion_group! {
     name = benches;
     config = Criterion::default().warm_up_time(Duration::from_millis(300)).measurement_time(Duration::from_millis(1200)).sample_size(30);
-    targets = stepping
+    targets = stepping, callback_free_calls
 }
 criterion_main!(benches);
