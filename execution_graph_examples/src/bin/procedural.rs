@@ -290,7 +290,7 @@ impl Executor for Scene {
         inputs: &[SceneValue],
         outputs: &mut Vec<SceneValue>,
         access: &mut NodeAccess<'_, SceneValue>,
-    ) -> Result<NodeOutcome, SceneError> {
+    ) -> Result<NodeOutcome<Self::Value, Self::Error>, SceneError> {
         let kind = match node {
             SceneNode::Tape(_) => "tape",
             SceneNode::Grid => "grid",

@@ -2,6 +2,45 @@
 
 Run the Criterion workloads with `cargo bench -p execution_graph_wind_tunnel`.
 
+## Deferred-task boundary and ordinary queries
+
+The deferred-task implementation was compared with main `6bbafb0` on macOS arm64,
+Rust 1.99 release builds, 2026-10-30. These probes use synchronous tape nodes; they
+measure ordinary queries, not deferred task polling or external I/O. Preparation,
+initial execution and destruction are outside timing. The same corrected benchmark
+source was compiled against both revisions in separate build directories.
+
+The clean-query case now hides both the mutable graph and returned summary behind
+`black_box`. A first attempt exposed constant folding after adding the clean-query
+fast path; its sub-nanosecond result was rejected. Older clean-query measurements
+using the original source should not be compared as if their optimization barriers
+were identical. Other fixtures retain their existing observable edits and work.
+
+A main/candidate/candidate/main pass used 30 samples, 1 s warmup and 3 s measurement:
+
+| Workload | Main first | Candidate first | Candidate repeat | Main last |
+|---|---:|---:|---:|---:|
+| One node rerun | 382.8 ns | 386.3 ns | 393.6 ns | 374.9 ns |
+| 1,000-node chain rerun | 304.7 µs | 300.6 µs | 316.0 µs | 319.1 µs |
+| Clean 1,000-node chain query | 11.86 ns | 1.68 ns | 1.67 ns | 11.91 ns |
+| 1,000-way fanout rerun | 328.3 µs | 324.9 µs | 325.6 µs | 318.5 µs |
+
+The empty-query improvement comes from returning before constructing scheduling
+and reporting machinery. It is a small bookkeeping result, not a whole-application
+speedup. The single-node case is roughly 1–5% slower in this pass; chain and fanout
+variation does not establish a general gain. These probes exclude pending-task
+storage, allocation counts, RSS, observers, UI and real native workloads. Deferred
+continuations and their provisional observations allocate only when used, outside
+the ordinary per-node layout; this table is not a task-memory measurement.
+
+```sh
+cargo bench -p execution_graph_wind_tunnel --bench graph -- \
+  '^(single_node_rerun|chain_rerun/1000|chain_noop_run_all/1000|fanout_rerun/1000)$' \
+  --warm-up-time 1 --measurement-time 3 --sample-size 30 --noplot
+```
+
+## Authoring
+
 The `authoring` benchmark measures connecting 16 or 64 independent 32-node chains
 into one join, both before first execution and after publishing literal inputs.
 Graph construction, initial execution, and destruction are outside the timed interval.

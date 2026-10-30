@@ -66,10 +66,10 @@ impl<X: Executor> Dispatcher<X> for InlineDispatcher {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Work {
     Run(NodeId),
-    Resume(NodeId),
+    Resume(NodeId, Vec<NodeId>),
 }
 
 fn run<X: Executor>(
@@ -96,6 +96,8 @@ fn run<X: Executor>(
     let mut work = Vec::new();
     let mut active = Vec::new();
     let mut active_set = HashSet::new();
+    let mut blocked = HashSet::new();
+    let initial_polls = graph.task_polls();
     let result = (|| {
         loop {
             let frame = if let Some(frame) = work.pop() {
@@ -108,9 +110,13 @@ fn run<X: Executor>(
             };
             let node = match frame {
                 Work::Run(node) => {
+                    if blocked.contains(&node) {
+                        continue;
+                    }
                     if active_set.contains(&node) {
                         let mut path = active.clone();
                         path.push(node);
+                        graph.cancel_failed_tasks(&path);
                         return Err(GraphError::DynamicDependencyCycle { path });
                     }
                     // A runtime request may already have completed a node in the original plan.
@@ -119,7 +125,7 @@ fn run<X: Executor>(
                     }
                     node
                 }
-                Work::Resume(node) => {
+                Work::Resume(node, producers) => {
                     let completed = active.pop();
                     debug_assert_eq!(
                         completed,
@@ -127,6 +133,14 @@ fn run<X: Executor>(
                         "nested requests finish before their readers"
                     );
                     active_set.remove(&node);
+                    if producers.iter().any(|producer| blocked.contains(producer)) {
+                        blocked.insert(node);
+                        summary.blocked_nodes += 1;
+                        if reporting {
+                            report.blocked.push(node);
+                        }
+                        continue;
+                    }
                     node
                 }
             };
@@ -144,7 +158,7 @@ fn run<X: Executor>(
                     summary.suspended_attempts += 1;
                     active.push(node);
                     active_set.insert(node);
-                    work.push(Work::Resume(node));
+                    work.push(Work::Resume(node, producers.clone()));
                     // Append in reverse so requests and their dependency plans run in order.
                     for producer in producers.into_iter().rev() {
                         let mut required =
@@ -163,6 +177,7 @@ fn run<X: Executor>(
                                 path.push(repeated);
                             }
                             graph.reclaim_schedule_buffer(required_nodes);
+                            graph.cancel_failed_tasks(&path);
                             return Err(GraphError::DynamicDependencyCycle { path });
                         }
                         for &required_node in required_nodes.iter().rev() {
@@ -174,6 +189,22 @@ fn run<X: Executor>(
                 }
                 Ok(NodeStep::Executed) => summary.executed_nodes += 1,
                 Ok(NodeStep::CutOff) => summary.cut_off_nodes += 1,
+                Ok(NodeStep::Waiting) => {
+                    blocked.insert(node);
+                    summary.waiting_nodes += 1;
+                    if reporting {
+                        report.waiting.push(node);
+                    }
+                    continue;
+                }
+                Ok(NodeStep::Blocked) => {
+                    blocked.insert(node);
+                    summary.blocked_nodes += 1;
+                    if reporting {
+                        report.blocked.push(node);
+                    }
+                    continue;
+                }
             }
             if reporting {
                 let records = if matches!(step, Ok(NodeStep::Executed)) {
@@ -198,14 +229,17 @@ fn run<X: Executor>(
         }
         Ok(())
     })();
+    graph.cancel_changed_tasks();
     graph.reclaim_schedule_buffer(to_run);
+    summary.task_polls = usize::try_from(graph.task_polls() - initial_polls).unwrap();
+    report.task_polls = summary.task_polls;
     report.execution_attempts = summary.execution_attempts;
     report.suspended_attempts = summary.suspended_attempts;
     match result {
         Ok(()) => Ok((summary, report)),
         Err(source) if reporting => Err(GraphError::RunReportFailed {
             source: Box::new(source),
-            partial_report: report,
+            partial_report: Box::new(report),
         }),
         Err(source) => Err(source),
     }

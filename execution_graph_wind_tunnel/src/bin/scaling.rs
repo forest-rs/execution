@@ -26,7 +26,7 @@ impl Executor for Native {
         _: &[u64],
         outputs: &mut Vec<u64>,
         access: &mut NodeAccess<'_, u64>,
-    ) -> Result<execution_graph::NodeOutcome, Infallible> {
+    ) -> Result<execution_graph::NodeOutcome<Self::Value, Self::Error>, Infallible> {
         access.read_host_state(HostOpId::new(0), *node);
         if self.writes {
             access.write_host_state(HostOpId::new(1), *node);

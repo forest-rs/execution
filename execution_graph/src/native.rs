@@ -18,7 +18,7 @@ use crate::node_access::NodeAccess;
 /// value per declared output, and the [`NodeAccess`] for reporting any reads or writes of state
 /// outside the graph.
 pub type NodeFn<V, E> =
-    dyn FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<NodeOutcome, E>;
+    dyn FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<NodeOutcome<V, E>, E>;
 
 /// A node body implemented by a Rust closure.
 pub struct FnNode<V, E> {
@@ -59,11 +59,26 @@ impl<V, E> FnNode<V, E> {
     /// Before completion, the closure must be safe to repeat; recorded host writes on a
     /// suspended attempt are rejected. Ordinary `new`/`named` closures are never replayed.
     pub fn restartable(
-        run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<NodeOutcome, E> + 'static,
+        run: impl FnMut(&[V], &mut Vec<V>, &mut NodeAccess<'_, V>) -> Result<NodeOutcome<V, E>, E>
+        + 'static,
     ) -> Self {
         Self {
             name: None,
             run: Box::new(run),
+        }
+    }
+
+    /// Constructs owned work that may wait across graph queries without repeating its start.
+    /// The graph immediately polls the returned task and owns cancellation and publication.
+    pub fn deferred(
+        mut start: impl FnMut(&[V], &mut NodeAccess<'_, V>) -> Result<Box<dyn crate::NodeTask<V, E>>, E>
+        + 'static,
+    ) -> Self {
+        Self {
+            name: None,
+            run: Box::new(move |inputs, _outputs, access| {
+                start(inputs, access).map(NodeOutcome::Deferred)
+            }),
         }
     }
 
@@ -156,7 +171,7 @@ impl<V: Clone + fmt::Debug, E: fmt::Debug> Executor for FnExecutor<V, E> {
         inputs: &[Self::Value],
         outputs: &mut Vec<Self::Value>,
         access: &mut NodeAccess<'_, V>,
-    ) -> Result<NodeOutcome, Self::Error> {
+    ) -> Result<NodeOutcome<V, E>, Self::Error> {
         (node.run)(inputs, outputs, access)
     }
 

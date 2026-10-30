@@ -21,11 +21,17 @@ pub struct RunSummary {
     pub executed_nodes: usize,
     /// Executor invocations, including attempts suspended for dynamic reads.
     pub execution_attempts: usize,
-    /// Attempts that yielded to pending producers and published nothing.
+    /// Suspensions requesting pending producers, without publishing a result.
     pub suspended_attempts: usize,
     /// Number of scheduled nodes skipped by early cutoff: nothing they read changed during the
     /// period since their last verification (see [`Executor::values_equal`](crate::Executor::values_equal)).
     pub cut_off_nodes: usize,
+    /// Owned continuation polls, including polls that finish or fail.
+    pub task_polls: usize,
+    /// Nodes that kept an owned continuation waiting at the end of their query visit.
+    pub waiting_nodes: usize,
+    /// Nodes not executed because a prerequisite still had unpublished work.
+    pub blocked_nodes: usize,
 }
 
 /// Bitmask that controls which optional fields are populated in [`NodeRunDetail`].
@@ -146,11 +152,17 @@ pub struct NodeRunDetail {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct RunDetailReport {
+    /// Nodes whose owned continuation remained pending during this query.
+    pub waiting: Vec<NodeId>,
+    /// Nodes blocked by pending prerequisite outputs.
+    pub blocked: Vec<NodeId>,
+    /// Owned continuation polls during this query.
+    pub task_polls: usize,
     /// Per-node detail records in execution order.
     pub executed: Vec<NodeRunDetail>,
     /// Executor invocations, including suspended attempts and the failing attempt, if any.
     pub execution_attempts: usize,
-    /// Attempts that yielded to pending producers and published nothing.
+    /// Suspensions requesting pending producers, without publishing a result.
     pub suspended_attempts: usize,
     /// Scheduled nodes skipped by early cutoff, in schedule order.
     ///
@@ -220,6 +232,9 @@ pub struct GraphStorageStats {
 /// Freshness of a node's graph-owned output cache relative to reported mutations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeStatus {
+    /// An owned continuation is held; cached outputs have not been replaced.
+    /// Inspect `task_info` for poll counts and abandonment after unwinding.
+    Waiting,
     /// No successful publication yet; the node is awaiting its first execution.
     NeverRun,
     /// A cache exists, but execution or verification is required before using it as current.
