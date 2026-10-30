@@ -65,6 +65,12 @@ value. Unavailable values are never presented as zero or false. `o` switches to 
 host-object references, including VM aggregate fields; this is not a minimal liveness set or
 a complete root set for an embedding language. The host still owns its objects and collection.
 
+An independently owned invocation can borrow local sources and caller context for a temporary
+view, then return to its scheduler with `into_invocation`. The explorer borrows view data
+separately from VM data. Migration for explicit type annotations: use
+`LiveExplorer<'view, 'vm, H>`; constructor and method calls continue to infer these lifetimes.
+The source map is validated against the invocation's exact code and is not retained by the VM.
+
 Embed `LiveExplorer::new(vm.start(...)?).sources(&source_map)?` with your actual host and program.
 `run(&mut self)` leaves the invocation available on return; dropping an unfinished explorer cancels
 guest work. `step`, bounded `resume`, `result`, `take_outputs` and `render_text` also work without

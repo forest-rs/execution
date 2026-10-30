@@ -31,7 +31,7 @@ impl Host for Counter {
         Ok(0)
     }
 }
-fn key(view: &mut LiveExplorer<'_, Counter>, code: KeyCode) {
+fn key(view: &mut LiveExplorer<'_, '_, Counter>, code: KeyCode) {
     assert!(view.key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 fn program(parent: bool) -> (VerifiedProgram, FuncId, SourceMap) {
@@ -296,4 +296,33 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
         LiveExplorer::new(call).requested_by(&request, Some(&wrong_sources)),
         Err(SourceError::ProgramMismatch)
     ));
+}
+
+#[test]
+fn a_stored_owned_invocation_can_use_local_sources_and_return_to_its_scheduler() {
+    use execution_tape::callable::Callable;
+    use std::sync::Arc;
+    let (program, entry, sources) = program(false);
+    let callable = Callable::function(Arc::new(program), entry).unwrap();
+    let call = callable
+        .start_owned(
+            Vm::new(Counter::default(), Limits::default()),
+            vec![],
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    let mut stored: Option<Invocation<'static, Counter>> = Some(call);
+    {
+        let mut view = LiveExplorer::new(stored.take().unwrap())
+            .sources(&sources)
+            .unwrap();
+        assert!(view.render_text(120, 40).unwrap().contains("method.expr"));
+        view.step().unwrap();
+        stored = Some(view.into_invocation());
+    }
+    drop(sources);
+    drop(callable);
+    let mut call = stored.unwrap();
+    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(call.result().unwrap().unwrap(), [Value::I64(42)]);
 }
