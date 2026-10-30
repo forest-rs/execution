@@ -103,7 +103,7 @@ fn program(trap: bool) -> (VerifiedProgram, FuncId, u32, SourceMap) {
     .unwrap();
     (p, entry, publish, sources)
 }
-fn key<H: Host>(view: &mut LiveExplorer<'_, H>, key: KeyCode) {
+fn key<H: Host>(view: &mut LiveExplorer<'_, '_, H>, key: KeyCode) {
     assert!(view.key(KeyEvent::new(key, KeyModifiers::NONE)));
 }
 
@@ -271,7 +271,7 @@ fn missing_inspector_and_omitted_fields_are_explicit_and_root_rows_navigate_corr
     assert!(view.render_text(140, 42).unwrap().contains("Wide"));
     assert_eq!(view.invocation.host().calls, 0);
 }
-fn finish_motion(view: &mut LiveExplorer<'_, Counter>) {
+fn finish_motion(view: &mut LiveExplorer<'_, '_, Counter>) {
     for _ in 0..20 {
         if !view.running() {
             return;

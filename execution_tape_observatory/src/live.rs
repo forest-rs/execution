@@ -85,10 +85,10 @@ enum ValueTarget {
 /// // Leaving the UI preserves the handle. Dropping it cancels unfinished guest execution.
 /// # Ok(()) }
 /// ```
-pub struct LiveExplorer<'a, H: Host> {
-    invocation: Invocation<'a, H>,
-    sources: Option<BoundSources<'a>>,
-    origin: Option<RequestOrigin<'a>>,
+pub struct LiveExplorer<'view, 'vm, H: Host> {
+    invocation: Invocation<'vm, H>,
+    sources: Option<BoundSources<'view>>,
+    origin: Option<RequestOrigin<'view>>,
     origin_selected: bool,
     showing_origin: bool,
     frames: Vec<PausedFrame>,
@@ -101,7 +101,7 @@ pub struct LiveExplorer<'a, H: Host> {
     values: Vec<String>,
     value_targets: Vec<Option<ValueTarget>>,
     value_path: Vec<ValueTarget>,
-    object_inspector: Option<Box<dyn ObjectInspector<H> + 'a>>,
+    object_inspector: Option<Box<dyn ObjectInspector<H> + 'view>>,
     values_offset: usize,
     source_lines: Vec<String>,
     source_offset: usize,
@@ -111,7 +111,7 @@ pub struct LiveExplorer<'a, H: Host> {
     skip_breakpoint: bool,
     status: String,
 }
-impl<H: Host> fmt::Debug for LiveExplorer<'_, H> {
+impl<H: Host> fmt::Debug for LiveExplorer<'_, '_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LiveExplorer")
             .field("invocation", &self.invocation)
@@ -122,10 +122,10 @@ impl<H: Host> fmt::Debug for LiveExplorer<'_, H> {
     }
 }
 
-impl<'a, H: Host> LiveExplorer<'a, H> {
+impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     /// Opens at the invocation's current safe boundary without executing an instruction.
     #[must_use]
-    pub fn new(invocation: Invocation<'a, H>) -> Self {
+    pub fn new(invocation: Invocation<'vm, H>) -> Self {
         let mut view = Self {
             invocation,
             sources: None,
@@ -157,7 +157,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     }
 
     /// Attaches exact frontend source snapshots, rejecting stale maps before terminal entry.
-    pub fn sources(mut self, map: &'a SourceMap) -> Result<Self, SourceError> {
+    pub fn sources(mut self, map: &'view SourceMap) -> Result<Self, SourceError> {
         self.sources = Some(map.bind(self.invocation.program().program())?);
         self.refresh_source();
         Ok(self)
@@ -170,7 +170,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     /// never executes guest instructions or automatically calls host methods. See
     /// [`ObjectInspector`] for lifetime, effect and bounded-materialization requirements.
     #[must_use]
-    pub fn object_inspector(mut self, inspector: impl ObjectInspector<H> + 'a) -> Self {
+    pub fn object_inspector(mut self, inspector: impl ObjectInspector<H> + 'view) -> Self {
         self.object_inspector = Some(Box::new(inspector));
         self
     }
@@ -675,7 +675,7 @@ fn value_target(value: ValueRef<'_>) -> Option<ValueTarget> {
     }
 }
 
-impl<H: Host> Screen for LiveExplorer<'_, H> {
+impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
     fn running(&self) -> bool {
         self.motion.is_some()
     }

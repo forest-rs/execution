@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-impl<H: Host> LiveExplorer<'_, H> {
+impl<H: Host> LiveExplorer<'_, '_, H> {
     pub(super) fn draw_view(&mut self, frame: &mut Frame<'_>) {
         self.refresh_object();
         let area = frame.area();

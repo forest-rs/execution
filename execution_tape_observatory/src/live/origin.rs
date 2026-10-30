@@ -93,7 +93,7 @@ fn caller_value(value: ValueRef<'_>) -> String {
     }
 }
 
-impl<'a, H: Host> LiveExplorer<'a, H> {
+impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     /// Links this invocation to the actual yielded request that initiated it.
     ///
     /// The live stack gains a selectable external-caller row with its exact instruction/source
@@ -103,8 +103,8 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     /// caller source maps must match that request's exact program, independently of this code.
     pub fn requested_by<P: Host>(
         mut self,
-        request: &'a PendingHostCall<'_, '_, P>,
-        sources: Option<&'a SourceMap>,
+        request: &'view PendingHostCall<'_, '_, P>,
+        sources: Option<&'view SourceMap>,
     ) -> Result<Self, SourceError> {
         self.origin = Some(RequestOrigin::new(request, sources)?);
         self.refresh();
@@ -131,7 +131,7 @@ impl<'a, H: Host> LiveExplorer<'a, H> {
     /// Embeddings can inspect a yielded call, leave the UI, then complete it or hand it back
     /// to their scheduler. Unlike dropping the explorer, this does not cancel unfinished work.
     #[must_use]
-    pub fn into_invocation(self) -> Invocation<'a, H> {
+    pub fn into_invocation(self) -> Invocation<'vm, H> {
         self.invocation
     }
 

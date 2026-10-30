@@ -86,11 +86,11 @@ struct MethodContext<'a> {
     records: &'a mut Vec<RecordedMethod>,
     snapshots: &'a mut Vec<(String, String)>,
 }
-fn execute_method<'a, 'world: 'a>(
-    mut call: Invocation<'a, Cells>,
-    request: &'a mut PendingHostCall<'_, '_, Cells>,
+fn execute_method(
+    mut call: Invocation<'_, Cells>,
+    request: &mut PendingHostCall<'_, '_, Cells>,
     publication: &CodeVersion,
-    context: &mut MethodContext<'world>,
+    context: &mut MethodContext<'_>,
     index: usize,
     fuel: u64,
 ) -> Result<(i64, u64)> {
