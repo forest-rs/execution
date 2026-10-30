@@ -257,6 +257,22 @@ impl AggDelta {
 
         Ok(remap)
     }
+
+    pub(crate) fn promote_all(mut self, base: &mut AggHeap) -> Result<(), AggError> {
+        // Reentry grows the base. Promote every staged handle first, including handles still
+        // held by the embedding, so the former overlay domain cannot alias callback allocations.
+        if self.base_len != base.len_u32() {
+            return Err(AggError::UnresolvedStagedHandle);
+        }
+        self.base_len
+            .checked_add(self.staged.len_u32())
+            .ok_or(AggError::HandleOverflow)?;
+        // Overlay constructors validated children before insertion. Every node is promoted,
+        // at its existing encoded index: no reachability list or remapping is necessary.
+        // Move node headers; their owned field/payload allocations keep their addresses.
+        base.nodes.append(&mut self.staged.nodes);
+        Ok(())
+    }
 }
 
 /// Finds reachable nodes encoded relative to `base_len`, without visiting the retained base.
@@ -898,6 +914,61 @@ fn copy_roots_into<'a>(
 mod tests {
     use super::*;
     use crate::value::{Closure, FuncId};
+
+    #[test]
+    fn staging_promotion_keeps_handles_sharing_and_payload_allocations() {
+        let mut base = AggHeap::new();
+        let original = base.tuple_new(vec![Value::I64(1)]).unwrap();
+        let bytes = vec![42; 4096];
+        let pointer = bytes.as_ptr();
+        let mut delta = AggDelta::for_base(&base);
+        let mut overlay = delta.overlay(&base);
+        let child = overlay
+            .tuple_new(vec![Value::Agg(original), Value::Bytes(bytes)])
+            .unwrap();
+        let root = overlay
+            .tuple_new(vec![
+                Value::Agg(child),
+                Value::Closure(Closure {
+                    func: FuncId(8),
+                    env: child,
+                }),
+            ])
+            .unwrap();
+        delta.promote_all(&mut base).unwrap();
+        assert_eq!(base.len_u32(), 3);
+        assert_eq!(base.tuple_get(root, 0), Ok(Value::Agg(child)));
+        assert_eq!(
+            base.tuple_get(root, 1),
+            Ok(Value::Closure(Closure {
+                func: FuncId(8),
+                env: child
+            }))
+        );
+        assert_eq!(base.tuple_get(child, 0), Ok(Value::Agg(original)));
+        let Value::Bytes(bytes) = base.tuple_get_ref(child, 1).unwrap() else {
+            panic!("moved payload");
+        };
+        assert_eq!(
+            bytes.as_ptr(),
+            pointer,
+            "promotion must move payload ownership"
+        );
+    }
+
+    #[test]
+    fn staging_promotion_rejects_a_changed_base_before_mutating_it() {
+        let mut base = AggHeap::new();
+        let mut delta = AggDelta::for_base(&base);
+        delta.overlay(&base).tuple_new(vec![Value::I64(1)]).unwrap();
+        let new_base = base.tuple_new(vec![Value::I64(2)]).unwrap();
+        assert_eq!(
+            delta.promote_all(&mut base),
+            Err(AggError::UnresolvedStagedHandle)
+        );
+        assert_eq!(base.len_u32(), 1);
+        assert_eq!(base.tuple_get(new_base, 0), Ok(Value::I64(2)));
+    }
 
     #[test]
     fn consuming_snapshot_moves_payloads_and_preserves_aliases() {

@@ -38,6 +38,9 @@ impl TraceSink for Observe {
 
     fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
         match event {
+            ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
+                panic!("fixture does not request callbacks")
+            }
             ValueEvent::Entry {
                 entry,
                 args,
@@ -439,6 +442,9 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                     s.as_ptr() as usize
                 }
                 ValueEvent::ReturnCandidate { .. } => return,
+                ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
+                    panic!("fixture does not request callbacks")
+                }
             };
             assert_eq!(pointer, self.expected);
             self.seen += 1;

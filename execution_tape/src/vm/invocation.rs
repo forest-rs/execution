@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 
 mod host_request;
 pub use host_request::PendingHostCall;
+pub(super) mod callback;
 
 pub(super) enum ProgramRef<'a> {
     Borrowed(&'a VerifiedProgram),
@@ -32,6 +33,8 @@ pub enum RunStatus {
     Suspended,
     /// An admitted host instruction is waiting for embedding-supplied completion.
     /// Query [`Invocation::pending_host_call`]; resuming alone does not invoke the host.
+    /// A guest callback return restores its original request in this same state; take the
+    /// callback results before choosing and completing the host outcome.
     AwaitingHost,
     /// The root returned and its results were committed.
     Complete,
@@ -283,9 +286,9 @@ impl<H: Host> Invocation<'_, H> {
         if let Some(outcome) = &self.outcome {
             return outcome.clone().map(|()| RunStatus::Complete);
         }
-        if let Some(pending) = self.control.pending_host {
+        if let Some(pending) = &self.control.pending_host {
             if pending.abandoned {
-                return Err(self.finish_abandoned_host(pending));
+                return Err(self.finish_abandoned_host(*pending));
             }
             return Ok(RunStatus::AwaitingHost);
         }
@@ -469,6 +472,12 @@ impl<H: Host> Invocation<'_, H> {
             }
         };
         self.trace.finish(self.program.program(), outcome);
+        callback::finish_instructions(
+            &mut self.control,
+            &mut self.trace,
+            self.program.program(),
+            outcome,
+        );
         self.trace.run_end(self.program.program(), outcome);
     }
 }
@@ -511,6 +520,12 @@ impl<H: Host> Drop for Invocation<'_, H> {
         self.vm.memory.rollback(self.checkpoint);
         self.ctx.clear();
         self.trace.cancel(self.program.program(), location, span);
+        callback::finish_instructions(
+            &mut self.control,
+            &mut self.trace,
+            self.program.program(),
+            TraceOutcome::Cancelled,
+        );
         self.trace
             .run_end(self.program.program(), TraceOutcome::Cancelled);
     }

@@ -66,7 +66,7 @@ impl TraceMask {
     /// - [`TraceSink::scope_enter`]
     /// - [`TraceSink::scope_exit`]
     pub const HOST: Self = Self(1 << 3);
-    /// Borrow values at entry, host-call completion and root return.
+    /// Borrow values at entry, host-call completion, guest callback boundaries and root return.
     ///
     /// Enables [`TraceSink::values`] independently of scope/instruction events. Include
     /// [`Self::RUN`] to learn whether the run eventually succeeds or traps. Values and aggregate
@@ -211,6 +211,34 @@ pub enum HostCallOutcome<'a> {
 /// returned identity, or reuse a handle map across runs.
 #[derive(Copy, Clone)]
 pub enum ValueEvent<'a> {
+    /// Embedding-requested guest reentry while a host instruction remains pending.
+    /// Observed before callback target, argument or fuel validation. IDs and handles use this
+    /// invocation's original code/heap. Promoted staging keeps its original handle identities.
+    CallbackEnter {
+        /// Host instruction whose embedding requested the callback.
+        location: TraceLocation,
+        /// Requested same-program function or closure.
+        callee: &'a Value,
+        /// Supplied user arguments, excluding a closure's hidden environment.
+        args: &'a [Value],
+        /// Prior host construction work promoted to the shared invocation before reentry.
+        work: DataWork,
+        /// Promoted aggregate handles, including values still held by the embedding.
+        created: &'a core::ops::Range<u32>,
+        /// Shared invocation storage after promotion.
+        aggregates: &'a AggHeap,
+    },
+    /// A callback returned successfully to the embedding, without completing its host call.
+    CallbackReturn {
+        /// The callback root's actual return instruction.
+        location: TraceLocation,
+        /// Original pending host instruction.
+        caller: TraceLocation,
+        /// Contract-checked result slots. Handles still belong to this invocation.
+        values: &'a [Value],
+        /// Shared invocation storage; no root commit or handle compaction occurred.
+        aggregates: &'a AggHeap,
+    },
     /// Invocation inputs, before entry, argument, shape or execution-limit validation.
     Entry {
         /// Requested entry function, which may be absent.
@@ -264,6 +292,34 @@ impl core::fmt::Debug for ValueEvent<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Inspect selected values without dumping unrelated backing heap contents.
         match self {
+            Self::CallbackEnter {
+                location,
+                callee,
+                args,
+                work,
+                created,
+                aggregates,
+            } => f
+                .debug_struct("CallbackEnter")
+                .field("location", location)
+                .field("callee", callee)
+                .field("args", args)
+                .field("work", work)
+                .field("created", created)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::CallbackReturn {
+                location,
+                caller,
+                values,
+                aggregates,
+            } => f
+                .debug_struct("CallbackReturn")
+                .field("location", location)
+                .field("caller", caller)
+                .field("values", values)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
             Self::Entry {
                 entry,
                 args,
@@ -380,12 +436,15 @@ pub trait TraceSink {
     ) {
     }
 
-    /// Completes the most recent [`Self::instr`] attempt.
+    /// Completes the identified outstanding [`Self::instr`] attempt.
     ///
     /// Enabled by [`TraceMask::INSTR`]. Every attempt gets exactly one completion, including
     /// instructions that trap. Fuel exhaustion before fetching an instruction creates no attempt.
     /// `next` is the actual execution successor (including call/return transitions); it is `None`
-    /// for a terminal return or trap. `outcome` describes this instruction, not the entire run.
+    /// for a terminal return, trap, or callback return to embedding code. `outcome` describes
+    /// this instruction, not the entire run. A yielded host attempt remains outstanding while
+    /// embedding-requested callbacks execute: completions nest, rather than forming pairs of
+    /// adjacent events. The original host instruction is not admitted or executed twice.
     /// A call completes its dispatch when control enters the callee; the call-frame scope's exit
     /// reports whether that invocation eventually returned or trapped.
     fn instr_end(

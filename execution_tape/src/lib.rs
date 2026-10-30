@@ -262,6 +262,8 @@
 //! Successful host completion adopts only staged nodes reachable from raw return slots.
 //! Return validation still runs afterward; a raw result is not proof of successful guest
 //! installation. Errors and cancellation discard staging. Native effects remain performed.
+//! A yielded request that reenters guest code first promotes all previous staging with unchanged
+//! handles; unused promoted nodes remain until root commit/rollback, as described below.
 //! Handles and nominal IDs belong to this invocation and program; these constructors do not
 //! make foreign handles portable. Use `retain` for results needed outside the host call.
 //! After successful execution, `Invocation::into_snapshot` consumes the invocation and moves
@@ -307,6 +309,47 @@
 //! statuses in a yielding driver. A polled producer abandoned before completion cannot be
 //! redispatched: resumption reports `HostCallAbandoned` and recording remains incomplete.
 //! Ordinary runs and `Host` implementations keep their existing signatures and behavior.
+//!
+//! ### Guest callbacks from a pending host request
+//!
+//! `PendingHostCall::call_guest` enters a function or closure in this invocation's original
+//! program/heap while retaining the admitted host instruction and its callers. Drive the same
+//! invocation with `resume`: the callback can yield further host requests, which can reenter
+//! guest code in turn. Its return exposes the original pending request, with result slots
+//! available through `callback_results`/`take_callback_results`. The embedding still chooses and supplies the
+//! final host outcome. Callback and host result signatures are independent.
+//!
+//! ```no_run
+//! use execution_tape::{host::Host, value::Value, vm::{Invocation, TrapInfo}};
+//! fn start_handler<H: Host>(run: &mut Invocation<'_, H>, handler: Value,
+//!     args: Vec<Value>) -> Result<(), TrapInfo> {
+//!     run.pending_host_call().expect("AwaitingHost").call_guest(handler, args)
+//! }
+//! // Resume and handle nested host requests normally. Once this original request returns:
+//! fn accept_handler<H: Host>(run: &mut Invocation<'_, H>) -> Result<(), TrapInfo> {
+//!     let mut request = run.pending_host_call().expect("original request restored");
+//!     let mut results = request.take_callback_results().expect("handler returned");
+//!     request.complete(&mut results, Ok(0)) // this example uses matching host/handler results
+//! }
+//! ```
+//!
+//! Active frame identities and source callers survive reentry. Closures use their concrete
+//! body/environment contracts. All nested work shares the original hard budgets; each callback
+//! spends one fuel unit, and moved immediate payload arguments are charged as host ingress.
+//! Previously staged host aggregates are promoted with unchanged handles before reentry, so
+//! callbacks and later host construction cannot reuse their staged identities. Even unused
+//! promoted nodes remain until root commit/rollback; their existing work stays charged.
+//!
+//! Invalid callback admission or return traps the whole invocation. Dropping it cancels every
+//! pending level without running guest code. Guest reentry does not capture a native Rust
+//! stack or import another program's function, closure or nominal IDs. Synchronous `Host::call`
+//! retains its existing interface; reentry uses the explicit yielded-request protocol.
+//!
+//! `ValueEvent::CallbackEnter`/`CallbackReturn` and ordinary call scopes describe actual guest
+//! activity. Callback return is distinct from host completion and root publication. Recording
+//! currently reports `CaptureFault::UnsupportedCallback` and refuses checked replay for this
+//! new control path; a replay driver needs the embedding's callback commands as well as host
+//! outcomes. Ordinary recordings retain their existing guarantees.
 //!
 //! ## Owned executable callables
 //!
@@ -354,7 +397,7 @@
 //!
 //! Register mapping and verifier facts are constructed only when requested for a function.
 //! `visit_objects` inventories conservative references in initialized registers, arguments,
-//! outputs and all VM aggregate fields, including retained results and temporary nodes. The
+//! pending callback results, outputs and all VM aggregate fields, including retained results and temporary nodes. The
 //! embedding collector must add its globals, snapshots and other external roots and trace its
 //! own object graph. The VM does not choose collection, identity or relocation policy. Inspection
 //! borrows prevent resumption or host mutation while those views are being read.

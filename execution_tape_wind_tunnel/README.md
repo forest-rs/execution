@@ -467,3 +467,38 @@ aggregate storage; actual merges remain separate. Native construction uses the e
 heap rather than modifying borrowed inputs. Prepared-program storage and ordinary scalar
 instructions gained no new allocation or data-work debit. Host dispatch helper experiments
 were removed after measurement; there is one direct synchronous interpreter path.
+
+## Callback-free execution after guest reentry support
+
+The `stepping` bench adds `callback_free_calls/{ordinary_1000,scheduled_1000}`: a prepared caller
+makes 1,000 direct calls to an identity function. This stresses returns alongside the existing
+1,000-addition scheduling cases. Neither fixture requests a guest callback or captures traces.
+Invocation setup/destruction is included; preparation is excluded. Ordinary execution reuses
+its VM, and scheduled execution starts a new invocation on that same VM.
+
+The callback implementation keeps its waiting-host stack behind an optional allocation and adds
+no callback fields to each guest frame or prepared instruction. Non-yielding dispatch removes
+the callback-return check at compile time. Resumable returns still check whether their frame
+belongs to a callback. This structure does not establish zero total performance cost.
+
+On arm64 macOS with Rust 1.99.0 (2026-10-31), a fresh `ff64768` baseline and the callback candidate used
+identical `stepping.rs` source, including the new return-heavy fixture. Separate frozen binaries
+ran in baseline/candidate/candidate/baseline order, without concurrent builds: 30 samples per
+case, 300 ms warmup and 1.2 s measurement. The table preserves both point estimates per binary;
+all numbers are microseconds for the complete 1,000-operation invocation.
+
+| Fixture | Main, two passes | Callback candidate, two passes |
+|---|---:|---:|
+| Ordinary additions | 4.784 / 4.914 | 4.794 / 4.936 |
+| Scheduled additions, quantum 1 | 12.111 / 12.136 | 12.806 / 12.906 |
+| Scheduled additions, quantum 64 | 4.769 / 4.838 | 4.550 / 4.393 |
+| Scheduled additions, unlimited quantum | 4.501 / 4.637 | 4.276 / 4.217 |
+| Ordinary direct calls | 30.331 / 31.466 | 30.501 / 29.950 |
+| Scheduled direct calls, unlimited quantum | 33.990 / 34.934 | 32.668 / 32.903 |
+
+One-instruction scheduling regressed by approximately 6% in these runs. Ordinary scalar work
+was approximately neutral; the other cases were mixed or faster. Separate runs also showed
+machine variation, so these are not a general speedup or parity claim. The comparison measures
+unused-feature cost, not guest callback throughput, allocation totals, recording or native host
+work. Guest callbacks themselves additionally perform admission, result materialization and
+optional host-staging promotion; their costs belong in separate measurements.

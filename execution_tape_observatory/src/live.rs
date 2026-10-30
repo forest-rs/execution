@@ -397,6 +397,9 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                         } => format!("frame #{} r{register}", activation.ordinal()),
                         ObjectRootOrigin::Argument { index } => format!("argument[{index}]"),
                         ObjectRootOrigin::Output { index } => format!("output[{index}]"),
+                        ObjectRootOrigin::CallbackResult { index } => {
+                            format!("callback result[{index}]")
+                        }
                         ObjectRootOrigin::Aggregate { aggregate, index } => {
                             format!("aggregate @{} field[{index}]", aggregate.0)
                         }

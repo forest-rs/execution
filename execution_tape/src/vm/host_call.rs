@@ -9,6 +9,9 @@ use super::*;
 pub(super) struct PendingHost {
     pub(super) location: TraceLocation,
     pub(super) instruction: usize,
+    // Admitting guest frame. A poisoned callback can leave this parent operation suspended
+    // below a new guest leaf; inspection must not assign the parent's location to that leaf.
+    pub(super) depth: usize,
     pub(super) abandoned: bool,
 }
 

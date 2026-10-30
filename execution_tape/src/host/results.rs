@@ -153,6 +153,14 @@ impl HostResults {
             Some(delta) => adopt_delta(delta, heap, values, returned),
         }
     }
+
+    pub(crate) fn promote(&mut self, heap: &mut AggHeap) -> Result<Range<u32>, AggError> {
+        let start = heap.len_u32();
+        if let Some(delta) = self.delta.take() {
+            delta.promote_all(heap)?;
+        }
+        Ok(start..heap.len_u32())
+    }
 }
 
 #[inline(never)]
@@ -176,7 +184,9 @@ impl HostContext<'_, '_> {
     ///
     /// Borrowed inputs remain unchanged. Handles in fields must belong to this call's heap or
     /// its earlier staged results. Successful completion adopts only reachable results; failure
-    /// or cancellation discards staging. One node plus each field and immediate payload bytes
+    /// or cancellation discards staging. Guest reentry through a yielded request first promotes
+    /// all staging with unchanged handles; unused promoted nodes live until root commit/rollback.
+    /// One node plus each field and immediate payload bytes
     /// share the invocation's aggregate/payload work limits. Native allocations before this call
     /// are outside those limits. A denial allocates no node and can be handled by the host.
     /// Errors preserve an `AggError` or VM `Trap` as the typed `HostError` source.

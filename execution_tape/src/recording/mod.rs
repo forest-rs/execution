@@ -13,6 +13,10 @@
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
 //!
+//! Embedding-requested guest callbacks through `PendingHostCall::call_guest` currently report
+//! [`CaptureFault::UnsupportedCallback`]. Their callback commands are not yet captured for the
+//! replay driver; such recordings stay explicitly incomplete and checked replay refuses them.
+//!
 //! ```
 //! use std::sync::Arc;
 //! use execution_tape::{
@@ -202,12 +206,19 @@ pub enum CaptureFault {
         /// Raw source handle, valid only in the observed invocation's heap domain.
         handle: u32,
     },
+    /// Guest callback control was observed without a supported replay transcript.
+    UnsupportedCallback,
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
 }
 
 impl core::fmt::Display for CaptureFault {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if matches!(self, Self::UnsupportedCallback) {
+            return f.write_str(
+                "incomplete capture: guest callback commands are not captured for checked replay",
+            );
+        }
         write!(f, "incomplete capture: {self:?}")
     }
 }

@@ -59,6 +59,7 @@ pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
     pub(super) yield_host_calls: bool,
     pub(super) pending_host: Option<host_call::PendingHost>,
+    pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
     owner: Option<Arc<()>>,
     frames: Vec<Activation>,
     last: u64,
@@ -69,6 +70,7 @@ impl ExecutionControl {
             remaining: 0,
             yield_host_calls,
             pending_host: None,
+            callbacks: None,
             owner: Some(Arc::new(())),
             frames: vec![Activation {
                 ordinal: 0,
@@ -137,6 +139,11 @@ pub enum ObjectRootOrigin {
     /// A committed root return slot.
     Output {
         /// Result position.
+        index: usize,
+    },
+    /// A callback result still owned by the pending host operation.
+    CallbackResult {
+        /// Callback result position, independent of the host return signature.
         index: usize,
     },
     /// An immediate field of a retained or temporary VM aggregate.
@@ -216,7 +223,10 @@ impl<'a> InvocationInspection<'a> {
         let frame = &self.ctx.frames[index];
         let activation = self.control.frames[index];
         let child = index + 1 < self.ctx.frames.len();
-        let pending = self.control.pending_host.filter(|_| !child);
+        let pending = self
+            .control
+            .pending_host
+            .filter(|pending| !child && pending.depth == self.ctx.frames.len());
         let waiting = child || pending.is_some();
         let location = if child {
             self.control.frames[index + 1]
@@ -330,7 +340,8 @@ impl<'a> InvocationInspection<'a> {
 
     /// Enumerates conservative host-object references without materializing a root vector.
     ///
-    /// Includes initialized active registers, borrowed arguments, committed outputs and every
+    /// Includes initialized active registers, borrowed arguments, pending callback results,
+    /// committed outputs and every
     /// VM aggregate field (including retained results and uncommitted temporaries). Duplicates
     /// and no-longer-needed values may occur; this is not a minimal liveness set. No uninitialized
     /// register slots are read. The collector must additionally trace its own heap, globals,
@@ -371,6 +382,21 @@ impl<'a> InvocationInspection<'a> {
                     object: *object,
                     origin: ObjectRootOrigin::Output { index },
                 });
+            }
+        }
+        if let Some(values) = self
+            .control
+            .callbacks
+            .as_ref()
+            .and_then(|callbacks| callbacks.returned.as_deref())
+        {
+            for (index, value) in values.iter().enumerate() {
+                if let Value::Obj(object) = value {
+                    visit(ObjectRoot {
+                        object: *object,
+                        origin: ObjectRootOrigin::CallbackResult { index },
+                    });
+                }
             }
         }
         for (aggregate, index, object) in self.aggregates.object_references() {

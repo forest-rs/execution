@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Reenter same-program guest functions/closures through `PendingHostCall::call_guest` while
+  retaining the original host operation, guest frames, heap and hard budgets. Nested callbacks
+  can wait for more host work; `take_callback_results` retrieves their results before explicit
+  host completion. Reentry promotes previous host staging with unchanged handles. Cancellation
+  closes every pending level, and invalid callback boundaries terminate the invocation. ([#228][])
+
 - Consume successful invocations with `into_snapshot`: owned VMs move their reachable result
   graph without payload copies; borrowed VMs preserve existing handles and copy that graph.
   `Invocation::program_owner` exposes the exact retained code domain for scoped result IDs,
@@ -58,6 +64,14 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Add `ValueEvent::{CallbackEnter,CallbackReturn}`, `ObjectRootOrigin::CallbackResult` and
+  `CaptureFault::UnsupportedCallback`.
+  Migration: handle the new enum variants in exhaustive matches. Instruction observers must
+  support outstanding parent host attempts across nested guest callback attempts; callback
+  return has no next guest instruction. Callback recordings are explicitly incomplete and
+  refuse checked replay until callback commands are captured. Existing execution/recordings,
+  crate versions and tape wire format are unchanged.
 
 - Add `work` and borrowed `created` metadata to `ValueEvent::HostCall`, and `work`/`constructed`
   to recorded host observations. Migration: include the new fields in explicit event patterns
@@ -595,3 +609,5 @@ runtime, host-call ABI, tracing API, and disassembler.
 [#209]: https://github.com/forest-rs/execution/pull/209
 [#210]: https://github.com/forest-rs/execution/pull/210
 [#216]: https://github.com/forest-rs/execution/pull/216
+
+[#228]: https://github.com/forest-rs/execution/pull/228
