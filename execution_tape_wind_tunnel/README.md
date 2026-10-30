@@ -114,6 +114,10 @@ per instruction; changed layouts and generated code can nevertheless affect perf
 These measurements exclude program preparation, inspection, recording, retained memory and
 real asynchronous host work.
 
+The fresh-VM ownership probe in the same session measured 4.446 µs borrowed and 4.450 µs
+owned, with overlapping confidence intervals. That small fixture does not establish that
+boxing is free or predict costs for large hosts, captures or owned observers.
+
 ## Yielded host-request costs
 
 `host_requests` compares the same 100 dependent host calls through ordinary execution, a
