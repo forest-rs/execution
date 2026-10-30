@@ -6,12 +6,16 @@
 use core::fmt;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::nodes::Nodes;
+use crate::tasks::{ActiveTask, Tasks};
 use crate::{InputId, InputSource, NodeOutcome, NodeOutputs, NodeStatus, OutputId};
+use crate::{NodeAttempt, TaskCancelReason, TaskEvent, TaskEventKind, TaskInfo};
+use core::task::{Context, Poll, Waker};
 use hashbrown::HashSet;
+mod task_execution;
 
 #[cfg(test)]
 use crate::HostOpId;
@@ -28,6 +32,11 @@ use crate::report::{NodeRunDetail, ReportDetailMask, RunDetailReport, RunSummary
 pub enum GraphError<E> {
     /// A node id was invalid.
     BadNodeId,
+    /// A deferred poll unwound; this attempt was cancelled and cannot safely resume.
+    TaskAbandoned {
+        /// Attempt whose continuation was abandoned.
+        id: NodeAttempt,
+    },
     /// A node declared no output through which execution could be scheduled.
     NoOutputs,
     /// A requested dependency would create a cycle. The rejected dependencies are not installed.
@@ -127,7 +136,7 @@ pub enum GraphError<E> {
         /// Original execution error.
         source: Box<Self>,
         /// Report rows collected for nodes that completed before the failure.
-        partial_report: RunDetailReport,
+        partial_report: Box<RunDetailReport>,
     },
 }
 
@@ -163,6 +172,12 @@ impl<E: fmt::Display> fmt::Display for GraphError<E> {
             Self::DynamicDependencyCycle { path } => write!(
                 f,
                 "dynamic dependency cycle {path:?}; remove a cyclic output read"
+            ),
+            Self::TaskAbandoned { id } => write!(
+                f,
+                "node {} attempt {} unwound during a task poll; its work was cancelled",
+                id.node.as_u64(),
+                id.attempt
             ),
             Self::BadNodeId => write!(f, "bad node id"),
             Self::NoOutputs => write!(
@@ -255,6 +270,8 @@ pub(crate) enum NodeStep {
     Executed,
     CutOff,
     Pending(Vec<NodeId>),
+    Waiting,
+    Blocked,
 }
 
 /// Ownership returned by removing a node. Its identity is permanently retired.
@@ -338,6 +355,7 @@ pub struct ExecutionGraph<X: Executor> {
     scratch: Scratch<X::Value>,
     collect_access: bool,
     execution_attempts: u64,
+    tasks: Tasks<X::Value, X::Error>,
 }
 
 #[derive(Debug)]
@@ -415,6 +433,7 @@ impl<X: Executor> ExecutionGraph<X> {
             scratch: Scratch::default(),
             collect_access: false,
             execution_attempts: 0,
+            tasks: Tasks::default(),
         }
     }
 
@@ -907,6 +926,8 @@ impl<X: Executor> ExecutionGraph<X> {
                 self.dirty.mark_dirty(key);
             }
         }
+        self.tasks
+            .cancel(node, TaskCancelReason::Rebound, &mut self.dirty);
         self.nodes[index].inputs[slot] = binding;
         self.dirty.collect_unused();
         Ok(())
@@ -933,6 +954,8 @@ impl<X: Executor> ExecutionGraph<X> {
     pub fn invalidate(&mut self, key: ResourceKey) {
         if let Some(id) = self.dirty.lookup(&key) {
             if let ResourceKey::NodeOutput { node, .. } = key {
+                self.tasks
+                    .cancel(node, TaskCancelReason::Invalidated, &mut self.dirty);
                 // Execution publishes all of a producer's outputs. Every sibling must become
                 // pending so its readers cannot return a cache without verifying the producer.
                 for &output in &self.nodes[usize::try_from(node.as_u64()).unwrap()].output_ids {
@@ -942,6 +965,7 @@ impl<X: Executor> ExecutionGraph<X> {
                 self.dirty.mark_dirty(id);
             }
         }
+        self.cancel_changed_tasks();
     }
 
     /// Invalidates a batch of resource keys. Duplicate roots are processed once.
@@ -953,6 +977,8 @@ impl<X: Executor> ExecutionGraph<X> {
         for key in keys {
             if let Some(id) = self.dirty.lookup(&key) {
                 if let ResourceKey::NodeOutput { node, .. } = key {
+                    self.tasks
+                        .cancel(node, TaskCancelReason::Invalidated, &mut self.dirty);
                     ids.extend_from_slice(
                         &self.nodes[usize::try_from(node.as_u64()).unwrap()].output_ids,
                     );
@@ -966,6 +992,7 @@ impl<X: Executor> ExecutionGraph<X> {
         for id in ids {
             self.dirty.mark_dirty(id);
         }
+        self.cancel_changed_tasks();
     }
 
     fn intern_input_id(&mut self, name: &str) -> DirtyKey {
@@ -979,7 +1006,18 @@ impl<X: Executor> ExecutionGraph<X> {
     /// Returned outputs stay owned by the caller, allowing host-owned values to be retired safely.
     pub fn remove_node(&mut self, node: NodeId) -> Result<RemovedNode<X>, GraphError<X::Error>> {
         let index = usize::try_from(node.as_u64()).map_err(|_| GraphError::BadNodeId)?;
-        let n = self.nodes.remove(index).ok_or(GraphError::BadNodeId)?;
+        self.nodes.get(index).ok_or(GraphError::BadNodeId)?;
+        self.tasks
+            .cancel(node, TaskCancelReason::Removed, &mut self.dirty);
+        let mut readers: Vec<_> = self.tasks.active.iter().filter_map(|(&reader, task)| {
+            (task.reads.keys().any(|&key| matches!(self.dirty.key(key), ResourceKey::NodeOutput { node: producer, .. } if *producer == node)) || task.requested.contains(&node)).then_some(reader)
+        }).collect();
+        readers.sort_unstable();
+        for reader in readers {
+            self.tasks
+                .cancel(reader, TaskCancelReason::Removed, &mut self.dirty);
+        }
+        let n = self.nodes.remove(index).expect("validated node");
         for &id in &n.output_ids {
             self.dirty.mark_dirty(id);
             let readers = self.dirty.remove(id);
@@ -1014,13 +1052,15 @@ impl<X: Executor> ExecutionGraph<X> {
         Some(&self.nodes.get(index)?.outputs)
     }
 
-    /// Returns whether cached outputs are current, pending, or have never been published.
+    /// Returns cache freshness, or `Waiting` when an owned attempt is in progress.
     ///
     /// This reflects changes reported to the graph. Unreported external mutations cannot be
     /// detected. `node_outputs` always exposes the last committed cache, even while pending.
     pub fn node_status(&self, node: NodeId) -> Option<NodeStatus> {
         let n = self.nodes.get(usize::try_from(node.as_u64()).ok()?)?;
-        Some(if n.run_count == 0 {
+        Some(if self.tasks.active.contains_key(&node) {
+            NodeStatus::Waiting
+        } else if n.run_count == 0 {
             NodeStatus::NeverRun
         } else if n.output_ids.iter().any(|&key| self.dirty.is_pending(key)) {
             NodeStatus::Pending
@@ -1177,6 +1217,9 @@ impl<X: Executor> ExecutionGraph<X> {
     /// dirty state of any not-yet-executed scheduled work is preserved so a subsequent run
     /// re-attempts it.
     pub fn run_all(&mut self) -> Result<RunSummary, GraphError<X::Error>> {
+        if self.dirty.is_clean() {
+            return Ok(RunSummary::default());
+        }
         let plan = self.plan_all();
         self.run_plan(plan)
     }
@@ -1243,6 +1286,32 @@ impl<X: Executor> ExecutionGraph<X> {
         &mut self,
         node: NodeId,
     ) -> Result<NodeStep, GraphError<X::Error>> {
+        if let Some(task) = self.tasks.active.get(&node) {
+            if task.poisoned {
+                let id = task.id;
+                self.tasks
+                    .cancel(node, TaskCancelReason::Abandoned, &mut self.dirty);
+                return Err(GraphError::TaskAbandoned { id });
+            }
+            if let Some(key) = task.changed(&self.dirty) {
+                let resource = self.dirty.key(key).clone();
+                self.tasks
+                    .cancel(node, TaskCancelReason::Changed(resource), &mut self.dirty);
+                // A producer may have changed while this query resolved provisional reads.
+                // Do not automatically restart an effectful body inside the same query.
+                self.tasks.waker.wake_by_ref();
+                return Ok(NodeStep::Blocked);
+            }
+        }
+        if !self.tasks.active.is_empty() {
+            let n = &self.nodes[usize::try_from(node.as_u64()).expect("validated node id")];
+            if self.dirty.effective_dependencies(n.output_ids[0]).iter().any(|&key| {
+                matches!(self.dirty.key(key), ResourceKey::NodeOutput { node: producer, .. } if self.nodes[usize::try_from(producer.as_u64()).unwrap()].output_ids.iter().any(|&id| self.dirty.is_pending(id)))
+            }) { return Ok(NodeStep::Blocked); }
+        }
+        if self.tasks.active.contains_key(&node) {
+            return self.poll_task(node);
+        }
         if self.is_cut_off(node) {
             let n = &mut self.nodes[usize::try_from(node.as_u64()).expect("validated node id")];
             self.dirty.complete(&n.output_ids);
@@ -1288,6 +1357,7 @@ impl<X: Executor> ExecutionGraph<X> {
         };
 
         let collect_access = self.collect_access;
+        let observed_at = self.dirty.revision();
 
         // Build args and (optionally) access log. Take the buffers out of scratch so the
         // remaining scratch fields can be borrowed disjointly by the executor's `NodeAccess`.
@@ -1349,8 +1419,10 @@ impl<X: Executor> ExecutionGraph<X> {
         // Temporarily move the body out so output inspection can borrow all node metadata
         // without reentrant execution or aliased mutable borrows.
         let mut body = self.nodes[node_index].body.take().expect("idle node body");
-        self.nodes[node_index].attempt_count =
-            self.nodes[node_index].attempt_count.saturating_add(1);
+        self.nodes[node_index].attempt_count = self.nodes[node_index]
+            .attempt_count
+            .checked_add(1)
+            .expect("node attempt identity exhausted");
         self.execution_attempts = self.execution_attempts.saturating_add(1);
         let mut pending = Vec::new();
         let result = {
@@ -1384,6 +1456,48 @@ impl<X: Executor> ExecutionGraph<X> {
             }
         };
 
+        match outcome {
+            NodeOutcome::Deferred(task) => {
+                let id = NodeAttempt {
+                    node,
+                    attempt: self.nodes[node_index].attempt_count,
+                };
+                let mut task = ActiveTask {
+                    id,
+                    task,
+                    reads: BTreeMap::new(),
+                    writes: BTreeSet::new(),
+                    outputs,
+                    log,
+                    polls: 0,
+                    poisoned: false,
+                    requested: Vec::new(),
+                };
+                task.observe(
+                    &self.scratch.read_ids,
+                    &self.scratch.write_ids,
+                    observed_at,
+                    &mut self.dirty,
+                );
+                task.requested = pending;
+                self.tasks.active.insert(node, task);
+                self.tasks.event(id, TaskEventKind::Started);
+                self.poll_task(node)
+            }
+            NodeOutcome::Pending => self.finish_attempt(node, outputs, log, pending, true),
+            NodeOutcome::Complete => self.finish_attempt(node, outputs, log, pending, false),
+        }
+    }
+
+    fn finish_attempt(
+        &mut self,
+        node: NodeId,
+        mut outputs: Vec<X::Value>,
+        mut log: Option<AccessLog>,
+        mut pending: Vec<NodeId>,
+        restart: bool,
+    ) -> Result<NodeStep, GraphError<X::Error>> {
+        let node_index = usize::try_from(node.as_u64()).expect("validated node");
         // A later host write may invalidate a producer that was current when read. Never
         // publish a result based on that cached value as if it were a fresh graph read.
         for &key in &self.scratch.read_ids {
@@ -1397,14 +1511,14 @@ impl<X: Executor> ExecutionGraph<X> {
                 }
             }
         }
-        if outcome == NodeOutcome::Pending || !pending.is_empty() {
+        if restart || !pending.is_empty() {
             outputs.clear();
             self.scratch.outputs = outputs;
             self.dirty.collect_unused();
             if !self.scratch.write_ids.is_empty() {
                 return Err(GraphError::PendingAfterWrite { node });
             }
-            if outcome == NodeOutcome::Complete {
+            if !restart {
                 return Err(GraphError::UnresolvedOutputReads {
                     node,
                     producers: pending,
@@ -1682,7 +1796,7 @@ mod tape_tests {
                 node: NodeId::new(2),
                 name: "tax".into(),
             }),
-            partial_report,
+            partial_report: Box::new(partial_report),
         };
         let wrapped_display = wrapped.to_string();
         assert!(wrapped_display.contains("1 executed and 0 cut-off report rows"));
@@ -4020,7 +4134,7 @@ mod mixed_tests {
             inputs: &[Self::Value],
             outputs: &mut Vec<Self::Value>,
             access: &mut NodeAccess<'_, Self::Value>,
-        ) -> Result<NodeOutcome, Self::Error> {
+        ) -> Result<NodeOutcome<Self::Value, Self::Error>, Self::Error> {
             match node {
                 MixedNode::Native(body) => self.native.execute(body, inputs, outputs, access),
                 MixedNode::Tape(body) => self.tape.execute(body, inputs, outputs, access),

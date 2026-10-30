@@ -343,7 +343,7 @@ impl<H: Host, O: TapeObserver> Executor for TapeExecutor<H, O> {
         inputs: &[Self::Value],
         outputs: &mut Vec<Self::Value>,
         access: &mut NodeAccess<'_, Self::Value>,
-    ) -> Result<crate::NodeOutcome, Self::Error> {
+    ) -> Result<crate::NodeOutcome<Self::Value, Self::Error>, Self::Error> {
         self.execute_node(node, inputs, outputs, access)
             .map(|()| crate::NodeOutcome::Complete)
     }

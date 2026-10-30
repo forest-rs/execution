@@ -679,7 +679,7 @@ fn custom_geometry_edges_can_delegate_tape_execution_and_keep_ownership() {
             inputs: &[SceneValue],
             outputs: &mut Vec<SceneValue>,
             access: &mut NodeAccess<'_, SceneValue>,
-        ) -> Result<NodeOutcome, String> {
+        ) -> Result<NodeOutcome<Self::Value, Self::Error>, String> {
             match node {
                 SceneNode::Tape(node) => {
                     let args = inputs

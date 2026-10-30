@@ -16,8 +16,26 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Own deferred node continuations through `NodeTask`, `NodeOutcome::Deferred` and
+  `FnNode::deferred`. Independent work progresses while consumers wait. Provisional reads
+  protect publication across edits; cancellation retires tentative results while published
+  values retain their existing ownership. Task identities, wake notifications, inspection and
+  opt-in lifecycle events expose actual progress without an async runtime dependency.
+
+
 - Export a published function or closure through `TapeValue::retain_callable`, retaining its
   exact code and immutable captures for execution after graph edits or executor destruction. ([#211][] by [@waywardmonkeys][])
+
+### Changed
+
+- `Executor::execute` now returns `NodeOutcome<Self::Value, Self::Error>` so deferred tasks carry
+  their exact edge-value and error types. Migration: update explicit return annotations in
+  custom executors and helpers; inferred `Complete`/`Pending` expressions usually need no
+  change. `NodeOutcome` owns continuations and no longer implements `Copy`, `Clone` or equality.
+  Handle the new outcome variant, `NodeStatus::Waiting` and `GraphError::TaskAbandoned` in
+  exhaustive matches. `RunReportFailed::partial_report` is boxed to keep ordinary errors small;
+  explicit construction must box the report, while `partial_report()` still borrows it directly.
+  Existing `Pending` remains a safe restart, distinct from deferred work.
 
 ## [0.1.0][] (2026-10-27)
 

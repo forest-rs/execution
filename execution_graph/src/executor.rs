@@ -15,6 +15,7 @@
 //! An embedder that needs both kinds of node in one graph writes an executor whose node type is an
 //! enum over the two and delegates each variant.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -58,6 +59,11 @@ pub trait Executor {
     /// external effects cannot be detected or rolled back. Ordinary successful execution
     /// returns [`NodeOutcome::Complete`]; unresolved reads then produce a graph error.
     ///
+    /// [`NodeOutcome::Deferred`] instead transfers an owned [`NodeTask`](crate::NodeTask).
+    /// Its polls continue this attempt, without calling `execute` again. Tentative results and
+    /// observed resources survive across queries. On invalidation, rewiring, cancellation or
+    /// removal the graph drops obsolete work; already performed external effects remain.
+    ///
     /// Mutations to `self`, `node`, or external host state are not rolled back. Report host writes
     /// even if a later operation fails, so other readers can be invalidated. Use owned values or
     /// shared ownership for output handles; do not retire a successfully published value because
@@ -68,7 +74,7 @@ pub trait Executor {
         inputs: &[Self::Value],
         outputs: &mut Vec<Self::Value>,
         access: &mut NodeAccess<'_, Self::Value>,
-    ) -> Result<NodeOutcome, Self::Error>;
+    ) -> Result<NodeOutcome<Self::Value, Self::Error>, Self::Error>;
 
     /// Returns whether `previous` and `next` are observably equivalent to every reader.
     ///
@@ -93,9 +99,9 @@ pub trait Executor {
     }
 }
 
-/// Whether an executor attempt is ready to publish or explicitly requests a restart.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NodeOutcome {
+/// Whether an attempt can publish, requests a safe restart, or transfers an owned continuation.
+#[derive(Debug)]
+pub enum NodeOutcome<V = (), E = core::convert::Infallible> {
     /// Publish the output buffer after arity and dependency validation.
     Complete,
     /// Discard this attempt and restart after the pending output reads are resolved.
@@ -103,4 +109,14 @@ pub enum NodeOutcome {
     /// At least one `read_node_output` must have returned `Ok(None)`. No recorded host
     /// writes are allowed. The executor promises that repeating this attempt is safe.
     Pending,
+    /// Transfer an owned continuation, polled in this query when its prerequisites are ready.
+    /// Unlike `Pending`, this retains the attempt and its tentative results across queries.
+    Deferred(Box<dyn crate::NodeTask<V, E>>),
+}
+
+impl<V, E> NodeOutcome<V, E> {
+    /// Boxes one owned continuation. Only deferred work pays this allocation.
+    pub fn deferred(task: impl crate::NodeTask<V, E> + 'static) -> Self {
+        Self::Deferred(Box::new(task))
+    }
 }

@@ -91,6 +91,77 @@ Executor-managed state uses the same key space: if a node records a
 [`ResourceKey::HostState { op, key }`](ResourceKey::HostState) read during execution, you can
 invalidate that state later via [`ExecutionGraph::invalidate`].
 
+## Deferred work
+
+[`NodeOutcome::Pending`] remains a discard-and-restart protocol for dynamic graph reads.
+[`NodeOutcome::Deferred`] transfers an owned [`NodeTask`] whose polls continue the same
+attempt. Independent nodes can run while it waits; consumers remain blocked and cannot use
+an old cached output as current. Old caches stay available through `node_outputs`.
+
+Use [`FnNode::deferred`] for a task-producing native node, or return the outcome from a custom
+executor. A task owns its inputs, continuation and tentative values. Its successful result
+crosses the normal arity/dependency/publication boundary. Reads observed before waiting are
+retained provisionally, without replacing committed dependencies. Rebinding or changing a
+read cancels obsolete work. If an upstream output still needs verification, the task waits
+for that verification; an unchanged result preserves its continuation.
+Supersession discovered while resolving producers ends that node's visit and requests a
+fresh query. It never repeatedly restarts an effectful body inside the same query.
+
+```rust
+use std::{cell::Cell, convert::Infallible, rc::Rc, task::{Context, Poll}};
+use execution_graph::{ExecutionGraph, FnExecutor, FnNode, NodeAccess, NodeTask, NodeStatus};
+
+#[derive(Debug)]
+struct Reply(Rc<Cell<Option<i64>>>);
+impl NodeTask<i64, Infallible> for Reply {
+    fn poll(&mut self, _: &mut Context<'_>, out: &mut Vec<i64>, _: &mut NodeAccess<'_, i64>)
+        -> Poll<Result<(), Infallible>>
+    {
+        match self.0.take() {
+            Some(value) => { out.push(value); Poll::Ready(Ok(())) }
+            None => Poll::Pending,
+        }
+    }
+}
+let reply = Rc::new(Cell::new(None));
+let mut graph = ExecutionGraph::new(FnExecutor::<i64, Infallible>::new());
+let waiting = graph.add_node(FnNode::deferred({
+    let reply = Rc::clone(&reply);
+    move |_, _| Ok(Box::new(Reply(Rc::clone(&reply))))
+}), vec![], vec!["result".into()]).unwrap();
+let ready = graph.add_node(FnNode::new(|_, out, _| { out.push(42); Ok(()) }),
+    vec![], vec!["result".into()]).unwrap();
+let summary = graph.run_all().unwrap();
+assert_eq!(summary.waiting_nodes, 1);
+assert_eq!(graph.node_status(ready), Some(NodeStatus::Current));
+assert_eq!(graph.node_status(waiting), Some(NodeStatus::Waiting));
+reply.set(Some(7)); // This small example drives readiness manually.
+graph.run_node(waiting).unwrap();
+assert_eq!(graph.node_outputs(waiting).unwrap().get("result"), Some(&7));
+```
+
+No async runtime or worker thread is created by the graph. Manually query again, or install
+an embedding waker with [`ExecutionGraph::set_task_waker`]. A task registers that waker with
+its external source. A wake requests another query; it does not reenter or mutate the graph.
+Ordinary pending tasks are polled at most once per query; requested graph producers may
+permit additional polls when they become current. A completed or cancelled attempt is never
+polled again. Unwinding from a poll poisons its continuation; the next query cancels it and
+reports [`GraphError::TaskAbandoned`].
+
+[`ExecutionGraph::task_info`] inspects an active attempt without polling it.
+[`ExecutionGraph::task_dependencies`] borrows its provisional read prefix, separately from
+the last successful publication's `node_dependencies`.
+[`ExecutionGraph::cancel_task`] drops it and retains the previous published cache. A later
+demand can start a fresh attempt. Removing the node or dropping the graph also drops owned
+work. This retires the continuation and prevents late publication; whether external work
+stops is the embedding's cancellation policy. External effects cannot be rolled back.
+
+Task-event collection is opt-in through [`ExecutionGraph::set_collect_task_events`].
+[`ExecutionGraph::take_task_events`] includes start, wait, publication and cancellation,
+correlated by graph-local [`NodeAttempt`]. It records transitions, not CPU time or a replay
+of native effects. Reports separately list waiting and blocked nodes and count task polls;
+a body becoming ready does not count as publication until validation succeeds.
+
 ## Early cutoff
 
 A node re-runs when something it read changed, but its new output may equal the old one (a
@@ -322,6 +393,9 @@ cargo run -p execution_graph_examples --bin tax -- --dot
 
 ## Current limitations
 
+- The built-in tape adapter still executes synchronously. A deferred custom executor can
+  own native work; this task boundary alone does not turn borrowed VM invocations into
+  independently owned continuations or choose an external scheduling policy.
 - The tape executor collapses VM traps to [`TapeError::Trap`] at the graph boundary rather
   than source-language diagnostics.
 

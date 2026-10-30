@@ -64,6 +64,7 @@ pub(crate) struct DirtyEngine {
     revision: u64,
     free: Vec<DirtyKey>,
     unused: Vec<DirtyKey>,
+    held: HashMap<DirtyKey, usize>,
 }
 
 impl DirtyEngine {
@@ -153,6 +154,7 @@ impl DirtyEngine {
             let entry = &self.entries[id.0];
             if entry.active
                 && entry.consumers.is_empty()
+                && !self.held.contains_key(&id)
                 && !matches!(entry.key, ResourceKey::NodeOutput { .. })
             {
                 self.remove(id);
@@ -163,8 +165,22 @@ impl DirtyEngine {
     pub(crate) fn key(&self, id: DirtyKey) -> &ResourceKey {
         &self.entries[id.0].key
     }
+    pub(crate) fn hold(&mut self, id: DirtyKey) {
+        *self.held.entry(id).or_default() += 1;
+    }
+    pub(crate) fn release(&mut self, id: DirtyKey) {
+        let count = self.held.get_mut(&id).expect("held provisional resource");
+        *count -= 1;
+        if *count == 0 {
+            self.held.remove(&id);
+            self.unused.push(id);
+        }
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+    pub(crate) fn is_clean(&self) -> bool {
+        self.pending.is_empty()
     }
     pub(crate) fn changed_since(&self, id: DirtyKey, revision: u64) -> bool {
         self.entries[id.0].changed_at > revision
@@ -328,7 +344,7 @@ impl DirtyEngine {
         Ok(())
     }
 
-    fn effective_dependencies(&self, key: DirtyKey) -> &[DirtyKey] {
+    pub(crate) fn effective_dependencies(&self, key: DirtyKey) -> &[DirtyKey] {
         let range = if self.prospective.is_empty() {
             self.entries[key.0].dependencies
         } else {
