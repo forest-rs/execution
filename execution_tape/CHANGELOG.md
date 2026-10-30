@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Consume successful invocations with `into_snapshot`: owned VMs move their reachable result
+  graph without payload copies; borrowed VMs preserve existing handles and copy that graph.
+  `Invocation::program_owner` exposes the exact retained code domain for scoped result IDs,
+  including when the original callable lookup has already been dropped.
+
 - Store independently owned executions with `Callable::start_owned`, transferring the VM,
   exact code and inputs into the existing invocation type. Borrowed execution still reuses VM
   storage. Owned trace/access options and shared `Rc<RefCell<S>>` observers preserve captures
