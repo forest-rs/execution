@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Store independently owned executions with `Callable::start_owned`, transferring the VM,
+  exact code and inputs into the existing invocation type. Borrowed execution still reuses VM
+  storage. Owned trace/access options and shared `Rc<RefCell<S>>` observers preserve captures
+  and resource observations after task retirement. Limits, checked replay and cancellation
+  use the same execution path; raw result handles still require explicit retention.
 - Yield admitted host requests with `InvocationOptions::yield_host_calls` and
   `Invocation::pending_host_call`. Borrowed requests support external completion, asynchronous
   producers with cancellation tracking, and dispatch through the original host. Return

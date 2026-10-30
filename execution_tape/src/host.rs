@@ -22,6 +22,9 @@ use crate::value::Value;
 
 /// Sink for recording resource accesses during execution.
 ///
+/// `Rc<RefCell<S>>` forwards reads and writes to a shared collector. Drain or inspect it between
+/// execution calls, releasing all `RefCell` borrows before executing or retiring an invocation.
+///
 /// This is an optional integration point intended for incremental execution systems (e.g.
 /// `execution_graph`). A sink is provided to host calls via [`HostContext`].
 ///
@@ -222,6 +225,16 @@ pub trait AccessSink {
     fn read(&mut self, key: ResourceKeyRef<'_>);
     /// Records a write of `key` (an invalidation source).
     fn write(&mut self, key: ResourceKeyRef<'_>);
+}
+
+// Shared collectors can be owned by an invocation and drained between graph task polls.
+impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>> {
+    fn read(&mut self, key: ResourceKeyRef<'_>) {
+        self.as_ref().borrow_mut().read(key);
+    }
+    fn write(&mut self, key: ResourceKeyRef<'_>) {
+        self.as_ref().borrow_mut().write(key);
+    }
 }
 
 /// Read-only VM context available during one host call.

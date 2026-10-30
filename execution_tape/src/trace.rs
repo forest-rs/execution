@@ -302,6 +302,10 @@ impl core::fmt::Debug for ValueEvent<'_> {
 }
 
 /// A trace sink that can receive VM events.
+///
+/// `Rc<RefCell<S>>` forwards all callbacks and filtering to a shared sink. This supports owned
+/// observers whose evidence outlives an invocation. Release `RefCell` borrows before executing
+/// or retiring the invocation; cancellation also emits observations.
 pub trait TraceSink {
     /// Reports the actual event subscription once before any events for a traced invocation.
     /// This is independent of [`TraceMask::RUN`]; [`TraceMask::NONE`] emits no callbacks.
@@ -443,4 +447,83 @@ pub trait TraceSink {
     /// - `program`: program being executed (unverified container data)
     /// - `outcome`: whether the run ended successfully or trapped
     fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {}
+}
+
+// Shared ownership keeps observations available after an owned invocation is dropped.
+// Borrow only between execution calls: reentrant RefCell borrows intentionally panic.
+impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> {
+    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
+        self.as_ref().borrow_mut().run_mask(program, mask);
+    }
+    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
+        self.as_ref().borrow().wants_registers(location, phase)
+    }
+    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
+        self.as_ref().borrow_mut().registers(program, event);
+    }
+    fn mask(&self) -> TraceMask {
+        self.as_ref().borrow().mask()
+    }
+    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+        self.as_ref()
+            .borrow_mut()
+            .run_start(program, entry, arg_count);
+    }
+    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+        self.as_ref().borrow_mut().values(program, event);
+    }
+    fn instr(
+        &mut self,
+        program: &Program,
+        func: FuncId,
+        pc: u32,
+        next_pc: u32,
+        span_id: Option<u64>,
+        opcode: u8,
+    ) {
+        self.as_ref()
+            .borrow_mut()
+            .instr(program, func, pc, next_pc, span_id, opcode);
+    }
+    fn instr_end(
+        &mut self,
+        program: &Program,
+        location: TraceLocation,
+        next: Option<TraceLocation>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        self.as_ref()
+            .borrow_mut()
+            .instr_end(program, location, next, outcome);
+    }
+    fn scope_enter(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        self.as_ref()
+            .borrow_mut()
+            .scope_enter(program, kind, depth, func, pc, span_id);
+    }
+    fn scope_exit(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        self.as_ref()
+            .borrow_mut()
+            .scope_exit(program, kind, depth, func, pc, span_id, outcome);
+    }
+    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        self.as_ref().borrow_mut().run_end(program, outcome);
+    }
 }

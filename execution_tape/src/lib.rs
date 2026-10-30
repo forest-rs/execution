@@ -213,6 +213,36 @@
 //! suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 //! use the unbounded dispatch specialization without scheduling checks.
 //!
+//! A stored task can instead transfer its VM into [`callable::Callable::start_owned`].
+//! This returns the same `Invocation` type with independently owned VM, code and inputs;
+//! it needs no self-references or pinned VM allocation. Borrowed entry points still support
+//! reusable VM storage. Observations can also be owned, including shared collectors:
+//!
+//! ```
+//! use std::{cell::RefCell, rc::Rc};
+//! use execution_tape::{callable::Callable, host::Host,
+//!     recording::{Recorder, RecordLimits}, trace::TraceSink, value::Value,
+//!     vm::{Invocation, InvocationOptions, TrapInfo, Vm}};
+//! fn stored<H: Host + 'static>(target: &Callable, vm: Vm<H>, args: Vec<Value>)
+//!     -> Result<(Invocation<'static, H>, Rc<RefCell<Recorder>>), TrapInfo>
+//! {
+//!     let capture = Rc::new(RefCell::new(Recorder::new(
+//!         target.program().clone(), RecordLimits::default())));
+//!     let mask = capture.mask();
+//!     let invocation = target.start_owned(vm, args, InvocationOptions::default()
+//!         .yield_host_calls().trace_owned(mask, Rc::clone(&capture)))?;
+//!     Ok((invocation, capture))
+//! }
+//! ```
+//!
+//! Shared trace/access collectors forward normal callbacks and filtering. Borrow them only
+//! between execution calls, releasing all borrows before resuming or retiring the invocation.
+//! Dropping an owned invocation cancels unfinished work and releases
+//! its VM and observers; external collector handles can retain the incomplete evidence.
+//! Raw aggregate/callable result IDs still need that VM/code owner: explicitly snapshot or
+//! retain values before retirement. Owned execution does not make raw handles portable or
+//! automatically create a scheduler, worker thread or external effect rollback.
+//!
 //! ## Yielded host requests
 //!
 //! Opt into `InvocationOptions::yield_host_calls()` to receive `RunStatus::AwaitingHost` after
@@ -252,8 +282,8 @@
 //! ## Owned executable callables
 //!
 //! [`callable::Callable`] retains an exact prepared program and an optional independent closure
-//! environment. An owned invocation retains its code and arguments independently of the lookup
-//! handle. Start through the callable, then retain a returned closure directly from the
+//! environment. Callable entry retains its code and arguments independently of the lookup
+//! handle; `start_owned` additionally owns the VM. Retain a returned closure directly from the
 //! successful invocation. That returned callable survives its creator's frames and VM:
 //!
 //! ```no_run
