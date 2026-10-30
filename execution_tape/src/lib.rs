@@ -126,12 +126,13 @@
 //! charged before adoption, after the host has already executed. Borrowed inputs and guest-call
 //! transfers cost zero. The counter resets every run; scalar instructions have no payload debit.
 //!
-//! This is not a heap or process-memory limit. Storage of retained results, aggregate/frame storage, nested
-//! host aggregate payloads, host effects/allocations, preparation, recording, and graph imports
-//! need their own policies. Guest tuple/struct/array construction has a separate
+//! This is not a heap or process-memory limit. Storage of retained results, aggregate/frame storage,
+//! arbitrary host effects/allocations, preparation, recording, and graph imports need their own
+//! policies. Guest and `HostContext` tuple/struct/array construction share a separate
 //! [`vm::Limits::max_aggregate_work`] budget (1,000,000 by default): one node plus its immediate
 //! field count, charged before field allocation or payload copying. Empty nodes cost one;
-//! nested handles do not traverse their contents. The counter is shared across guest calls and
+//! nested handles do not traverse their contents. Staged host fields charge immediate payload
+//! bytes before VM adoption, including work later discarded. The counter is shared across calls and
 //! resets each run. Exhaustion reports [`vm::Trap::AggregateWorkExceeded`].
 //! See [`vm::Limits::max_payload_work`] for exact byte/string charging rules and
 //! [`vm::Trap::PayloadWorkExceeded`] for recoverable limit diagnostics.
@@ -242,6 +243,34 @@
 //! Raw aggregate/callable result IDs still need that VM/code owner: explicitly snapshot or
 //! retain values before retirement. Owned execution does not make raw handles portable or
 //! automatically create a scheduler, worker thread or external effect rollback.
+//!
+//! ## Structured host results
+//!
+//! Hosts can use `HostContext::tuple_new`, `struct_new` and `array_new` to construct immutable
+//! results while their input payloads borrow the original heap. The context's readers and
+//! `retain` understand both domains; `aggregates()` exposes only the original base heap.
+//!
+//! ```
+//! use execution_tape::{host::{HostContext, HostError}, value::Value};
+//! fn loaded(mut context: HostContext<'_, '_>, bytes: Vec<u8>) -> Result<Value, HostError> {
+//!     let size = bytes.len() as u64;
+//!     let root = context.tuple_new(vec![Value::U64(size), Value::Bytes(bytes)])?;
+//!     Ok(Value::Agg(root))
+//! }
+//! ```
+//!
+//! Successful host completion adopts only staged nodes reachable from raw return slots.
+//! Return validation still runs afterward; a raw result is not proof of successful guest
+//! installation. Errors and cancellation discard staging. Native effects remain performed.
+//! Handles and nominal IDs belong to this invocation and program; these constructors do not
+//! make foreign handles portable. Use `retain` for results needed outside the host call.
+//! After successful execution, `Invocation::into_snapshot` consumes the invocation and moves
+//! an owned VM's reachable results out without copying payloads. A borrowed VM copies its
+//! reachable graph and keeps its existing raw handles valid. Clone `Invocation::program_owner`
+//! before consumption to retain the exact code domain for nominal/callable snapshot IDs, even
+//! after the original lookup handle has been dropped.
+//! Recordings preserve adopted node identities and all successful construction debits, so
+//! replay restores rich results without repeating native work or replenishing guest budgets.
 //!
 //! ## Yielded host requests
 //!

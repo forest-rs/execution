@@ -352,11 +352,9 @@ struct RecordedHost<'a> {
     state: Rc<RefCell<State>>,
 }
 impl RecordedHost<'_> {
-    fn invoke<'a>(
+    fn invoke(
         &mut self,
-        import: HostSigId,
-        args: impl ExactSizeIterator<Item = ValueRef<'a>>,
-        heap: &'a AggHeap,
+        request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects>,
     ) -> Result<Result<(Vec<Value>, u64), HostError>, ReplayError> {
         let mut state = self.state.borrow_mut();
         if let Some(error) = &state.error {
@@ -379,19 +377,42 @@ impl RecordedHost<'_> {
         if !self.record.frames.is_empty() && call.frame != state.top {
             return Err(state.mismatch(Divergence::CallStack));
         }
+        let import = request.import();
         if import != call.import {
             return Err(state.mismatch(Divergence::Import {
                 expected: call.import,
                 actual: import,
             }));
         }
-        state.matches(self.record, self.record.arena.slice(&call.args), args, heap)?;
+        state.matches(
+            self.record,
+            self.record.arena.slice(&call.args),
+            request.arguments(),
+            request.aggregates(),
+        )?;
+        request
+            .restore_host_work(call.work)
+            .map_err(|_| state.mismatch(Divergence::Outcome))?;
+        for &id in &call.constructed {
+            let node = self
+                .record
+                .aggregate(id)
+                .ok_or_else(|| state.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
+            let values = state.materialize(self.record, node.values, request.aggregates())?;
+            let handle = request
+                .restore_host_node(node.kind, values)
+                .map_err(ReplayError::Aggregate)?;
+            state.bind(id, handle)?;
+        }
         state.calls += 1;
         match &call.outcome {
             CallOutcome::Failed(error) => Ok(Err(error.clone())),
             CallOutcome::Returned { values, fuel } => {
-                let values =
-                    state.materialize(self.record, self.record.arena.slice(values), heap)?;
+                let values = state.materialize(
+                    self.record,
+                    self.record.arena.slice(values),
+                    request.aggregates(),
+                )?;
                 Ok(Ok((values, *fuel)))
             }
         }
@@ -699,14 +720,10 @@ impl Recording {
                         break Ok(invocation.take_outputs().expect("completed replay outputs"));
                     }
                     Ok(crate::vm::RunStatus::AwaitingHost) => {
-                        let request = invocation
+                        let mut request = invocation
                             .pending_host_call()
                             .expect("yielded replay request");
-                        let outcome = recorded_host.invoke(
-                            request.import(),
-                            request.arguments(),
-                            request.aggregates(),
-                        )?;
+                        let outcome = recorded_host.invoke(&mut request)?;
                         let (mut values, outcome) = match outcome {
                             Ok((values, fuel)) => (values, Ok(fuel)),
                             Err(error) => (Vec::new(), Err(error)),
@@ -1112,6 +1129,8 @@ mod tests {
         let mut changed = record(true, false);
         let call = changed.calls.pop().unwrap();
         changed.calls.push(Call {
+            work: call.work,
+            constructed: call.constructed.clone(),
             frame: call.frame,
             location: call.location,
             import: call.import,
@@ -1228,5 +1247,71 @@ mod tests {
                 aggregate: duplicate
             }
         );
+    }
+    #[test]
+    fn changed_host_construction_evidence_cannot_hide_a_guest_budget_failure() {
+        struct Produces;
+        impl Host for Produces {
+            fn call(
+                &mut self,
+                _: &str,
+                _: SigHash,
+                _: &[ValueRef<'_>],
+                out: &mut [Value],
+                mut cx: HostContext<'_, '_>,
+            ) -> Result<u64, HostError> {
+                out[0] = Value::Agg(cx.tuple_new(vec![Value::I64(42)])?);
+                Ok(0)
+            }
+        }
+        for remove_work in [false, true] {
+            let mut b = ProgramBuilder::new();
+            let entry = b
+                .declare_function(FunctionSig {
+                    arg_types: vec![],
+                    ret_types: vec![ValueType::Agg],
+                })
+                .unwrap();
+            let import = b.host_sig_for(
+                "produce",
+                HostSig {
+                    args: vec![],
+                    rets: vec![ValueType::Agg],
+                },
+            );
+            let mut a = b.function_asm(entry).unwrap();
+            let result = a.alloc_register(ValueType::Agg);
+            let wrapper = a.alloc_register(ValueType::Agg);
+            a.host_call_sig_id(0, import, 0, &[], &[result])
+                .tuple_new(wrapper, &[result])
+                .ret(0, &[wrapper]);
+            b.define_function(entry, a).unwrap();
+            let program = Arc::new(b.build_verified().unwrap());
+            let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
+            let error = Vm::new(
+                Produces,
+                Limits {
+                    max_aggregate_work: 2,
+                    ..Limits::default()
+                },
+            )
+            .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+            .unwrap_err();
+            assert!(matches!(error.trap, Trap::AggregateWorkExceeded { .. }));
+            let mut recording = recorder.finish();
+            assert!(matches!(
+                recording.replay().unwrap(),
+                ReplayOutcome::Trapped(_)
+            ));
+            if remove_work {
+                recording.calls[0].work = crate::vm::DataWork::default();
+            } else {
+                recording.calls[0].constructed.clear();
+            }
+            assert!(
+                recording.replay().is_err(),
+                "altered work or missing host nodes must fail checked replay"
+            );
+        }
     }
 }

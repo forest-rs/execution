@@ -21,6 +21,12 @@ This release has an [MSRV][] of 1.88.
   `Invocation::program_owner` exposes the exact retained code domain for scoped result IDs,
   including when the original callable lookup has already been dropped.
 
+- Construct immutable host results through `HostContext::{tuple_new,struct_new,array_new}`,
+  sharing the guest's aggregate/payload work budgets while keeping borrowed inputs immutable.
+  Context readers and explicit retention include staged results. Completion adopts reachable
+  nodes; failures/cancellation discard staging. Recording/replay preserves constructed identities
+  and spent work, including discarded allocations, without re-executing native effects.
+
 - Store independently owned executions with `Callable::start_owned`, transferring the VM,
   exact code and inputs into the existing invocation type. Borrowed execution still reuses VM
   storage. Owned trace/access options and shared `Rc<RefCell<S>>` observers preserve captures
@@ -52,6 +58,11 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Add `work` and borrowed `created` metadata to `ValueEvent::HostCall`, and `work`/`constructed`
+  to recorded host observations. Migration: include the new fields in explicit event patterns
+  and construction, or use `..` for unrelated inspection. Hosts without structured construction
+  report zero work and an empty range. Crate versions and tape wire format are unchanged.
 
 - Add `RunStatus::AwaitingHost` and `Trap::HostCallAbandoned`. Migration: handle the new variants
   in exhaustive matches; yielding drivers must complete or dispatch a pending request before

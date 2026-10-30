@@ -64,7 +64,9 @@ pub struct Limits {
     /// count before allocating field storage or materializing payloads. Repeated fields charge
     /// separately; nested aggregate handles cost one field without traversing their contents.
     /// Empty aggregates cost one. Owned callable entry imports charge the same units before
-    /// copying their captures. Work accumulates across entry preparation and guest calls.
+    /// copying their captures. `HostContext` constructors share this counter, charging before
+    /// adopting their owned field vectors; arbitrary native allocations remain outside it.
+    /// Work accumulates across entry preparation, guest calls and staged host construction.
     ///
     /// This bounds logical construction work, not live heap bytes. Existing input/retained
     /// aggregates, host allocations, graph imports, frame storage, preparation, and capture
@@ -81,9 +83,10 @@ pub struct Limits {
     /// bytes/strings charge their lengths before adoption, after all return kinds are validated.
     ///
     /// Owned callable entry imports also charge copied capture payloads. Moved arguments cost zero.
-    /// Borrowed arguments/constants/projections and guest-call transfers cost zero. This is not
-    /// a heap or RSS limit: aggregate slots, frames, storage of retained results, nested host aggregate
-    /// payloads, host allocations/effects, preparation, tracing/recording, and graph-adapter
+    /// Borrowed arguments/constants/projections and guest-call transfers cost zero.
+    /// Staged `HostContext` fields charge immediate bytes/string payloads before adoption,
+    /// including construction later discarded. This is not a heap or RSS limit: aggregate slots,
+    /// frames, retained results, arbitrary host allocations/effects, preparation, capture, and graph-adapter
     /// imports are outside this budget. Set `u64::MAX` for the maximum supported budget.
     pub max_payload_work: u64,
 }
@@ -537,6 +540,20 @@ impl ExecutionContext {
         self.payload_limit = payload_limit;
     }
 
+    #[inline]
+    fn host_results(&self) -> crate::host::HostResults {
+        crate::host::HostResults::new(
+            DataWork {
+                aggregate: self.aggregate_work,
+                payload: self.payload_work,
+            },
+            DataWork {
+                aggregate: self.aggregate_limit,
+                payload: self.payload_limit,
+            },
+        )
+    }
+
     fn charge_payload_bytes(&mut self, len: usize, factor: u64) -> Result<(), Trap> {
         let requested = u64::try_from(len)
             .ok()
@@ -878,6 +895,11 @@ trait TracePolicy {
     type RegisterState: Default;
 
     #[inline(always)]
+    fn values_enabled(_trace: &TraceCtx<'_>) -> bool {
+        false
+    }
+
+    #[inline(always)]
     fn registers(
         _register_state: &mut Self::RegisterState,
         _trace: &mut TraceCtx<'_>,
@@ -1027,6 +1049,11 @@ impl TracePolicy for NoTracePolicy {
 
 impl TracePolicy for WithTracePolicy {
     type RegisterState = observations::RegisterState;
+
+    #[inline(always)]
+    fn values_enabled(trace: &TraceCtx<'_>) -> bool {
+        trace.enabled(TraceMask::VALUES)
+    }
 
     #[inline(always)]
     fn registers(
@@ -1351,6 +1378,7 @@ impl<H: Host> Vm<H> {
         register_state: &mut P::RegisterState,
         control: &mut ExecutionControl,
     ) -> Result<RunStatus, TrapInfo> {
+        let root_args = args;
         let output_start = outputs.len();
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
@@ -2204,9 +2232,7 @@ impl<H: Host> Vm<H> {
 
                     let args = vf.vregs(*args);
 
-                    // Stack buffer for the common case (0–8 args); Vec fallback for the rest.
-                    // 8 × 24 bytes = 192 bytes on the stack — every host call in the codebase
-                    // uses 0–2 args, so this is generous headroom without measurable stack cost.
+                    // Inline small argument lists; larger declared ABIs use the Vec fallback.
                     const HOST_CALL_INLINE_ARGS: usize = 8;
                     let mut buf = [ValueRef::Unit; HOST_CALL_INLINE_ARGS];
                     let mut vec_fallback: Vec<ValueRef<'_>>;
@@ -2261,22 +2287,15 @@ impl<H: Host> Vm<H> {
                         });
                         return Ok(RunStatus::AwaitingHost);
                     }
-
-                    // Stack buffer for the common case (0–8 rets); Vec fallback for the rest.
-                    // Value is Clone but not Copy, so use `from_fn` instead of repeat syntax.
-                    // 8 × ~32 bytes = ~256 bytes on the stack — every host call in the codebase
-                    // returns 0–2 values, so this is generous headroom.
-                    const HOST_CALL_INLINE_RETS: usize = 8;
-                    let mut ret_buf: [Value; HOST_CALL_INLINE_RETS] =
-                        core::array::from_fn(|_| Value::Unit);
-                    let mut ret_vec_fallback: Vec<Value>;
-                    let ret_slots: &mut [Value] = if ret_types.len() <= HOST_CALL_INLINE_RETS {
-                        &mut ret_buf[..ret_types.len()]
+                    let mut inline_rets: [Value; 8] = core::array::from_fn(|_| Value::Unit);
+                    let mut fallback_rets;
+                    let ret_slots = if ret_types.len() <= inline_rets.len() {
+                        &mut inline_rets[..ret_types.len()]
                     } else {
-                        ret_vec_fallback = vec![Value::Unit; ret_types.len()];
-                        &mut ret_vec_fallback
+                        fallback_rets = vec![Value::Unit; ret_types.len()];
+                        &mut fallback_rets
                     };
-
+                    let mut host_results = ctx.host_results();
                     let access_for_call = access
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
@@ -2284,24 +2303,60 @@ impl<H: Host> Vm<H> {
                         program_ref,
                         *host_sig,
                         self.memory.aggs(),
+                        &mut host_results,
                         access_for_call,
                     );
                     let host_result =
                         self.host
                             .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx);
-                    P::values(trace, program_ref, || ValueEvent::HostCall {
-                        location: TraceLocation { func: func_id, pc },
-                        host_sig: *host_sig,
-                        args: call_args,
-                        outcome: match &host_result {
-                            Ok(extra_fuel) => HostCallOutcome::Returned {
-                                values: ret_slots,
-                                extra_fuel: *extra_fuel,
+                    let work = host_results.work;
+                    let created =
+                        host_results.adopt(self.memory.aggs_mut(), ret_slots, host_result.is_ok());
+                    ctx.aggregate_work += work.aggregate;
+                    ctx.payload_work += work.payload;
+                    if P::values_enabled(trace) {
+                        let sources = ValueSources::new(program_ref, root_args, self.memory.aggs());
+                        let observed_args: Vec<_> = args
+                            .iter()
+                            .map(|&a| {
+                                read_value_ref_at(
+                                    &ctx.arena,
+                                    sources,
+                                    &ctx.bools,
+                                    &ctx.i64s,
+                                    &ctx.u64s,
+                                    &ctx.f64s,
+                                    &ctx.decimals,
+                                    &ctx.bytes,
+                                    &ctx.strs,
+                                    &ctx.objs,
+                                    &ctx.aggs,
+                                    &ctx.funcs,
+                                    &ctx.closures,
+                                    base,
+                                    a,
+                                )
+                                .expect("admitted host argument")
+                            })
+                            .collect();
+                        P::values(trace, program_ref, || ValueEvent::HostCall {
+                            location: TraceLocation { func: func_id, pc },
+                            host_sig: *host_sig,
+                            args: &observed_args,
+                            outcome: match &host_result {
+                                Ok(extra_fuel) => HostCallOutcome::Returned {
+                                    values: ret_slots,
+                                    extra_fuel: *extra_fuel,
+                                },
+                                Err(error) => HostCallOutcome::Failed(error),
                             },
-                            Err(error) => HostCallOutcome::Failed(error),
-                        },
-                        aggregates: self.memory.aggs(),
-                    });
+                            work,
+                            created: created.as_ref().ok().unwrap_or(&(0..0)),
+                            aggregates: self.memory.aggs(),
+                        });
+                    }
+                    created
+                        .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     host_call::admit_return(
                         ctx,
                         host_call::HostReturnSite {

@@ -273,6 +273,22 @@ impl Builder {
         Ok(id)
     }
 
+    pub(crate) fn constructed(
+        &self,
+        handles: Range<u32>,
+    ) -> Result<Vec<AggregateId>, CaptureFault> {
+        // All adopted host nodes are reachable from the raw returned roots just captured.
+        // Keep original construction order, independent of discovery order in the recording.
+        handles
+            .map(|handle| {
+                self.handles
+                    .get(&handle)
+                    .copied()
+                    .ok_or(CaptureFault::InvalidAggregate { handle })
+            })
+            .collect()
+    }
+
     pub(crate) fn finish(self) -> (Arena, Vec<AggregateId>) {
         let initial = self
             .handles

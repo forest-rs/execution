@@ -125,6 +125,7 @@ pub struct Invocation<'a, H: Host> {
     checkpoint: Checkpoint,
     trace: TraceCtx<'a>,
     access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
+    host_results: Option<crate::host::HostResults>,
     register_state: observations::RegisterState,
     outputs: Vec<Value>,
     outcome: Option<Result<(), TrapInfo>>,
@@ -218,6 +219,7 @@ impl<'a, H: Host> Invocation<'a, H> {
             checkpoint,
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access,
+            host_results: None,
             register_state: observations::RegisterState::default(),
             outputs: Vec::new(),
             outcome: None,
@@ -410,12 +412,15 @@ impl<H: Host> Invocation<'_, H> {
 
     /// Aggregate/payload work spent so far, including owned-input preparation and root returns.
     /// Counters accumulate across quanta and remain available after a return or trap. These are
-    /// logical work units, not retained heap bytes; contract work and host allocations are separate.
+    /// logical work units, not retained heap bytes. Includes staged host results before completion;
+    /// arbitrary native allocations and contract work remain separate.
     #[must_use]
     pub fn data_work(&self) -> DataWork {
         DataWork {
-            aggregate: self.ctx.aggregate_work,
-            payload: self.ctx.payload_work,
+            aggregate: self.ctx.aggregate_work
+                + self.host_results.as_ref().map_or(0, |r| r.work.aggregate),
+            payload: self.ctx.payload_work
+                + self.host_results.as_ref().map_or(0, |r| r.work.payload),
         }
     }
 
