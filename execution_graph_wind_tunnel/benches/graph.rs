@@ -213,7 +213,7 @@ fn bench_chain_noop(c: &mut Criterion) {
         let (mut g, _n0) = build_chain_graph(len);
         group.bench_with_input(BenchmarkId::from_parameter(len), &len, |b, _| {
             b.iter(|| {
-                g.run_all().unwrap();
+                black_box(black_box(&mut g).run_all().unwrap());
             });
         });
     }
