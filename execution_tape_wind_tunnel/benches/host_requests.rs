@@ -140,9 +140,72 @@ fn host_requests(c: &mut Criterion) {
     }
     group.finish();
 }
+// Rich results are newly allocated native payloads, moved into staged VM nodes. The guest
+// consumes their shape and returns a scalar, so every sample retires its aggregate suffix.
+struct Rich {
+    bytes: usize,
+}
+impl Host for Rich {
+    fn call(
+        &mut self,
+        _: &str,
+        _: SigHash,
+        _: &[ValueRef<'_>],
+        rets: &mut [Value],
+        mut cx: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        let root = cx.tuple_new(vec![
+            Value::U64(self.bytes as u64),
+            Value::Bytes(vec![42; self.bytes]),
+        ])?;
+        rets[0] = Value::Agg(root);
+        Ok(0)
+    }
+}
+fn host_aggregate_results(c: &mut Criterion) {
+    let mut b = ProgramBuilder::new();
+    let entry = b
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::U64],
+        })
+        .unwrap();
+    let import = b.host_sig_for(
+        "load",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::Agg],
+        },
+    );
+    let mut a = b.function_asm(entry).unwrap();
+    let root = a.alloc_register(ValueType::Agg);
+    let count = a.alloc_register(ValueType::U64);
+    a.host_call_sig_id(0, import, 0, &[], &[root])
+        .tuple_len(count, root)
+        .ret(0, &[count]);
+    b.define_function(entry, a).unwrap();
+    let program = b.build_verified().unwrap();
+    let mut group = c.benchmark_group("host_aggregate_result");
+    for bytes in [0, 32, 4096] {
+        let mut vm = Vm::new(Rich { bytes }, Limits::default());
+        group.bench_with_input(BenchmarkId::from_parameter(bytes), &bytes, |b, _| {
+            b.iter(|| {
+                let output = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
+                assert_eq!(output, [Value::U64(2)], "rich result consumed by guest");
+                assert_eq!(
+                    vm.aggregates().len_u32(),
+                    0,
+                    "temporary result retired per sample"
+                );
+                black_box(output);
+            });
+        });
+    }
+    group.finish();
+}
 criterion_group! {
     name = benches;
     config = Criterion::default().warm_up_time(Duration::from_secs(1)).measurement_time(Duration::from_secs(3)).sample_size(30);
-    targets = host_requests
+    targets = host_requests, host_aggregate_results
 }
 criterion_main!(benches);

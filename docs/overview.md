@@ -35,7 +35,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
   frontend; it is not itself a source range. Optional `source::SourceMap` metadata supplies ranges.
 - **Host call**: effectful operation implemented by the embedder.
 - Host-call arguments are passed as borrowed views (bytes/strings are exposed as `&[u8]`/`&str` to avoid cloning).
-- Hosts also receive read-only VM context for program metadata, tuple/struct/array inspection, and optional incremental access recording.
+- Hosts receive program metadata, immutable aggregate readers, staged tuple/struct/array construction, and optional incremental access recording.
 - **Effect token**: the initialized Unit register r0 required by call/return instructions.
 
 ## Execution model
@@ -68,11 +68,11 @@ limit, successfully used work, and the rejected request; rejection leaves used w
 Unrepresentable payload sizes/work calculations trap with `PayloadSizeOverflow`.
 
 This deterministic work budget is separate from memory residency. Aggregate slots, frames,
-storage of previously retained results, nested host aggregate payloads, host allocations/effects,
+storage of previously retained results, arbitrary host allocations/effects,
 preparation, capture, and graph-adapter imports are outside it. Trusted workloads can explicitly
 raise the limit or select `u64::MAX`. Usage resets on each invocation and context clearing.
 
-`Limits::max_aggregate_work` separately bounds guest tuple, struct, and array construction,
+`Limits::max_aggregate_work` separately bounds guest and `HostContext` tuple, struct, and array construction,
 defaulting to 1,000,000 units per run. Each constructor charges one node plus its immediate
 field count before allocating field storage or copying payloads. Repeated fields each cost one;
 empty nodes cost one; nested handles cost one field without traversing their contents. Payload
@@ -387,3 +387,21 @@ current wire format.
 Incremental scheduling already belongs to `execution_graph`. Caching pure regions inside a tape
 would be a separate capability. Durable recording archives and externally persistent source identity
 also need explicit compatibility policies before they can be promised.
+
+### Host-produced structures
+
+`HostContext::{tuple_new,struct_new,array_new}` move owned fields into separate staging while
+arguments borrow the VM heap. Context readers and `retain` cover both domains; `aggregates()`
+continues to expose only the immutable base. Shape/child checks and aggregate/payload admission
+precede node allocation. A denied constructor returns a typed `HostError` source and spends no
+work, allowing a deliberate fallback. Successful construction remains charged even if unused
+or followed by a host failure. Native allocation of the supplied vectors/payloads is outside
+the VM budget. Borrowed inputs cannot be mutated.
+
+At completion, only staged nodes reachable from successful raw return slots are adopted,
+sharing preserved. The raw outcome is observed before ordinary ABI validation; an invalid
+result can still fail and roll back the invocation's new heap suffix. Host errors and abandoned
+producers discard staging. Explicit snapshots survive retirement. Recording retains the adopted
+node sequence and construction debit, including discarded work, so checked replay reconstructs
+values in the same identity domain and uses the same remaining guest budget. No live host or
+external effects are replayed.

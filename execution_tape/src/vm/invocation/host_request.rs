@@ -182,9 +182,28 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             site.args,
         )
     }
-    /// Reads aggregates in this request and records actual host resource accesses.
+    pub(crate) fn restore_host_work(&mut self, work: DataWork) -> Result<(), Trap> {
+        let inv = &mut self.invocation;
+        inv.host_results
+            .get_or_insert_with(|| inv.ctx.host_results())
+            .prepaid(work)
+    }
+    pub(crate) fn restore_host_node(
+        &mut self,
+        kind: crate::value::AggType,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        let inv = &mut self.invocation;
+        inv.host_results
+            .get_or_insert_with(|| inv.ctx.host_results())
+            .restore_node(inv.vm.memory.aggs(), kind, values)
+    }
+
+    /// Reads arguments, stages new aggregate results and records actual host resource accesses.
     ///
-    /// Handles belong to this invocation's heap. Copy scalar/opaque arguments before borrowing
+    /// Context readers include earlier staged results across successive views. Completing the
+    /// call adopts reachable results; dropping the invocation discards them. Handles belong to
+    /// this invocation's heap. Copy scalar/opaque arguments before borrowing
     /// this context mutably to record reads or writes, as in an ordinary host implementation.
     pub fn context(&mut self) -> HostContext<'_, '_> {
         let import = self.import();
@@ -193,6 +212,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             inv.program.program(),
             import,
             inv.vm.memory.aggs(),
+            inv.host_results
+                .get_or_insert_with(|| inv.ctx.host_results()),
             inv.access
                 .as_mut()
                 .map(|sink| &mut **sink as &mut dyn AccessSink),
@@ -305,6 +326,8 @@ impl<'vm, H: Host> Invocation<'vm, H> {
             self.program.program(),
             site.import,
             vm.memory.aggs(),
+            self.host_results
+                .get_or_insert_with(|| self.ctx.host_results()),
             self.access
                 .as_mut()
                 .map(|sink| &mut **sink as &mut dyn AccessSink),
@@ -320,6 +343,14 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         values: &mut [Value],
         outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
+        let mut results = self
+            .host_results
+            .take()
+            .unwrap_or_else(|| self.ctx.host_results());
+        let work = results.work;
+        let created = results.adopt(self.vm.memory.aggs_mut(), values, outcome.is_ok());
+        self.ctx.aggregate_work += work.aggregate;
+        self.ctx.payload_work += work.payload;
         let result = if self.trace.active() {
             finish_pending::<WithTracePolicy>(
                 &mut self.ctx,
@@ -329,6 +360,8 @@ impl<'vm, H: Host> Invocation<'vm, H> {
                 self.control.pending_host.expect("pending guard"),
                 values,
                 outcome,
+                work,
+                created.clone(),
                 &mut self.trace,
                 &mut self.register_state,
             )
@@ -341,6 +374,8 @@ impl<'vm, H: Host> Invocation<'vm, H> {
                 self.control.pending_host.expect("pending guard"),
                 values,
                 outcome,
+                work,
+                created.clone(),
                 &mut self.trace,
                 &mut (),
             )
@@ -352,6 +387,10 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         result
     }
     pub(super) fn finish_abandoned_host(&mut self, pending: PendingHost) -> TrapInfo {
+        if let Some(results) = self.host_results.take() {
+            self.ctx.aggregate_work += results.work.aggregate;
+            self.ctx.payload_work += results.work.payload;
+        }
         let span = self.ctx.span_at(
             self.program.program(),
             pending.location.func,
@@ -386,12 +425,14 @@ fn finish_pending<P: TracePolicy>(
     pending: PendingHost,
     values: &mut [Value],
     outcome: Result<u64, HostError>,
+    work: DataWork,
+    created: Result<core::ops::Range<u32>, AggError>,
     trace: &mut TraceCtx<'_>,
     register_state: &mut P::RegisterState,
 ) -> Result<(), TrapInfo> {
     let site = site(prepared, ctx, pending);
     let program = prepared.program();
-    if trace.enabled(TraceMask::VALUES) {
+    if P::values_enabled(trace) {
         let args: Vec<_> = arguments(
             ctx,
             ValueSources::new(program, root_args, heap),
@@ -411,8 +452,18 @@ fn finish_pending<P: TracePolicy>(
                 Err(error) => HostCallOutcome::Failed(error),
             },
             aggregates: heap,
+            work,
+            created: created.as_ref().ok().unwrap_or(&(0..0)),
         });
     }
+    created.map_err(|error| {
+        ctx.trap(
+            site.pending.location.func,
+            site.pending.location.pc,
+            site.span,
+            Trap::AggError(error),
+        )
+    })?;
     admit_return(
         ctx,
         HostReturnSite {

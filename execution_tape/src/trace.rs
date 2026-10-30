@@ -237,6 +237,11 @@ pub enum ValueEvent<'a> {
         args: &'a [ValueRef<'a>],
         /// Raw host result.
         outcome: HostCallOutcome<'a>,
+        /// Host construction work already debited, including discarded staged values.
+        work: DataWork,
+        /// Newly adopted host aggregate handles, in construction order.
+        /// Only values reachable from raw successful return slots are adopted.
+        created: &'a core::ops::Range<u32>,
         /// Storage containing argument and result aggregates.
         aggregates: &'a AggHeap,
     },
@@ -279,12 +284,16 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 args,
                 outcome,
                 aggregates,
+                work,
+                created,
             } => f
                 .debug_struct("HostCall")
                 .field("location", location)
                 .field("host_sig", host_sig)
                 .field("args", args)
                 .field("outcome", outcome)
+                .field("work", work)
+                .field("created", created)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::ReturnCandidate {

@@ -185,6 +185,8 @@ impl Recorder {
                 args,
                 outcome,
                 aggregates,
+                work,
+                created,
             } => {
                 if self.entry.is_none() || self.end.is_some() || self.candidate.is_some() {
                     return Err(CaptureFault::InvalidSequence);
@@ -205,8 +207,11 @@ impl Recorder {
                     },
                     HostCallOutcome::Failed(error) => CallOutcome::Failed(error.clone()),
                 };
+                let constructed = self.builder.constructed(created.clone())?;
                 self.check_location(location)?;
                 self.calls.push(Call {
+                    constructed,
+                    work,
                     frame: self.top,
                     location,
                     import: host_sig,

@@ -171,6 +171,35 @@ impl AggDelta {
         Self::new(base.len_u32())
     }
 
+    pub(crate) fn resolve<'a>(
+        &'a self,
+        base: &'a AggHeap,
+        handle: AggHandle,
+    ) -> (&'a AggHeap, AggHandle) {
+        if handle.0 < self.base_len {
+            (base, handle)
+        } else {
+            (&self.staged, AggHandle(handle.0 - self.base_len))
+        }
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        base: &AggHeap,
+        mut values: Vec<Value>,
+    ) -> Result<ValueSnapshot, AggError> {
+        let mut aggregates = AggHeap::new();
+        copy_roots_into(
+            |handle| {
+                let (heap, handle) = self.resolve(base, handle);
+                heap.node(handle)
+            },
+            &mut aggregates,
+            &mut values,
+        )?;
+        Ok(ValueSnapshot { values, aggregates })
+    }
+
     /// Returns the base snapshot length used by this delta.
     #[must_use]
     pub const fn base_len(&self) -> u32 {
@@ -585,54 +614,7 @@ impl AggHeap {
     }
 
     fn copy_roots_into(&self, target: &mut Self, roots: &mut [Value]) -> Result<(), AggError> {
-        let base_len = target.len_u32();
-        let mut indices = BTreeMap::new();
-        let mut pending = Vec::new();
-        let remap = |value: &mut Value,
-                     indices: &mut BTreeMap<u32, u32>,
-                     pending: &mut Vec<u32>|
-         -> Result<(), AggError> {
-            let handle = match value {
-                Value::Agg(h) => h,
-                Value::Closure(c) => &mut c.env,
-                _ => return Ok(()),
-            };
-            self.node(*handle)?;
-            let next = u32::try_from(indices.len()).map_err(|_| AggError::HandleOverflow)?;
-            let mapped = match indices.entry(handle.0) {
-                alloc::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
-                alloc::collections::btree_map::Entry::Vacant(entry) => {
-                    // Leave the final count representable by the heap's u32 length.
-                    base_len
-                        .checked_add(next)
-                        .and_then(|x| x.checked_add(1))
-                        .ok_or(AggError::HandleOverflow)?;
-                    pending.push(handle.0);
-                    *entry.insert(base_len + next)
-                }
-            };
-            *handle = AggHandle(mapped);
-            Ok(())
-        };
-        for root in roots.iter_mut() {
-            remap(root, &mut indices, &mut pending)?;
-        }
-        let mut nodes = Vec::new();
-        let mut cursor = 0;
-        while cursor < pending.len() {
-            let mut node = self.node(AggHandle(pending[cursor]))?.clone();
-            for value in node.values_mut() {
-                remap(value, &mut indices, &mut pending)?;
-            }
-            nodes.push(node);
-            cursor += 1;
-        }
-        let delta = AggDelta {
-            base_len,
-            staged: Self { nodes },
-        };
-        let remap = delta.merge_into(target, roots)?;
-        remap.remap_values_in_place(roots)
+        copy_roots_into(|handle| self.node(handle), target, roots)
     }
 
     /// Returns the current heap length as `u32`.
@@ -855,6 +837,61 @@ impl AggHeap {
     fn node(&self, handle: AggHandle) -> Result<&AggNode, AggError> {
         self.nodes.get(handle.0 as usize).ok_or(AggError::BadHandle)
     }
+}
+
+fn copy_roots_into<'a>(
+    node: impl Fn(AggHandle) -> Result<&'a AggNode, AggError>,
+    target: &mut AggHeap,
+    roots: &mut [Value],
+) -> Result<(), AggError> {
+    let base_len = target.len_u32();
+    let mut indices = BTreeMap::new();
+    let mut pending = Vec::new();
+    let remap = |value: &mut Value,
+                 indices: &mut BTreeMap<u32, u32>,
+                 pending: &mut Vec<u32>|
+     -> Result<(), AggError> {
+        let handle = match value {
+            Value::Agg(h) => h,
+            Value::Closure(c) => &mut c.env,
+            _ => return Ok(()),
+        };
+        node(*handle)?;
+        let next = u32::try_from(indices.len()).map_err(|_| AggError::HandleOverflow)?;
+        let mapped = match indices.entry(handle.0) {
+            alloc::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+            alloc::collections::btree_map::Entry::Vacant(entry) => {
+                // Leave the final count representable by the heap's u32 length.
+                base_len
+                    .checked_add(next)
+                    .and_then(|x| x.checked_add(1))
+                    .ok_or(AggError::HandleOverflow)?;
+                pending.push(handle.0);
+                *entry.insert(base_len + next)
+            }
+        };
+        *handle = AggHandle(mapped);
+        Ok(())
+    };
+    for root in roots.iter_mut() {
+        remap(root, &mut indices, &mut pending)?;
+    }
+    let mut nodes = Vec::new();
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        let mut current = node(AggHandle(pending[cursor]))?.clone();
+        for value in current.values_mut() {
+            remap(value, &mut indices, &mut pending)?;
+        }
+        nodes.push(current);
+        cursor += 1;
+    }
+    let delta = AggDelta {
+        base_len,
+        staged: AggHeap { nodes },
+    };
+    let remap = delta.merge_into(target, roots)?;
+    remap.remap_values_in_place(roots)
 }
 
 #[cfg(test)]

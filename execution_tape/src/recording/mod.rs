@@ -53,7 +53,9 @@
 //! Missing call callbacks, rejected entry and failed capture leave stack data explicitly unavailable.
 //! Replay checks captured activation order, caller locations and boundary ancestry as well as values.
 //!
-//! Replay restores observed initial nodes before execution. Guest-created nodes are matched
+//! Replay restores observed initial nodes before execution and adopted host-produced nodes at
+//! their recorded boundary, preserving construction order, sharing and exact work debits.
+//! Discarded host staging spends work without retaining nodes. Guest-created nodes are matched
 //! through boundary values and allocation ordinals relative to the initial heap. VM heaps append
 //! immutable nodes until root commit; this lets replay resolve a host return even when that node
 //! was never an entry argument. Final heap compaction does not change recording identities.
@@ -247,6 +249,10 @@ pub struct HostCall<'a> {
     pub import: HostSigId,
     /// Captured arguments.
     pub args: &'a [RecordedValue],
+    /// Host construction work, including staged values discarded before completion.
+    pub work: crate::vm::DataWork,
+    /// Adopted host aggregate nodes, in their original construction order.
+    pub constructed: &'a [AggregateId],
     /// Raw host outcome, before VM validation.
     pub outcome: HostOutcome<'a>,
     /// Actual guest callers, innermost first, when call-frame callbacks were captured.
@@ -289,6 +295,8 @@ struct Entry {
 }
 #[derive(Debug)]
 struct Call {
+    work: crate::vm::DataWork,
+    constructed: Vec<AggregateId>,
     frame: Option<frames::FrameId>,
     location: TraceLocation,
     import: HostSigId,
@@ -416,6 +424,8 @@ impl Recording {
                 .frame
                 .map(|top| CallStack::new(&self.frames, top, call.location)),
             import: call.import,
+            work: call.work,
+            constructed: &call.constructed,
             args: self.arena.slice(&call.args),
             outcome: match &call.outcome {
                 CallOutcome::Returned { values, fuel } => HostOutcome::Returned {

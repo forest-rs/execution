@@ -437,3 +437,33 @@ do not establish a general speedup or cost bound. An initial out-of-line
 allocator was about 12% slower at 1,024 steps; making the small public allocator
 inline reduced that repeat to the values above. Keep the primitive, host-heavy,
 and decimal probes separate when changing runtime representations.
+
+## Structured host results
+
+`host_requests` includes `host_aggregate_result/{0,32,4096}`. A native host allocates a byte
+payload, moves it and a length into a staged two-field tuple, and returns it to a guest that
+reads the tuple length and returns a scalar. Each sample asserts an empty aggregate heap after
+completion. Timing includes native allocation, staging, reachable adoption and retirement;
+it excludes program preparation, recording, inspection and retained snapshots. On macOS arm64,
+Rust 1.99, 2026-10-30, 30 samples with 1 s warmup and 3 s measurement gave 249.1, 253.1 and
+305.6 ns respectively. These are fixture costs, not general host-boundary or geometry costs.
+
+Ordinary execution was also compared with main `6382447`, whose source tree is identical to
+that of the frozen pre-merge `2bb501b` benchmark executable. The final ABBA probe used the same frozen benchmark source and executable settings,
+without concurrent compilation. Point estimates were:
+
+| Ordinary workload | Parent A | Candidate B | Candidate B repeat | Parent A repeat |
+|---|---:|---:|---:|---:|
+| 1,000 additions | 4.235 µs | 6.845 µs | 4.373 µs | 4.677 µs |
+| 1,000 host-call iterations | 79.23 µs | 147.20 µs | 88.94 µs | 82.92 µs |
+
+The first candidate pass was visibly unstable (host 95% interval 121.83–176.09 µs); the repeated
+host estimate also had a wide 83.85–95.59 µs interval. These results do not establish parity or
+a general improvement; residual host-call overhead remains a limitation. Earlier runs also
+showed code-layout-sensitive scalar regressions. The benchmark host itself allocates and hashes
+a signature on each call; `sample` found that work as well as staging bookkeeping. Timing is
+therefore not an isolated ABI cost. Empty staging now has a small inlined check and drops no
+aggregate storage; actual merges remain separate. Native construction uses the existing staged
+heap rather than modifying borrowed inputs. Prepared-program storage and ordinary scalar
+instructions gained no new allocation or data-work debit. Host dispatch helper experiments
+were removed after measurement; there is one direct synchronous interpreter path.

@@ -59,7 +59,15 @@ impl TraceSink for Observe {
                 args,
                 outcome,
                 aggregates,
+                work,
+                created,
             } => {
+                assert_eq!(
+                    work,
+                    execution_tape::vm::DataWork::default(),
+                    "fixture host constructs no aggregate results"
+                );
+                assert!(created.is_empty(), "fixture host adopts no aggregate nodes");
                 self.order.push("host");
                 let args: Vec<_> = args.iter().copied().map(ValueRef::to_value).collect();
                 self.host_args.push(aggregates.snapshot(&args).unwrap());

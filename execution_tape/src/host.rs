@@ -6,6 +6,9 @@
 //! The VM delegates effectful operations to an embedder-provided [`Host`].
 //! Host calls are identified by a stable symbol string plus a signature hash.
 
+mod results;
+pub(crate) use results::HostResults;
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
@@ -250,6 +253,7 @@ pub struct HostContext<'vm, 'access> {
     program: &'vm Program,
     host_sig_id: HostSigId,
     aggregates: &'vm AggHeap,
+    results: &'access mut HostResults,
     access: Option<&'access mut dyn AccessSink>,
 }
 
@@ -259,6 +263,7 @@ impl fmt::Debug for HostContext<'_, '_> {
             .field("program_name", &self.program.name())
             .field("host_sig_id", &self.host_sig_id)
             .field("aggregate_count", &self.aggregates.len_u32())
+            .field("construction_work", &self.results.work)
             .field("has_access", &self.access.is_some())
             .finish()
     }
@@ -270,12 +275,14 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         program: &'vm Program,
         host_sig_id: HostSigId,
         aggregates: &'vm AggHeap,
+        results: &'access mut HostResults,
         access: Option<&'access mut dyn AccessSink>,
     ) -> Self {
         Self {
             program,
             host_sig_id,
             aggregates,
+            results,
             access,
         }
     }
@@ -287,8 +294,11 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     /// through [`ValueSnapshot::aggregates`], or import it into a destination heap before using
     /// its aggregate roots in another run. Host objects and function IDs retain their own domains.
     pub fn retain(&self, values: &[ValueRef<'_>]) -> Result<ValueSnapshot, AggError> {
-        self.aggregates
-            .snapshot_owned(values.iter().copied().map(ValueRef::to_value).collect())
+        let values = values.iter().copied().map(ValueRef::to_value).collect();
+        match &self.results.delta {
+            Some(delta) => delta.snapshot(self.aggregates, values),
+            None => self.aggregates.snapshot_owned(values),
+        }
     }
 
     /// Returns the verified program being executed.
@@ -308,8 +318,8 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
 
     /// Returns the VM aggregate heap for reading aggregate argument contents.
     ///
-    /// Aggregates are immutable from the host ABI. Hosts may inspect values reachable from
-    /// aggregate handles, but cannot mutate or allocate aggregate nodes through this context.
+    /// This base heap excludes staged host results. Use the context's aggregate accessors
+    /// to read both arguments and newly constructed results. Borrowed aggregates stay immutable.
     #[must_use]
     pub fn aggregates(&self) -> &AggHeap {
         self.aggregates
@@ -317,29 +327,32 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
 
     /// Returns the kind and shape metadata for an aggregate.
     pub fn agg_type(&self, handle: AggHandle) -> Result<AggType, AggError> {
-        self.aggregates.agg_type(handle)
+        let (heap, handle) = self.resolve(handle);
+        heap.agg_type(handle)
     }
 
     /// Returns tuple element `index`.
     pub fn tuple_get(&self, tuple: AggHandle, index: usize) -> Result<Value, AggError> {
-        self.aggregates.tuple_get(tuple, index)
+        let (heap, handle) = self.resolve(tuple);
+        heap.tuple_get(handle, index)
     }
 
     /// Returns tuple element `index` as a borrowed VM value.
     pub fn tuple_get_ref(&self, tuple: AggHandle, index: usize) -> Result<ValueRef<'_>, AggError> {
-        self.aggregates
-            .tuple_get_ref(tuple, index)
-            .map(ValueRef::from_value)
+        let (heap, handle) = self.resolve(tuple);
+        heap.tuple_get_ref(handle, index).map(ValueRef::from_value)
     }
 
     /// Returns tuple length.
     pub fn tuple_len(&self, tuple: AggHandle) -> Result<usize, AggError> {
-        self.aggregates.tuple_len(tuple)
+        let (heap, handle) = self.resolve(tuple);
+        heap.tuple_len(handle)
     }
 
     /// Returns struct field `field_index`.
     pub fn struct_get(&self, st: AggHandle, field_index: usize) -> Result<Value, AggError> {
-        self.aggregates.struct_get(st, field_index)
+        let (heap, handle) = self.resolve(st);
+        heap.struct_get(handle, field_index)
     }
 
     /// Returns struct field `field_index` as a borrowed VM value.
@@ -348,31 +361,33 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         st: AggHandle,
         field_index: usize,
     ) -> Result<ValueRef<'_>, AggError> {
-        self.aggregates
-            .struct_get_ref(st, field_index)
+        let (heap, handle) = self.resolve(st);
+        heap.struct_get_ref(handle, field_index)
             .map(ValueRef::from_value)
     }
 
     /// Returns struct field count.
     pub fn struct_field_count(&self, st: AggHandle) -> Result<usize, AggError> {
-        self.aggregates.struct_field_count(st)
+        let (heap, handle) = self.resolve(st);
+        heap.struct_field_count(handle)
     }
 
     /// Returns array element `index`.
     pub fn array_get(&self, arr: AggHandle, index: usize) -> Result<Value, AggError> {
-        self.aggregates.array_get(arr, index)
+        let (heap, handle) = self.resolve(arr);
+        heap.array_get(handle, index)
     }
 
     /// Returns array element `index` as a borrowed VM value.
     pub fn array_get_ref(&self, arr: AggHandle, index: usize) -> Result<ValueRef<'_>, AggError> {
-        self.aggregates
-            .array_get_ref(arr, index)
-            .map(ValueRef::from_value)
+        let (heap, handle) = self.resolve(arr);
+        heap.array_get_ref(handle, index).map(ValueRef::from_value)
     }
 
     /// Returns array length.
     pub fn array_len(&self, arr: AggHandle) -> Result<usize, AggError> {
-        self.aggregates.array_len(arr)
+        let (heap, handle) = self.resolve(arr);
+        heap.array_len(handle)
     }
 
     /// Returns the access sink, when the caller is collecting incremental-execution accesses.
@@ -654,7 +669,7 @@ impl<'a> ValueRef<'a> {
 /// - argument values as `args`
 /// - a pre-sized `rets` slice (one slot per declared return value, pre-filled with
 ///   [`Value::Unit`])
-/// - a [`HostContext`] for read-only VM metadata/aggregates and optional access recording
+/// - a [`HostContext`] for immutable inputs, staged aggregate results and optional access recording
 ///
 /// The host writes return values into `rets` and returns an optional additional fuel charge
 /// (charged by the VM). Every slot in `rets` whose declared type is not `Unit` **must** be
@@ -743,7 +758,11 @@ mod tests {
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
             .unwrap();
-        let snapshot = HostContext::new(&program, HostSigId(0), &heap, None)
+        let mut results = HostResults::new(
+            crate::vm::DataWork::default(),
+            crate::vm::DataWork::default(),
+        );
+        let snapshot = HostContext::new(&program, HostSigId(0), &heap, &mut results, None)
             .retain(&[ValueRef::Agg(root)])
             .unwrap();
         heap.clear();
