@@ -40,7 +40,9 @@ pub use inspection::{
     ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
 };
 mod observations;
+mod ownership;
 pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
+use ownership::BorrowedOrOwned;
 #[cfg(test)]
 mod payload_tests;
 
@@ -591,7 +593,7 @@ impl<H: Host> fmt::Debug for Vm<H> {
 /// per-run context while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
     mask: TraceMask,
-    sink: Option<&'a mut dyn TraceSink>,
+    sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
     scopes: Vec<(ScopeKind, usize)>,
     pending: Option<TraceLocation>,
 }
@@ -599,6 +601,13 @@ struct TraceCtx<'a> {
 impl<'a> TraceCtx<'a> {
     #[inline]
     fn new(mask: TraceMask, sink: Option<&'a mut dyn TraceSink>) -> Self {
+        Self::with_observer(mask, sink.map(BorrowedOrOwned::Borrowed))
+    }
+
+    fn with_observer(
+        mask: TraceMask,
+        sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
+    ) -> Self {
         Self {
             mask,
             sink,

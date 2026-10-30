@@ -6,13 +6,14 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
+    callable::Callable,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{HostTypeId, ValueType},
     trace::TraceMask,
     value::{Obj, ObjHandle, Value},
     vm::{ExecutionContext, InvocationOptions, Limits, RunStatus, Vm},
 };
-use std::{hint::black_box, time::Duration};
+use std::{hint::black_box, sync::Arc, time::Duration};
 
 struct NoHost;
 impl Host for NoHost {
@@ -93,6 +94,35 @@ fn stepping(c: &mut Criterion) {
                 })
             },
         );
+    }
+    group.finish();
+
+    // Both sides create a fresh VM and own their inputs/code. This isolates transferring
+    // the VM into the invocation from the established choice to reuse a borrowed VM above.
+    let callable = Callable::function(Arc::new(p.clone()), entry).unwrap();
+    let mut group = c.benchmark_group("invocation_ownership");
+    for owned in [false, true] {
+        group.bench_function(if owned { "owned_vm" } else { "borrowed_vm" }, |b| {
+            b.iter(|| {
+                let mut fresh = Vm::new(NoHost, Limits::default());
+                let mut invocation = if owned {
+                    callable.start_owned(
+                        fresh,
+                        black_box(args.to_vec()),
+                        InvocationOptions::default(),
+                    )
+                } else {
+                    callable.start(
+                        &mut fresh,
+                        black_box(args.to_vec()),
+                        InvocationOptions::default(),
+                    )
+                }
+                .unwrap();
+                assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
+                black_box(invocation.result().unwrap().unwrap());
+            });
+        });
     }
     group.finish();
 

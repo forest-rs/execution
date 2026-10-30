@@ -276,6 +276,7 @@ impl<'vm, H: Host> Invocation<'vm, H> {
     fn dispatch_pending(&mut self) -> Result<(), TrapInfo> {
         let pending = self.control.pending_host.expect("pending guard");
         let site = site(&self.program, &self.ctx, pending);
+        let vm = &mut *self.vm;
         let mut inline_args = [ValueRef::Unit; 8];
         let mut arg_vec;
         let args = if site.args.len() <= inline_args.len() {
@@ -286,7 +287,7 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         };
         for (slot, value) in args.iter_mut().zip(arguments(
             &self.ctx,
-            ValueSources::new(self.program.program(), &self.args, self.vm.memory.aggs()),
+            ValueSources::new(self.program.program(), &self.args, vm.memory.aggs()),
             site.base,
             site.args,
         )) {
@@ -303,13 +304,12 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         let context = HostContext::new(
             self.program.program(),
             site.import,
-            self.vm.memory.aggs(),
+            vm.memory.aggs(),
             self.access
                 .as_mut()
                 .map(|sink| &mut **sink as &mut dyn AccessSink),
         );
-        let outcome = self
-            .vm
+        let outcome = vm
             .host
             .call(site.symbol, site.signature, args, values, context);
         self.complete_pending(values, outcome)

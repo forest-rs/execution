@@ -89,6 +89,31 @@ Use the ordinary `vm` cases with `--save-baseline <name>` on main, then `--basel
 the candidate. Keep benchmark output in a locally ignored directory; do not compare a candidate
 only against an older optimization branch.
 
+### Invocation ownership
+
+`stepping` also includes `invocation_ownership/{borrowed_vm,owned_vm}`. Both prepare a fresh
+VM, transfer an owned argument vector and retain the callable's code on each iteration, then
+execute the same 1,000 additions and destroy the invocation/VM. Only the owned variant boxes
+and transfers the VM into the invocation. This is a lifetime-boundary cost; compare reusable
+VM execution separately through `live_execution` above.
+
+An ownership-change check against main `6bbafb0` on macOS arm64, Rust 1.99, 2026-10-30 used
+30 samples, 1 s warmup and 3 s measurement, without concurrent builds. Two candidate passes
+gave ordinary reused-context estimates of 4.733/4.813 µs; the adjacent baseline was 4.727 µs.
+Scheduled quantum-64 estimates were 6.363/4.752 µs versus baseline 4.696 µs, and uninterrupted
+scheduled estimates were 4.771/4.459 µs versus baseline 4.414 µs. The repeat thus retains
+roughly 1–2% regressions in these cases; single-step scheduling and the first ordinary-run
+pass were too variable to support a useful comparison.
+
+The ordinary `vm` probes were also repeated. The unchanged baseline's branch-loop estimate
+moved from 481.8 to 389.4 µs, while candidate passes were 475.9/476.4 µs. Ten additions varied
+from 154.4 to 162.5 ns on baseline and 167.3 to 242.5 ns on candidate. Those swings prevent
+a reliable aggregate speed claim. Host-call estimates were 75.5/74.5 µs on baseline and
+76.4/74.4 µs on candidate. The unbounded interpreter still has no ownership/scheduling test
+per instruction; changed layouts and generated code can nevertheless affect performance.
+These measurements exclude program preparation, inspection, recording, retained memory and
+real asynchronous host work.
+
 ## Yielded host-request costs
 
 `host_requests` compares the same 100 dependent host calls through ordinary execution, a

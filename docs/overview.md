@@ -262,6 +262,14 @@ cargo run -p execution_tape_wind_tunnel --bin bound_host
 - Recursion via `call` and frames.
 - Typed block parameters express joins directly; edge transfers are simultaneous preparation details.
 
+`Callable::start_owned` transfers a VM, code and arguments into the existing invocation type,
+so tasks can store it without self-references. Owned trace/access observers retain their state
+across polls; shared collectors remain inspectable after retirement. Borrowed entry still supports
+reusable VM storage. Limits, capture import, cancellation, host completion and checked replay
+are shared. Raw aggregate/function/closure IDs still need their original ownership domain;
+retention or snapshots are explicit. Observatory borrows local sources separately from the
+invocation, then returns the same owned handle to its scheduler after inspection.
+
 `InvocationOptions::yield_host_calls()` admits a host instruction and returns `AwaitingHost`.
 The pending request exposes exact code/import/source identity and borrowed arguments, while
 inspection shows the call awaiting a return and excludes uninitialized destinations. Request
