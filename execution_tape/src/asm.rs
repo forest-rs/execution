@@ -13,6 +13,7 @@ mod calls;
 pub use calls::{CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
+mod sources;
 
 use alloc::string::String;
 use alloc::vec;
@@ -1009,6 +1010,7 @@ pub struct Asm {
     block_params: Vec<Option<Vec<u32>>>,
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, SpanId)>,
+    sources: sources::Sources,
 }
 
 #[derive(Clone, Debug)]
@@ -2324,6 +2326,7 @@ impl Asm {
     }
 
     fn opcode(&mut self, opcode: Opcode) {
+        self.sources.instruction(self.pc());
         self.bytes.push(opcode as u8);
     }
 

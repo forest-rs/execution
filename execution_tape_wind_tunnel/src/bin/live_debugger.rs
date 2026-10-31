@@ -7,8 +7,7 @@ use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{HostTypeId, ValueType},
-    source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
-    trace::TraceLocation,
+    source::{SourceDocument, SourceId, SourceLimits, SourceMap},
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
     vm::{InvocationOptions, Limits, Vm},
@@ -61,13 +60,9 @@ fn object() -> Obj {
         handle: ObjHandle(42),
     }
 }
-fn mapping(func: FuncId, pc: u32, text: &str) -> SourceMapping {
+fn source(text: &str) -> std::ops::Range<usize> {
     let start = SOURCE.find(text).expect("demo source fragment");
-    SourceMapping {
-        location: TraceLocation { func, pc },
-        document: SourceId(0),
-        range: start..start + text.len(),
-    }
+    start..start + text.len()
 }
 fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error::Error>> {
     // This example assembles its tiny source directly; it is not a language compiler.
@@ -93,14 +88,15 @@ fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error:
         ret_types: vec![ValueType::I64],
     })?;
     let mut a = b.function_asm(double)?;
-    let mut mappings = vec![mapping(double, a.pc(), "read(receiver)")];
+    a.source(SourceId(0), source("read(receiver)"));
     let receiver = b.argument(double, 0)?;
     let [sample] = b.emit_call(&mut a, read, &[receiver])?;
-    mappings.push(mapping(double, a.pc(), "sample + sample"));
+    a.source(SourceId(0), source("sample + sample"));
     let answer = a.alloc_register(ValueType::I64);
     a.i64_add(answer, sample, sample);
-    mappings.push(mapping(double, a.pc(), "return sample + sample;"));
+    a.source(SourceId(0), source("return sample + sample;"));
     a.ret(0, &[answer]);
+    let mut mappings: Vec<_> = a.source_mappings(double).collect();
     b.define_function(double, a)?;
     b.set_function_name(double, "double")?;
     let main = b.declare_function(FunctionSig {
@@ -109,15 +105,16 @@ fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error:
     })?;
     let mut a = b.function_asm(main)?;
     let receiver = b.argument(main, 0)?;
-    mappings.push(mapping(main, a.pc(), "double(receiver)"));
+    a.source(SourceId(0), source("double(receiver)"));
     let [answer] = b.emit_call(&mut a, double, &[receiver])?;
-    mappings.push(mapping(main, a.pc(), "publish(receiver, answer)"));
+    a.source(SourceId(0), source("publish(receiver, answer)"));
     let [] = b.emit_call(&mut a, publish, &[receiver, answer])?;
-    mappings.push(mapping(main, a.pc(), "(receiver, answer)"));
+    a.source(SourceId(0), source("(receiver, answer)"));
     let tuple = a.alloc_register(ValueType::Agg);
     a.tuple_new(tuple, &[receiver, answer]);
-    mappings.push(mapping(main, a.pc(), "return (receiver, answer);"));
+    a.source(SourceId(0), source("return (receiver, answer);"));
     a.ret(0, &[tuple]);
+    mappings.extend(a.source_mappings(main));
     b.define_function(main, a)?;
     b.set_function_name(main, "main")?;
     let program = b.build_verified()?;

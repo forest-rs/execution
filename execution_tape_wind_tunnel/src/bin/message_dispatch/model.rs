@@ -9,7 +9,6 @@ use execution_tape::{
     host::HostSig,
     program::{HostTypeId, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
-    trace::TraceLocation,
     value::{FuncId, Obj, ObjHandle},
     verifier::VerifiedProgram,
 };
@@ -28,13 +27,6 @@ pub(super) struct Compiled {
     pub(super) program: Arc<VerifiedProgram>,
     pub(super) entry: FuncId,
     pub(super) sources: SourceMap,
-}
-fn mapping(func: FuncId, pc: u32, range: Range<usize>) -> SourceMapping {
-    SourceMapping {
-        location: TraceLocation { func, pc },
-        document: SourceId(0),
-        range,
-    }
 }
 fn fragment(source: &str, text: &str) -> Range<usize> {
     let start = source.find(text).expect("authored fixture fragment");
@@ -85,25 +77,21 @@ pub(super) fn caller(selector: &str) -> Result<Compiled> {
     let name = b.const_str(selector);
     let mut a = b.function_asm(entry)?;
     let selector_reg = a.alloc_register(ValueType::Str);
-    let first = a.alloc_register(ValueType::I64);
-    let second = a.alloc_register(ValueType::I64);
-    let tuple = a.alloc_register(ValueType::Agg);
-    let mut mappings = vec![mapping(entry, a.pc(), fragment(&source, selector))];
-    a.const_pool(selector_reg, name);
+    let counter = b.argument(entry, 0)?;
+    a.source(SourceId(0), fragment(&source, selector))
+        .const_pool(selector_reg, name);
     let expression = format!("counter.{selector}()");
-    mappings.push(mapping(entry, a.pc(), fragment(&source, &expression)));
-    a.host_call_sig_id(0, send, 0, &[1, selector_reg], &[first]);
+    a.source(SourceId(0), fragment(&source, &expression));
+    let [first] = b.emit_call(&mut a, send, &[counter, selector_reg])?;
     let last = source.rfind(&expression).expect("second authored send");
-    mappings.push(mapping(entry, a.pc(), last..last + expression.len()));
-    a.host_call_sig_id(0, send, 0, &[1, selector_reg], &[second]);
-    mappings.push(mapping(entry, a.pc(), fragment(&source, "(first, second)")));
-    a.tuple_new(tuple, &[first, second]);
-    mappings.push(mapping(
-        entry,
-        a.pc(),
-        fragment(&source, "return (first, second);"),
-    ));
-    a.ret(0, &[tuple]);
+    a.source(SourceId(0), last..last + expression.len());
+    let [second] = b.emit_call(&mut a, send, &[counter, selector_reg])?;
+    let tuple = a.alloc_register(ValueType::Agg);
+    a.source(SourceId(0), fragment(&source, "(first, second)"))
+        .tuple_new(tuple, &[first, second]);
+    a.source(SourceId(0), fragment(&source, "return (first, second);"))
+        .ret(0, &[tuple]);
+    let mappings = a.source_mappings(entry).collect();
     b.define_function(entry, a)?;
     b.set_function_name(entry, "main")?;
     b.set_function_input_name(entry, 0, "counter")?;
@@ -127,28 +115,23 @@ pub(super) fn method(delta: i64) -> Result<Compiled> {
     })?;
     let mut a = b.function_asm(entry)?;
     let amount = a.alloc_register(ValueType::I64);
-    let result = a.alloc_register(ValueType::I64);
-    let mut mappings = vec![mapping(
-        entry,
-        a.pc(),
-        fragment(&source, &delta.to_string()),
-    )];
-    a.const_i64(amount, delta);
-    mappings.push(mapping(
-        entry,
-        a.pc(),
+    let receiver = b.argument(entry, 0)?;
+    a.source(SourceId(0), fragment(&source, &delta.to_string()))
+        .const_i64(amount, delta);
+    a.source(
+        SourceId(0),
         fragment(&source, &format!("CounterCell.add(receiver, {delta})")),
-    ));
-    a.host_call_sig_id(0, add, 0, &[1, amount], &[result]);
-    mappings.push(mapping(
-        entry,
-        a.pc(),
+    );
+    let [result] = b.emit_call(&mut a, add, &[receiver, amount])?;
+    a.source(
+        SourceId(0),
         fragment(
             &source,
             &format!("return CounterCell.add(receiver, {delta});"),
         ),
-    ));
-    a.ret(0, &[result]);
+    )
+    .ret(0, &[result]);
+    let mappings = a.source_mappings(entry).collect();
     b.define_function(entry, a)?;
     b.set_function_name(entry, "increment")?;
     b.set_function_input_name(entry, 0, "receiver")?;

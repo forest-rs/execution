@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Attribute emitted instructions directly with `Asm::source` and collect exact sidecar mappings
+  through `source_mappings`. `clear_source` preserves explicit gaps. Source attribution is optional
+  authoring state; bytecode, ordinary verification and execution retain no source recorder.
+  Migration: no caller changes are required; existing explicit `SourceMapping` construction remains supported.
+
 - Declare closure capture layouts with `ProgramBuilder::declare_closure`. One declaration derives
   the exact tuple environment, hidden body argument and caller-visible indirect signature;
   `ClosureLayout` loads captures and constructs matching closure values with declared register kinds.
