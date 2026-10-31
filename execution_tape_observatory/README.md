@@ -300,3 +300,10 @@ let text = explorer.render_text(160, 60)?;
 Frontend context follows the selected attempt or suspended caller. Missing mappings are labelled;
 opening the recording does not infer source ranges or read a source file from disk. Existing
 `explore` and `render_text` functions remain conveniences for the default boundary view.
+
+Recorded guest callbacks have separate request and return events, interleaved with native host
+outcomes in observation order. Select a request to see its target, arguments and admitting source;
+select its return to see actual results and the returning guest stack/source. A callback return
+leaves the original host request pending. Optional instruction histories identify the outstanding
+parent host attempt; a callback `Ret` returns to embedding code rather than completing the root.
+Checked replay reexecutes callback bodies and verifies their results.
