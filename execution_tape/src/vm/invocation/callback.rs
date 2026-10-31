@@ -17,6 +17,13 @@ struct WaitingHost {
 }
 
 impl Callbacks {
+    pub(super) fn count_exited(&self, first: usize) -> usize {
+        self.waiting
+            .iter()
+            .rev()
+            .take_while(|waiting| waiting.host.depth >= first)
+            .count()
+    }
     pub(super) fn waiting_at(&self, depth: usize) -> Option<(PendingHost, bool)> {
         self.waiting
             .iter()

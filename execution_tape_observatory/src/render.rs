@@ -82,6 +82,9 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 Divergence::HostCalls { expected, actual } => {
                     format!("calls expected {expected}, got {actual}")
                 }
+                Divergence::ControlTarget { activation } => {
+                    format!("transfer target activation #{activation} is not active")
+                }
                 Divergence::Outcome => "outcome mismatch".into(),
                 Divergence::CallStack => "guest call stack mismatch".into(),
                 Divergence::Instruction => "instruction path mismatch".into(),

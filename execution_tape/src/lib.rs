@@ -374,8 +374,9 @@
 //! One fuel unit and moved immediate payload ingress are charged; staging is promoted with stable
 //! handles. All work remains cumulative. `ValueEvent::ReturnFrom` retains the real initiating
 //! host source; abandoned instructions/scopes close with `TraceOutcome::Unwound`. No synthetic
-//! `Ret` is executed. This primitive does not yet run protected guest cleanup. Recording reports
-//! `CaptureFault::UnsupportedTransfer` explicitly; callback recordings without exits still replay.
+//! `Ret` is executed. This primitive does not automatically run protected guest cleanup. Recording
+//! retains admitted transfer commands and their actual unwinding. Checked replay resolves the
+//! exact active target and reissues the typed transfer, including promoted staging and budgets.
 //! Language condition classes, handler selection and restart policy remain above the core VM.
 //!
 //! ## Owned executable callables

@@ -299,8 +299,9 @@ Reentry first promotes all previous host staging with unchanged handles, avoidin
 with callback allocations. Previously spent work stays charged and future contexts use the
 updated heap/budgets. Unused promoted nodes survive until root commit/rollback. The embedding
 owns scheduling and callback selection; no native Rust stack is captured. Cancellation executes
-no guest code. This establishes nested guest execution; dynamic condition dispatch, restarts,
-non-local exits, protected cleanup and typed delimited operations are not implemented yet.
+no guest code. Exact activation-scoped typed exits are available as described below. Dynamic
+condition dispatch, restart policy and protected cleanup are language-runtime responsibilities;
+this VM does not automatically install them or provide typed delimited-effect opcodes.
 
 Callback entry/return are explicit value events and guest frames have their actual host call
 sites as callers. The parent host instruction remains outstanding while child attempts execute.
@@ -450,6 +451,9 @@ returns to its caller; a callback root restores its parent host request with res
 All intervening pending host operations are abandoned without dispatch. They and their scopes
 are observed as `Unwound` at the actual initiating source, with no fabricated `Ret` instruction.
 Staging is promoted before admission, one fuel unit and immediate payload ingress are charged,
-and existing hard limits never reset. This first transfer primitive has no protected cleanup
-registration. Its recordings are explicitly incomplete until transfer-command replay is added.
+and existing hard limits never reset. This transfer primitive has no automatic protected cleanup
+registration. Recording retains admitted transfers, ingress, staging and abandoned callback counts;
+checked replay resolves the actual active target and reissues the transfer. Instruction histories
+can end in a checked root transfer rather than an executed `Ret`. Pure foreign/expired denials
+change no guest state and are not recorded as admitted control commands.
 Condition/restart policy belongs above the VM; hard cancellation still executes no guest code.
