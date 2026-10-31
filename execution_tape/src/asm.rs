@@ -11,6 +11,8 @@
 
 mod calls;
 pub use calls::{CallBuildError, CallTarget};
+mod closures;
+pub use closures::{ClosureBuildError, ClosureLayout};
 
 use alloc::string::String;
 use alloc::vec;
@@ -165,6 +167,8 @@ pub enum BuildError {
     Contract(ContractBuildError),
     /// Signature-aware call emission was denied before mutation.
     Call(CallBuildError),
+    /// Closure capture emission was denied before mutation.
+    Closure(ClosureBuildError),
     /// A function id was out of range for the builder.
     BadFuncId {
         /// The invalid function id.
@@ -204,6 +208,7 @@ impl fmt::Display for BuildError {
         match self {
             Self::Contract(error) => error.fmt(f),
             Self::Call(error) => error.fmt(f),
+            Self::Closure(error) => error.fmt(f),
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
             Self::BadArgIndex {
                 func,
@@ -254,6 +259,7 @@ impl core::error::Error for BuildError {
             Self::Verify(e) => Some(e),
             Self::Contract(error) => Some(error),
             Self::Call(error) => Some(error),
+            Self::Closure(error) => Some(error),
             _ => None,
         }
     }
@@ -273,6 +279,12 @@ impl From<ContractBuildError> for BuildError {
 impl From<CallBuildError> for BuildError {
     fn from(error: CallBuildError) -> Self {
         Self::Call(error)
+    }
+}
+
+impl From<ClosureBuildError> for BuildError {
+    fn from(error: ClosureBuildError) -> Self {
+        Self::Closure(error)
     }
 }
 

@@ -7,7 +7,7 @@
 
 use super::language::{Class, Policy, RESTART_TOKEN, RestartMode};
 use execution_tape::{
-    asm::{Asm, ContractRef, FunctionAbi, ProgramBuilder},
+    asm::{Asm, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
     contract::{Contract, ContractId},
     disasm::disassemble_function,
     host::HostSig,
@@ -177,7 +177,7 @@ struct Services {
 }
 struct Compiler {
     builder: ProgramBuilder,
-    environment: ContractId,
+    closures: BTreeMap<u32, ClosureLayout>,
     integer: ContractId,
     boolean: ContractId,
     services: Services,
@@ -191,7 +191,6 @@ impl Compiler {
         builder.set_program_name("Language conditions and scoped recovery");
         let integer = builder.contract(Contract::Kind(ValueType::I64))?;
         let boolean = builder.contract(Contract::Kind(ValueType::Bool))?;
-        let environment = builder.contract(Contract::Tuple(&[Some(integer); 4]))?;
         let pair = [ValueType::I64, ValueType::Bool];
         let mut service = |name: &str, args: &[ValueType], rets: &[ValueType]| {
             builder.host_sig_for(
@@ -247,7 +246,7 @@ impl Compiler {
         };
         Ok(Self {
             builder,
-            environment,
+            closures: BTreeMap::new(),
             integer,
             boolean,
             services,
@@ -273,46 +272,32 @@ impl Compiler {
         a.const_i64(register, value);
         register
     }
-    fn context(&mut self, function: FuncId, kind: Kind, a: &mut Asm) -> Context {
+    fn context(&mut self, function: FuncId, kind: Kind, body: &mut Asm) -> Result<Context> {
         if matches!(kind, Kind::Entry) {
-            Context {
+            return Ok(Context {
                 function,
-                capture: Self::integer(a, self.capture),
-                class: Self::integer(a, -1),
-                payload: Self::integer(a, 0),
-                argument: Self::integer(a, 0),
-            }
-        } else {
-            let capture = a.alloc_register(ValueType::I64);
-            a.tuple_get(capture, 1, 0);
-            let field = |a: &mut Asm, index| {
-                let reg = a.alloc_register(ValueType::I64);
-                a.tuple_get(reg, 1, index);
-                reg
-            };
-            let class = if matches!(kind, Kind::Handler { .. }) {
-                2
-            } else {
-                field(a, 1)
-            };
-            let payload = if matches!(kind, Kind::Handler { .. }) {
-                3
-            } else {
-                field(a, 2)
-            };
-            let argument = if matches!(kind, Kind::Restart) {
-                2
-            } else {
-                field(a, 3)
-            };
-            Context {
-                function,
-                capture,
-                class,
-                payload,
-                argument,
-            }
+                capture: Self::integer(body, self.capture),
+                class: Self::integer(body, -1),
+                payload: Self::integer(body, 0),
+                argument: Self::integer(body, 0),
+            });
         }
+        let closure = &self.closures[&function.0];
+        let [capture, mut class, mut payload, mut argument] = closure.load_captures(body)?;
+        if matches!(kind, Kind::Handler { .. }) {
+            class = closure.argument(0)?;
+            payload = closure.argument(1)?;
+        }
+        if matches!(kind, Kind::Restart) {
+            argument = closure.argument(0)?;
+        }
+        Ok(Context {
+            function,
+            capture,
+            class,
+            payload,
+            argument,
+        })
     }
     fn environment(a: &mut Asm, context: Context) -> u32 {
         let env = a.alloc_register(ValueType::Agg);
@@ -327,20 +312,19 @@ impl Compiler {
         );
         env
     }
-    fn closure(a: &mut Asm, context: Context, function: FuncId) -> u32 {
-        let env = Self::environment(a, context);
-        let callee = a.alloc_register(ValueType::Func);
-        let closure = a.alloc_register(ValueType::Closure);
-        a.const_func(callee, function)
-            .closure_new(closure, callee, env);
-        closure
+    fn closure(&self, body: &mut Asm, context: Context, function: FuncId) -> Result<u32> {
+        Ok(self.closures[&function.0].instantiate(
+            body,
+            &[
+                context.capture,
+                context.class,
+                context.payload,
+                context.argument,
+            ],
+        )?)
     }
     fn function(&mut self, role: &str, kind: Kind, expr: &Expr, indent: usize) -> Result<FuncId> {
-        let mut args: Vec<ContractRef> = if matches!(kind, Kind::Entry) {
-            vec![]
-        } else {
-            vec![self.environment.into()]
-        };
+        let mut args: Vec<ContractRef> = vec![];
         if matches!(kind, Kind::Handler { .. }) {
             args.push(self.integer.into());
             args.push(self.integer.into());
@@ -357,7 +341,17 @@ impl Compiler {
             Kind::Cleanup => vec![],
             _ => vec![self.integer.into(), self.boolean.into()],
         };
-        let function = self.builder.declare_function(FunctionAbi { args, rets })?;
+        let abi = FunctionAbi { args, rets };
+        let function = if matches!(kind, Kind::Entry) {
+            self.builder.declare_function(abi)?
+        } else {
+            let closure = self
+                .builder
+                .declare_closure(&[self.integer.into(); 4], abi)?;
+            let function = closure.function();
+            self.closures.insert(function.0, closure);
+            function
+        };
         let name = if matches!(kind, Kind::Entry) {
             role.to_string()
         } else {
@@ -367,7 +361,7 @@ impl Compiler {
         let header = self.line(indent, &format!("fn {name}:"));
         let mut a = self.builder.function_asm(function)?;
         self.anchors.insert((function.0, 0), header.clone());
-        let context = self.context(function, kind, &mut a);
+        let context = self.context(function, kind, &mut a)?;
         let body_start = self.source.len() + 2 * (indent + 1);
         let body_range = body_start..body_start + expr.label().len();
         let (value, flag) = self.expression(&mut a, context, expr, indent + 1)?;
@@ -480,8 +474,8 @@ impl Compiler {
                     indent + 1,
                 )?;
                 let body = self.function("handler_body", Kind::Body, body, indent + 1)?;
-                let handler = Self::closure(a, context, handler);
-                let body = Self::closure(a, context, body);
+                let handler = self.closure(a, context, handler)?;
+                let body = self.closure(a, context, body)?;
                 let class = Self::integer(a, class.code());
                 let policy_reg = a.alloc_register(ValueType::U64);
                 a.const_u64(policy_reg, *policy as u64);
@@ -504,8 +498,8 @@ impl Compiler {
                 let function =
                     self.function(&restart_name(*name), Kind::Restart, function, indent + 1)?;
                 let body = self.function("restart_body", Kind::Body, body, indent + 1)?;
-                let function = Self::closure(a, context, function);
-                let body = Self::closure(a, context, body);
+                let function = self.closure(a, context, function)?;
+                let body = self.closure(a, context, body)?;
                 let name = Self::integer(a, *name);
                 let mode_reg = a.alloc_register(ValueType::U64);
                 a.const_u64(mode_reg, *mode as u64);
@@ -522,8 +516,8 @@ impl Compiler {
             Expr::Protect { cleanup, body } => {
                 let cleanup = self.function("cleanup", Kind::Cleanup, cleanup, indent + 1)?;
                 let body = self.function("protected_body", Kind::Body, body, indent + 1)?;
-                let cleanup = Self::closure(a, context, cleanup);
-                let body = Self::closure(a, context, body);
+                let cleanup = self.closure(a, context, cleanup)?;
+                let body = self.closure(a, context, body)?;
                 self.mark(context, a, &range);
                 a.host_call_sig_id(
                     0,
