@@ -225,6 +225,8 @@ pub enum ValueEvent<'a> {
         location: TraceLocation,
         /// Target activation ordinal in this invocation.
         target: u64,
+        /// Target frame's actual suspended instruction, using the same rule as live inspection.
+        target_location: TraceLocation,
         /// Callback bodies abandoned by this transfer, including a callback-root target.
         unwound_callbacks: usize,
         /// Raw supplied results, checked against the target function's result contracts.
@@ -320,6 +322,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
             Self::ReturnFrom {
                 location,
                 target,
+                target_location,
                 unwound_callbacks,
                 values,
                 work,
@@ -329,6 +332,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .debug_struct("ReturnFrom")
                 .field("location", location)
                 .field("target", target)
+                .field("target_location", target_location)
                 .field("unwound_callbacks", unwound_callbacks)
                 .field("values", values)
                 .field("work", work)

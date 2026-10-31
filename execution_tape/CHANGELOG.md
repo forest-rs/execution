@@ -17,7 +17,7 @@ This release has an [MSRV][] of 1.88.
 ### Added
 
 - Record and replay typed non-local returns with exact activation targets, supplied multiple
-  values, promoted staging and callback abandonment. Full and truncated instruction histories
+  values, target/initiating source locations, promoted staging and callback abandonment. Full and truncated instruction histories
   preserve unwound attempts and resumed caller execution; root transfers need no synthetic `Ret`.
   Reconstructed host/control staging must have at least its recorded node/field/payload work.
 
@@ -81,7 +81,7 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
-- Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::unwound_callbacks`, and
+- Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include
   the added event field in explicit patterns. Remove provisional `CaptureFault::UnsupportedTransfer`:
   complete transfer recordings now support checked replay. Supplied transfer values remain

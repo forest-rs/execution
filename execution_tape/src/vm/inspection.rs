@@ -79,6 +79,24 @@ impl ExecutionControl {
             last: 0,
         }
     }
+    pub(super) fn paused_location(&self, ctx: &ExecutionContext, index: usize) -> TraceLocation {
+        if index + 1 < ctx.frames.len() {
+            self.frames[index + 1]
+                .caller
+                .expect("nested activation has caller")
+        } else if let Some(pending) = self
+            .pending_host
+            .filter(|pending| pending.depth == ctx.frames.len())
+        {
+            pending.location
+        } else {
+            let frame = &ctx.frames[index];
+            TraceLocation {
+                func: frame.func,
+                pc: frame.pc,
+            }
+        }
+    }
     pub(super) fn target_index(&self, id: &ActivationId) -> Result<usize, ControlError> {
         if !self
             .owner
@@ -244,18 +262,7 @@ impl<'a> InvocationInspection<'a> {
             .pending_host
             .filter(|pending| !child && pending.depth == self.ctx.frames.len());
         let waiting = child || pending.is_some();
-        let location = if child {
-            self.control.frames[index + 1]
-                .caller
-                .expect("nested activation has caller")
-        } else if let Some(pending) = pending {
-            pending.location
-        } else {
-            TraceLocation {
-                func: frame.func,
-                pc: frame.pc,
-            }
-        };
+        let location = self.control.paused_location(self.ctx, index);
         PausedFrame {
             activation: ActivationId {
                 owner: Arc::clone(self.control.owner.as_ref().expect("invocation identity")),

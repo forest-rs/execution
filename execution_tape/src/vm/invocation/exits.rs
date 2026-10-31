@@ -107,6 +107,7 @@ impl<H: Host> Invocation<'_, H> {
         self.trace.values(program, || ValueEvent::ReturnFrom {
             location: pending.location,
             target: ordinal,
+            target_location: self.control.paused_location(&self.ctx, index),
             unwound_callbacks: self
                 .control
                 .callbacks
