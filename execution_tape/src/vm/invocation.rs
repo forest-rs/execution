@@ -415,6 +415,25 @@ impl<H: Host> Invocation<'_, H> {
         self.ctx.fuel
     }
 
+    /// Cumulative admitted VM work, including entry checks, host staging and control operations.
+    ///
+    /// Snapshot before and after an operation and use [`ExecutionWork::checked_sub`] to obtain
+    /// its debit. Counters remain available after successful completion or a trap. Fuel is the
+    /// amount actually debited, including clipped host extra fuel. Failed charges do not count
+    /// the refused work. Capture/snapshot copies and arbitrary native work are outside this meter.
+    ///
+    /// This read-only query does not install tracing or change any limits. Summing independent
+    /// invocations accounts for task work; it does not enforce a shared allocation or work ceiling.
+    #[must_use]
+    pub fn work(&self) -> ExecutionWork {
+        ExecutionWork {
+            fuel: self.vm.limits.fuel - self.ctx.fuel,
+            host_calls: self.ctx.host_calls,
+            contract: self.ctx.contract_scratch.work_used(),
+            data: self.data_work(),
+        }
+    }
+
     /// Aggregate/payload work spent so far, including owned-input preparation and root returns.
     /// Counters accumulate across quanta and remain available after a return or trap. These are
     /// logical work units, not retained heap bytes. Includes staged host results before completion;

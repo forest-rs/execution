@@ -104,6 +104,11 @@ fn main() -> program::Result<()> {
         task.answer.expect("successful answer"),
         task.remaining_fuel
     );
+    let work = task.work()?;
+    println!(
+        "VM work: {} fuel, {} host calls, {} contract units, {} aggregate units, {} payload bytes",
+        work.fuel, work.host_calls, work.contract, work.data.aggregate, work.data.payload
+    );
     if explain {
         println!("Language decisions (embedding policy, separate from checked guest replay):");
         for event in &task.events {

@@ -80,6 +80,10 @@ fuel and debiting actual VM fuel consumption, including the final typed transfer
 waits spends none. `--fuel N` changes that task budget. Each VM still has its own default host-call,
 contract, aggregate and payload limits; a shared data-work/retained-memory policy remains future
 work. The fixture executes no synchronous host dispatch or host extra-fuel charges.
+The report sums `Invocation::work` across live and retired VMs exactly once, including entry
+checks, imported closure captures and pending host staging. Fuel counts actually debited units;
+the other counters retain their respective VM units. This accounting does not install shared
+host-call, contract or allocation ceilings. Native capture copies are outside the VM work meter.
 
 Cancelling or exhausting fuel retires the task without running further guest cleanup. Native
 effects already performed remain real. The example's tests also execute the retained block

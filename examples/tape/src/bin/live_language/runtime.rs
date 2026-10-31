@@ -13,7 +13,7 @@ use execution_tape::{
     recording::{InstructionCapture, RecordLimits, Recorder, Recording},
     trace::{TraceLocation, TraceSink},
     value::Value,
-    vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{ActivationId, ExecutionWork, Invocation, InvocationOptions, Limits, RunStatus, Vm},
 };
 use std::{cell::RefCell, error::Error, fmt, rc::Rc, sync::Arc};
 
@@ -100,6 +100,7 @@ pub(super) struct Evidence {
     pub(super) code: Arc<Compiled>,
     pub(super) termination: Termination,
     pub(super) recording: Recording,
+    pub(super) work: ExecutionWork,
 }
 
 struct Frame {
@@ -192,9 +193,14 @@ impl Frame {
         if *remaining == 0 {
             return Err(Failure::FuelExhausted.into());
         }
-        let before = self.call.remaining_fuel();
+        let before = self.call.work();
         let status = self.call.resume(quantum.min(*remaining));
-        *remaining -= before - self.call.remaining_fuel();
+        *remaining -= self
+            .call
+            .work()
+            .checked_sub(before)
+            .expect("monotonic VM work")
+            .fuel;
         Ok(status?)
     }
 
@@ -206,6 +212,7 @@ impl Frame {
     }
 
     fn retire(self) -> Evidence {
+        let work = self.call.work();
         let termination = match self.call.result() {
             Some(Ok(_)) => Termination::Returned,
             Some(Err(_)) => Termination::Trapped,
@@ -226,6 +233,7 @@ impl Frame {
             code,
             termination,
             recording: recorder.finish(),
+            work,
         }
     }
 }
@@ -311,6 +319,29 @@ impl Task {
 
     pub(super) fn revision(&self) -> u64 {
         self.methods.current().revision()
+    }
+
+    /// Counts each live or retired VM once, including owned entry preparation and staging.
+    pub(super) fn work(&self) -> Result<ExecutionWork> {
+        self.evidence
+            .iter()
+            .map(|frame| frame.work)
+            .chain(
+                [
+                    &self.root,
+                    &self.method,
+                    &self.block,
+                    &self.handler,
+                    &self.cleanup,
+                ]
+                .into_iter()
+                .flatten()
+                .map(|frame| frame.call.work()),
+            )
+            .try_fold(ExecutionWork::default(), |sum, work| {
+                sum.checked_add(work)
+                    .ok_or_else(|| Failure::Protocol("task work counters overflowed").into())
+            })
     }
 
     pub(super) fn poll(&mut self, quantum: u64) -> Result<Status> {
@@ -568,13 +599,18 @@ impl Task {
             }
             let root = self.root.as_mut().expect("live lexical home");
             let site = root.site()?;
-            let before = root.call.remaining_fuel();
+            let before = root.call.work();
             let result = root
                 .call
                 .pending_host_call()
                 .expect("waiting send")
                 .return_from(&transfer.target, vec![Value::I64(transfer.value)]);
-            self.remaining_fuel -= before - root.call.remaining_fuel();
+            self.remaining_fuel -= root
+                .call
+                .work()
+                .checked_sub(before)
+                .expect("monotonic VM work")
+                .fuel;
             result?;
             self.events.push(Event {
                 site,

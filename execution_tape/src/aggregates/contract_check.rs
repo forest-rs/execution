@@ -60,6 +60,10 @@ pub(crate) struct ContractScratch {
     work: u64,
 }
 impl ContractScratch {
+    pub(crate) fn work_used(&self) -> u64 {
+        self.work
+    }
+
     pub(crate) fn reset(&mut self) {
         self.clear_proofs();
         self.work = 0;
