@@ -66,10 +66,13 @@ and the distinction between static verifier facts and recorded observations.
 | [`smalltalk_blocks`](tape/src/bin/smalltalk_blocks.rs) | Shared mutable captures, ordinary block returns, lexical `^`, nested `ensure:` cleanup and an escaped return after its home has ended. Compare `--normal-return`; inspect the source-linked recording. | [Blocks and lexical homes](tape/blocks.md) |
 | [`conditions`](tape/src/bin/conditions.rs) | Language-owned dynamic handlers, restart lookup, recovery, non-local exits, cleanup suspension and replacement, and expired capabilities above the VM's control primitives. Use `--help` for the scenarios. | [Conditions above the VM](tape/conditions.md) |
 | [`message_dispatch`](tape/src/bin/message_dispatch.rs) | Embedding-controlled method lookup, shared cells and compatible method publication while an existing invocation keeps its original code. Inspect the actual waiting caller. | [Messages and method replacement](tape/messages.md) |
+| [`live_language`](tape/src/bin/live_language.rs) | Follow an escaped block through independently compiled methods, a waiting condition handler, live publication and original cleanup to its exact lexical home. Inspect source-linked task ancestry and the limits of separate VM recordings. | [Composed language control](tape/live-language.md) |
 
 The block and condition examples use one program and invocation. The message-dispatch example
 executes independently owned methods in separate invocations. Their guides explain those control
 boundaries and what checked guest replay does and does not reproduce.
+`live_language` connects independent invocations with an explicit language-owned task; its guide
+explains why crossed child recordings remain incomplete after a lexical exit.
 
 ## Tape: recording and profiling
 
