@@ -20,7 +20,7 @@ pub(super) enum Focus {
 #[derive(Clone, Copy)]
 pub(super) enum Boundary {
     Host(usize),
-    Callback(usize),
+    Command(usize),
     CallbackReturn(usize),
 }
 
@@ -69,9 +69,12 @@ impl<'a> View<'a> {
             .map(|(i, call)| (call.sequence, Boundary::Host(i)))
             .collect();
         for (i, command) in commands.iter().enumerate() {
-            ordered.push((command.sequence, Boundary::Callback(i)));
-            let ControlAction::CallGuest { returned, .. } = &command.action;
-            if let Some(returned) = returned {
+            ordered.push((command.sequence, Boundary::Command(i)));
+            if let ControlAction::CallGuest {
+                returned: Some(returned),
+                ..
+            } = &command.action
+            {
                 ordered.push((returned.sequence, Boundary::CallbackReturn(i)));
             }
         }
@@ -113,8 +116,10 @@ impl<'a> View<'a> {
     }
 
     pub(super) fn callback_return(&self, index: usize) -> Option<&GuestReturn<'a>> {
-        let ControlAction::CallGuest { returned, .. } = &self.commands[index].action;
-        returned.as_ref()
+        match &self.commands[index].action {
+            ControlAction::CallGuest { returned, .. } => returned.as_ref(),
+            ControlAction::ReturnFrom { .. } => None,
+        }
     }
 
     pub(super) fn stack(&self) -> Option<CallStack<'a>> {
@@ -126,7 +131,7 @@ impl<'a> View<'a> {
         } else if let Some(boundary) = self.boundary(self.selected) {
             match boundary {
                 Boundary::Host(i) => self.calls[i].stack.clone(),
-                Boundary::Callback(i) => self.commands[i].stack.clone(),
+                Boundary::Command(i) => self.commands[i].stack.clone(),
                 Boundary::CallbackReturn(i) => {
                     self.callback_return(i).and_then(|r| r.stack.clone())
                 }
@@ -155,7 +160,7 @@ impl<'a> View<'a> {
         if let Some(boundary) = self.boundary(self.selected) {
             return match boundary {
                 Boundary::Host(i) => Some(self.calls[i].location),
-                Boundary::Callback(i) => Some(self.commands[i].location),
+                Boundary::Command(i) => Some(self.commands[i].location),
                 Boundary::CallbackReturn(i) => self.callback_return(i).map(|r| r.location),
             };
         }
@@ -328,10 +333,10 @@ impl<'a> View<'a> {
                         };
                         ("arg", call.args, returns)
                     }
-                    Boundary::Callback(i) => {
-                        let ControlAction::CallGuest { args, .. } = &self.commands[i].action;
-                        ("arg", args, &[])
-                    }
+                    Boundary::Command(i) => match &self.commands[i].action {
+                        ControlAction::CallGuest { args, .. } => ("arg", *args, &[]),
+                        ControlAction::ReturnFrom { values, .. } => ("exit", *values, &[]),
+                    },
                     Boundary::CallbackReturn(i) => (
                         "ret",
                         self.callback_return(i).map_or(&[], |r| r.values),

@@ -307,3 +307,9 @@ select its return to see actual results and the returning guest stack/source. A 
 leaves the original host request pending. Optional instruction histories identify the outstanding
 parent host attempt; a callback `Ret` returns to embedding code rather than completing the root.
 Checked replay reexecutes callback bodies and verifies their results.
+
+Explicit typed exits have their own event rows naming the target function and invocation-local
+activation. Their values are labeled as embedding inputs; they are not presented as computed
+normal callback returns. Target metadata retains the actual suspended call/host source separately
+from the initiating instruction. Unwound instruction attempts are labeled as abandoned, including
+an older parent host attempt that closes after later callback instructions.

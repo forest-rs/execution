@@ -198,11 +198,19 @@ fn title(view: &View<'_>, index: usize) -> String {
     if let Some(boundary) = view.boundary(index) {
         return match boundary {
             Boundary::Host(i) => format!("#{:04}  {}", i, import_name(view, i)),
-            Boundary::Callback(i) => {
-                let execution_tape::recording::ControlAction::CallGuest { callee, .. } =
-                    &view.commands[i].action;
-                format!("Callback #{i} → {}", describe::value(view.record, callee))
-            }
+            Boundary::Command(i) => match &view.commands[i].action {
+                execution_tape::recording::ControlAction::CallGuest { callee, .. } => {
+                    format!("Callback #{i} → {}", describe::value(view.record, callee))
+                }
+                execution_tape::recording::ControlAction::ReturnFrom {
+                    target,
+                    target_location,
+                    ..
+                } => format!(
+                    "Exit → {} [activation #{target}]",
+                    describe::function(view.record.program().program(), target_location.func)
+                ),
+            },
             Boundary::CallbackReturn(i) => format!("Callback #{i} returned → embedding"),
         };
     }
@@ -312,12 +320,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         )),
         Line::styled(
             format!(
-                " Events: start → {} host calls{} → {}. i: history {}",
+                " Events: start → {} host outcomes{} → {}. i: history {}",
                 view.calls.len(),
                 if view.commands.is_empty() {
                     String::new()
                 } else {
-                    format!(" / {} callbacks", view.commands.len())
+                    format!(" / {} controls", view.commands.len())
                 },
                 match view.record.outcome() {
                     Some(Outcome::Trapped(_)) => "trap",
@@ -726,26 +734,22 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     } else if let Some(boundary) = view.boundary(view.selected) {
         match boundary {
             Boundary::Host(i) => call_values(frame, view, area, &view.calls[i]),
-            Boundary::Callback(i) => {
-                let execution_tape::recording::ControlAction::CallGuest {
-                    callee,
-                    args,
-                    returned,
-                    ..
-                } = &view.commands[i].action;
-                value_section(
-                    frame,
-                    view,
-                    area,
-                    ValueSection {
+            Boundary::Command(i) => {
+                let section = match &view.commands[i].action {
+                    execution_tape::recording::ControlAction::CallGuest {
+                        callee,
+                        args,
+                        returned,
+                        ..
+                    } => ValueSection {
                         title: format!(" CALLBACK #{i} INPUTS "),
                         note: format!(
                             "Target: {} · {}",
                             describe::value(view.record, callee),
                             if returned.is_some() {
-                                "guest return observed separately"
+                                "normal guest return observed separately"
                             } else {
-                                "no successful guest return observed"
+                                "no normal return; inspect transfers/outcome"
                             }
                         ),
                         label: "Input",
@@ -753,7 +757,29 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                         base: 0,
                         empty: "No callback arguments.".into(),
                     },
-                );
+                    execution_tape::recording::ControlAction::ReturnFrom {
+                        target,
+                        target_location,
+                        values,
+                        unwound_callbacks,
+                        ..
+                    } => ValueSection {
+                        title: format!(" EXIT VALUES · activation #{target} "),
+                        note: format!(
+                            "To {}:{:06} · {unwound_callbacks} callbacks abandoned · embedding inputs",
+                            describe::function(
+                                view.record.program().program(),
+                                target_location.func
+                            ),
+                            target_location.pc
+                        ),
+                        label: "Exit",
+                        values,
+                        base: 0,
+                        empty: "Exit supplies no values.".into(),
+                    },
+                };
+                value_section(frame, view, area, section);
             }
             Boundary::CallbackReturn(i) => value_section(
                 frame,

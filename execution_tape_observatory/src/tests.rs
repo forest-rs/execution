@@ -853,8 +853,7 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
     assert!(text(&mut view, 160, 50).contains("took true arm · r1 = true"));
 }
 
-#[test]
-fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
+fn callback_recording(exit: bool) -> Recording {
     use execution_tape::recording::InstructionCapture;
     use execution_tape::vm::{InvocationOptions, RunStatus};
     use std::{cell::RefCell, rc::Rc};
@@ -911,10 +910,30 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     let mut returned = request.take_callback_results().unwrap();
-    request.complete(&mut returned, Ok(0)).unwrap();
+    if exit {
+        let target = request.inspect().frames().last().unwrap().activation;
+        request.return_from(&target, returned).unwrap();
+    } else {
+        request.complete(&mut returned, Ok(0)).unwrap();
+    }
     assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
     drop(run);
-    let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+    Rc::try_unwrap(recorder).unwrap().into_inner().finish()
+}
+
+#[test]
+fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
+    let record = callback_recording(false);
+    let root = record.invocation().unwrap().entry;
+    let command = record.control_commands().next().unwrap();
+    let execution_tape::recording::ControlAction::CallGuest {
+        callee: RecordedValue::Func(handler),
+        ..
+    } = command.action
+    else {
+        panic!("guest callback target");
+    };
+    let handler = *handler;
     let mut view = View::new(&record);
     assert_eq!(view.selected, 1);
     assert_eq!(view.location().unwrap().func, root);
@@ -943,4 +962,37 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     assert!(screen.contains("parent host attempt #0"), "{screen}");
     press(&mut view, KeyCode::Char('r'));
     assert!(text(&mut view, 180, 42).contains("MATCHED"));
+}
+
+#[test]
+fn typed_transfer_rows_name_the_target_and_distinguish_embedding_inputs_from_guest_returns() {
+    let record = callback_recording(true);
+    assert_eq!(
+        record.instruction_status(),
+        Some(execution_tape::recording::InstructionStatus::Complete)
+    );
+    let mut view = View::new(&record);
+    assert_eq!(view.calls.len(), 0);
+    view.select(3);
+    let source = view.location().unwrap();
+    assert_eq!(source.func, FuncId(0));
+    let screen = text(&mut view, 180, 42);
+    assert!(screen.contains("EXIT VALUES · activation #0"), "{screen}");
+    assert!(screen.contains("embedding inputs"), "{screen}");
+    assert!(
+        screen.contains("Exit → function #0 [activation #0]"),
+        "{screen}"
+    );
+    assert!(
+        view.values()
+            .any(|(label, _, value)| label == "exit" && matches!(value, RecordedValue::I64(42)))
+    );
+    press(&mut view, KeyCode::Char('r'));
+    assert!(text(&mut view, 180, 42).contains("MATCHED"));
+    press(&mut view, KeyCode::Char('i'));
+    let screen = text(&mut view, 180, 42);
+    assert!(
+        screen.contains("abandoned by return from activation #0"),
+        "{screen}"
+    );
 }
