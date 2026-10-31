@@ -7,7 +7,7 @@
 
 use super::language::{Class, Policy, RESTART_TOKEN, RestartMode};
 use execution_tape::{
-    asm::{Asm, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
+    asm::{Asm, CallTarget, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
     contract::{Contract, ContractId},
     host::HostSig,
     program::{HostSigId, ValueType},
@@ -404,73 +404,84 @@ impl Compiler {
             }
         }
     }
-    fn lookup(&mut self, a: &mut Asm, context: Context, name: i64, range: &Range<usize>) -> u32 {
-        let name = Self::integer(a, name);
-        let found = a.alloc_register(ValueType::Bool);
-        let token = a.alloc_register(ValueType::Obj(RESTART_TOKEN));
-        self.mark(a, range);
-        a.host_call_sig_id(
-            0,
+    fn lookup(
+        &self,
+        body: &mut Asm,
+        context: Context,
+        name: i64,
+        range: &Range<usize>,
+    ) -> Result<u32> {
+        let name = Self::integer(body, name);
+        self.mark(body, range);
+        let [_found, token] = self.builder.emit_call(
+            body,
             self.services.find,
-            0,
             &[name, context.class, context.payload],
-            &[found, token],
-        );
-        token
+        )?;
+        Ok(token)
+    }
+    fn pair_call(
+        &self,
+        body: &mut Asm,
+        target: impl Into<CallTarget>,
+        args: &[u32],
+        range: &Range<usize>,
+    ) -> Result<(u32, u32)> {
+        self.mark(body, range);
+        let [value, flag] = self.builder.emit_call(body, target, args)?;
+        Ok((value, flag))
+    }
+    fn value_pair(body: &mut Asm, value: u32, flag: bool) -> (u32, u32) {
+        let result_flag = body.alloc_register(ValueType::Bool);
+        body.const_bool(result_flag, flag);
+        (value, result_flag)
     }
     fn expression(
         &mut self,
-        a: &mut Asm,
+        body: &mut Asm,
         context: Context,
         expr: &Expr,
         indent: usize,
     ) -> Result<(u32, u32)> {
         let range = self.line(indent, &expr.label());
-        self.mark(a, &range);
-        let answer = a.alloc_register(ValueType::I64);
-        let flag = a.alloc_register(ValueType::Bool);
+        self.mark(body, &range);
         match expr {
-            Expr::Value(term, value) => {
-                let result = Self::term(a, context, term);
-                a.const_bool(flag, *value);
-                return Ok((result, flag));
+            Expr::Value(term, flag) => {
+                let value = Self::term(body, context, term);
+                Ok(Self::value_pair(body, value, *flag))
             }
             Expr::Signal(class, payload) => {
-                let class = Self::integer(a, class.code());
-                let payload = Self::term(a, context, payload);
-                self.mark(a, &range);
-                a.host_call_sig_id(
-                    0,
-                    self.services.signal,
-                    0,
-                    &[class, payload],
-                    &[answer, flag],
-                );
+                let class = Self::integer(body, class.code());
+                let payload = Self::term(body, context, payload);
+                self.pair_call(body, self.services.signal, &[class, payload], &range)
             }
             Expr::IfClass { class, yes, no } => {
-                let expected = Self::integer(a, class.code());
-                let condition = a.alloc_register(ValueType::Bool);
-                let yes_label = a.label();
-                let no_label = a.label();
-                let join = a.block(&[answer, flag]);
-                self.mark(a, &range);
-                a.i64_eq(condition, context.class, expected)
+                let expected = Self::integer(body, class.code());
+                let condition = body.alloc_register(ValueType::Bool);
+                let yes_label = body.label();
+                let no_label = body.label();
+                let answer = body.alloc_register(ValueType::I64);
+                let flag = body.alloc_register(ValueType::Bool);
+                let join = body.block(&[answer, flag]);
+                self.mark(body, &range);
+                body.i64_eq(condition, context.class, expected)
                     .br(condition, yes_label, no_label);
-                a.place(yes_label)?;
-                let (value, result_flag) = self.expression(a, context, yes, indent + 1)?;
-                a.jmp(join.with_args(&[value, result_flag]));
-                a.place(no_label)?;
-                let (value, result_flag) = self.expression(a, context, no, indent + 1)?;
-                a.jmp(join.with_args(&[value, result_flag]));
-                self.mark(a, &range);
-                a.place(join)?;
+                body.place(yes_label)?;
+                let (value, result_flag) = self.expression(body, context, yes, indent + 1)?;
+                body.jmp(join.with_args(&[value, result_flag]));
+                body.place(no_label)?;
+                let (value, result_flag) = self.expression(body, context, no, indent + 1)?;
+                body.jmp(join.with_args(&[value, result_flag]));
+                self.mark(body, &range);
+                body.place(join)?;
+                Ok((answer, flag))
             }
             Expr::Handle {
                 class,
                 policy,
                 accepted,
                 handler,
-                body,
+                body: protected,
             } => {
                 let handler = self.function(
                     &format!("{class:?}_handler"),
@@ -480,120 +491,97 @@ impl Compiler {
                     handler,
                     indent + 1,
                 )?;
-                let body = self.function("handler_body", Kind::Body, body, indent + 1)?;
-                let handler = self.closure(a, context, handler)?;
-                let body = self.closure(a, context, body)?;
-                let class = Self::integer(a, class.code());
-                let policy_reg = a.alloc_register(ValueType::U64);
-                a.const_u64(policy_reg, *policy as u64);
-                self.mark(a, &range);
-                a.host_call_sig_id(
-                    0,
+                let protected = self.function("handler_body", Kind::Body, protected, indent + 1)?;
+                let handler = self.closure(body, context, handler)?;
+                let protected = self.closure(body, context, protected)?;
+                let class = Self::integer(body, class.code());
+                let policy_register = body.alloc_register(ValueType::U64);
+                body.const_u64(policy_register, *policy as u64);
+                self.pair_call(
+                    body,
                     self.services.handle,
-                    0,
-                    &[body, handler, class, policy_reg],
-                    &[answer, flag],
-                );
+                    &[protected, handler, class, policy_register],
+                    &range,
+                )
             }
             Expr::Restart {
                 name,
                 mode,
                 class,
                 function,
-                body,
+                body: protected,
             } => {
                 let function =
                     self.function(&restart_name(*name), Kind::Restart, function, indent + 1)?;
-                let body = self.function("restart_body", Kind::Body, body, indent + 1)?;
-                let function = self.closure(a, context, function)?;
-                let body = self.closure(a, context, body)?;
-                let name = Self::integer(a, *name);
-                let mode_reg = a.alloc_register(ValueType::U64);
-                a.const_u64(mode_reg, *mode as u64);
-                let class = Self::integer(a, class.code());
-                self.mark(a, &range);
-                a.host_call_sig_id(
-                    0,
+                let protected = self.function("restart_body", Kind::Body, protected, indent + 1)?;
+                let function = self.closure(body, context, function)?;
+                let protected = self.closure(body, context, protected)?;
+                let name = Self::integer(body, *name);
+                let mode_register = body.alloc_register(ValueType::U64);
+                body.const_u64(mode_register, *mode as u64);
+                let class = Self::integer(body, class.code());
+                self.pair_call(
+                    body,
                     self.services.restart,
-                    0,
-                    &[body, function, name, mode_reg, class],
-                    &[answer, flag],
-                );
+                    &[protected, function, name, mode_register, class],
+                    &range,
+                )
             }
-            Expr::Protect { cleanup, body } => {
+            Expr::Protect {
+                cleanup,
+                body: protected,
+            } => {
                 let cleanup = self.function("cleanup", Kind::Cleanup, cleanup, indent + 1)?;
-                let body = self.function("protected_body", Kind::Body, body, indent + 1)?;
-                let cleanup = self.closure(a, context, cleanup)?;
-                let body = self.closure(a, context, body)?;
-                self.mark(a, &range);
-                a.host_call_sig_id(
-                    0,
-                    self.services.protect,
-                    0,
-                    &[body, cleanup],
-                    &[answer, flag],
-                );
+                let protected =
+                    self.function("protected_body", Kind::Body, protected, indent + 1)?;
+                let cleanup = self.closure(body, context, cleanup)?;
+                let protected = self.closure(body, context, protected)?;
+                self.pair_call(body, self.services.protect, &[protected, cleanup], &range)
             }
             Expr::Invoke(name, argument) => {
-                let token = self.lookup(a, context, *name, &range);
-                let argument = Self::term(a, context, argument);
-                self.mark(a, &range);
-                a.host_call_sig_id(
-                    0,
-                    self.services.invoke,
-                    0,
-                    &[token, argument],
-                    &[answer, flag],
-                );
+                let token = self.lookup(body, context, *name, &range)?;
+                let argument = Self::term(body, context, argument);
+                self.pair_call(body, self.services.invoke, &[token, argument], &range)
             }
             Expr::Remember(name) => {
-                let token = self.lookup(a, context, *name, &range);
-                self.mark(a, &range);
-                a.host_call_sig_id(0, self.services.save, 0, &[token], &[])
-                    .const_i64(answer, 0)
-                    .const_bool(flag, true);
+                let token = self.lookup(body, context, *name, &range)?;
+                self.mark(body, &range);
+                let [] = self.builder.emit_call(body, self.services.save, &[token])?;
+                let value = Self::integer(body, 0);
+                Ok(Self::value_pair(body, value, true))
             }
             Expr::InvokeSaved(argument) => {
-                let token = a.alloc_register(ValueType::Obj(RESTART_TOKEN));
-                a.host_call_sig_id(0, self.services.load, 0, &[], &[token]);
-                let argument = Self::term(a, context, argument);
-                self.mark(a, &range);
-                a.host_call_sig_id(
-                    0,
-                    self.services.invoke,
-                    0,
-                    &[token, argument],
-                    &[answer, flag],
-                );
+                let [token] = self.builder.emit_call(body, self.services.load, &[])?;
+                let argument = Self::term(body, context, argument);
+                self.pair_call(body, self.services.invoke, &[token, argument], &range)
             }
             Expr::Sequence(expressions) => {
                 let mut result = None;
                 for expression in expressions {
-                    result = Some(self.expression(a, context, expression, indent + 1)?);
+                    result = Some(self.expression(body, context, expression, indent + 1)?);
                 }
                 if let Some(result) = result {
                     return Ok(result);
                 }
-                a.const_i64(answer, 0).const_bool(flag, true);
+                let value = Self::integer(body, 0);
+                Ok(Self::value_pair(body, value, true))
             }
-            Expr::Call(name, body) => {
-                let callee = self.function(name, Kind::Body, body, indent + 1)?;
-                let env = Self::environment(a, context);
-                self.mark(a, &range);
-                a.call(0, callee, 0, &[env], &[answer, flag]);
+            Expr::Call(name, expression) => {
+                let callee = self.function(name, Kind::Body, expression, indent + 1)?;
+                let environment = Self::environment(body, context);
+                self.pair_call(body, callee, &[environment], &range)
             }
-            Expr::Emit(value, body) => {
-                let value = Self::integer(a, *value);
-                self.mark(a, &range);
-                a.host_call_sig_id(0, self.services.emit, 0, &[value], &[]);
-                return self.expression(a, context, body, indent + 1);
+            Expr::Emit(value, expression) => {
+                let value = Self::integer(body, *value);
+                self.mark(body, &range);
+                let [] = self.builder.emit_call(body, self.services.emit, &[value])?;
+                self.expression(body, context, expression, indent + 1)
             }
-            Expr::Wait(body) => {
-                a.host_call_sig_id(0, self.services.wait, 0, &[], &[]);
-                return self.expression(a, context, body, indent + 1);
+            Expr::Wait(expression) => {
+                let [] = self.builder.emit_call(body, self.services.wait, &[])?;
+                self.expression(body, context, expression, indent + 1)
             }
         }
-        Ok((answer, flag))
     }
 }
 

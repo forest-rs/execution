@@ -39,11 +39,11 @@ generate ordinary tape instructions; the language runtime still supplies handler
 `compute` and `divide`; it does not execute a division instruction. Its signal site is:
 
 ```text
-000016: const.i64 r8 ; 4
-000019: const.i64 r9 ; 5
+000016: const.i64 r6 ; 4
+000019: const.i64 r7 ; 5
 000022: host_call eff_out=r0, host_sig#3("condition.signal"), eff_in=r0,
-          args=[r8, r9], rets=[r6, r7]
-000032: ret eff=r0, rets=[r6, r7]
+          args=[r6, r7], rets=[r8, r9]
+000032: ret eff=r0, rets=[r8, r9]
 ```
 
 Class `4` means `DivisionByZero` and `5` is its example payload. Neither integer has intrinsic
