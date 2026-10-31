@@ -1,5 +1,8 @@
 # Graph wind tunnel
 
+Runnable application examples live in the [examples guide](../examples/README.md).
+This package retains benchmarks and the standalone scaling/churn measurement probes.
+
 Run the Criterion workloads with `cargo bench -p execution_graph_wind_tunnel`.
 
 ## Deferred-task boundary and ordinary queries

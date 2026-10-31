@@ -149,7 +149,7 @@ header to its first executable operation without hiding the original edge target
 fields. Structural checks cover all encoded edges; type/initialization checks follow the
 verifier's reachable-code policy.
 
-Run `cargo run -p execution_tape_wind_tunnel --bin block_parameters` to execute equivalent
+Run `cargo run -p execution_tape_examples --bin block_parameters` to execute equivalent
 loops using explicit moves and block arguments, with prepared/frame statistics. Run
 `cargo bench -p execution_tape_wind_tunnel --bench block_parameters` for cold owned preparation
 (fixture cloning excluded) and reused execution. Each case checks results before timing;
@@ -254,7 +254,7 @@ implement value equality; match variants and compare their diagnostic fields ins
 Run the maintained example with:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin bound_host
+cargo run -p execution_tape_examples --bin bound_host
 ```
 
 ## Control flow
@@ -345,7 +345,7 @@ The wind-tunnel tool prints tab-separated per-function statistics. Supply an opt
 for its signature, aggregate contracts, and prepared instruction locations:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et 0
+cargo run -p execution_tape_examples --bin inspect_prepared -- program.et 0
 ```
 
 ## Source connections

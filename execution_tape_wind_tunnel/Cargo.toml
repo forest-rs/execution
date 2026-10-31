@@ -9,12 +9,6 @@ repository.workspace = true
 
 [dependencies]
 execution_tape = { workspace = true, features = ["std"] }
-execution_tape_observatory.workspace = true
-ratatui.workspace = true
-execution_tape_footfall.workspace = true
-execution_tape_tracy.workspace = true
-tracy-client.workspace = true
-footfall = { workspace = true, features = ["runtime", "export"] }
 
 [dev-dependencies]
 criterion.workspace = true

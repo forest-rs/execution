@@ -19,6 +19,7 @@ env:
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
     --exclude execution_graph_examples
+    --exclude execution_tape_examples
     --exclude execution_graph_wind_tunnel
     --exclude execution_tape_codegen
     --exclude execution_tape_tracy
@@ -27,6 +28,7 @@ env:
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS: >-
     --exclude execution_graph_examples
+    --exclude execution_tape_examples
     --exclude execution_graph_wind_tunnel
     --exclude execution_tape_codegen
     --exclude execution_tape_tracy
@@ -35,6 +37,7 @@ env:
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS: >-
     --exclude execution_graph_examples
+    --exclude execution_tape_examples
     --exclude execution_graph_wind_tunnel
     --exclude execution_tape_codegen
     --exclude execution_tape_tracy

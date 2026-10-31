@@ -25,7 +25,7 @@
 //!
 //! This adapter needs only `no_std + alloc`. Runtime capture and export dependencies belong
 //! to the application; the core VM has no Footfall dependency. See the `footfall_capture`
-//! binary in `execution_tape_wind_tunnel` for an executable capture example.
+//! binary in `execution_tape_examples` for an executable capture example.
 
 #![no_std]
 

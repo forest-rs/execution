@@ -101,8 +101,8 @@ through `ProgramBuilder::call_sig(FunctionAbi { ... })`. `Kind(Func)` and `Kind(
 opaque; exact callable matching implements no variance or subtyping. Closure environment layouts
 stay hidden from their exposed signature and are checked against the concrete body before use.
 
-Run `cargo run -p execution_tape_wind_tunnel --bin nested_contracts` for a complete example.
-Run `cargo run -p execution_tape_wind_tunnel --bin typed_callable` for an indirect nested result.
+Run `cargo run -p execution_tape_examples --bin nested_contracts` for a complete example.
+Run `cargo run -p execution_tape_examples --bin typed_callable` for an indirect nested result.
 
 ## Source connections
 
@@ -444,7 +444,7 @@ The repository-level design notes live outside the packaged crate:
 Print disassembly for a small branching program:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin disasm
+cargo run -p execution_tape_examples --bin disasm
 ```
 
 <!-- cargo-rdme end -->

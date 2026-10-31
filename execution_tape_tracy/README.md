@@ -25,7 +25,7 @@ vm.run(program, entry, &[], mask, Some(&mut sink))?;
 Run the development executable from the workspace:
 
 ```bash
-cargo run -p execution_tape_wind_tunnel --bin tracy_capture
+cargo run -p execution_tape_examples --bin tracy_capture
 ```
 
 ## Labels

@@ -4,21 +4,23 @@ Workspace repository for `execution_tape`, a small verifiable bytecode container
 `execution_graph`, an incremental execution graph with native and tape executors.
 
 Crates:
+
 - `execution_tape/`: publishable `no_std + alloc` crate for the bytecode format, verifier, VM,
   tracing hooks, host ABI, disassembly, owned recording and checked replay.
 - `execution_graph/`: publishable `no_std + alloc` crate owning scheduling, invalidation and
   publication, with native Rust execution and an optional tape adapter.
-- `execution_graph_examples/`: native and tape examples, including a procedural surface with
-  retained geometry, edit histories and source-linked VM recordings.
+- [`examples/`](examples/README.md): runnable graph and tape examples, with a purpose-oriented
+  guide to host integration, live code, source connections, recording and language control flow.
 - `execution_tape_conformance/`: conformance/regression tests for the tape format, verifier, and VM.
 - `execution_tape_tracy/`: publishable Tracy adapter, kept separate from the core crate.
 - `execution_tape_observatory/`: optional terminal exploration of recordings, graph values,
   source instructions and checked replay (`std`, Ratatui).
 - `execution_tape_wind_tunnel/` and `execution_graph_wind_tunnel/`: Criterion benchmarks and
-  runnable inspection/comparison tools.
+  standalone performance, numeric-storage and layout probes.
 - `execution_tape_footfall/`: publishable `no_std + alloc` Footfall adapter for semantic VM observations.
 
 Docs:
+
 - `docs/overview.md`: design notes for the tape VM and host boundary.
 - `docs/v1_spec.md`: current bytecode and execution specification (wire 0.5).
 - `execution_tape/README.md`: crate overview and quick start.
@@ -84,7 +86,7 @@ checks the returned root, reachable leaf and heap size before timing reused exec
 Record real host calls, drop the live VM/host, and check a fresh replay:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin record_replay -- 1000 256 65536
+cargo run -p execution_tape_examples --bin record_replay -- 1000 256 65536
 cargo bench -p execution_tape_wind_tunnel --bench recording
 ```
 
@@ -96,6 +98,6 @@ construction are excluded from the ordinary execution and capture windows.
 Explore a read/compute/store recording with named calls, values, source context and checked replay:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --color=always
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
+cargo run -p execution_tape_examples --bin observatory -- --color=always
+cargo run -p execution_tape_examples --bin observatory -- --snapshot
 ```

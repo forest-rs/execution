@@ -3,7 +3,7 @@
 
 //! Complete live execution, capture/freeze/drop, and fresh replay costs.
 
-#[path = "../src/recording.rs"]
+#[path = "../../examples/tape/src/support/recording.rs"]
 mod workload;
 
 use criterion::{Criterion, criterion_group, criterion_main};

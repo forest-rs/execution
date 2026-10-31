@@ -4,7 +4,7 @@
 //! Disassembler example.
 //!
 //! Run with:
-//! `cargo run -p execution_tape_wind_tunnel --bin disasm`
+//! `cargo run -p execution_tape_examples --bin disasm`
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::disasm::disassemble_verified;

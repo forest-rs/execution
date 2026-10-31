@@ -5,7 +5,7 @@
 //! Preparation excludes source construction, cloning, and container decoding. Buffer byte counts
 //! describe this build's element layouts rather than total retained memory or RSS.
 
-#[path = "../src/block_parameters.rs"]
+#[path = "../../examples/tape/src/support/block_parameters.rs"]
 mod workload;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::trace::TraceMask;
