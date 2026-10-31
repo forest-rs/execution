@@ -38,6 +38,9 @@ and activation identities. Inspection starts at a fixed suspension; cached queri
 inspection view. Root traversal includes an existing 1,024-field aggregate without growing it
 between samples. No UI drawing, recording or application object-graph traversal is timed.
 
+For source-linked disassembly of a language-layer handler/restart protocol, see
+[Conditions above the VM](conditions.md). These are development examples, not performance results.
+
 On macOS arm64, Rust 1.99 release builds, 2026-10-28, a repeat with 30 samples, 1 s warmup and
 3 s measurement gave these point estimates:
 
