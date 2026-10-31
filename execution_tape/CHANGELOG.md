@@ -16,6 +16,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Expose the exact code owner and work snapshot through `InvocationInspection::{program,work}`
+  for heterogeneous, read-only task inspection. Migration: no caller changes are required.
+
 - End a pending invocation explicitly with `PendingHostCall::abandon`. The terminal result is
   `Trap::Abandoned`, with no guest outputs or cleanup. Recording retains the command and discarded
   staging work; checked replay reexecutes the guest prefix and the explicit stop. Drop cancellation

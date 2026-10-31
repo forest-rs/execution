@@ -210,6 +210,7 @@ struct FunctionInspection<'a> {
 /// resuming. Terminal invocations expose no live frames, but retained heaps and outputs can
 /// still contribute object roots. Source connections use each frame's exact `location`.
 pub struct InvocationInspection<'a> {
+    work: ExecutionWork,
     program: &'a VerifiedProgram,
     ctx: &'a ExecutionContext,
     args: &'a [Value],
@@ -233,6 +234,7 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
         InvocationInspection {
+            work: self.work(),
             program: &self.program,
             ctx: &self.ctx,
             args: &self.args,
@@ -253,6 +255,18 @@ impl<H: Host> Invocation<'_, H> {
 }
 
 impl<'a> InvocationInspection<'a> {
+    /// Exact code domain for all inspected function, nominal and instruction identities.
+    #[must_use]
+    pub fn program(&self) -> &'a VerifiedProgram {
+        self.program
+    }
+
+    /// Work snapshot at the time this read-only inspection was borrowed.
+    #[must_use]
+    pub fn work(&self) -> ExecutionWork {
+        self.work
+    }
+
     fn frame_at(&self, index: usize) -> PausedFrame {
         let frame = &self.ctx.frames[index];
         let activation = self.control.frames[index];

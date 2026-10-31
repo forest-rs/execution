@@ -411,3 +411,64 @@ fn every_instruction_budget_cut_retires_the_whole_task() {
         }
     }
 }
+
+#[test]
+fn task_explorer_selects_each_real_code_domain_without_spending_work() {
+    let mut task = Task::new(true, 1_000).unwrap();
+    assert_eq!(until_wait(&mut task, 16), Status::NeedValue);
+    let before = task.work().unwrap();
+    let mut explorer = task.explorer().unwrap();
+    assert_eq!(explorer.frames().len(), 4);
+    assert_eq!(explorer.work(), Some(before));
+    let expected = [
+        "Runtime send:",
+        "Runtime protect:",
+        "Runtime signal:",
+        "Runtime chooseRecovery",
+    ];
+    for (index, expression) in expected.into_iter().enumerate() {
+        assert!(explorer.select_frame(index));
+        let text = explorer.render_text(160, 48).unwrap();
+        assert!(text.contains(expression), "frame {index}: {text}");
+        assert!(text.contains("ACTUAL VM FRAME"));
+        assert!(text.contains("INITIALIZED VALUES"));
+        assert!(text.contains("reply destinations are unavailable"));
+        assert!(
+            !text.contains("Enter to inspect"),
+            "read-only task view promises no unavailable expansion action"
+        );
+    }
+    assert!(!explorer.select_frame(4));
+    let signal = explorer
+        .decisions()
+        .iter()
+        .position(|decision| decision.text().contains("NeedValue selects"))
+        .unwrap();
+    assert!(explorer.select_decision(signal));
+    let text = explorer.render_text(160, 48).unwrap();
+    assert!(text.contains("EMBEDDING DECISION"));
+    assert!(text.contains("Runtime signal:"));
+    drop(explorer);
+    assert_eq!(task.work().unwrap(), before);
+    task.publish_replacement().unwrap();
+    task.recover(42).unwrap();
+    assert_eq!(until_wait(&mut task, 16), Status::CleanupWaiting);
+    let mut explorer = task.explorer().unwrap();
+    assert_eq!(
+        explorer.frames().len(),
+        4,
+        "cleanup replaces the returned handler in the physical inventory"
+    );
+    let recovery = explorer
+        .decisions()
+        .iter()
+        .position(|decision| decision.text().contains("driver supplies recovery"))
+        .unwrap();
+    assert!(explorer.select_decision(recovery));
+    let text = explorer.render_text(160, 48).unwrap();
+    assert!(
+        text.contains("handler.st"),
+        "retired handler's original source remains selectable"
+    );
+    assert!(text.contains("Runtime chooseRecovery"));
+}
