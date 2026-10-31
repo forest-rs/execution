@@ -93,11 +93,11 @@ fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error:
         ret_types: vec![ValueType::I64],
     })?;
     let mut a = b.function_asm(double)?;
-    let sample = a.alloc_register(ValueType::I64);
-    let answer = a.alloc_register(ValueType::I64);
     let mut mappings = vec![mapping(double, a.pc(), "read(receiver)")];
-    a.host_call_sig_id(0, read, 0, &[1], &[sample]);
+    let receiver = b.argument(double, 0)?;
+    let [sample] = b.emit_call(&mut a, read, &[receiver])?;
     mappings.push(mapping(double, a.pc(), "sample + sample"));
+    let answer = a.alloc_register(ValueType::I64);
     a.i64_add(answer, sample, sample);
     mappings.push(mapping(double, a.pc(), "return sample + sample;"));
     a.ret(0, &[answer]);
@@ -108,14 +108,14 @@ fn program() -> Result<(VerifiedProgram, FuncId, SourceMap), Box<dyn std::error:
         ret_types: vec![ValueType::Agg],
     })?;
     let mut a = b.function_asm(main)?;
-    let answer = a.alloc_register(ValueType::I64);
-    let tuple = a.alloc_register(ValueType::Agg);
+    let receiver = b.argument(main, 0)?;
     mappings.push(mapping(main, a.pc(), "double(receiver)"));
-    a.call(0, double, 0, &[1], &[answer]);
+    let [answer] = b.emit_call(&mut a, double, &[receiver])?;
     mappings.push(mapping(main, a.pc(), "publish(receiver, answer)"));
-    a.host_call_sig_id(0, publish, 0, &[1, answer], &[]);
+    let [] = b.emit_call(&mut a, publish, &[receiver, answer])?;
     mappings.push(mapping(main, a.pc(), "(receiver, answer)"));
-    a.tuple_new(tuple, &[1, answer]);
+    let tuple = a.alloc_register(ValueType::Agg);
+    a.tuple_new(tuple, &[receiver, answer]);
     mappings.push(mapping(main, a.pc(), "return (receiver, answer);"));
     a.ret(0, &[tuple]);
     b.define_function(main, a)?;

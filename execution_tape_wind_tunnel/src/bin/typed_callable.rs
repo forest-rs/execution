@@ -4,7 +4,7 @@
 //! A first-class function returning a nested tuple through an exact indirect signature.
 //! Pass an optional output filename to save the program for browsing.
 
-use execution_tape::asm::{Asm, FunctionAbi, ProgramBuilder};
+use execution_tape::asm::{CallTarget, FunctionAbi, ProgramBuilder};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
@@ -31,25 +31,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let integer = builder.contract(Contract::Kind(ValueType::I64))?;
     let inner = builder.contract(Contract::Tuple(&[Some(integer)]))?;
     let outer = builder.contract(Contract::Tuple(&[Some(inner)]))?;
-    let mut producer = Asm::new();
-    producer.set_register_types(vec![
-        ValueType::Unit,
-        ValueType::I64,
-        ValueType::Agg,
-        ValueType::Agg,
-    ]);
+    let target = builder.declare_function(FunctionAbi {
+        args: vec![],
+        rets: vec![outer.into()],
+    })?;
+    let mut producer = builder.function_asm(target)?;
+    let value = producer.alloc_register(ValueType::I64);
+    let inner_tuple = producer.alloc_register(ValueType::Agg);
+    let outer_tuple = producer.alloc_register(ValueType::Agg);
     producer
-        .const_i64(1, 42)
-        .tuple_new(2, &[1])
-        .tuple_new(3, &[2])
-        .ret(0, &[3]);
-    let target = builder.push_function_checked(
-        producer,
-        FunctionAbi {
-            args: vec![],
-            rets: vec![outer.into()],
-        },
-    )?;
+        .const_i64(value, 42)
+        .tuple_new(inner_tuple, &[value])
+        .tuple_new(outer_tuple, &[inner_tuple])
+        .ret(0, &[outer_tuple]);
+    builder.define_function(target, producer)?;
     builder.set_function_name(target, "produce_nested")?;
     let callable = builder.contract(Contract::Function {
         args: &[],
@@ -59,25 +54,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args: vec![],
         rets: vec![outer.into()],
     })?;
-    let mut caller = Asm::new();
-    caller.set_register_types(vec![
-        ValueType::Unit,
-        ValueType::Func,
-        ValueType::Agg,
-        ValueType::I64,
-    ]);
-    caller
-        .call_indirect(0, indirect, 1, 0, &[], &[2])
-        .tuple_get(2, 2, 0)
-        .tuple_get(3, 2, 0)
-        .ret(0, &[3]);
-    let entry = builder.push_function_checked(
-        caller,
-        FunctionAbi {
-            args: vec![callable.into()],
-            rets: vec![ValueType::I64.into()],
+    let entry = builder.declare_function(FunctionAbi {
+        args: vec![callable.into()],
+        rets: vec![ValueType::I64.into()],
+    })?;
+    let mut caller = builder.function_asm(entry)?;
+    let function = builder.argument(entry, 0)?;
+    let [outer_tuple] = builder.emit_call(
+        &mut caller,
+        CallTarget::Indirect {
+            signature: indirect,
+            callee: function,
         },
+        &[],
     )?;
+    let inner_tuple = caller.alloc_register(ValueType::Agg);
+    let answer = caller.alloc_register(ValueType::I64);
+    caller
+        .tuple_get(inner_tuple, outer_tuple, 0)
+        .tuple_get(answer, inner_tuple, 0)
+        .ret(0, &[answer]);
+    builder.define_function(entry, caller)?;
     builder.set_function_name(entry, "invoke_nested")?;
     let program = builder.build_verified()?;
     if let Some(path) = std::env::args_os().nth(1) {

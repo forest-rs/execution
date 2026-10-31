@@ -9,6 +9,9 @@
 //! The encoding matches the "Draft encoding for minimal implemented opcodes" section in
 //! `docs/v1_spec.md`.
 
+mod calls;
+pub use calls::{CallBuildError, CallTarget};
+
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -160,6 +163,8 @@ impl From<VerifyError> for AsmError {
 pub enum BuildError {
     /// A signature references an absent compositional contract.
     Contract(ContractBuildError),
+    /// Signature-aware call emission was denied before mutation.
+    Call(CallBuildError),
     /// A function id was out of range for the builder.
     BadFuncId {
         /// The invalid function id.
@@ -198,6 +203,7 @@ impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Contract(error) => error.fmt(f),
+            Self::Call(error) => error.fmt(f),
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
             Self::BadArgIndex {
                 func,
@@ -247,6 +253,7 @@ impl core::error::Error for BuildError {
         match self {
             Self::Verify(e) => Some(e),
             Self::Contract(error) => Some(error),
+            Self::Call(error) => Some(error),
             _ => None,
         }
     }
@@ -255,6 +262,17 @@ impl core::error::Error for BuildError {
 impl From<VerifyError> for BuildError {
     fn from(e: VerifyError) -> Self {
         Self::Verify(e)
+    }
+}
+
+impl From<ContractBuildError> for BuildError {
+    fn from(error: ContractBuildError) -> Self {
+        Self::Contract(error)
+    }
+}
+impl From<CallBuildError> for BuildError {
+    fn from(error: CallBuildError) -> Self {
+        Self::Call(error)
     }
 }
 
@@ -380,7 +398,8 @@ impl From<&Self> for FunctionAbi {
 /// Owns program tables and declared guest signatures. Frontends supply their language semantics,
 /// source spans, and lowering policy. Use [`Self::function_asm`] to seed function bodies from their
 /// declarations and [`Asm::alloc_register`] for typed temporaries; pre-numbered frontends can
-/// transfer a complete ledger through [`Asm::set_register_types`].
+/// transfer a complete ledger through [`Asm::set_register_types`]. [`Self::emit_call`] allocates
+/// call results from declared signatures without repeating result kinds or r0 operands.
 ///
 /// For execution, see [`Vm::run`].
 ///
@@ -391,25 +410,21 @@ impl From<&Self> for FunctionAbi {
 ///
 /// use alloc::vec;
 ///
-/// use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+/// use execution_tape::asm::{FunctionSig, ProgramBuilder};
 /// use execution_tape::program::ValueType;
 ///
-/// let mut a = Asm::new();
-/// a.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64, ValueType::I64]);
-/// a.const_i64(1, 1);
-/// a.const_i64(2, 2);
-/// a.i64_add(3, 1, 2);
-/// a.ret(0, &[3]);
-///
-/// let mut pb = ProgramBuilder::new();
-/// pb.push_function_checked(
-///     a,
-///     FunctionSig {
-///         arg_types: vec![],
-///         ret_types: vec![ValueType::I64],
-///     },
-/// )?;
-/// let _program = pb.build_verified()?;
+/// let mut program = ProgramBuilder::new();
+/// let add_one = program.declare_function(FunctionSig {
+///     arg_types: vec![ValueType::I64],
+///     ret_types: vec![ValueType::I64],
+/// })?;
+/// let mut body = program.function_asm(add_one)?;
+/// let argument = program.argument(add_one, 0)?;
+/// let one = body.alloc_register(ValueType::I64);
+/// let answer = body.alloc_register(ValueType::I64);
+/// body.const_i64(one, 1).i64_add(answer, argument, one).ret(0, &[answer]);
+/// program.define_function(add_one, body)?;
+/// let _program = program.build_verified()?;
 /// # Ok::<(), execution_tape::asm::BuildError>(())
 /// ```
 #[derive(Clone, Debug, Default)]
