@@ -82,6 +82,11 @@ pub enum InstructionOutcome {
     Pending,
     /// The instruction completed, including dispatch into a guest callee.
     Completed,
+    /// The instruction was abandoned by a typed non-local return.
+    Unwound {
+        /// Target activation ordinal within this invocation.
+        target: u64,
+    },
     /// The instruction trapped. The final VM trap is available from the recording outcome.
     Trapped,
 }
@@ -310,6 +315,9 @@ impl History {
         let actual = match outcome {
             crate::trace::TraceOutcome::Ok => InstructionOutcome::Completed,
             crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
+            crate::trace::TraceOutcome::Unwound { target } => {
+                InstructionOutcome::Unwound { target }
+            }
             crate::trace::TraceOutcome::Cancelled => {
                 self.status = InstructionStatus::Incomplete;
                 InstructionOutcome::Pending

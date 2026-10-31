@@ -16,6 +16,26 @@ struct WaitingHost {
     instruction: bool,
 }
 
+impl Callbacks {
+    pub(super) fn waiting_at(&self, depth: usize) -> Option<(PendingHost, bool)> {
+        self.waiting
+            .iter()
+            .rev()
+            .find(|waiting| waiting.host.depth == depth)
+            .map(|waiting| (waiting.host, waiting.instruction))
+    }
+    pub(super) fn discard_exited(&mut self, first: usize) {
+        while self
+            .waiting
+            .last()
+            .is_some_and(|waiting| waiting.host.depth >= first)
+        {
+            self.waiting.pop();
+        }
+        self.returned = None;
+    }
+}
+
 impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Starts a same-program guest function or closure while retaining this host request.
     ///

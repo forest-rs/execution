@@ -66,7 +66,7 @@ impl TraceMask {
     /// - [`TraceSink::scope_enter`]
     /// - [`TraceSink::scope_exit`]
     pub const HOST: Self = Self(1 << 3);
-    /// Borrow values at entry, host-call completion, guest callback boundaries and root return.
+    /// Borrow values at entry, host-call completion, guest control boundaries and root return.
     ///
     /// Enables [`TraceSink::values`] independently of scope/instruction events. Include
     /// [`Self::RUN`] to learn whether the run eventually succeeds or traps. Values and aggregate
@@ -171,6 +171,13 @@ pub enum TraceOutcome<'a> {
     /// Host effects are not undone; abandoned deliveries produce incomplete evidence.
     /// An interrupted instruction attempt has no successful completion.
     Cancelled,
+    /// This instruction or scope was abandoned by a typed non-local return.
+    /// The target is an activation ordinal in this invocation, not a function ID.
+    /// This is neither a successful instruction completion nor hard cancellation.
+    Unwound {
+        /// Activation whose declared result boundary receives the transfer values.
+        target: u64,
+    },
     /// Trapped.
     Trap(&'a TrapInfo),
 }
@@ -211,6 +218,22 @@ pub enum HostCallOutcome<'a> {
 /// returned identity, or reuse a handle map across runs.
 #[derive(Copy, Clone)]
 pub enum ValueEvent<'a> {
+    /// An admitted embedding request to return from an exact live guest activation.
+    /// Emitted before result/fuel validation; foreign or expired target denials emit no event.
+    ReturnFrom {
+        /// Pending host instruction that initiated the transfer.
+        location: TraceLocation,
+        /// Target activation ordinal in this invocation.
+        target: u64,
+        /// Raw supplied results, checked against the target function's result contracts.
+        values: &'a [Value],
+        /// Host construction work promoted before admitting the transfer.
+        work: DataWork,
+        /// Promoted nodes, including otherwise unused staging.
+        created: &'a core::ops::Range<u32>,
+        /// Shared invocation heap after promotion.
+        aggregates: &'a AggHeap,
+    },
     /// Embedding-requested guest reentry while a host instruction remains pending.
     /// Observed before callback target, argument or fuel validation. IDs and handles use this
     /// invocation's original code/heap. Promoted staging keeps its original handle identities.
@@ -292,6 +315,22 @@ impl core::fmt::Debug for ValueEvent<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Inspect selected values without dumping unrelated backing heap contents.
         match self {
+            Self::ReturnFrom {
+                location,
+                target,
+                values,
+                work,
+                created,
+                aggregates,
+            } => f
+                .debug_struct("ReturnFrom")
+                .field("location", location)
+                .field("target", target)
+                .field("values", values)
+                .field("work", work)
+                .field("created", created)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
             Self::CallbackEnter {
                 location,
                 callee,

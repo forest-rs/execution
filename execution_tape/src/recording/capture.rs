@@ -166,6 +166,7 @@ impl Recorder {
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
+            ValueEvent::ReturnFrom { .. } => return Err(CaptureFault::UnsupportedTransfer),
             ValueEvent::CallbackEnter {
                 location,
                 callee,
@@ -483,6 +484,7 @@ impl TraceSink for Recorder {
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
+            | ValueEvent::ReturnFrom { location, .. }
             | ValueEvent::ReturnCandidate { location, .. } => Some(location),
         };
         if self.check(program)
@@ -614,6 +616,7 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
+            TraceOutcome::Unwound { .. } => self.fail(CaptureFault::InvalidSequence),
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),
             TraceOutcome::Ok => {
                 if !self.active_commands.is_empty() {
