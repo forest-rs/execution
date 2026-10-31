@@ -5,12 +5,12 @@ through compiled tape, live control decisions, source-linked recording and check
 It is hand-lowered from that source fixture; there is no Smalltalk parser or complete image runtime.
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin smalltalk_blocks
-cargo run -p execution_tape_wind_tunnel --bin smalltalk_blocks -- --normal-return
-cargo run -p execution_tape_wind_tunnel --bin smalltalk_blocks -- --explain --snapshot
-cargo run -p execution_tape_wind_tunnel --bin smalltalk_blocks -- --explore
-cargo run -p execution_tape_wind_tunnel --bin smalltalk_blocks -- --disassemble
-cargo test -p execution_tape_wind_tunnel --bin smalltalk_blocks
+cargo run -p execution_tape_examples --bin smalltalk_blocks
+cargo run -p execution_tape_examples --bin smalltalk_blocks -- --normal-return
+cargo run -p execution_tape_examples --bin smalltalk_blocks -- --explain --snapshot
+cargo run -p execution_tape_examples --bin smalltalk_blocks -- --explore
+cargo run -p execution_tape_examples --bin smalltalk_blocks -- --disassemble
+cargo test -p execution_tape_examples --bin smalltalk_blocks
 ```
 
 ## Follow the story

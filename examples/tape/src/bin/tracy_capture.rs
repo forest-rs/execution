@@ -4,7 +4,7 @@
 //! Simple Tracy-backed example for `execution_tape_tracy`.
 //!
 //! Run with:
-//! `cargo run -p execution_tape_wind_tunnel --bin tracy_capture`
+//! `cargo run -p execution_tape_examples --bin tracy_capture`
 
 use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};

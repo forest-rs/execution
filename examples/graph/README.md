@@ -1,5 +1,8 @@
 # Execution graph examples
 
+See the [examples guide](../README.md) for the purpose of each graph and tape binary.
+The walkthroughs below cover the larger application workflows.
+
 - `tax`: tape nodes, host-state invalidation and dependency reports.
 - `transforms`: native nodes with dynamic dependencies, scoped queries and fresh-evaluation checks.
 - `procedural`: mixed tape/native geometry, owned viewport/undo results and selected VM recordings.
@@ -51,7 +54,7 @@ a new directory, refusing an existing one, with `report.txt`, `report.json`, `as
 For example, inspect the exact compiled input separately:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/deferred-assets/asset.tape --sources .local/deferred-assets/asset.sources
+cargo run -p execution_tape_examples --bin observatory -- --program .local/deferred-assets/asset.tape --sources .local/deferred-assets/asset.sources
 ```
 
 This finite, four-request service demonstrates an embedding policy. Admission synchronously opens
@@ -100,7 +103,7 @@ sidecars, and the pre-resumption `paused.txt` view. It refuses an existing direc
 inspectable inputs and a result survey, not a portable heap or recording archive. For example:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/live-counter/old.tape --sources .local/live-counter/old.sources
+cargo run -p execution_tape_examples --bin observatory -- --program .local/live-counter/old.tape --sources .local/live-counter/old.sources
 ```
 
 The embedding owns selector/class lookup, publication synchronization, cache invalidation and

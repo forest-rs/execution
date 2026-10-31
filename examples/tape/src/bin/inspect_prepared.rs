@@ -3,7 +3,7 @@
 
 //! Inspect prepared functions in an encoded program without running it.
 //!
-//! `cargo run -p execution_tape_wind_tunnel --bin inspect_prepared -- program.et [function-id [pc]]`
+//! `cargo run -p execution_tape_examples --bin inspect_prepared -- program.et [function-id [pc]]`
 
 use std::error::Error;
 

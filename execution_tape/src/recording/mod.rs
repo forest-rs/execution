@@ -86,7 +86,7 @@
 //! resource accesses are not reconstructed. No portable archive, cross-platform float guarantee,
 //! is implied.
 //!
-//! Run `cargo run -p execution_tape_wind_tunnel --bin record_replay` from the workspace for an
+//! Run `cargo run -p execution_tape_examples --bin record_replay` from the workspace for an
 //! executable capture/drop/replay example. Optional arguments select host-call count, shared graph
 //! depth and byte-payload size. `cargo bench -p execution_tape_wind_tunnel --bench recording`
 //! measures ordinary execution, capture/freeze/drop and fresh replay/drop separately.

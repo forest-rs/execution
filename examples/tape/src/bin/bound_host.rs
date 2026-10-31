@@ -3,7 +3,7 @@
 
 //! Bind host operations before execution and reuse bindings with independent VM state.
 //!
-//! `cargo run -p execution_tape_wind_tunnel --bin bound_host`
+//! `cargo run -p execution_tape_examples --bin bound_host`
 
 use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};

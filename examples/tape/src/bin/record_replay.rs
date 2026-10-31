@@ -3,7 +3,7 @@
 
 //! Capture one real invocation, drop the live host and VM, then replay and inspect it.
 
-#[path = "../recording.rs"]
+#[path = "../support/recording.rs"]
 mod workload;
 
 use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};

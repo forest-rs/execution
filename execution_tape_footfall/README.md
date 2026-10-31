@@ -54,7 +54,7 @@ remain in the ordinary VM result, without copying arbitrary error payloads into 
 Run the capture example:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin footfall_capture -- .local/footfall-demo
+cargo run -p execution_tape_examples --bin footfall_capture -- .local/footfall-demo
 ```
 
 It captures branches, a typed join, a guest call, host work, and guest/host failures. The output

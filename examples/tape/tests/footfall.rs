@@ -3,7 +3,7 @@
 
 //! Real capture boundaries live outside the dependency-free core and adapter crates.
 
-#[path = "../src/footfall_demo.rs"]
+#[path = "../src/support/footfall_demo.rs"]
 mod demo;
 
 use demo::{Behavior, DemoHost, ENTRY, GUEST_TRAP};

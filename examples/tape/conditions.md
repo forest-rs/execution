@@ -6,9 +6,9 @@ restarts and protected bodies. These conventions belong to this example, not to 
 The inspection commands need no native condition service:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin conditions -- recovery --disassemble
-cargo run -p execution_tape_wind_tunnel --bin conditions -- cleanup-signals --static --snapshot
-cargo run -p execution_tape_wind_tunnel --bin conditions -- cleanup-signals --static --explore
+cargo run -p execution_tape_examples --bin conditions -- recovery --disassemble
+cargo run -p execution_tape_examples --bin conditions -- cleanup-signals --static --snapshot
+cargo run -p execution_tape_examples --bin conditions -- cleanup-signals --static --explore
 ```
 
 Use `--help` for the scenario names. In the static browser, select functions and instructions
@@ -81,10 +81,10 @@ and change neither core opcodes nor the wire format.
 Without `--static` or `--disassemble`, the example drives the tape in a native language service:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin conditions -- recovery
-cargo run -p execution_tape_wind_tunnel --bin conditions -- cleanup --snapshot
-cargo run -p execution_tape_wind_tunnel --bin conditions -- cleanup-replaces --explore
-cargo test -p execution_tape_wind_tunnel --bin conditions
+cargo run -p execution_tape_examples --bin conditions -- recovery
+cargo run -p execution_tape_examples --bin conditions -- cleanup --snapshot
+cargo run -p execution_tape_examples --bin conditions -- cleanup-replaces --explore
+cargo test -p execution_tape_examples --bin conditions
 ```
 
 `recovery` stops at native work inside a guest handler. The printed explanation separates

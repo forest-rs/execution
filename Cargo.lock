@@ -418,6 +418,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_tape_examples"
+version = "0.1.0"
+dependencies = [
+ "execution_tape",
+ "execution_tape_footfall",
+ "execution_tape_observatory",
+ "execution_tape_tracy",
+ "footfall",
+ "ratatui",
+ "tracy-client",
+]
+
+[[package]]
 name = "execution_tape_footfall"
 version = "0.1.0"
 dependencies = [
@@ -447,12 +460,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "execution_tape",
- "execution_tape_footfall",
- "execution_tape_observatory",
- "execution_tape_tracy",
- "footfall",
- "ratatui",
- "tracy-client",
 ]
 
 [[package]]

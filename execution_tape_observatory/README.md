@@ -7,9 +7,9 @@ recording; capture, immutable value ownership, completeness and replay remain in
 Try live execution with real host objects and authored source:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin live_debugger -- --color=always
-cargo run -p execution_tape_wind_tunnel --bin live_debugger -- --snapshot
-cargo run -p execution_tape_wind_tunnel --bin live_debugger -- --snapshot --complete
+cargo run -p execution_tape_examples --bin live_debugger -- --color=always
+cargo run -p execution_tape_examples --bin live_debugger -- --snapshot
+cargo run -p execution_tape_examples --bin live_debugger -- --snapshot --complete
 ```
 
 The live demo opens inside `double`, before its first host call. Its caller `main` is waiting
@@ -87,23 +87,23 @@ the embedding's actual bindings and state.
 From the workspace, run:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --color=always
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --snapshot
+cargo run -p execution_tape_examples --bin observatory -- --color=always
+cargo run -p execution_tape_examples --bin observatory -- --snapshot
 ```
 
 Open a compiled tape without executing it or loading a host:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program path/to/program.tape --color=always
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program path/to/program.tape --snapshot
+cargo run -p execution_tape_examples --bin observatory -- --program path/to/program.tape --color=always
+cargo run -p execution_tape_examples --bin observatory -- --program path/to/program.tape --snapshot
 ```
 
 To try the file browser with a self-contained artifact, write the demo program to a **new** file:
 
 ```sh
 mkdir -p .local
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --write-demo .local/demo.tape
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/demo.tape --color=always
+cargo run -p execution_tape_examples --bin observatory -- --write-demo .local/demo.tape
+cargo run -p execution_tape_examples --bin observatory -- --program .local/demo.tape --color=always
 ```
 
 The file browser verifies the decoded program once. Rejected programs remain inspectable and
@@ -196,8 +196,8 @@ does not perform replay. The interactive view needs at least 80 columns and 20 r
 To browse nested guest results through the ordinary pipeline, create a new example tape:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin nested_contracts -- .local/nested.tape
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/nested.tape
+cargo run -p execution_tape_examples --bin nested_contracts -- .local/nested.tape
+cargo run -p execution_tape_examples --bin observatory -- --program .local/nested.tape
 ```
 
 The producer returns `((42), true)`; the caller projects the inner integer. Guest signatures
@@ -206,8 +206,8 @@ show those nested contracts, while register declarations continue to show storag
 To inspect how a typed join retains common structure while losing a member's scalar kind:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin join_contracts -- .local/join.tape
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program .local/join.tape
+cargo run -p execution_tape_examples --bin join_contracts -- .local/join.tape
+cargo run -p execution_tape_examples --bin observatory -- --program .local/join.tape
 ```
 
 Focus instructions, select `BrArgs` and press `Enter` to follow the join. Both static arms target
@@ -278,9 +278,9 @@ Try the small real arithmetic frontend, which parses expressions and exports the
 ranges during emission:
 
 ```sh
-cargo run -p execution_tape_wind_tunnel --bin source_frontend -- --snapshot
-cargo run -p execution_tape_wind_tunnel --bin source_frontend -- --source expression.expr --write-prefix /tmp/expression
-cargo run -p execution_tape_wind_tunnel --bin observatory -- --program /tmp/expression.tape --sources /tmp/expression.sources --snapshot
+cargo run -p execution_tape_examples --bin source_frontend -- --snapshot
+cargo run -p execution_tape_examples --bin source_frontend -- --source expression.expr --write-prefix /tmp/expression
+cargo run -p execution_tape_examples --bin observatory -- --program /tmp/expression.tape --sources /tmp/expression.sources --snapshot
 ```
 
 The frontend accepts integer literals, parentheses, `+`, `-` and `*`, validates the emitted program,

@@ -3,7 +3,7 @@
 
 //! Capture a typed join and nested host work with Footfall, including failure paths.
 
-#[path = "../footfall_demo.rs"]
+#[path = "../support/footfall_demo.rs"]
 mod demo;
 
 use demo::{Behavior, DemoHost, ENTRY, GUEST_TRAP};
@@ -100,7 +100,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
         SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
     use execution_tape::trace::TraceLocation;
-    let text = include_str!("../footfall_demo.rs");
+    let text = include_str!("../support/footfall_demo.rs");
     let statements: &[(FuncId, &[&str])] = &[
         (
             FuncId(0),

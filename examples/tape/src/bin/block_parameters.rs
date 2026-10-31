@@ -3,7 +3,7 @@
 
 //! Run equivalent loops and inspect their execution requirements.
 
-#[path = "../block_parameters.rs"]
+#[path = "../support/block_parameters.rs"]
 mod workload;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncId;
