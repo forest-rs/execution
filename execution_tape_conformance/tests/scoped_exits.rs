@@ -409,6 +409,12 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                 }
             }
             let source = run.pending_host_call().unwrap().location();
+            let target_source = run
+                .inspect()
+                .frames()
+                .find(|frame| frame.activation == target)
+                .unwrap()
+                .location;
             run.pending_host_call()
                 .unwrap()
                 .return_from(&target, vec![Value::I64(7), Value::Bool(true)])
@@ -437,6 +443,7 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
             assert_eq!(transfer.location, source);
             let ControlAction::ReturnFrom {
                 target: captured,
+                target_location,
                 unwound_callbacks,
                 ..
             } = transfer.action
@@ -444,6 +451,7 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                 panic!("transfer command");
             };
             assert_eq!(captured, target.ordinal());
+            assert_eq!(target_location, target_source);
             assert_eq!(
                 unwound_callbacks,
                 match case {

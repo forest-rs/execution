@@ -31,6 +31,8 @@ pub enum ControlAction<'a> {
     ReturnFrom {
         /// Invocation-local target activation ordinal, never a function ID.
         target: u64,
+        /// Target frame's actual suspended call/host instruction, independent of the initiator.
+        target_location: TraceLocation,
         /// Callback bodies abandoned by the transfer, including a callback-root target.
         unwound_callbacks: usize,
         /// Raw supplied values, validated by the VM against the target's result contracts.
@@ -80,6 +82,7 @@ pub(super) struct Command {
 pub(super) enum Action {
     ReturnFrom {
         target: u64,
+        target_location: TraceLocation,
         unwound_callbacks: usize,
         values: Range<usize>,
         work: DataWork,
@@ -105,12 +108,14 @@ impl Command {
         let action = match &self.action {
             Action::ReturnFrom {
                 target,
+                target_location,
                 unwound_callbacks,
                 values,
                 work,
                 constructed,
             } => ControlAction::ReturnFrom {
                 target: *target,
+                target_location: *target_location,
                 unwound_callbacks: *unwound_callbacks,
                 values: recording.arena.slice(values),
                 work: *work,

@@ -816,6 +816,7 @@ impl TraceSink for Check<'_> {
                 ValueEvent::ReturnFrom {
                     location,
                     target,
+                    target_location,
                     unwound_callbacks,
                     values,
                     work,
@@ -843,6 +844,7 @@ impl TraceSink for Check<'_> {
                     }
                     let Action::ReturnFrom {
                         target: expected_target,
+                        target_location: expected_location,
                         unwound_callbacks: expected_callbacks,
                         values: expected_values,
                         work: expected_work,
@@ -851,6 +853,12 @@ impl TraceSink for Check<'_> {
                     else {
                         return Err(state.mismatch(Divergence::Outcome));
                     };
+                    if target_location != *expected_location {
+                        return Err(state.mismatch(Divergence::Location {
+                            expected: *expected_location,
+                            actual: Some(target_location),
+                        }));
+                    }
                     if target != *expected_target
                         || unwound_callbacks != *expected_callbacks
                         || work != *expected_work
@@ -1504,11 +1512,12 @@ mod tests {
 
     #[test]
     fn corrupted_transfer_target_order_values_callback_count_and_work_are_rejected() {
-        for change in 0..7 {
+        for change in 0..8 {
             let mut record = control_recording(true);
             let command = record.commands.last_mut().unwrap();
             let Action::ReturnFrom {
                 target,
+                target_location,
                 unwound_callbacks,
                 values,
                 work,
@@ -1525,6 +1534,7 @@ mod tests {
                 4 => *unwound_callbacks += 1,
                 5 => work.aggregate = 0,
                 6 => work.payload = 0,
+                7 => target_location.pc += 1,
                 _ => unreachable!(),
             }
             assert!(

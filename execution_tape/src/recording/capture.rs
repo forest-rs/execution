@@ -177,6 +177,7 @@ impl Recorder {
             ValueEvent::ReturnFrom {
                 location,
                 target,
+                target_location,
                 unwound_callbacks,
                 values,
                 work,
@@ -215,6 +216,7 @@ impl Recorder {
                     frame: self.top,
                     action: Action::ReturnFrom {
                         target,
+                        target_location,
                         unwound_callbacks,
                         values,
                         work,
