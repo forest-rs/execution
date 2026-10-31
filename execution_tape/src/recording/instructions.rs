@@ -140,7 +140,7 @@ pub(crate) struct History {
     pending: Vec<PendingAttempt>,
     next: Option<TraceLocation>,
     admitted: bool,
-    entering_callback: bool,
+    control_boundary: bool,
     returning_callback: bool,
     pub(crate) started: bool,
     pub(crate) finished: bool,
@@ -178,7 +178,7 @@ impl History {
             pending: Vec::new(),
             next: None,
             admitted: false,
-            entering_callback: false,
+            control_boundary: false,
             returning_callback: false,
             started: false,
             finished: false,
@@ -220,20 +220,21 @@ impl History {
     pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
+    pub(crate) fn begin_transfer(&mut self) {
+        self.control_boundary = true;
+    }
     pub(crate) fn begin_callback(&mut self, location: TraceLocation) {
         if self.status == InstructionStatus::Incomplete {
             return;
         }
-        let Some(pending) = self
-            .pending
-            .last_mut()
-            .filter(|pending| pending.location == location && !pending.suspended)
-        else {
+        let Some(pending) = self.pending.last_mut().filter(|pending| {
+            pending.location == location && (!pending.suspended || self.control_boundary)
+        }) else {
             self.status = InstructionStatus::Incomplete;
             return;
         };
         pending.suspended = true;
-        self.entering_callback = true;
+        self.control_boundary = true;
     }
     pub(crate) fn end_callback(&mut self) {
         if self.status != InstructionStatus::Incomplete {
@@ -257,13 +258,13 @@ impl History {
                 .is_some_and(|pending| !pending.suspended)
             || (self.status == InstructionStatus::Complete
                 && self.admitted
-                && !self.entering_callback
+                && !self.control_boundary
                 && self.next != Some(location))
         {
             self.status = InstructionStatus::Incomplete;
             return;
         }
-        self.entering_callback = false;
+        self.control_boundary = false;
         self.admitted = true;
         let index = if self.status == InstructionStatus::Complete
             && self.steps.len() < self.config.max_steps
@@ -307,7 +308,9 @@ impl History {
             return;
         };
         if pending.location != location
-            || (pending.suspended && matches!(outcome, crate::trace::TraceOutcome::Ok))
+            || (pending.suspended
+                && matches!(outcome, crate::trace::TraceOutcome::Ok)
+                && !self.control_boundary)
         {
             self.status = InstructionStatus::Incomplete;
             return;
@@ -342,8 +345,11 @@ impl History {
                 self.status = InstructionStatus::Incomplete;
             }
         }
-        if !matches!(outcome, crate::trace::TraceOutcome::Ok) {
-            self.entering_callback = false;
+        if matches!(
+            outcome,
+            crate::trace::TraceOutcome::Trap(_) | crate::trace::TraceOutcome::Cancelled
+        ) {
+            self.control_boundary = false;
         }
     }
 }

@@ -225,6 +225,8 @@ pub enum ValueEvent<'a> {
         location: TraceLocation,
         /// Target activation ordinal in this invocation.
         target: u64,
+        /// Callback bodies abandoned by this transfer, including a callback-root target.
+        unwound_callbacks: usize,
         /// Raw supplied results, checked against the target function's result contracts.
         values: &'a [Value],
         /// Host construction work promoted before admitting the transfer.
@@ -318,6 +320,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
             Self::ReturnFrom {
                 location,
                 target,
+                unwound_callbacks,
                 values,
                 work,
                 created,
@@ -326,6 +329,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .debug_struct("ReturnFrom")
                 .field("location", location)
                 .field("target", target)
+                .field("unwound_callbacks", unwound_callbacks)
                 .field("values", values)
                 .field("work", work)
                 .field("created", created)

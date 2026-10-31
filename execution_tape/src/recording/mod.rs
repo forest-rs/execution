@@ -19,9 +19,12 @@
 //! Commands, callback returns and native host outcomes carry a shared observation sequence.
 //! A callback return does not complete its parent host request or publish the root result.
 //!
-//! Typed non-local returns through `PendingHostCall::return_from` currently report
-//! [`CaptureFault::UnsupportedTransfer`]. Their transfer commands are not yet replayed; these
-//! partial recordings remain inspectable and refuse checked replay before executing guest code.
+//! Typed non-local returns through `PendingHostCall::return_from` retain the exact invocation-local
+//! target ordinal, supplied results, promoted staging and abandoned callback count. Replay resolves
+//! the actual live activation and issues the transfer; it checks target contracts, budgets,
+//! resulting guest execution and `Unwound` instruction outcomes. Supplied exit results are embedding
+//! inputs, whereas normal callback returns are computed again by the guest. Foreign/expired target
+//! denials spend no guest work and are not recorded as admitted commands.
 //!
 //! ```
 //! use std::sync::Arc;
@@ -202,8 +205,6 @@ pub enum CaptureResource {
 /// Why a recording cannot be replayed as a complete invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureFault {
-    /// A non-local control transfer was observed before transfer-command replay is supported.
-    UnsupportedTransfer,
     /// The sink did not observe invocation values.
     MissingEntry,
     /// The invocation never returned or trapped: completion was missing or execution was cancelled.

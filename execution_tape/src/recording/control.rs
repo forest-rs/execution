@@ -27,6 +27,19 @@ pub struct ControlCommand<'a> {
 /// An embedding control operation, with values owned by its recording.
 #[derive(Debug)]
 pub enum ControlAction<'a> {
+    /// Return supplied values from an exact live activation, abandoning its active callees.
+    ReturnFrom {
+        /// Invocation-local target activation ordinal, never a function ID.
+        target: u64,
+        /// Callback bodies abandoned by the transfer, including a callback-root target.
+        unwound_callbacks: usize,
+        /// Raw supplied values, validated by the VM against the target's result contracts.
+        values: &'a [RecordedValue],
+        /// Host construction work promoted before admission.
+        work: DataWork,
+        /// All promoted nodes in construction order, including unused staging.
+        constructed: &'a [AggregateId],
+    },
     /// Run a same-program guest function or closure without completing the pending host call.
     CallGuest {
         /// Requested target, observed before admission/contract validation.
@@ -37,8 +50,8 @@ pub enum ControlAction<'a> {
         work: DataWork,
         /// Promoted nodes in original construction order, including otherwise unused staging.
         constructed: &'a [AggregateId],
-        /// Actual successful guest return. `None` also occurs after rejection, trap or cancellation;
-        /// inspect recording completeness and the invocation outcome separately.
+        /// Actual normal guest return. `None` also occurs after rejection, trap, cancellation
+        /// or a subsequent non-local transfer; inspect commands and the invocation outcome separately.
         returned: Option<GuestReturn<'a>>,
     },
 }
@@ -65,6 +78,13 @@ pub(super) struct Command {
 }
 #[derive(Debug)]
 pub(super) enum Action {
+    ReturnFrom {
+        target: u64,
+        unwound_callbacks: usize,
+        values: Range<usize>,
+        work: DataWork,
+        constructed: Vec<AggregateId>,
+    },
     CallGuest {
         callee: usize,
         args: Range<usize>,
@@ -83,6 +103,19 @@ pub(super) struct Returned {
 impl Command {
     pub(super) fn view<'a>(&'a self, recording: &'a Recording) -> ControlCommand<'a> {
         let action = match &self.action {
+            Action::ReturnFrom {
+                target,
+                unwound_callbacks,
+                values,
+                work,
+                constructed,
+            } => ControlAction::ReturnFrom {
+                target: *target,
+                unwound_callbacks: *unwound_callbacks,
+                values: recording.arena.slice(values),
+                work: *work,
+                constructed,
+            },
             Action::CallGuest {
                 callee,
                 args,
@@ -111,6 +144,19 @@ impl Command {
                 .frame
                 .map(|frame| CallStack::new(&recording.frames, frame, self.location)),
             action,
+        }
+    }
+}
+
+impl Action {
+    pub(super) fn construction(&self) -> (DataWork, &[AggregateId]) {
+        match self {
+            Self::CallGuest {
+                work, constructed, ..
+            }
+            | Self::ReturnFrom {
+                work, constructed, ..
+            } => (*work, constructed),
         }
     }
 }

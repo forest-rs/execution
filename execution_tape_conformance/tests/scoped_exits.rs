@@ -7,7 +7,10 @@ use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::ValueType,
-    recording::{CaptureFault, RecordLimits, Recorder, ReplayError},
+    recording::{
+        ControlAction, InstructionCapture, InstructionOutcome, InstructionStatus, RecordLimits,
+        Recorder, ReplayOutcome,
+    },
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{FuncId, Value},
     verifier::VerifiedProgram,
@@ -357,38 +360,111 @@ fn abandoned_attempts_and_scopes_are_unwound_not_successful_cancelled_or_trapped
 }
 
 #[test]
-fn unfinished_transfer_recording_refuses_to_claim_replay_support() {
+fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories() {
     let f = fixture();
-    let recorder = Rc::new(RefCell::new(Recorder::new(
-        f.program.clone(),
-        RecordLimits::default(),
-    )));
-    let mut vm = Vm::new(NeverHost, Limits::default());
-    let mut run = vm
-        .start(
-            &f.program,
-            f.root,
-            &[],
-            options().trace_owned(recorder.mask(), recorder.clone()),
-        )
-        .unwrap();
-    run.resume(100).unwrap();
-    let home = run.inspect().frames().last().unwrap().activation;
-    run.pending_host_call()
-        .unwrap()
-        .return_from(&home, vec![Value::I64(3), Value::Bool(true)])
-        .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
-    drop(run);
-    let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
-    assert!(matches!(
-        record.status(),
-        Err(CaptureFault::UnsupportedTransfer)
-    ));
-    assert!(matches!(
-        record.replay(),
-        Err(ReplayError::Incomplete(CaptureFault::UnsupportedTransfer))
-    ));
+    for max_steps in [0, 2, 1000] {
+        for case in 0..5 {
+            let recorder = Rc::new(RefCell::new(
+                Recorder::new(f.program.clone(), RecordLimits::default()).with_instructions(
+                    InstructionCapture {
+                        max_steps,
+                        watches: vec![],
+                    },
+                ),
+            ));
+            let mut vm = Vm::new(NeverHost, Limits::default());
+            let mut run = vm
+                .start(
+                    &f.program,
+                    f.root,
+                    &[],
+                    options().trace_owned(recorder.mask(), recorder.clone()),
+                )
+                .unwrap();
+            run.resume(100).unwrap();
+            let root = run.inspect().frames().last().unwrap().activation;
+            let mut target = if case == 1 {
+                run.inspect().frames().nth(1).unwrap().activation
+            } else {
+                root.clone()
+            };
+            if case >= 2 {
+                run.pending_host_call()
+                    .unwrap()
+                    .call_guest(Value::Func(f.middle), vec![])
+                    .unwrap();
+                run.resume(100).unwrap();
+                if case == 2 {
+                    target = run.inspect().frames().nth(1).unwrap().activation;
+                }
+                if case == 4 {
+                    target = run.inspect().frames().next().unwrap().activation;
+                }
+                if case == 3 {
+                    run.pending_host_call()
+                        .unwrap()
+                        .call_guest(Value::Func(f.leaf), vec![])
+                        .unwrap();
+                    run.resume(100).unwrap();
+                }
+            }
+            let source = run.pending_host_call().unwrap().location();
+            run.pending_host_call()
+                .unwrap()
+                .return_from(&target, vec![Value::I64(7), Value::Bool(true)])
+                .unwrap();
+            while run.resume(100).unwrap() != RunStatus::Complete {
+                let mut request = run.pending_host_call().unwrap();
+                request.take_callback_results();
+                request.complete(&mut [], Ok(0)).unwrap();
+            }
+            let expected = run.result().unwrap().unwrap().to_vec();
+            drop(run);
+            drop(vm);
+            let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+            record.status().unwrap();
+            assert_eq!(
+                record.instruction_status(),
+                Some(if max_steps == 1000 {
+                    InstructionStatus::Complete
+                } else {
+                    InstructionStatus::Truncated { limit: max_steps }
+                }),
+                "case {case}, max_steps {max_steps}"
+            );
+            let commands: Vec<_> = record.control_commands().collect();
+            let transfer = commands.last().unwrap();
+            assert_eq!(transfer.location, source);
+            let ControlAction::ReturnFrom {
+                target: captured,
+                unwound_callbacks,
+                ..
+            } = transfer.action
+            else {
+                panic!("transfer command");
+            };
+            assert_eq!(captured, target.ordinal());
+            assert_eq!(
+                unwound_callbacks,
+                match case {
+                    2 => 1,
+                    3 => 2,
+                    _ => 0,
+                }
+            );
+            if max_steps == 1000 {
+                assert!(
+                    record
+                        .instructions()
+                        .any(|step| matches!(step.outcome, InstructionOutcome::Unwound { .. }))
+                );
+            }
+            let ReplayOutcome::Returned(snapshot) = record.replay().unwrap() else {
+                panic!("replayed transfer result");
+            };
+            assert_eq!(snapshot.values(), expected);
+        }
+    }
 }
 
 #[test]
@@ -652,4 +728,194 @@ fn panicking_transfer_observers_cannot_expose_caller_results_or_retry_the_operat
         ));
         assert!(run.resume(100).is_err());
     }
+}
+
+#[test]
+fn transfer_replay_preserves_promoted_graphs_and_actual_contract_failures_after_vm_drop() {
+    use execution_tape::{asm::FunctionAbi, contract::Contract};
+    for case in 0..3 {
+        let mut b = ProgramBuilder::new();
+        let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let tuple = b.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+        let root = b
+            .declare_function(FunctionAbi {
+                args: vec![],
+                rets: vec![tuple.into()],
+            })
+            .unwrap();
+        let signal = b.host_sig_for(
+            "opaque",
+            HostSig {
+                args: vec![],
+                rets: vec![ValueType::Agg],
+            },
+        );
+        let mut a = b.function_asm(root).unwrap();
+        let value = a.alloc_register(ValueType::Agg);
+        a.host_call_sig_id(0, signal, 0, &[], &[value])
+            .ret(0, &[value]);
+        b.define_function(root, a).unwrap();
+        let program = Arc::new(b.build_verified().unwrap());
+        let recorder = Rc::new(RefCell::new(
+            Recorder::new(program.clone(), RecordLimits::default())
+                .with_instructions(InstructionCapture::default()),
+        ));
+        let mut vm = Vm::new(
+            NeverHost,
+            Limits {
+                max_contract_work: if case == 2 { 0 } else { 100 },
+                ..Limits::default()
+            },
+        );
+        vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+        let mut run = vm
+            .start(
+                &program,
+                root,
+                &[],
+                options().trace_owned(recorder.mask(), recorder.clone()),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let home = run.inspect().frames().next().unwrap().activation;
+        let mut request = run.pending_host_call().unwrap();
+        request
+            .context()
+            .tuple_new(vec![Value::Bytes(vec![7; 16])])
+            .unwrap();
+        let result = request
+            .context()
+            .tuple_new(vec![if case == 1 {
+                Value::Bool(true)
+            } else {
+                Value::I64(42)
+            }])
+            .unwrap();
+        let live = request.return_from(&home, vec![Value::Agg(result)]);
+        assert_eq!(live.is_ok(), case == 0);
+        drop(run);
+        drop(vm);
+        let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+        record.status().unwrap();
+        assert_eq!(
+            record.instruction_status(),
+            Some(InstructionStatus::Complete)
+        );
+        match record.replay().unwrap() {
+            ReplayOutcome::Returned(snapshot) => {
+                assert_eq!(case, 0);
+                let [Value::Agg(handle)] = snapshot.values() else {
+                    panic!("returned graph");
+                };
+                assert_eq!(
+                    snapshot.aggregates().tuple_get(*handle, 0).unwrap(),
+                    Value::I64(42)
+                );
+            }
+            ReplayOutcome::Trapped(trap) => {
+                if case == 1 {
+                    assert!(matches!(trap.trap, Trap::ContractMismatch { .. }));
+                } else {
+                    assert!(matches!(trap.trap, Trap::ContractWorkExceeded { .. }));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn transfer_recording_limits_and_post_transfer_cancellation_remain_explicit() {
+    use execution_tape::recording::{CaptureFault, CaptureResource, ReplayError};
+    let f = fixture();
+    for cancel in [false, true] {
+        let recorder = Rc::new(RefCell::new(Recorder::new(
+            f.program.clone(),
+            RecordLimits {
+                control_commands: if cancel { 10 } else { 0 },
+                ..RecordLimits::default()
+            },
+        )));
+        let mut vm = Vm::new(NeverHost, Limits::default());
+        let mut run = vm
+            .start(
+                &f.program,
+                f.root,
+                &[],
+                options().trace_owned(recorder.mask(), recorder.clone()),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let target = if cancel {
+            run.inspect().frames().nth(1).unwrap().activation
+        } else {
+            run.inspect().frames().last().unwrap().activation
+        };
+        run.pending_host_call()
+            .unwrap()
+            .return_from(&target, vec![Value::I64(7), Value::Bool(true)])
+            .unwrap();
+        assert_eq!(run.result().is_none(), cancel);
+        drop(run);
+        let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+        if cancel {
+            assert!(matches!(
+                record.status(),
+                Err(CaptureFault::MissingCompletion)
+            ));
+        } else {
+            assert!(matches!(
+                record.status(),
+                Err(CaptureFault::Budget {
+                    resource: CaptureResource::ControlCommands,
+                    limit: 0
+                })
+            ));
+        }
+        assert!(matches!(record.replay(), Err(ReplayError::Incomplete(_))));
+    }
+}
+
+#[test]
+fn transfer_replay_does_not_require_retaining_call_stack_evidence() {
+    let f = fixture();
+    let recorder = Rc::new(RefCell::new(
+        Recorder::new(f.program.clone(), RecordLimits::default())
+            .with_instructions(InstructionCapture::default()),
+    ));
+    let mut vm = Vm::new(NeverHost, Limits::default());
+    let mut run = vm
+        .start(
+            &f.program,
+            f.root,
+            &[],
+            options().trace_owned(
+                TraceMask::RUN | TraceMask::VALUES | TraceMask::INSTR,
+                recorder.clone(),
+            ),
+        )
+        .unwrap();
+    run.resume(100).unwrap();
+    let home = run.inspect().frames().last().unwrap().activation;
+    run.pending_host_call()
+        .unwrap()
+        .call_guest(Value::Func(f.leaf), vec![])
+        .unwrap();
+    run.resume(100).unwrap();
+    run.pending_host_call()
+        .unwrap()
+        .return_from(&home, vec![Value::I64(7), Value::Bool(true)])
+        .unwrap();
+    drop(run);
+    let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+    record.status().unwrap();
+    assert_eq!(record.stats().call_frames, 0);
+    assert!(
+        record
+            .control_commands()
+            .all(|command| command.stack.is_none())
+    );
+    let ReplayOutcome::Returned(snapshot) = record.replay().unwrap() else {
+        panic!("returned without stack retention");
+    };
+    assert_eq!(snapshot.values(), [Value::I64(7), Value::Bool(true)]);
 }

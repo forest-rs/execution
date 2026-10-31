@@ -50,8 +50,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Abandoned host instructions do not complete successfully or dispatch their hosts. Trace
     /// scopes/attempts close as `Unwound`, at the real initiating source. This primitive does not
     /// run protected cleanup; language cleanup support must be layered explicitly. Dropping an
-    /// invocation remains hard cancellation and never runs guest code. Boundary recording marks
-    /// this control path incomplete until its transfer commands are supported by checked replay.
+    /// invocation remains hard cancellation and never runs guest code. Boundary recording retains
+    /// admitted commands; checked replay resolves the actual active target and reissues the
+    /// typed transfer. Pure foreign/expired denials do not change guest execution and are not
+    /// recorded as admitted commands.
     pub fn return_from(
         mut self,
         target: &ActivationId,
@@ -105,6 +107,11 @@ impl<H: Host> Invocation<'_, H> {
         self.trace.values(program, || ValueEvent::ReturnFrom {
             location: pending.location,
             target: ordinal,
+            unwound_callbacks: self
+                .control
+                .callbacks
+                .as_ref()
+                .map_or(0, |callbacks| callbacks.count_exited(index)),
             values,
             work,
             created: &created,
