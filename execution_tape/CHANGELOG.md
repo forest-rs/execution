@@ -16,6 +16,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Author calls through `ProgramBuilder::emit_call`, deriving result register kinds from one
+  declared direct, host or indirect signature. `ProgramBuilder::argument` resolves declared
+  argument registers. Rejected authoring requests leave instruction bytes and registers unchanged;
+  ordinary verification remains authoritative for initialization and rich contracts.
+  Contract and call-authoring failures convert into the ordinary `BuildError` error chain.
+  Migration: handle `BuildError::Call` in exhaustive matches; existing assembler calls remain supported.
+
 - Record and replay typed non-local returns with exact activation targets, supplied multiple
   values, target/initiating source locations, promoted staging and callback abandonment. Full and truncated instruction histories
   preserve unwound attempts and resumed caller execution; root transfers need no synthetic `Ret`.

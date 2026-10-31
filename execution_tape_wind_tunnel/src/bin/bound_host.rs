@@ -5,12 +5,12 @@
 //!
 //! `cargo run -p execution_tape_wind_tunnel --bin bound_host`
 
-use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
 use execution_tape::host_binding::HostFunctions;
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
-use execution_tape::value::{FuncId, Value};
+use execution_tape::value::Value;
 use execution_tape::vm::Trap;
 use execution_tape::vm::{Limits, Vm};
 
@@ -56,17 +56,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     functions.register("counter.add", signature.clone(), add)?;
     let mut builder = ProgramBuilder::new();
     let import = builder.host_sig_for("counter.add", signature);
-    let mut body = Asm::new();
-    body.set_register_types(vec![ValueType::Unit, ValueType::I64, ValueType::I64]);
-    body.host_call_sig_id(0, import, 0, &[1], &[2]);
-    body.ret(0, &[2]);
-    builder.push_function_checked(
-        body,
-        FunctionSig {
-            arg_types: vec![ValueType::I64],
-            ret_types: vec![ValueType::I64],
-        },
-    )?;
+    let entry = builder.declare_function(FunctionSig {
+        arg_types: vec![ValueType::I64],
+        ret_types: vec![ValueType::I64],
+    })?;
+    let mut body = builder.function_asm(entry)?;
+    let addend = builder.argument(entry, 0)?;
+    let [total] = builder.emit_call(&mut body, import, &[addend])?;
+    body.ret(0, &[total]);
+    builder.define_function(entry, body)?;
     let program = builder.build_verified()?;
 
     // Every import is validated here, before either VM receives mutable host state.
@@ -74,14 +72,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut first = Vm::new(bindings.with_state(0), Limits::default());
     let mut second = Vm::new(bindings.with_state(100), Limits::default());
     for vm in [&mut first, &mut second] {
-        let result = vm.run(&program, FuncId(0), &[Value::I64(5)], TraceMask::NONE, None)?;
+        let result = vm.run(&program, entry, &[Value::I64(5)], TraceMask::NONE, None)?;
         println!("outputs={result:?} state={}", vm.host().state());
     }
     assert_eq!(*first.host().state(), 5);
     assert_eq!(*second.host().state(), 105);
     *first.host_mut().state_mut() = i64::MAX;
     let failure = first
-        .run(&program, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+        .run(&program, entry, &[Value::I64(1)], TraceMask::NONE, None)
         .unwrap_err();
     let Trap::HostCallFailed {
         error: HostError::Custom(source),
