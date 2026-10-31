@@ -306,8 +306,9 @@ Callback entry/return are explicit value events and guest frames have their actu
 sites as callers. The parent host instruction remains outstanding while child attempts execute.
 Callback return goes to embedding code, with no next guest instruction; it does not complete the
 parent host instruction. On failure/cancellation all outstanding attempts and scopes close.
-The boundary recorder currently reports `UnsupportedCallback` rather than pretending host
-outcomes alone can reproduce an embedding-driven callback. These captures refuse checked replay.
+The boundary recorder captures the embedding's command and the callback's actual return separately
+from native host outcomes. Checked replay issues that command into the same invocation, executes
+the guest body again and verifies its actual result.
 
 ## Program serialization
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
@@ -427,3 +428,14 @@ producers discard staging. Explicit snapshots survive retirement. Recording reta
 node sequence and construction debit, including discarded work, so checked replay reconstructs
 values in the same identity domain and uses the same remaining guest budget. No live host or
 external effects are replayed.
+
+### Recorded embedding control
+
+A yielded host request can enter a same-program guest function or closure while its original
+host instruction remains pending. The boundary recorder retains that embedding command,
+all promoted staging, and the actual callback return separately from the eventual host outcome.
+Their sequence numbers describe observation order; a callback return does not publish the root
+result. Replay issues the recorded command, executes the guest again, and checks the values it
+actually computes. It does not inject saved callback results. Optional instruction history orders
+attempts by admission and links callback instructions to their outstanding parent host attempt.
+Capture budgets and truncated histories remain independent of the live invocation's budgets.

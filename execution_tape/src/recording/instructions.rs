@@ -86,10 +86,11 @@ pub enum InstructionOutcome {
     Trapped,
 }
 
-/// One attempted instruction in execution order. Locations are source byte offsets.
+/// One attempted instruction in admission order. Locations are source byte offsets.
 ///
 /// `next` is the actual executable successor; typed block declarations have no event.
-/// Calls complete at callee entry, while returns resume the suspended caller.
+/// Calls complete at callee entry, while returns resume the suspended caller. A host attempt
+/// remains outstanding during its callbacks, so completions can overlap in this admission order.
 #[derive(Clone, Debug)]
 pub struct InstructionStep<'a> {
     /// Selected actual read operands before execution.
@@ -98,9 +99,12 @@ pub struct InstructionStep<'a> {
     pub outputs: RegisterObservations<'a>,
     /// Executed instruction location.
     pub location: TraceLocation,
+    /// Retained host attempt that remains outstanding while this callback instruction executes.
+    /// `None` means no outstanding parent attempt; ordinary guest ancestry is in `stack`.
+    pub parent_attempt: Option<usize>,
     /// Source opcode byte.
     pub opcode: u8,
-    /// Actual successor, absent at root return, trap or missing completion.
+    /// Actual guest successor, absent at root/callback return, trap or missing completion.
     pub next: Option<TraceLocation>,
     /// Observed instruction outcome, separate from the eventual invocation result.
     pub outcome: InstructionOutcome,
@@ -114,6 +118,7 @@ pub(crate) struct Step {
     pub(crate) inputs: core::ops::Range<usize>,
     pub(crate) outputs: core::ops::Range<usize>,
     pub(crate) location: TraceLocation,
+    pub(crate) parent: Option<usize>,
     pub(crate) opcode: u8,
     pub(crate) next: Option<TraceLocation>,
     pub(crate) outcome: InstructionOutcome,
@@ -127,7 +132,11 @@ pub(crate) struct History {
     pub(crate) config: InstructionCapture,
     pub(crate) steps: Vec<Step>,
     pub(crate) status: InstructionStatus,
-    pub(crate) pending: Option<usize>,
+    pending: Vec<PendingAttempt>,
+    next: Option<TraceLocation>,
+    admitted: bool,
+    entering_callback: bool,
+    returning_callback: bool,
     pub(crate) started: bool,
     pub(crate) finished: bool,
 }
@@ -161,7 +170,11 @@ impl History {
             config,
             steps: Vec::new(),
             status: InstructionStatus::Complete,
-            pending: None,
+            pending: Vec::new(),
+            next: None,
+            admitted: false,
+            entering_callback: false,
+            returning_callback: false,
             started: false,
             finished: false,
         }
@@ -178,8 +191,151 @@ impl History {
     }
 
     pub(crate) fn finish(&mut self) {
-        if self.pending.is_some() || !self.started || !self.finished || !self.mask_seen {
+        if !self.pending.is_empty()
+            || self.returning_callback
+            || !self.started
+            || !self.finished
+            || !self.mask_seen
+        {
             self.status = InstructionStatus::Incomplete;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PendingAttempt {
+    location: TraceLocation,
+    index: Option<usize>,
+    suspended: bool,
+}
+impl History {
+    pub(crate) fn current(&self) -> Option<usize> {
+        self.pending.last().and_then(|pending| pending.index)
+    }
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+    pub(crate) fn begin_callback(&mut self, location: TraceLocation) {
+        if self.status == InstructionStatus::Incomplete {
+            return;
+        }
+        let Some(pending) = self
+            .pending
+            .last_mut()
+            .filter(|pending| pending.location == location && !pending.suspended)
+        else {
+            self.status = InstructionStatus::Incomplete;
+            return;
+        };
+        pending.suspended = true;
+        self.entering_callback = true;
+    }
+    pub(crate) fn end_callback(&mut self) {
+        if self.status != InstructionStatus::Incomplete {
+            self.returning_callback = true;
+        }
+    }
+    pub(crate) fn record_instruction(
+        &mut self,
+        location: TraceLocation,
+        opcode: u8,
+        frame: Option<FrameId>,
+    ) {
+        if self.status == InstructionStatus::Incomplete {
+            return;
+        }
+        if !self.started
+            || self.finished
+            || self
+                .pending
+                .last()
+                .is_some_and(|pending| !pending.suspended)
+            || (self.status == InstructionStatus::Complete
+                && self.admitted
+                && !self.entering_callback
+                && self.next != Some(location))
+        {
+            self.status = InstructionStatus::Incomplete;
+            return;
+        }
+        self.entering_callback = false;
+        self.admitted = true;
+        let index = if self.status == InstructionStatus::Complete
+            && self.steps.len() < self.config.max_steps
+        {
+            let index = self.steps.len();
+            self.steps.push(Step {
+                inputs_seen: false,
+                inputs: self.registers.len()..self.registers.len(),
+                outputs: self.registers.len()..self.registers.len(),
+                location,
+                opcode,
+                parent: self.current(),
+                next: None,
+                outcome: InstructionOutcome::Pending,
+                frame,
+            });
+            Some(index)
+        } else {
+            self.status = InstructionStatus::Truncated {
+                limit: self.config.max_steps,
+            };
+            None
+        };
+        self.pending.push(PendingAttempt {
+            location,
+            index,
+            suspended: false,
+        });
+    }
+    pub(crate) fn complete_instruction(
+        &mut self,
+        location: TraceLocation,
+        next: Option<TraceLocation>,
+        outcome: crate::trace::TraceOutcome<'_>,
+    ) {
+        if self.status == InstructionStatus::Incomplete {
+            return;
+        }
+        let Some(pending) = self.pending.pop() else {
+            self.status = InstructionStatus::Incomplete;
+            return;
+        };
+        if pending.location != location
+            || (pending.suspended && matches!(outcome, crate::trace::TraceOutcome::Ok))
+        {
+            self.status = InstructionStatus::Incomplete;
+            return;
+        }
+        let actual = match outcome {
+            crate::trace::TraceOutcome::Ok => InstructionOutcome::Completed,
+            crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
+            crate::trace::TraceOutcome::Cancelled => {
+                self.status = InstructionStatus::Incomplete;
+                InstructionOutcome::Pending
+            }
+        };
+        if let Some(index) = pending.index {
+            if !self.steps[index].inputs_seen && self.watch(location).is_some() {
+                self.status = InstructionStatus::Incomplete;
+            }
+            self.steps[index].next = next;
+            self.steps[index].outcome = actual;
+        }
+        self.next = next;
+        if self.returning_callback {
+            self.returning_callback = false;
+            if !matches!(outcome, crate::trace::TraceOutcome::Ok) {
+                self.status = InstructionStatus::Incomplete;
+            }
+            if let Some(parent) = self.pending.last_mut() {
+                parent.suspended = false;
+            } else {
+                self.status = InstructionStatus::Incomplete;
+            }
+        }
+        if !matches!(outcome, crate::trace::TraceOutcome::Ok) {
+            self.entering_callback = false;
         }
     }
 }

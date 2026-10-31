@@ -13,9 +13,11 @@
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
 //!
-//! Embedding-requested guest callbacks through `PendingHostCall::call_guest` currently report
-//! [`CaptureFault::UnsupportedCallback`]. Their callback commands are not yet captured for the
-//! replay driver; such recordings stay explicitly incomplete and checked replay refuses them.
+//! Embedding-requested guest callbacks through `PendingHostCall::call_guest` are retained as
+//! [`ControlCommand`]s. Replay issues those commands into the same invocation and executes the
+//! guest bodies again; it checks actual callback results rather than supplying saved guest results.
+//! Commands, callback returns and native host outcomes carry a shared observation sequence.
+//! A callback return does not complete its parent host request or publish the root result.
 //!
 //! ```
 //! use std::sync::Arc;
@@ -89,7 +91,10 @@
 //! and request no register inspection. `instructions()` iterates actual attempts in execution order;
 //! `instruction(index)` directly accesses one attempt, its actual successor and guest ancestry.
 //! Typed block headers have no execution event. Calls complete at callee entry; returns resume the
-//! suspended caller. Fuel exhaustion before fetching an instruction creates no attempted step.
+//! suspended caller. Callback instructions link to their still-outstanding parent host attempt
+//! through `InstructionStep::parent_attempt`; completion order can differ from admission order.
+//! A callback return has no guest successor while embedding code decides what to do next.
+//! Fuel exhaustion before fetching an instruction creates no attempted step.
 //!
 //! `instruction_status()` is independent of boundary `status()`: a truncated instruction prefix
 //! can coexist with complete boundary data and successful replay. Replay checks retained instruction
@@ -110,6 +115,7 @@
 //! from disabled callbacks. A recommended mask alone does not establish which events were enabled.
 
 mod capture;
+mod control;
 mod frames;
 mod instructions;
 mod replay;
@@ -126,6 +132,7 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 pub use capture::Recorder;
+pub use control::{ControlAction, ControlCommand, GuestReturn};
 pub use frames::CallStack;
 pub use instructions::{
     InstructionCapture, InstructionOutcome, InstructionStatus, InstructionStep,
@@ -149,6 +156,8 @@ pub struct RecordLimits {
     pub aggregates: usize,
     /// Maximum host-call observations.
     pub host_calls: usize,
+    /// Maximum embedding control commands, including rejected guest callback requests.
+    pub control_commands: usize,
     /// Maximum entered guest activations, including ones with no host observations.
     /// The effective limit is capped at `u32::MAX` for compact recording-local identities.
     pub call_frames: usize,
@@ -162,6 +171,7 @@ impl Default for RecordLimits {
             values: 1_000_000,
             aggregates: 100_000,
             host_calls: 10_000,
+            control_commands: 10_000,
             call_frames: 100_000,
             payload_bytes: 64 * 1024 * 1024,
         }
@@ -177,6 +187,8 @@ pub enum CaptureResource {
     Aggregates,
     /// Host-call observations.
     HostCalls,
+    /// Embedding control commands.
+    ControlCommands,
     /// Entered guest activations.
     CallFrames,
     /// Copied byte/string contents and trap symbol text.
@@ -206,19 +218,12 @@ pub enum CaptureFault {
         /// Raw source handle, valid only in the observed invocation's heap domain.
         handle: u32,
     },
-    /// Guest callback control was observed without a supported replay transcript.
-    UnsupportedCallback,
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
 }
 
 impl core::fmt::Display for CaptureFault {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if matches!(self, Self::UnsupportedCallback) {
-            return f.write_str(
-                "incomplete capture: guest callback commands are not captured for checked replay",
-            );
-        }
         write!(f, "incomplete capture: {self:?}")
     }
 }
@@ -254,6 +259,8 @@ pub enum HostOutcome<'a> {
 /// One host-call observation, without expanding its aggregate graph.
 #[derive(Debug)]
 pub struct HostCall<'a> {
+    /// Zero-based observation order shared with control commands and callback returns.
+    pub sequence: usize,
     /// Calling guest instruction.
     pub location: TraceLocation,
     /// Program-local import identity.
@@ -291,6 +298,8 @@ pub struct RecordStats {
     pub aggregates: usize,
     /// Retained host-call observations.
     pub host_calls: usize,
+    /// Retained embedding control commands.
+    pub control_commands: usize,
     /// Retained entered guest activations, shared by boundary stacks.
     pub call_frames: usize,
     /// Copied byte/string contents and trap symbol text, counted once per retained allocation.
@@ -306,6 +315,7 @@ struct Entry {
 }
 #[derive(Debug)]
 struct Call {
+    sequence: usize,
     work: crate::vm::DataWork,
     constructed: Vec<AggregateId>,
     frame: Option<frames::FrameId>,
@@ -337,6 +347,7 @@ pub struct Recording {
     initial: Vec<AggregateId>,
     entry: Option<Entry>,
     calls: Vec<Call>,
+    commands: Vec<control::Command>,
     frames: Vec<frames::Frame>,
     outcome_frame: Option<frames::FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
@@ -371,6 +382,7 @@ impl Recording {
                     arena: &self.arena,
                 },
                 location: step.location,
+                parent_attempt: step.parent,
                 opcode: step.opcode,
                 next: step.next,
                 outcome: step.outcome,
@@ -393,6 +405,7 @@ impl Recording {
                 arena: &self.arena,
             },
             location: step.location,
+            parent_attempt: step.parent,
             opcode: step.opcode,
             next: step.next,
             outcome: step.outcome,
@@ -430,6 +443,7 @@ impl Recording {
     /// Iterates retained host calls in execution order.
     pub fn host_calls(&self) -> impl ExactSizeIterator<Item = HostCall<'_>> {
         self.calls.iter().map(|call| HostCall {
+            sequence: call.sequence,
             location: call.location,
             stack: call
                 .frame
@@ -446,6 +460,12 @@ impl Recording {
                 CallOutcome::Failed(error) => HostOutcome::Failed(error),
             },
         })
+    }
+
+    /// Iterates captured embedding commands in admission order, without expanding value graphs.
+    /// Sequence numbers interleave commands, callback returns and host outcomes.
+    pub fn control_commands(&self) -> impl ExactSizeIterator<Item = ControlCommand<'_>> {
+        self.commands.iter().map(|command| command.view(self))
     }
 
     /// Borrows one complete aggregate node without expanding other nodes.
@@ -501,6 +521,7 @@ impl Recording {
             values: self.arena.values.len(),
             aggregates: self.arena.nodes.len(),
             host_calls: self.calls.len(),
+            control_commands: self.commands.len(),
             call_frames: self.frames.len(),
             payload_bytes: self.arena.payload_bytes,
         }
