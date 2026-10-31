@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Return from an exact live activation through `PendingHostCall::return_from`, with the target
+  function's multiple-value and rich result contracts. Root returns commit outputs; callback
+  roots restore their pending host request; ordinary frames return to their guest caller.
+  Foreign/expired targets are recoverable denials. Admitted transfers preserve heap identity
+  and cumulative fuel, contract, aggregate and payload budgets. No protected cleanup is run yet.
+
 - Capture embedding guest-callback commands and actual guest returns with their source,
   ancestry, promoted host staging and shared observation order. Checked replay reexecutes
   callbacks and verifies results, including nested callbacks and rejected admissions.
@@ -69,6 +75,12 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Add `ControlError`, `ValueEvent::ReturnFrom`, `TraceOutcome::Unwound`, and
+  `InstructionOutcome::Unwound`. Migration: handle these variants in exhaustive matches;
+  unwound instructions were abandoned and have no successful writes. Footfall labels scopes
+  as unwound rather than cancelled or trapped. Recording explicitly reports the new
+  `CaptureFault::UnsupportedTransfer` until transfer commands are supported by replay.
 
 - Add `RecordLimits::control_commands`, `RecordStats::control_commands`, `HostCall::sequence`,
   `InstructionStep::parent_attempt`, and structured control-command/return inspection.

@@ -731,6 +731,9 @@ impl TraceSink for Check<'_> {
         let actual = match outcome {
             TraceOutcome::Ok => crate::recording::InstructionOutcome::Completed,
             TraceOutcome::Trap(_) => crate::recording::InstructionOutcome::Trapped,
+            TraceOutcome::Unwound { target } => {
+                crate::recording::InstructionOutcome::Unwound { target }
+            }
             TraceOutcome::Cancelled => {
                 state.boundary = ReplayBoundary::Instruction { index };
                 state.error = Some(state.mismatch(Divergence::Instruction));
@@ -751,6 +754,7 @@ impl TraceSink for Check<'_> {
         }
         let result = (|| -> Result<(), ReplayError> {
             match event {
+                ValueEvent::ReturnFrom { .. } => return Err(state.mismatch(Divergence::Outcome)),
                 ValueEvent::Entry { .. } => {}
                 ValueEvent::HostCall {
                     location,

@@ -351,6 +351,33 @@
 //! order. Checked replay runs those guest bodies again and verifies their results. Optional
 //! instruction histories link callback attempts to the host instruction that remains pending.
 //!
+//! ### Typed non-local returns
+//!
+//! `PendingHostCall::return_from` exits an exact live `ActivationId`, using that function's
+//! declared multiple-value and rich result contracts. Recursive calls have different IDs even
+//! when their code and call sites match. Returning from the root commits the invocation; a
+//! callback root restores its original host request with callback results; an ordinary guest
+//! frame returns to its real caller. Intervening host operations are abandoned without dispatch.
+//!
+//! ```no_run
+//! use execution_tape::{host::Host, value::Value,
+//!     vm::{ControlError, Invocation}};
+//! fn return_from_root<H: Host>(run: &mut Invocation<'_, H>, values: Vec<Value>)
+//!     -> Result<(), ControlError> {
+//!     let target = run.inspect().frames().last().expect("active root").activation;
+//!     run.pending_host_call().expect("AwaitingHost").return_from(&target, values)
+//! }
+//! ```
+//!
+//! Foreign or expired targets return a recoverable `ControlError` before spending guest work;
+//! the host request remains pending. Admitted invalid results or hard limits trap the invocation.
+//! One fuel unit and moved immediate payload ingress are charged; staging is promoted with stable
+//! handles. All work remains cumulative. `ValueEvent::ReturnFrom` retains the real initiating
+//! host source; abandoned instructions/scopes close with `TraceOutcome::Unwound`. No synthetic
+//! `Ret` is executed. This primitive does not yet run protected guest cleanup. Recording reports
+//! `CaptureFault::UnsupportedTransfer` explicitly; callback recordings without exits still replay.
+//! Language condition classes, handler selection and restart policy remain above the core VM.
+//!
 //! ## Owned executable callables
 //!
 //! [`callable::Callable`] retains an exact prepared program and an optional independent closure

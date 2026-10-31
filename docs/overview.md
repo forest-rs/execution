@@ -439,3 +439,17 @@ result. Replay issues the recorded command, executes the guest again, and checks
 actually computes. It does not inject saved callback results. Optional instruction history orders
 attempts by admission and links callback instructions to their outstanding parent host attempt.
 Capture budgets and truncated histories remain independent of the live invocation's budgets.
+
+### Activation-scoped typed exits
+
+An embedding can use a pending host request to `return_from` a live activation selected through
+inspection. Identity belongs to the exact invocation and activation, including recursive calls;
+foreign or expired targets are recoverable denials before guest work is spent. Admitted values
+must satisfy the target function's result contracts. A root exit commits; an ordinary frame
+returns to its caller; a callback root restores its parent host request with result slots.
+All intervening pending host operations are abandoned without dispatch. They and their scopes
+are observed as `Unwound` at the actual initiating source, with no fabricated `Ret` instruction.
+Staging is promoted before admission, one fuel unit and immediate payload ingress are charged,
+and existing hard limits never reset. This first transfer primitive has no protected cleanup
+registration. Its recordings are explicitly incomplete until transfer-command replay is added.
+Condition/restart policy belongs above the VM; hard cancellation still executes no guest code.

@@ -41,7 +41,7 @@ pub use inspection::{
 };
 mod observations;
 mod ownership;
-pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
+pub use invocation::{ControlError, Invocation, InvocationOptions, PendingHostCall, RunStatus};
 use ownership::BorrowedOrOwned;
 #[cfg(test)]
 mod payload_tests;

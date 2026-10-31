@@ -118,6 +118,9 @@ fn step_description(
     use execution_tape::recording::InstructionOutcome;
     match step.outcome {
         InstructionOutcome::Pending => "completion not observed".into(),
+        InstructionOutcome::Unwound { target } => {
+            format!("abandoned by return from activation #{target}")
+        }
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
         InstructionOutcome::Completed => match Opcode::from_byte(step.opcode) {
             Some(Opcode::Call | Opcode::CallIndirect) => {

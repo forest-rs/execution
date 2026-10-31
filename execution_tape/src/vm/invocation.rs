@@ -8,7 +8,9 @@ use crate::callable::{Callable, CallableError};
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
+mod exits;
 mod host_request;
+pub use exits::ControlError;
 pub use host_request::PendingHostCall;
 pub(super) mod callback;
 
