@@ -39,7 +39,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// calls do. Dropping it cancels all waiting operations without executing guest code.
     ///
     /// Callback entry/return and actual guest ancestry are observable. The boundary recorder
-    /// currently marks callback captures explicitly incomplete; checked replay refuses them.
+    /// retains the command and its actual return; checked replay reexecutes the guest callback.
     pub fn call_guest(mut self, callee: Value, args: Vec<Value>) -> Result<(), TrapInfo> {
         self.delivering = true;
         let result = self.invocation.begin_callback(callee, args);

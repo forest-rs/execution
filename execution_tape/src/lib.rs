@@ -347,9 +347,9 @@
 //!
 //! `ValueEvent::CallbackEnter`/`CallbackReturn` and ordinary call scopes describe actual guest
 //! activity. Callback return is distinct from host completion and root publication. Recording
-//! currently reports `CaptureFault::UnsupportedCallback` and refuses checked replay for this
-//! new control path; a replay driver needs the embedding's callback commands as well as host
-//! outcomes. Ordinary recordings retain their existing guarantees.
+//! retains embedding callback commands, promoted staging and actual guest returns in observation
+//! order. Checked replay runs those guest bodies again and verifies their results. Optional
+//! instruction histories link callback attempts to the host instruction that remains pending.
 //!
 //! ## Owned executable callables
 //!

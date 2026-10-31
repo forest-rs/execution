@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Capture embedding guest-callback commands and actual guest returns with their source,
+  ancestry, promoted host staging and shared observation order. Checked replay reexecutes
+  callbacks and verifies results, including nested callbacks and rejected admissions.
+  Optional instruction histories retain parent-attempt links across overlapping callbacks.
+
 - Reenter same-program guest functions/closures through `PendingHostCall::call_guest` while
   retaining the original host operation, guest frames, heap and hard budgets. Nested callbacks
   can wait for more host work; `take_callback_results` retrieves their results before explicit
@@ -65,13 +70,19 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
-- Add `ValueEvent::{CallbackEnter,CallbackReturn}`, `ObjectRootOrigin::CallbackResult` and
-  `CaptureFault::UnsupportedCallback`.
+- Add `RecordLimits::control_commands`, `RecordStats::control_commands`, `HostCall::sequence`,
+  `InstructionStep::parent_attempt`, and structured control-command/return inspection.
+  Migration: initialize the new fields in complete struct literals; handle control replay
+  boundaries/divergences in exhaustive matches. Remove the temporary `UnsupportedCallback`
+  capture fault: complete callback recordings now support checked replay. Instruction histories
+  are ordered by admission; an outstanding host attempt can complete after its callback steps.
+  No version, dependency or tape wire-format change.
+
+- Add `ValueEvent::{CallbackEnter,CallbackReturn}` and `ObjectRootOrigin::CallbackResult`.
   Migration: handle the new enum variants in exhaustive matches. Instruction observers must
   support outstanding parent host attempts across nested guest callback attempts; callback
-  return has no next guest instruction. Callback recordings are explicitly incomplete and
-  refuse checked replay until callback commands are captured. Existing execution/recordings,
-  crate versions and tape wire format are unchanged.
+  return has no next guest instruction. Existing execution/recordings, crate versions and tape
+  wire format are unchanged.
 
 - Add `work` and borrowed `created` metadata to `ValueEvent::HostCall`, and `work`/`constructed`
   to recorded host observations. Migration: include the new fields in explicit event patterns

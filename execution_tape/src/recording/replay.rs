@@ -4,6 +4,7 @@
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, Program};
+use crate::recording::control::Action;
 use crate::recording::{AggregateId, CallOutcome, CaptureFault, End, RecordedValue, Recording};
 use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent};
 use crate::value::{AggHandle, AggType, Closure, FuncId, Value};
@@ -55,6 +56,20 @@ pub enum Divergence {
         /// Observed count, including a refused extra call.
         actual: usize,
     },
+    /// The number of embedding commands differs.
+    ControlCommands {
+        /// Recorded count.
+        expected: usize,
+        /// Observed command admissions.
+        actual: usize,
+    },
+    /// A host outcome, command or guest return occurred out of observation order.
+    ObservationOrder {
+        /// Recorded observation ordinal.
+        expected: usize,
+        /// Next ordinal in this replay.
+        actual: usize,
+    },
     /// The number of argument/result values differs.
     Arity {
         /// Recorded argument/result/field count.
@@ -84,6 +99,16 @@ pub enum ReplayBoundary {
     /// Checking one host invocation in execution order.
     HostCall {
         /// Zero-based ordinal, also indexing [`Recording::host_calls`].
+        index: usize,
+    },
+    /// Checking an embedding command's admission.
+    ControlCommand {
+        /// Zero-based command ordinal.
+        index: usize,
+    },
+    /// Checking a command's actual guest return.
+    ControlReturn {
+        /// Zero-based command ordinal.
         index: usize,
     },
     /// Checking the top-level return candidate before heap commit.
@@ -137,6 +162,10 @@ pub enum ReplayOutcome {
 #[derive(Default)]
 struct State {
     instructions: usize,
+    pending: Vec<usize>,
+    commands: usize,
+    sequence: usize,
+    active_commands: Vec<usize>,
     boundary: ReplayBoundary,
     bindings: BTreeMap<AggregateId, AggHandle>,
     inverse: BTreeMap<u32, AggregateId>,
@@ -347,6 +376,64 @@ impl State {
     }
 }
 
+enum Delivery {
+    CallGuest { callee: Value, args: Vec<Value> },
+    Host(Result<(Vec<Value>, u64), HostError>),
+}
+fn restore_construction(
+    record: &Recording,
+    state: &mut State,
+    request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects>,
+    work: crate::vm::DataWork,
+    constructed: &[AggregateId],
+) -> Result<(), ReplayError> {
+    request
+        .restore_host_work(work)
+        .map_err(|_| state.mismatch(Divergence::Outcome))?;
+    for &id in constructed {
+        let node = record
+            .aggregate(id)
+            .ok_or_else(|| state.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
+        let values = state.materialize(record, node.values, request.aggregates())?;
+        let handle = request
+            .restore_host_node(node.kind, values)
+            .map_err(ReplayError::Aggregate)?;
+        state.bind(id, handle)?;
+    }
+    Ok(())
+}
+fn check_created(
+    record: &Recording,
+    state: &mut State,
+    constructed: &[AggregateId],
+    created: &core::ops::Range<u32>,
+) -> Result<(), ReplayError> {
+    if constructed.len() != (created.end - created.start) as usize {
+        return Err(state.mismatch(Divergence::Outcome));
+    }
+    for (&id, handle) in constructed.iter().zip(created.clone()) {
+        let offset = record
+            .arena
+            .nodes
+            .get(id.0 as usize)
+            .and_then(|node| node.created_offset);
+        if offset != handle.checked_sub(state.initial_count) {
+            return Err(state.mismatch(Divergence::Identity { aggregate: id }));
+        }
+        state.bind(id, AggHandle(handle))?;
+    }
+    Ok(())
+}
+fn check_sequence(state: &State, expected: usize) -> Result<(), ReplayError> {
+    if state.sequence != expected {
+        return Err(state.mismatch(Divergence::ObservationOrder {
+            expected,
+            actual: state.sequence,
+        }));
+    }
+    Ok(())
+}
+
 struct RecordedHost<'a> {
     record: &'a Recording,
     state: Rc<RefCell<State>>,
@@ -355,10 +442,47 @@ impl RecordedHost<'_> {
     fn invoke(
         &mut self,
         request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects>,
-    ) -> Result<Result<(Vec<Value>, u64), HostError>, ReplayError> {
+    ) -> Result<Delivery, ReplayError> {
         let mut state = self.state.borrow_mut();
         if let Some(error) = &state.error {
             return Err(error.clone());
+        }
+        state.location = Some(request.location());
+        if let Some(command) = self.record.commands.get(state.commands)
+            && command.sequence <= state.sequence
+        {
+            state.boundary = ReplayBoundary::ControlCommand {
+                index: state.commands,
+            };
+            check_sequence(&state, command.sequence)?;
+            if command.location != request.location() {
+                return Err(state.mismatch(Divergence::Location {
+                    expected: command.location,
+                    actual: Some(request.location()),
+                }));
+            }
+            if !self.record.frames.is_empty() && command.frame != state.top {
+                return Err(state.mismatch(Divergence::CallStack));
+            }
+            let Action::CallGuest {
+                callee,
+                args,
+                work,
+                constructed,
+                ..
+            } = &command.action;
+            restore_construction(self.record, &mut state, request, *work, constructed)?;
+            let callee = state.materialize_value(
+                self.record,
+                &self.record.arena.values[*callee],
+                request.aggregates(),
+            )?;
+            let args = state.materialize(
+                self.record,
+                self.record.arena.slice(args),
+                request.aggregates(),
+            )?;
+            return Ok(Delivery::CallGuest { callee, args });
         }
         let index = state.calls;
         state.boundary = ReplayBoundary::HostCall { index };
@@ -368,7 +492,8 @@ impl RecordedHost<'_> {
                 actual: index + 1,
             })
         })?;
-        if state.location != Some(call.location) {
+        check_sequence(&state, call.sequence)?;
+        if request.location() != call.location {
             return Err(state.mismatch(Divergence::Location {
                 expected: call.location,
                 actual: state.location,
@@ -390,30 +515,22 @@ impl RecordedHost<'_> {
             request.arguments(),
             request.aggregates(),
         )?;
-        request
-            .restore_host_work(call.work)
-            .map_err(|_| state.mismatch(Divergence::Outcome))?;
-        for &id in &call.constructed {
-            let node = self
-                .record
-                .aggregate(id)
-                .ok_or_else(|| state.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
-            let values = state.materialize(self.record, node.values, request.aggregates())?;
-            let handle = request
-                .restore_host_node(node.kind, values)
-                .map_err(ReplayError::Aggregate)?;
-            state.bind(id, handle)?;
-        }
-        state.calls += 1;
+        restore_construction(
+            self.record,
+            &mut state,
+            request,
+            call.work,
+            &call.constructed,
+        )?;
         match &call.outcome {
-            CallOutcome::Failed(error) => Ok(Err(error.clone())),
+            CallOutcome::Failed(error) => Ok(Delivery::Host(Err(error.clone()))),
             CallOutcome::Returned { values, fuel } => {
                 let values = state.materialize(
                     self.record,
                     self.record.arena.slice(values),
                     request.aggregates(),
                 )?;
-                Ok(Ok((values, *fuel)))
+                Ok(Delivery::Host(Ok((values, *fuel))))
             }
         }
     }
@@ -441,8 +558,9 @@ impl TraceSink for Check<'_> {
     fn wants_registers(&self, location: TraceLocation, phase: crate::trace::RegisterPhase) -> bool {
         let state = self.state.borrow();
         let Some(step) = state
-            .instructions
-            .checked_sub(1)
+            .pending
+            .last()
+            .copied()
             .and_then(|index| self.record.instruction(index))
         else {
             return false;
@@ -459,7 +577,7 @@ impl TraceSink for Check<'_> {
         if state.error.is_some() {
             return;
         }
-        let Some(index) = state.instructions.checked_sub(1) else {
+        let Some(index) = state.pending.last().copied() else {
             return;
         };
         let Some(step) = self.record.instruction(index) else {
@@ -560,7 +678,7 @@ impl TraceSink for Check<'_> {
         let mut state = self.state.borrow_mut();
         state.location = Some(TraceLocation { func, pc });
         let index = state.instructions;
-        state.instructions += 1;
+        state.instructions = state.instructions.saturating_add(1);
         if state.error.is_some() {
             return;
         }
@@ -570,12 +688,21 @@ impl TraceSink for Check<'_> {
                 if step.location != (TraceLocation { func, pc })
                     || step.opcode != opcode
                     || step.frame.is_some_and(|frame| Some(frame) != state.top)
+                    || step.parent
+                        != state
+                            .pending
+                            .last()
+                            .copied()
+                            .filter(|&parent| parent < history.steps.len())
                 {
                     state.error = Some(state.mismatch(Divergence::Instruction));
                 }
             } else if history.status == crate::recording::InstructionStatus::Complete {
                 state.error = Some(state.mismatch(Divergence::Instruction));
             }
+        }
+        if self.record.history.is_some() {
+            state.pending.push(index);
         }
     }
 
@@ -590,7 +717,7 @@ impl TraceSink for Check<'_> {
         if state.error.is_some() {
             return;
         }
-        let Some(index) = state.instructions.checked_sub(1) else {
+        let Some(index) = state.pending.pop() else {
             return;
         };
         let Some(step) = self
@@ -618,31 +745,170 @@ impl TraceSink for Check<'_> {
         }
     }
     fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
-        if let ValueEvent::ReturnCandidate {
-            location,
-            values,
-            aggregates,
-        } = event
-        {
-            let mut state = self.state.borrow_mut();
-            if state.error.is_some() {
-                return;
-            }
-            state.candidate = true;
-            state.final_top = state.top;
-            state.boundary = ReplayBoundary::ReturnCandidate;
-            let result = match &self.record.candidate {
-                Some((expected, roots)) if *expected == location => state.matches(
-                    self.record,
-                    self.record.arena.slice(roots),
-                    values.iter().map(ValueRef::from_value),
+        let mut state = self.state.borrow_mut();
+        if state.error.is_some() {
+            return;
+        }
+        let result = (|| -> Result<(), ReplayError> {
+            match event {
+                ValueEvent::Entry { .. } => {}
+                ValueEvent::HostCall {
+                    location,
+                    host_sig,
+                    args,
+                    outcome: _,
+                    work,
+                    created,
                     aggregates,
-                ),
-                _ => Err(state.mismatch(Divergence::Outcome)),
-            };
-            if let Err(error) = result {
-                state.error = Some(error);
+                } => {
+                    let index = state.calls;
+                    state.boundary = ReplayBoundary::HostCall { index };
+                    state.location = Some(location);
+                    let call = self.record.calls.get(index).ok_or_else(|| {
+                        state.mismatch(Divergence::HostCalls {
+                            expected: self.record.calls.len(),
+                            actual: index + 1,
+                        })
+                    })?;
+                    check_sequence(&state, call.sequence)?;
+                    if call.location != location {
+                        return Err(state.mismatch(Divergence::Location {
+                            expected: call.location,
+                            actual: Some(location),
+                        }));
+                    }
+                    if call.import != host_sig {
+                        return Err(state.mismatch(Divergence::Import {
+                            expected: call.import,
+                            actual: host_sig,
+                        }));
+                    }
+                    if call.work != work {
+                        return Err(state.mismatch(Divergence::Outcome));
+                    }
+                    check_created(self.record, &mut state, &call.constructed, created)?;
+                    state.matches(
+                        self.record,
+                        self.record.arena.slice(&call.args),
+                        args.iter().copied(),
+                        aggregates,
+                    )?;
+                    state.calls += 1;
+                    state.sequence += 1;
+                }
+                ValueEvent::CallbackEnter {
+                    location,
+                    callee,
+                    args,
+                    work,
+                    created,
+                    aggregates,
+                } => {
+                    let index = state.commands;
+                    state.boundary = ReplayBoundary::ControlCommand { index };
+                    state.location = Some(location);
+                    let command = self.record.commands.get(index).ok_or_else(|| {
+                        state.mismatch(Divergence::ControlCommands {
+                            expected: self.record.commands.len(),
+                            actual: index + 1,
+                        })
+                    })?;
+                    check_sequence(&state, command.sequence)?;
+                    if command.location != location {
+                        return Err(state.mismatch(Divergence::Location {
+                            expected: command.location,
+                            actual: Some(location),
+                        }));
+                    }
+                    if !self.record.frames.is_empty() && command.frame != state.top {
+                        return Err(state.mismatch(Divergence::CallStack));
+                    }
+                    let Action::CallGuest {
+                        callee: expected,
+                        args: expected_args,
+                        work: expected_work,
+                        constructed,
+                        ..
+                    } = &command.action;
+                    if *expected_work != work {
+                        return Err(state.mismatch(Divergence::Outcome));
+                    }
+                    check_created(self.record, &mut state, constructed, created)?;
+                    state.matches(
+                        self.record,
+                        core::slice::from_ref(&self.record.arena.values[*expected]),
+                        core::iter::once(ValueRef::from_value(callee)),
+                        aggregates,
+                    )?;
+                    state.matches(
+                        self.record,
+                        self.record.arena.slice(expected_args),
+                        args.iter().map(ValueRef::from_value),
+                        aggregates,
+                    )?;
+                    state.active_commands.push(index);
+                    state.commands += 1;
+                    state.sequence += 1;
+                }
+                ValueEvent::CallbackReturn {
+                    location,
+                    caller,
+                    values,
+                    aggregates,
+                } => {
+                    let index = state
+                        .active_commands
+                        .pop()
+                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
+                    state.boundary = ReplayBoundary::ControlReturn { index };
+                    state.location = Some(location);
+                    let command = &self.record.commands[index];
+                    let Action::CallGuest { returned, .. } = &command.action;
+                    let returned = returned
+                        .as_ref()
+                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
+                    check_sequence(&state, returned.sequence)?;
+                    if caller != command.location || location != returned.location {
+                        return Err(state.mismatch(Divergence::Location {
+                            expected: returned.location,
+                            actual: Some(location),
+                        }));
+                    }
+                    if !self.record.frames.is_empty() && returned.frame != state.top {
+                        return Err(state.mismatch(Divergence::CallStack));
+                    }
+                    state.matches(
+                        self.record,
+                        self.record.arena.slice(&returned.values),
+                        values.iter().map(ValueRef::from_value),
+                        aggregates,
+                    )?;
+                    state.sequence += 1;
+                }
+                ValueEvent::ReturnCandidate {
+                    location,
+                    values,
+                    aggregates,
+                } => {
+                    state.candidate = true;
+                    state.final_top = state.top;
+                    state.boundary = ReplayBoundary::ReturnCandidate;
+                    state.location = Some(location);
+                    match &self.record.candidate {
+                        Some((expected, roots)) if *expected == location => state.matches(
+                            self.record,
+                            self.record.arena.slice(roots),
+                            values.iter().map(ValueRef::from_value),
+                            aggregates,
+                        )?,
+                        _ => return Err(state.mismatch(Divergence::Outcome)),
+                    }
+                }
             }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            state.error = Some(error);
         }
     }
 }
@@ -724,6 +990,15 @@ impl Recording {
                             .pending_host_call()
                             .expect("yielded replay request");
                         let outcome = recorded_host.invoke(&mut request)?;
+                        let outcome = match outcome {
+                            Delivery::CallGuest { callee, args } => {
+                                if let Err(error) = request.call_guest(callee, args) {
+                                    break Err(error);
+                                }
+                                continue;
+                            }
+                            Delivery::Host(outcome) => outcome,
+                        };
                         let (mut values, outcome) = match outcome {
                             Ok((values, fuel)) => (values, Ok(fuel)),
                             Err(error) => (Vec::new(), Err(error)),
@@ -752,6 +1027,26 @@ impl Recording {
                 expected: self.calls.len(),
                 actual: state.calls,
             }));
+        }
+        if state.commands != self.commands.len() {
+            return Err(state.mismatch(Divergence::ControlCommands {
+                expected: self.commands.len(),
+                actual: state.commands,
+            }));
+        }
+        if !state.pending.is_empty()
+            || state.active_commands.iter().any(|&index| {
+                matches!(
+                    &self.commands[index].action,
+                    Action::CallGuest {
+                        returned: Some(_),
+                        ..
+                    }
+                )
+            })
+            || (matches!(self.end, Some(End::Returned)) && !state.active_commands.is_empty())
+        {
+            return Err(state.mismatch(Divergence::Outcome));
         }
         if state.frames != self.frames.len()
             || (!self.frames.is_empty() && self.outcome_frame != state.final_top)
@@ -990,6 +1285,129 @@ mod tests {
         recorder.finish()
     }
 
+    fn callback_recording() -> Recording {
+        use crate::trace::TraceSink;
+        use crate::vm::{InvocationOptions, RunStatus};
+        let mut b = ProgramBuilder::new();
+        let sig = FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        };
+        let root = b.declare_function(sig.clone()).unwrap();
+        let handler = b.declare_function(sig).unwrap();
+        let import = b.host_sig_for(
+            "signal",
+            HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64],
+            },
+        );
+        let mut a = b.function_asm(root).unwrap();
+        let result = a.alloc_register(ValueType::I64);
+        a.host_call_sig_id(0, import, 0, &[1], &[result])
+            .ret(0, &[result]);
+        b.define_function(root, a).unwrap();
+        let mut a = b.function_asm(handler).unwrap();
+        let one = a.alloc_register(ValueType::I64);
+        let result = a.alloc_register(ValueType::I64);
+        a.const_i64(one, 1)
+            .i64_add(result, 1, one)
+            .ret(0, &[result]);
+        b.define_function(handler, a).unwrap();
+        let program = Arc::new(b.build_verified().unwrap());
+        let recorder = Rc::new(RefCell::new(
+            Recorder::new(program.clone(), RecordLimits::default())
+                .with_instructions(crate::recording::InstructionCapture::default()),
+        ));
+        let mut vm = Vm::new(Echo, Limits::default());
+        let args = [Value::I64(41)];
+        let mut run = vm
+            .start(
+                &program,
+                root,
+                &args,
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace_owned(recorder.mask(), recorder.clone()),
+            )
+            .unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        run.pending_host_call()
+            .unwrap()
+            .call_guest(Value::Func(handler), args.to_vec())
+            .unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        let mut request = run.pending_host_call().unwrap();
+        let mut results = request.take_callback_results().unwrap();
+        request.complete(&mut results, Ok(0)).unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
+        drop(run);
+        let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+        record.replay().unwrap();
+        record
+    }
+
+    #[test]
+    fn corrupted_callback_return_is_checked_against_reexecuted_guest() {
+        let mut record = callback_recording();
+        let Action::CallGuest {
+            returned: Some(returned),
+            ..
+        } = &record.commands[0].action
+        else {
+            panic!("return")
+        };
+        record.arena.values[returned.values.start] = RecordedValue::I64(99);
+        assert!(matches!(
+            record.replay(),
+            Err(ReplayError::Diverged {
+                boundary: ReplayBoundary::ControlReturn { index: 0 },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn corrupted_control_order_sites_targets_arguments_and_parent_links_are_rejected() {
+        for change in 0..8 {
+            let mut record = callback_recording();
+            match change {
+                0 => record.commands[0].sequence += 1,
+                1 => record.commands[0].location.pc += 1,
+                2 => {
+                    let Action::CallGuest { callee, .. } = record.commands[0].action;
+                    record.arena.values[callee] = RecordedValue::Func(FuncId(99));
+                }
+                3 => {
+                    let Action::CallGuest { ref args, .. } = record.commands[0].action;
+                    record.arena.values[args.start] = RecordedValue::I64(99);
+                }
+                4 => {
+                    let Action::CallGuest {
+                        ref mut returned, ..
+                    } = record.commands[0].action;
+                    *returned = None;
+                }
+                5 => record.calls[0].sequence += 1,
+                6 => {
+                    let history = record.history.as_mut().unwrap();
+                    let child = history
+                        .steps
+                        .iter_mut()
+                        .find(|step| step.parent.is_some())
+                        .unwrap();
+                    child.parent = None;
+                }
+                7 => record.commands.clear(),
+                _ => unreachable!(),
+            }
+            assert!(
+                record.replay().is_err(),
+                "changed control evidence {change} must diverge"
+            );
+        }
+    }
+
     fn reason(record: &Recording) -> Divergence {
         let Err(ReplayError::Diverged {
             location: Some(_),
@@ -1129,6 +1547,7 @@ mod tests {
         let mut changed = record(true, false);
         let call = changed.calls.pop().unwrap();
         changed.calls.push(Call {
+            sequence: call.sequence,
             work: call.work,
             constructed: call.constructed.clone(),
             frame: call.frame,

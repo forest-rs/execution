@@ -8,7 +8,9 @@ use execution_tape::{
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::{HostTypeId, Program, ValueType},
-    recording::{CaptureFault, RecordLimits, Recorder, ReplayError},
+    recording::{
+        ControlAction, InstructionCapture, InstructionStatus, RecordLimits, Recorder, ReplayOutcome,
+    },
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{AggHandle, Closure, FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
@@ -572,12 +574,12 @@ fn cancellation_and_traps_close_nested_guest_host_and_instruction_scopes() {
     }
 }
 #[test]
-fn callback_observations_do_not_claim_a_replayable_capture_without_a_driver_transcript() {
+fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
     let f = fixture();
-    let recorder = Rc::new(RefCell::new(Recorder::new(
-        f.program.clone(),
-        RecordLimits::default(),
-    )));
+    let recorder = Rc::new(RefCell::new(
+        Recorder::new(f.program.clone(), RecordLimits::default())
+            .with_instructions(InstructionCapture::default()),
+    ));
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(1)];
     let mut run = vm
@@ -603,11 +605,30 @@ fn callback_observations_do_not_claim_a_replayable_capture_without_a_driver_tran
         .expect("observer retired")
         .into_inner()
         .finish();
-    assert_eq!(record.status(), Err(&CaptureFault::UnsupportedCallback));
-    assert!(matches!(
-        record.replay(),
-        Err(ReplayError::Incomplete(CaptureFault::UnsupportedCallback))
-    ));
+    assert_eq!(record.status(), Ok(()));
+    assert_eq!(
+        record.instruction_status(),
+        Some(InstructionStatus::Complete)
+    );
+    assert!(
+        record
+            .instructions()
+            .any(|step| step.parent_attempt.is_some()),
+        "callback attempts must name their outstanding parent host attempt"
+    );
+    let command = record.control_commands().next().unwrap();
+    let ControlAction::CallGuest {
+        returned: Some(returned),
+        ..
+    } = command.action
+    else {
+        panic!("captured guest return");
+    };
+    assert_eq!(returned.location.func, f.plus_one);
+    let ReplayOutcome::Returned(snapshot) = record.replay().unwrap() else {
+        panic!("successful checked callback replay");
+    };
+    assert_eq!(snapshot.values(), [Value::I64(2)]);
 }
 #[test]
 #[cfg(panic = "unwind")]

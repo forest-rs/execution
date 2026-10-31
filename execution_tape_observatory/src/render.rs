@@ -40,6 +40,8 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 ReplayBoundary::Instruction { index } => format!("instruction #{index}"),
                 ReplayBoundary::InitialState => "initial state".into(),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
+                ReplayBoundary::ControlCommand { index } => format!("control command #{index}"),
+                ReplayBoundary::ControlReturn { index } => format!("callback return #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
                 ReplayBoundary::Completion => "completion".into(),
             };
@@ -70,6 +72,12 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 }
                 Divergence::UnresolvedAggregate { aggregate } => {
                     format!("unresolved @{}", aggregate.get())
+                }
+                Divergence::ControlCommands { expected, actual } => {
+                    format!("control commands: expected {expected}, observed {actual}")
+                }
+                Divergence::ObservationOrder { expected, actual } => {
+                    format!("observation order: expected {expected}, observed {actual}")
                 }
                 Divergence::HostCalls { expected, actual } => {
                     format!("calls expected {expected}, got {actual}")
