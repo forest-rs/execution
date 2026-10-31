@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Declare closure capture layouts with `ProgramBuilder::declare_closure`. One declaration derives
+  the exact tuple environment, hidden body argument and caller-visible indirect signature;
+  `ClosureLayout` loads captures and constructs matching closure values with declared register kinds.
+  Layouts are authoring metadata and are not retained by prepared execution.
+  Migration: handle `BuildError::Closure` in exhaustive matches. Existing raw closure assembly remains supported.
+
 - Author calls through `ProgramBuilder::emit_call`, deriving result register kinds from one
   declared direct, host or indirect signature. `ProgramBuilder::argument` resolves declared
   argument registers. Rejected authoring requests leave instruction bytes and registers unchanged;

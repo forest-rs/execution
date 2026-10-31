@@ -26,6 +26,11 @@ verified four-integer environment. Body and restart functions return `(i64, bool
 functions return `(accepted: bool, value: i64, flag: bool)`; cleanup functions return no values.
 The acceptance flag is separate from the user's secondary result.
 
+The frontend uses `ProgramBuilder::declare_closure` to describe the captured context and exposed
+signature once. `load_captures` gives the body meaningful local names, `argument` excludes the
+hidden environment, and `instantiate` emits the matching closure construction. These helpers
+generate ordinary tape instructions; the language runtime still supplies handler and restart policy.
+
 `recovery` explicitly signals a `DivisionByZero` condition through the ordinary calls
 `compute` and `divide`; it does not execute a division instruction. Its signal site is:
 
