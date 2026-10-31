@@ -41,6 +41,10 @@ between samples. No UI drawing, recording or application object-graph traversal 
 For source-linked disassembly of a language-layer handler/restart protocol, see
 [Conditions above the VM](conditions.md). These are development examples, not performance results.
 
+[Blocks, lexical homes and shared captures](blocks.md) follows a Smalltalk-style story through
+the builder and runtime. Compare a block's ordinary return with `^` returning from its lexical
+home, inspect nested `ensure:` cleanup, and diagnose an escaped return after that home has ended.
+
 On macOS arm64, Rust 1.99 release builds, 2026-10-28, a repeat with 30 samples, 1 s warmup and
 3 s measurement gave these point estimates:
 
