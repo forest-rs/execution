@@ -44,17 +44,26 @@ struct Author {
 }
 impl Author {
     fn at(&self, body: &mut Asm, method: &str, expression: &str) {
+        let prefix = format!("\n{method}");
         let start = self
             .source
-            .find(&format!("\n{method}\n"))
-            .expect("authored method")
-            + 1;
+            .match_indices(&prefix)
+            .map(|(offset, _)| offset + 1)
+            .find(|start| self.source[*start..].lines().next() == Some(method))
+            .unwrap_or_else(|| panic!("authored method {method:?} not found"));
+        // Git checkouts can use either newline style. Keep the snapshot bytes unchanged;
+        // only method-boundary recognition accounts for both LF and CRLF separators.
         let method_end = self.source[start..]
             .find("\n\n")
+            .into_iter()
+            .chain(self.source[start..].find("\r\n\r\n"))
+            .min()
             .map_or(self.source.len(), |end| start + end);
         let offset = self.source[start..method_end]
             .find(expression)
-            .expect("authored expression");
+            .unwrap_or_else(|| {
+                panic!("authored expression {expression:?} not found in {method:?}")
+            });
         let range: Range<usize> = start + offset..start + offset + expression.len();
         body.source(SourceId(0), range);
     }
@@ -147,10 +156,14 @@ impl Author {
 }
 
 pub(super) fn compile(non_local: bool) -> Result<Fixture> {
+    compile_story(STORY, non_local)
+}
+
+fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     let source = if non_local {
-        STORY.to_string()
+        story.to_string()
     } else {
-        STORY.replacen("[ ^ counter value ]", "[ counter value ]", 1)
+        story.replacen("[ ^ counter value ]", "[ counter value ]", 1)
     };
     let mut author = Author {
         program: ProgramBuilder::new(),
@@ -397,4 +410,57 @@ pub(super) fn compile(non_local: bool) -> Result<Fixture> {
         entry,
         sources,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{Runtime, Status, decode_outputs};
+    use execution_tape::{recording::ReplayOutcome, trace::TraceLocation};
+
+    #[test]
+    fn source_snapshots_preserve_lf_and_crlf_while_both_return_modes_execute_and_replay() {
+        let lf = STORY.replace("\r\n", "\n");
+        for story in [lf.clone(), lf.replace('\n', "\r\n")] {
+            for non_local in [false, true] {
+                let fixture = compile_story(&story, non_local).unwrap();
+                let sources = fixture.sources.bind(fixture.program.program()).unwrap();
+                let first = sources
+                    .lookup(TraceLocation {
+                        func: fixture.entry,
+                        pc: 0,
+                    })
+                    .unwrap();
+                let expected = if non_local {
+                    story.clone()
+                } else {
+                    story.replacen("[ ^ counter value ]", "[ counter value ]", 1)
+                };
+                assert_eq!(
+                    first.document().text,
+                    expected,
+                    "retain exact authored bytes"
+                );
+                let mut runtime = Runtime::new(&fixture, Default::default()).unwrap();
+                loop {
+                    match runtime.poll(64).unwrap() {
+                        Status::Running => {}
+                        Status::Waiting => runtime.finish_native_wait().unwrap(),
+                        Status::CannotReturn(_) => runtime.supply_return_fallback(-1).unwrap(),
+                        Status::Complete => break,
+                    }
+                }
+                assert_eq!(runtime.outputs().unwrap(), [41, 42, 42, -1]);
+                let session = runtime.into_session();
+                assert_eq!(session.after_ensure, !non_local);
+                let ReplayOutcome::Returned(replayed) = session.recording.replay().unwrap() else {
+                    panic!("returned replay");
+                };
+                assert_eq!(
+                    decode_outputs(replayed.values(), replayed.aggregates()).unwrap(),
+                    [41, 42, 42, -1]
+                );
+            }
+        }
+    }
 }
