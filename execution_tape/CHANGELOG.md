@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
+  contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
+  provides checked snapshot differences and sums across code domains. This is accounting, not
+  a shared heap or allocation limit. Migration: no caller changes are required.
+
 - Attribute emitted instructions directly with `Asm::source` and collect exact sidecar mappings
   through `source_mappings`. `clear_source` preserves explicit gaps. Source attribution is optional
   authoring state; bytecode, ordinary verification and execution retain no source recorder.

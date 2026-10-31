@@ -30,6 +30,11 @@ fn lexical_exit_keeps_original_code_and_cleanup_after_publication() {
     finish(&mut task, 1);
     assert_eq!(task.answer, Some(42));
     assert_eq!(task.revision(), 1);
+    let work = task.work().unwrap();
+    assert_eq!(work.fuel, 1_000 - task.remaining_fuel);
+    assert!(work.host_calls > 5);
+    assert!(work.contract > 0);
+    assert!(work.data.aggregate > 0);
     let actions: Vec<_> = task
         .events
         .iter()
