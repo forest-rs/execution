@@ -852,3 +852,95 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
     assert_eq!(view.location().unwrap().func, root);
     assert!(text(&mut view, 160, 50).contains("took true arm · r1 = true"));
 }
+
+#[test]
+fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
+    use execution_tape::recording::InstructionCapture;
+    use execution_tape::vm::{InvocationOptions, RunStatus};
+    use std::{cell::RefCell, rc::Rc};
+    let mut b = ProgramBuilder::new();
+    let sig = FunctionSig {
+        arg_types: vec![ValueType::I64],
+        ret_types: vec![ValueType::I64],
+    };
+    let root = b.declare_function(sig.clone()).unwrap();
+    let handler = b.declare_function(sig).unwrap();
+    let import = b.host_sig_for(
+        "signal",
+        HostSig {
+            args: vec![ValueType::I64],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let mut a = b.function_asm(root).unwrap();
+    let result = a.alloc_register(ValueType::I64);
+    a.host_call_sig_id(0, import, 0, &[1], &[result])
+        .ret(0, &[result]);
+    b.define_function(root, a).unwrap();
+    let mut a = b.function_asm(handler).unwrap();
+    a.ret(0, &[1]);
+    b.define_function(handler, a).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+    let recorder = Rc::new(RefCell::new(
+        Recorder::new(program.clone(), RecordLimits::default())
+            .with_instructions(InstructionCapture::default()),
+    ));
+    let mut vm = Vm::new(
+        Echo {
+            effects: Arc::new(AtomicUsize::new(0)),
+            error: None,
+        },
+        Limits::default(),
+    );
+    let args = [Value::I64(42)];
+    let mut run = vm
+        .start(
+            &program,
+            root,
+            &args,
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace_owned(recorder.mask(), recorder.clone()),
+        )
+        .unwrap();
+    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    run.pending_host_call()
+        .unwrap()
+        .call_guest(Value::Func(handler), args.to_vec())
+        .unwrap();
+    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    let mut request = run.pending_host_call().unwrap();
+    let mut returned = request.take_callback_results().unwrap();
+    request.complete(&mut returned, Ok(0)).unwrap();
+    assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
+    drop(run);
+    let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
+    let mut view = View::new(&record);
+    assert_eq!(view.selected, 1);
+    assert_eq!(view.location().unwrap().func, root);
+    let screen = text(&mut view, 180, 42);
+    assert!(screen.contains("CALLBACK #0 INPUTS"), "{screen}");
+    assert!(screen.contains("42"));
+    press(&mut view, KeyCode::Down);
+    assert_eq!(view.location().unwrap().func, handler);
+    assert_eq!(view.stack().unwrap().len(), 2);
+    let screen = text(&mut view, 180, 42);
+    assert!(screen.contains("CALLBACK #0 RESULT"), "{screen}");
+    assert!(
+        screen.contains("original host request remains pending"),
+        "{screen}"
+    );
+    press(&mut view, KeyCode::Down);
+    assert_eq!(view.location().unwrap().func, root);
+    assert!(text(&mut view, 180, 42).contains("signal"));
+    press(&mut view, KeyCode::Char('i'));
+    press(&mut view, KeyCode::Down);
+    let screen = text(&mut view, 180, 42);
+    assert!(
+        screen.contains("callback returned to embedding"),
+        "{screen}"
+    );
+    assert!(screen.contains("parent host attempt #0"), "{screen}");
+    press(&mut view, KeyCode::Char('r'));
+    assert!(text(&mut view, 180, 42).contains("MATCHED"));
+}

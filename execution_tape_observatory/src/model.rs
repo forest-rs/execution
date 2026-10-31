@@ -4,7 +4,8 @@
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
 use execution_tape::recording::{
-    AggregateId, CallStack, HostCall, HostOutcome, Outcome, RecordedValue, Recording, ReplayOutcome,
+    AggregateId, CallStack, ControlAction, ControlCommand, GuestReturn, HostCall, HostOutcome,
+    Outcome, RecordedValue, Recording, ReplayOutcome,
 };
 use execution_tape::trace::TraceLocation;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -16,9 +17,18 @@ pub(super) enum Focus {
     Stack,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Boundary {
+    Host(usize),
+    Callback(usize),
+    CallbackReturn(usize),
+}
+
 pub(super) struct View<'a> {
     pub(super) record: &'a Recording,
     pub(super) calls: Vec<HostCall<'a>>,
+    pub(super) commands: Vec<ControlCommand<'a>>,
+    pub(super) boundaries: Vec<Boundary>,
     pub(super) selected: usize,
     pub(super) instruction: Option<usize>,
     pub(super) value_selected: usize,
@@ -51,9 +61,26 @@ impl<'a> View<'a> {
         sources: Option<execution_tape::source::BoundSources<'a>>,
         instructions: bool,
     ) -> Self {
+        let calls: Vec<_> = record.host_calls().collect();
+        let commands: Vec<_> = record.control_commands().collect();
+        let mut ordered: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, call)| (call.sequence, Boundary::Host(i)))
+            .collect();
+        for (i, command) in commands.iter().enumerate() {
+            ordered.push((command.sequence, Boundary::Callback(i)));
+            let ControlAction::CallGuest { returned, .. } = &command.action;
+            if let Some(returned) = returned {
+                ordered.push((returned.sequence, Boundary::CallbackReturn(i)));
+            }
+        }
+        ordered.sort_by_key(|(sequence, _)| *sequence);
         let mut view = Self {
             record,
-            calls: record.host_calls().collect(),
+            calls,
+            commands,
+            boundaries: ordered.into_iter().map(|(_, boundary)| boundary).collect(),
             selected: 0,
             instruction: (instructions && record.instruction_status().is_some()).then_some(0),
             value_selected: 0,
@@ -74,8 +101,20 @@ impl<'a> View<'a> {
             fact_function: None,
             page_rows: 10,
         };
-        view.select(if view.calls.is_empty() { 0 } else { 1 });
+        view.select(if view.boundaries.is_empty() { 0 } else { 1 });
         view
+    }
+
+    pub(super) fn boundary(&self, index: usize) -> Option<Boundary> {
+        index
+            .checked_sub(1)
+            .and_then(|i| self.boundaries.get(i))
+            .copied()
+    }
+
+    pub(super) fn callback_return(&self, index: usize) -> Option<&GuestReturn<'a>> {
+        let ControlAction::CallGuest { returned, .. } = &self.commands[index].action;
+        returned.as_ref()
     }
 
     pub(super) fn stack(&self) -> Option<CallStack<'a>> {
@@ -84,8 +123,14 @@ impl<'a> View<'a> {
         }
         if self.selected == 0 {
             None
-        } else if let Some(call) = self.calls.get(self.selected - 1) {
-            call.stack.clone()
+        } else if let Some(boundary) = self.boundary(self.selected) {
+            match boundary {
+                Boundary::Host(i) => self.calls[i].stack.clone(),
+                Boundary::Callback(i) => self.commands[i].stack.clone(),
+                Boundary::CallbackReturn(i) => {
+                    self.callback_return(i).and_then(|r| r.stack.clone())
+                }
+            }
         } else {
             self.record.outcome_stack()
         }
@@ -107,15 +152,19 @@ impl<'a> View<'a> {
                 pc: 0,
             });
         }
-        if let Some(call) = self.calls.get(self.selected - 1) {
-            return Some(call.location);
+        if let Some(boundary) = self.boundary(self.selected) {
+            return match boundary {
+                Boundary::Host(i) => Some(self.calls[i].location),
+                Boundary::Callback(i) => Some(self.commands[i].location),
+                Boundary::CallbackReturn(i) => self.callback_return(i).map(|r| r.location),
+            };
         }
         self.record.outcome_location()
     }
 
     pub(super) fn select(&mut self, selected: usize) {
         let previous = self.location();
-        self.selected = selected.min(self.calls.len() + 1);
+        self.selected = selected.min(self.boundaries.len() + 1);
         self.path.clear();
         self.value_selected = 0;
         self.frame_selected = 0;
@@ -269,12 +318,26 @@ impl<'a> View<'a> {
                     self.record.invocation().map_or(&[], |entry| entry.args),
                     &[],
                 )
-            } else if let Some(call) = self.calls.get(self.selected - 1) {
-                let returns = match call.outcome {
-                    HostOutcome::Returned { values, .. } => values,
-                    HostOutcome::Failed(_) => &[],
-                };
-                ("arg", call.args, returns)
+            } else if let Some(boundary) = self.boundary(self.selected) {
+                match boundary {
+                    Boundary::Host(i) => {
+                        let call = &self.calls[i];
+                        let returns = match call.outcome {
+                            HostOutcome::Returned { values, .. } => values,
+                            HostOutcome::Failed(_) => &[],
+                        };
+                        ("arg", call.args, returns)
+                    }
+                    Boundary::Callback(i) => {
+                        let ControlAction::CallGuest { args, .. } = &self.commands[i].action;
+                        ("arg", args, &[])
+                    }
+                    Boundary::CallbackReturn(i) => (
+                        "ret",
+                        self.callback_return(i).map_or(&[], |r| r.values),
+                        &[],
+                    ),
+                }
             } else {
                 (
                     "ret",

@@ -5,7 +5,7 @@ use super::describe::host_error;
 pub(super) use super::describe::preview;
 use super::{
     describe,
-    model::{Focus, View},
+    model::{Boundary, Focus, View},
 };
 use super::{palette::*, syntax};
 use execution_tape::recording::{
@@ -40,9 +40,11 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 ReplayBoundary::Instruction { index } => format!("instruction #{index}"),
                 ReplayBoundary::InitialState => "initial state".into(),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
-                ReplayBoundary::ControlCommand { index } => format!("control command #{index}"),
-                ReplayBoundary::ControlReturn { index } => format!("callback return #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
+                ReplayBoundary::ControlCommand { index } => format!("control command {index}"),
+                ReplayBoundary::ControlReturn { index } => {
+                    format!("guest return for command {index}")
+                }
                 ReplayBoundary::Completion => "completion".into(),
             };
             let location =
@@ -73,12 +75,6 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 Divergence::UnresolvedAggregate { aggregate } => {
                     format!("unresolved @{}", aggregate.get())
                 }
-                Divergence::ControlCommands { expected, actual } => {
-                    format!("control commands: expected {expected}, observed {actual}")
-                }
-                Divergence::ObservationOrder { expected, actual } => {
-                    format!("observation order: expected {expected}, observed {actual}")
-                }
                 Divergence::HostCalls { expected, actual } => {
                     format!("calls expected {expected}, got {actual}")
                 }
@@ -87,6 +83,12 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 }
                 Divergence::Outcome => "outcome mismatch".into(),
                 Divergence::CallStack => "guest call stack mismatch".into(),
+                Divergence::ControlCommands { expected, actual } => {
+                    format!("control command count: expected {expected}, observed {actual}")
+                }
+                Divergence::ObservationOrder { expected, actual } => {
+                    format!("observation order: expected {expected}, observed {actual}")
+                }
                 Divergence::Instruction => "instruction path mismatch".into(),
             };
             format!("FAILED · {boundary}{location} · {reason}")
@@ -131,6 +133,8 @@ fn step_description(
             }
             Some(Opcode::Ret) => if step.next.is_some() {
                 "returned to caller"
+            } else if step.parent_attempt.is_some() {
+                "callback returned to embedding; original host request still pending"
             } else {
                 "root return"
             }
@@ -191,8 +195,16 @@ fn title(view: &View<'_>, index: usize) -> String {
             },
         );
     }
-    if index <= view.calls.len() {
-        return format!("#{:04}  {}", index - 1, import_name(view, index - 1));
+    if let Some(boundary) = view.boundary(index) {
+        return match boundary {
+            Boundary::Host(i) => format!("#{:04}  {}", i, import_name(view, i)),
+            Boundary::Callback(i) => {
+                let execution_tape::recording::ControlAction::CallGuest { callee, .. } =
+                    &view.commands[i].action;
+                format!("Callback #{i} → {}", describe::value(view.record, callee))
+            }
+            Boundary::CallbackReturn(i) => format!("Callback #{i} returned → embedding"),
+        };
     }
     match view.record.outcome() {
         Some(Outcome::Returned(values)) => {
@@ -300,8 +312,13 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         )),
         Line::styled(
             format!(
-                " Events: start → {} host calls → {}. i: history {}",
+                " Events: start → {} host calls{} → {}. i: history {}",
                 view.calls.len(),
+                if view.commands.is_empty() {
+                    String::new()
+                } else {
+                    format!(" / {} callbacks", view.commands.len())
+                },
                 match view.record.outcome() {
                     Some(Outcome::Trapped(_)) => "trap",
                     Some(Outcome::Returned(_)) => "result",
@@ -334,11 +351,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     let value_count = view.value_count();
     let value_rows = if view.instruction.is_none()
         && view.path.is_empty()
-        && let Some(call) = view
-            .selected
-            .checked_sub(1)
-            .and_then(|index| view.calls.get(index))
+        && let Some(Boundary::Host(index)) = view.boundary(view.selected)
     {
+        let call = &view.calls[index];
         let returns = match call.outcome {
             HostOutcome::Returned { values, .. } => values.len(),
             HostOutcome::Failed(_) => 0,
@@ -373,8 +388,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             || "No attempts retained; check instruction history status.".into(),
             |step| {
                 format!(
-                    "Attempt #{index}: {}\nActual successor: {} · history {}",
+                    "Attempt #{index}: {}{}\nActual successor: {} · history {}",
                     step_description(view, &step),
+                    step.parent_attempt
+                        .map_or_else(String::new, |parent| format!(
+                            " · parent host attempt #{parent}"
+                        )),
                     step.next.map_or_else(
                         || "none".into(),
                         |loc| format!(
@@ -387,12 +406,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 )
             },
         )
-    } else if let Some(call) = view
-        .selected
-        .checked_sub(1)
-        .and_then(|index| view.calls.get(index))
-    {
-        let name = import_name(view, view.selected - 1);
+    } else if let Some(Boundary::Host(index)) = view.boundary(view.selected) {
+        let call = &view.calls[index];
+        let name = import_name(view, index);
         let response = match call.outcome {
             HostOutcome::Returned { values, .. } => {
                 format!("returned {}", describe::values(view.record, values))
@@ -401,7 +417,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         };
         let mut detail = format!(
             "Call #{}: {name}({}) {response}\nSignature: {}",
-            view.selected - 1,
+            index,
             describe::arguments(view.record, call.args),
             describe::signature(view.record.program().program(), call.import)
         );
@@ -411,10 +427,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             detail.push_str(&format!("\nExtra fuel requested: {extra_fuel}"));
         }
         detail
+    } else if view.boundary(view.selected).is_some() {
+        title(view, view.selected)
     } else if let Some(Outcome::Trapped(trap)) = view
         .record
         .outcome()
-        .filter(|_| view.selected > view.calls.len())
+        .filter(|_| view.selected > view.boundaries.len())
     {
         trap_text(&trap.trap)
     } else {
@@ -466,7 +484,7 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     let count = if view.instruction.is_some() {
         view.record.instructions().len()
     } else {
-        view.calls.len() + 2
+        view.boundaries.len() + 2
     };
     let start = selected.saturating_sub(height / 2);
     let items: Vec<_> = (start..count)
@@ -476,7 +494,7 @@ fn timeline(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 title(view, index),
                 Style::default().fg(if index == 0 {
                     BLUE
-                } else if index <= view.calls.len() {
+                } else if index <= view.boundaries.len() {
                     FG
                 } else {
                     GOLD
@@ -705,8 +723,52 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 .into(),
             },
         );
-    } else if let Some(call) = view.calls.get(view.selected - 1) {
-        call_values(frame, view, area, call);
+    } else if let Some(boundary) = view.boundary(view.selected) {
+        match boundary {
+            Boundary::Host(i) => call_values(frame, view, area, &view.calls[i]),
+            Boundary::Callback(i) => {
+                let execution_tape::recording::ControlAction::CallGuest {
+                    callee,
+                    args,
+                    returned,
+                    ..
+                } = &view.commands[i].action;
+                value_section(
+                    frame,
+                    view,
+                    area,
+                    ValueSection {
+                        title: format!(" CALLBACK #{i} INPUTS "),
+                        note: format!(
+                            "Target: {} · {}",
+                            describe::value(view.record, callee),
+                            if returned.is_some() {
+                                "guest return observed separately"
+                            } else {
+                                "no successful guest return observed"
+                            }
+                        ),
+                        label: "Input",
+                        values: args,
+                        base: 0,
+                        empty: "No callback arguments.".into(),
+                    },
+                );
+            }
+            Boundary::CallbackReturn(i) => value_section(
+                frame,
+                view,
+                area,
+                ValueSection {
+                    title: format!(" CALLBACK #{i} RESULT "),
+                    note: "Returned to embedding; original host request remains pending".into(),
+                    label: "Output",
+                    values: view.callback_return(i).map_or(&[], |r| r.values),
+                    base: 0,
+                    empty: "Callback returned successfully without values.".into(),
+                },
+            ),
+        }
     } else {
         let returned = match view.record.outcome() {
             Some(Outcome::Returned(values)) => values,
@@ -800,7 +862,10 @@ fn call_values(
         List::new(items)
             .block(
                 panel(
-                    format!(" CALL VALUES · {} ", import_name(view, view.selected - 1)),
+                    format!(
+                        " CALL VALUES · {} ",
+                        describe::host(view.record.program().program(), call.import)
+                    ),
                     view.focus == Focus::Values,
                 )
                 .title_bottom("→ sent · ← returned before checks"),
