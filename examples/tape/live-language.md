@@ -64,11 +64,12 @@ do not establish identity. The task must perform the transfer in the home VM, af
 cleanup has completed. This example uses a single, non-reused home token and block token within
 one task; those integers are not capabilities to exchange between tasks.
 
-In the lexical-return case, the crossed block and protected-method invocations are **cancelled**.
-Core cannot describe a cross-invocation unwind, and their recordings truthfully report
-`MissingCompletion` and reject replay. The handler, cleanup and home each return successfully
-and are replayed independently. The home recording sees the transfer at its pending send;
-the separate language event identifies the block's initiating return source.
+In the lexical-return case, the task explicitly abandons the crossed block and protected method
+through `PendingHostCall::abandon`. Each finishes with `Trap::Abandoned`, without guest outputs.
+Their complete recordings replay the actual guest prefix and stop command. The handler, cleanup
+and home return successfully and are also replayed independently. The home recording sees the
+transfer at its pending send; the separate language event identifies the block's initiating return
+source. Core validates each local operation; the task owns their causal relationship.
 
 Successful guest replay checks each complete invocation under recorded host outcomes and
 control commands. It does not reexecute method lookup, verify the task's handler choice, or
@@ -93,6 +94,6 @@ after its home ends: its code and captures remain valid, but its lexical return 
 
 Retained callables, compatible code publication, exact activations and existing source mappings
 can compose into this finite language task without changing core opcodes or the wire format.
-The remaining seams are visible: shared resource accounting, first-class causal/unwind evidence,
+The remaining seams are visible: shared resource enforcement, composed task evidence,
 multi-invocation debugging, and a deliberate ABI for general dynamic values. Those need further
 design before this task policy becomes reusable infrastructure.

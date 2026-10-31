@@ -78,6 +78,9 @@ pub enum InstructionStatus {
 /// Observed outcome of one attempted instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstructionOutcome {
+    /// The embedding explicitly ended the invocation at a pending host instruction.
+    /// The guest instruction produced no successful writes.
+    Abandoned,
     /// The matching completion was not observed.
     Pending,
     /// The instruction completed, including dispatch into a guest callee.
@@ -322,6 +325,7 @@ impl History {
             return;
         }
         let actual = match outcome {
+            crate::trace::TraceOutcome::Abandoned(_) => InstructionOutcome::Abandoned,
             crate::trace::TraceOutcome::Ok => InstructionOutcome::Completed,
             crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
             crate::trace::TraceOutcome::Unwound { target } => {

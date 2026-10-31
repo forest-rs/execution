@@ -178,6 +178,26 @@ impl Recorder {
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
+            ValueEvent::Abandon { location, work } => {
+                if self.entry.is_none() || self.end.is_some() || self.candidate.is_some() {
+                    return Err(CaptureFault::InvalidSequence);
+                }
+                if self.commands.len() >= self.builder.limits.control_commands {
+                    return Err(CaptureFault::Budget {
+                        resource: CaptureResource::ControlCommands,
+                        limit: self.builder.limits.control_commands,
+                    });
+                }
+                self.check_location(location)?;
+                self.commands.push(Command {
+                    sequence: self.sequence,
+                    location,
+                    frame: self.top,
+                    action: Action::Abandon { work },
+                });
+                self.sequence += 1;
+                self.active_commands.clear();
+            }
             ValueEvent::ReturnFrom {
                 location,
                 target,
@@ -548,6 +568,7 @@ impl TraceSink for Recorder {
     fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
         let location = match event {
             ValueEvent::Entry { .. } => None,
+            ValueEvent::Abandon { location, .. } => Some(location),
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
@@ -657,7 +678,9 @@ impl TraceSink for Recorder {
             );
             return;
         }
-        if matches!(outcome, TraceOutcome::Trap(_)) && self.outcome_frame.is_none() {
+        if matches!(outcome, TraceOutcome::Trap(_) | TraceOutcome::Abandoned(_))
+            && self.outcome_frame.is_none()
+        {
             // The first exit still has the entire leaf-to-root ancestry. Later exits are unwind.
             self.outcome_frame = Some(top);
         }
@@ -696,7 +719,7 @@ impl TraceSink for Recorder {
                 }
                 self.end = Some(End::Returned);
             }
-            TraceOutcome::Trap(error) => {
+            TraceOutcome::Trap(error) | TraceOutcome::Abandoned(error) => {
                 let bytes = match &error.trap {
                     Trap::HostCallFailed { symbol, .. } => symbol.len(),
                     _ => 0,

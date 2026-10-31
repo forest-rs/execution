@@ -34,6 +34,51 @@ impl core::error::Error for ControlError {
 }
 
 impl<H: Host> PendingHostCall<'_, '_, H> {
+    /// Explicitly ends this entire invocation without completing the pending host operation.
+    ///
+    /// The terminal result is [`Trap::Abandoned`]. New guest aggregates and staged host results
+    /// are discarded; admitted work and external effects remain real. No guest cleanup is run,
+    /// and no successful result is manufactured. All outstanding callbacks end with the invocation.
+    ///
+    /// An embedding can use this after its own cleanup when a language exit crosses independent
+    /// invocations. Cross-invocation ancestry and the eventual target remain embedding policy;
+    /// this command does not validate a foreign activation. It spends no additional fuel.
+    ///
+    /// Unlike dropping unfinished execution, explicit abandonment has complete control evidence.
+    /// Checked replay reexecutes the guest prefix and issues the same command at this actual
+    /// pending instruction. It does not verify the embedding's reason for ending the invocation.
+    pub fn abandon(mut self) {
+        self.delivering = true;
+        let inv = &mut self.invocation;
+        let location = inv
+            .control
+            .pending_host
+            .expect("pending host guard")
+            .location;
+        let work = inv
+            .host_results
+            .as_ref()
+            .map_or(DataWork::default(), |results| results.work);
+        inv.trace
+            .values(inv.program.program(), || ValueEvent::Abandon {
+                location,
+                work,
+            });
+        if let Some(staging) = inv.host_results.take() {
+            inv.ctx.aggregate_work += staging.work.aggregate;
+            inv.ctx.payload_work += staging.work.payload;
+        }
+        inv.control.pending_host = None;
+        let span = inv
+            .ctx
+            .span_at(inv.program.program(), location.func, location.pc);
+        let error = inv
+            .ctx
+            .trap(location.func, location.pc, span, Trap::Abandoned);
+        inv.finish(Err(error));
+        self.delivering = false;
+    }
+
     /// Returns typed values from one exact live guest activation, abandoning its active callees.
     ///
     /// The target comes from this invocation's paused-frame inspection. Recursive activations

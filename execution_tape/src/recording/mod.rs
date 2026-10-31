@@ -26,6 +26,12 @@
 //! inputs, whereas normal callback returns are computed again by the guest. Foreign/expired target
 //! denials spend no guest work and are not recorded as admitted commands.
 //!
+//! `PendingHostCall::abandon` records an explicit stop at that invocation's pending host
+//! instruction. Its terminal outcome is `Trap::Abandoned`. Replay executes the actual guest
+//! prefix and issues the recorded stop, including discarded host staging work; it invents no
+//! guest return or foreign target. The embedding's exit reason and cross-invocation ancestry
+//! require separate task evidence. Dropping unfinished execution still rejects replay.
+//!
 //! ```
 //! use std::sync::Arc;
 //! use execution_tape::{

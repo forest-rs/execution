@@ -95,6 +95,9 @@ impl FootfallSink {
             TraceOutcome::Cancelled => {
                 footfall::message_with(ok_desc, self.context, "cancelled", args);
             }
+            TraceOutcome::Abandoned(_) => {
+                footfall::message_with(ok_desc, self.context, "abandoned", args);
+            }
             TraceOutcome::Trap(_) => {
                 // Custom host diagnostics can be arbitrarily large. The VM result owns them;
                 // profiling records the outcome/location without formatting or copying payloads.
@@ -151,7 +154,7 @@ impl TraceSink for FootfallSink {
         {
             args = args.with("scope_token", run.token().get());
         }
-        if let TraceOutcome::Trap(error) = outcome {
+        if let TraceOutcome::Trap(error) | TraceOutcome::Abandoned(error) = outcome {
             args = args.with("func", error.func.0).with("pc", error.pc);
         }
         self.outcome(&RUN_END, &RUN_TRAP, &args, outcome);

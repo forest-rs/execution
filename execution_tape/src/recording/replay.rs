@@ -382,6 +382,7 @@ impl State {
 }
 
 enum Delivery {
+    Abandon,
     ReturnFrom {
         target: crate::vm::ActivationId,
         values: Vec<Value>,
@@ -510,6 +511,7 @@ impl RecordedHost<'_> {
             let (work, constructed) = command.action.construction();
             restore_construction(self.record, &mut state, request, work, constructed)?;
             return match &command.action {
+                Action::Abandon { .. } => Ok(Delivery::Abandon),
                 Action::CallGuest { callee, args, .. } => {
                     let callee = state.materialize_value(
                         self.record,
@@ -725,7 +727,9 @@ impl TraceSink for Check<'_> {
         if state.error.is_some() {
             return;
         }
-        if matches!(outcome, TraceOutcome::Trap(_)) && state.final_top.is_none() {
+        if matches!(outcome, TraceOutcome::Trap(_) | TraceOutcome::Abandoned(_))
+            && state.final_top.is_none()
+        {
             state.final_top = state.top;
         }
         state.top = state
@@ -788,6 +792,7 @@ impl TraceSink for Check<'_> {
             return;
         };
         let actual = match outcome {
+            TraceOutcome::Abandoned(_) => crate::recording::InstructionOutcome::Abandoned,
             TraceOutcome::Ok => crate::recording::InstructionOutcome::Completed,
             TraceOutcome::Trap(_) => crate::recording::InstructionOutcome::Trapped,
             TraceOutcome::Unwound { target } => {
@@ -813,6 +818,34 @@ impl TraceSink for Check<'_> {
         }
         let result = (|| -> Result<(), ReplayError> {
             match event {
+                ValueEvent::Abandon { location, work } => {
+                    let index = state.commands;
+                    state.boundary = ReplayBoundary::ControlCommand { index };
+                    state.location = Some(location);
+                    let command = self.record.commands.get(index).ok_or_else(|| {
+                        state.mismatch(Divergence::ControlCommands {
+                            expected: self.record.commands.len(),
+                            actual: index + 1,
+                        })
+                    })?;
+                    check_sequence(&state, command.sequence)?;
+                    if command.location != location {
+                        return Err(state.mismatch(Divergence::Location {
+                            expected: command.location,
+                            actual: Some(location),
+                        }));
+                    }
+                    if !self.record.frames.is_empty() && command.frame != state.top {
+                        return Err(state.mismatch(Divergence::CallStack));
+                    }
+                    if !matches!(command.action, Action::Abandon { work: expected } if expected == work)
+                    {
+                        return Err(state.mismatch(Divergence::Outcome));
+                    }
+                    state.active_commands.clear();
+                    state.commands += 1;
+                    state.sequence += 1;
+                }
                 ValueEvent::ReturnFrom {
                     location,
                     target,
@@ -1126,6 +1159,10 @@ impl Recording {
                             .expect("yielded replay request");
                         let outcome = recorded_host.invoke(&mut request)?;
                         let outcome = match outcome {
+                            Delivery::Abandon => {
+                                request.abandon();
+                                continue;
+                            }
                             Delivery::CallGuest { callee, args } => {
                                 if let Err(error) = request.call_guest(callee, args) {
                                     break Err(error);
@@ -1236,6 +1273,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         return false;
     }
     match (&a.trap, &b.trap) {
+        (Trap::Abandoned, Trap::Abandoned) => true,
         (Trap::FuelExceeded, Trap::FuelExceeded)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
@@ -1364,6 +1402,169 @@ mod tests {
     use alloc::vec;
 
     struct Echo;
+
+    fn abandoned_recording(callback: bool, explicit: bool, control_limit: usize) -> Recording {
+        use crate::{
+            recording::InstructionCapture,
+            vm::{InvocationOptions, RunStatus},
+        };
+        let mut builder = ProgramBuilder::new();
+        let signature = FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        };
+        let root = builder.declare_function(signature.clone()).unwrap();
+        let child = builder.declare_function(signature).unwrap();
+        let host = builder.host_sig_for(
+            "wait",
+            HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64],
+            },
+        );
+        for function in [root, child] {
+            let mut body = builder.function_asm(function).unwrap();
+            let [value] = builder.emit_call(&mut body, host, &[1]).unwrap();
+            body.ret(0, &[value]);
+            builder.define_function(function, body).unwrap();
+        }
+        let program = Arc::new(builder.build_verified().unwrap());
+        let recorder = Rc::new(RefCell::new(
+            Recorder::new(
+                Arc::clone(&program),
+                RecordLimits {
+                    control_commands: control_limit,
+                    ..RecordLimits::default()
+                },
+            )
+            .with_instructions(InstructionCapture::default()),
+        ));
+        let mut vm = Vm::new(
+            Echo,
+            Limits {
+                fuel: if callback { 3 } else { 1 },
+                ..Limits::default()
+            },
+        );
+        let original = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+        let arguments = [Value::I64(41)];
+        let mask = recorder.borrow().mask();
+        let mut run = vm
+            .start(
+                &program,
+                root,
+                &arguments,
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace_owned(mask, Rc::clone(&recorder)),
+            )
+            .unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        if callback {
+            run.pending_host_call()
+                .unwrap()
+                .call_guest(Value::Func(child), vec![Value::I64(42)])
+                .unwrap();
+            assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        }
+        let mut request = run.pending_host_call().unwrap();
+        request
+            .context()
+            .tuple_new(vec![Value::Bytes(vec![1, 2, 3, 4])])
+            .unwrap();
+        drop(request);
+        let work = run.work();
+        if explicit {
+            run.pending_host_call().unwrap().abandon();
+            assert!(
+                matches!(run.result(), Some(Err(error)) if matches!(error.trap, Trap::Abandoned))
+            );
+            assert!(matches!(run.resume(1).unwrap_err().trap, Trap::Abandoned));
+            assert_eq!(
+                run.work(),
+                work,
+                "stopping spends no extra fuel and preserves discarded work"
+            );
+            assert!(run.take_outputs().is_none());
+            assert!(run.pending_host_call().is_none());
+        }
+        drop(run);
+        assert_eq!(
+            vm.aggregates().len_u32(),
+            1,
+            "rollback preserves old retained values"
+        );
+        assert_eq!(vm.aggregates().tuple_len(original).unwrap(), 1);
+        Rc::try_unwrap(recorder)
+            .unwrap_or_else(|_| panic!("observer released"))
+            .into_inner()
+            .finish()
+    }
+
+    #[test]
+    fn explicit_abandonment_replays_actual_guest_prefix_and_discarded_staging() {
+        for callback in [false, true] {
+            let record = abandoned_recording(callback, true, 10);
+            record.status().unwrap();
+            assert_eq!(
+                record.instruction_status(),
+                Some(crate::recording::InstructionStatus::Complete)
+            );
+            assert!(
+                record
+                    .instructions()
+                    .any(|step| step.outcome == crate::recording::InstructionOutcome::Abandoned)
+            );
+            assert!(matches!(
+                record.commands.last().unwrap().action,
+                Action::Abandon {
+                    work: crate::vm::DataWork {
+                        aggregate: 2,
+                        payload: 4
+                    }
+                }
+            ));
+            assert!(
+                matches!(record.replay().unwrap(), ReplayOutcome::Trapped(error) if matches!(error.trap, Trap::Abandoned))
+            );
+            assert_eq!(
+                record.outcome_stack().unwrap().count(),
+                if callback { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn drop_cancellation_remains_incomplete_and_control_capture_limits_are_enforced() {
+        let cancelled = abandoned_recording(false, false, 10);
+        assert!(matches!(
+            cancelled.status(),
+            Err(CaptureFault::MissingCompletion)
+        ));
+        assert!(cancelled.replay().is_err());
+        let limited = abandoned_recording(false, true, 0);
+        assert!(matches!(
+            limited.status(),
+            Err(CaptureFault::Budget {
+                resource: crate::recording::CaptureResource::ControlCommands,
+                limit: 0
+            })
+        ));
+        assert!(limited.replay().is_err());
+    }
+
+    #[test]
+    fn corrupted_abandonment_location_and_impossible_work_are_rejected() {
+        let mut moved = abandoned_recording(false, true, 10);
+        moved.commands.last_mut().unwrap().location.pc += 1;
+        assert!(moved.replay().is_err());
+        let mut impossible = abandoned_recording(false, true, 10);
+        let Action::Abandon { work } = &mut impossible.commands.last_mut().unwrap().action else {
+            panic!("stop command")
+        };
+        work.aggregate = u64::MAX;
+        assert!(impossible.replay().is_err());
+    }
     impl Host for Echo {
         fn call(
             &mut self,

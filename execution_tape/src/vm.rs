@@ -143,6 +143,10 @@ impl Default for Limits {
 /// A runtime trap.
 #[derive(Clone, Debug)]
 pub enum Trap {
+    /// The embedding explicitly ended this invocation without a guest return.
+    /// An admitted `PendingHostCall::abandon` is recordable; dropping a live invocation remains
+    /// cancellation with incomplete evidence. Neither operation executes guest cleanup.
+    Abandoned,
     /// Fuel limit exceeded.
     FuelExceeded,
     /// Call depth limit exceeded.
@@ -262,6 +266,7 @@ pub enum Trap {
 impl fmt::Display for Trap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Abandoned => f.write_str("invocation explicitly abandoned by embedding"),
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
@@ -874,7 +879,7 @@ impl<'a> TraceCtx<'a> {
     }
 
     fn finish(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
-        if let TraceOutcome::Trap(error) = outcome {
+        if let TraceOutcome::Trap(error) | TraceOutcome::Abandoned(error) = outcome {
             self.unwind(
                 program,
                 TraceLocation {

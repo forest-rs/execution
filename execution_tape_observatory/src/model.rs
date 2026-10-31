@@ -118,7 +118,7 @@ impl<'a> View<'a> {
     pub(super) fn callback_return(&self, index: usize) -> Option<&GuestReturn<'a>> {
         match &self.commands[index].action {
             ControlAction::CallGuest { returned, .. } => returned.as_ref(),
-            ControlAction::ReturnFrom { .. } => None,
+            ControlAction::ReturnFrom { .. } | ControlAction::Abandon { .. } => None,
         }
     }
 
@@ -336,6 +336,7 @@ impl<'a> View<'a> {
                     Boundary::Command(i) => match &self.commands[i].action {
                         ControlAction::CallGuest { args, .. } => ("arg", *args, &[]),
                         ControlAction::ReturnFrom { values, .. } => ("exit", *values, &[]),
+                        ControlAction::Abandon { .. } => ("abandon", &[], &[]),
                     },
                     Boundary::CallbackReturn(i) => (
                         "ret",

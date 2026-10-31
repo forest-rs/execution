@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use execution_tape::recording::{CaptureFault, ReplayOutcome};
+use execution_tape::recording::ReplayOutcome;
 use execution_tape::vm::ControlError;
 
 fn until_wait(task: &mut Task, quantum: u64) -> Status {
@@ -74,15 +74,14 @@ fn lexical_exit_keeps_original_code_and_cleanup_after_publication() {
                     ReplayOutcome::Returned(_)
                 ));
             }
-            Termination::Cancelled => {
-                assert!(matches!(
-                    evidence.recording.status(),
-                    Err(CaptureFault::MissingCompletion)
-                ));
+            Termination::Abandoned => {
+                evidence.recording.status().unwrap();
                 assert!(
-                    evidence.recording.replay().is_err(),
-                    "never invent successful child returns"
+                    matches!(evidence.recording.replay().unwrap(), ReplayOutcome::Trapped(error) if matches!(error.trap, Trap::Abandoned))
                 );
+            }
+            Termination::Cancelled => {
+                panic!("deliberate language exit must have complete stop evidence")
             }
             Termination::Trapped => panic!("successful language exit must not fabricate traps"),
         }
@@ -90,7 +89,7 @@ fn lexical_exit_keeps_original_code_and_cleanup_after_publication() {
     assert_eq!(
         task.evidence
             .iter()
-            .filter(|record| record.termination == Termination::Cancelled)
+            .filter(|record| record.termination == Termination::Abandoned)
             .count(),
         2
     );

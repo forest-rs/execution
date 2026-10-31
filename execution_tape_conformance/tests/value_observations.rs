@@ -38,6 +38,7 @@ impl TraceSink for Observe {
 
     fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
         match event {
+            ValueEvent::Abandon { .. } => panic!("fixture does not explicitly abandon"),
             ValueEvent::ReturnFrom { .. }
             | ValueEvent::CallbackEnter { .. }
             | ValueEvent::CallbackReturn { .. } => {
@@ -103,6 +104,7 @@ impl TraceSink for Observe {
     fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
         self.order.push("run_end");
         self.outcome = Some(match outcome {
+            TraceOutcome::Abandoned(_) => panic!("fixture does not explicitly abandon"),
             TraceOutcome::Ok => Ok(()),
             TraceOutcome::Trap(error) => Err(error.clone()),
             TraceOutcome::Cancelled => panic!("run-to-completion cannot cancel"),
@@ -432,6 +434,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
     impl TraceSink for Borrowed {
         fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
             let pointer = match event {
+                ValueEvent::Abandon { .. } => panic!("fixture does not explicitly abandon"),
                 ValueEvent::Entry { args, .. } => {
                     let Value::Str(s) = &args[0] else {
                         panic!("string entry");
