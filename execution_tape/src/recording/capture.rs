@@ -95,22 +95,26 @@ impl Recorder {
             }
             if history.status == InstructionStatus::Complete
                 && matches!(self.end, Some(End::Returned))
-                && !history.steps.last().is_some_and(|step| {
-                    (step.outcome == InstructionOutcome::Completed
-                        || (step.outcome == InstructionOutcome::Unwound { target: 0 }
-                            && self.commands.last().is_some_and(|command| {
-                                command.location == step.location
-                                    && matches!(
-                                        command.action,
-                                        Action::ReturnFrom { target: 0, .. }
-                                    )
-                            })))
-                        && step.next.is_none()
-                        && self
-                            .candidate
-                            .as_ref()
-                            .is_some_and(|(location, _)| *location == step.location)
-                })
+                && !history
+                    .root_exit
+                    .and_then(|index| history.steps.get(index))
+                    .or_else(|| history.steps.last())
+                    .is_some_and(|step| {
+                        (step.outcome == InstructionOutcome::Completed
+                            || (step.outcome == InstructionOutcome::Unwound { target: 0 }
+                                && self.commands.last().is_some_and(|command| {
+                                    command.location == step.location
+                                        && matches!(
+                                            command.action,
+                                            Action::ReturnFrom { target: 0, .. }
+                                        )
+                                })))
+                            && step.next.is_none()
+                            && self
+                                .candidate
+                                .as_ref()
+                                .is_some_and(|(location, _)| *location == step.location)
+                    })
             {
                 history.status = InstructionStatus::Incomplete;
             }
@@ -225,7 +229,7 @@ impl Recorder {
                 });
                 self.sequence += 1;
                 if let Some(history) = &mut self.history {
-                    history.begin_transfer();
+                    history.begin_transfer(target);
                 }
             }
             ValueEvent::CallbackEnter {

@@ -1511,6 +1511,16 @@ mod tests {
     }
 
     #[test]
+    fn callback_return_then_root_exit_keeps_a_complete_overlapping_history() {
+        let record = control_recording(true);
+        assert_eq!(
+            record.instruction_status(),
+            Some(crate::recording::InstructionStatus::Complete),
+            "the parent host attempt closes after the callback Ret; last admission is not the terminal attempt"
+        );
+    }
+
+    #[test]
     fn corrupted_transfer_target_order_values_callback_count_and_work_are_rejected() {
         for change in 0..8 {
             let mut record = control_recording(true);
