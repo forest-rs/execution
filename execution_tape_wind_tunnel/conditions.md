@@ -18,6 +18,10 @@ not parsed language input or the Rust implementation of the compiler. Its ranges
 instructions, including generated closure construction and function returns. Maps are bound to
 the exact tape; changing a captured constant invalidates the old map.
 
+The frontend sets `Asm::source` as it emits each authored expression and collects
+`source_mappings` before defining the body. It does not rediscover instruction boundaries through
+disassembly to construct its map. The static browser and recorded explorer use that same sidecar.
+
 ## What the frontend emits
 
 A handler binding is a call to the example service `condition.handle`, carrying the protected

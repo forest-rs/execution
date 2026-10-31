@@ -9,7 +9,6 @@ use super::language::{Class, Policy, RESTART_TOKEN, RestartMode};
 use execution_tape::{
     asm::{Asm, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
     contract::{Contract, ContractId},
-    disasm::disassemble_function,
     host::HostSig,
     program::{HostSigId, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
@@ -31,6 +30,17 @@ pub(super) enum Term {
 impl Term {
     pub(super) fn plus(self, other: Self) -> Self {
         Self::Add(Box::new(self), Box::new(other))
+    }
+}
+impl std::fmt::Display for Term {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(value) => value.fmt(f),
+            Self::Capture => f.write_str("captured"),
+            Self::Payload => f.write_str("condition.payload"),
+            Self::Argument => f.write_str("argument"),
+            Self::Add(left, right) => write!(f, "({left} + {right})"),
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -107,8 +117,8 @@ impl Expr {
     }
     fn label(&self) -> String {
         match self {
-            Self::Value(term, flag) => format!("({term:?}, {flag})"),
-            Self::Signal(class, term) => format!("signal {class:?}({term:?})"),
+            Self::Value(term, flag) => format!("({term}, {flag})"),
+            Self::Signal(class, term) => format!("signal {class:?}({term})"),
             Self::IfClass { class, .. } => format!("if current condition is {class:?}"),
             Self::Handle {
                 class,
@@ -122,9 +132,9 @@ impl Expr {
             Self::Protect { .. } => {
                 "protect body; cleanup on normal or non-local completion".into()
             }
-            Self::Invoke(name, argument) => format!("invoke {}({argument:?})", restart_name(*name)),
+            Self::Invoke(name, argument) => format!("invoke {}({argument})", restart_name(*name)),
             Self::Remember(name) => format!("retain token for {}", restart_name(*name)),
-            Self::InvokeSaved(argument) => format!("invoke retained token({argument:?})"),
+            Self::InvokeSaved(argument) => format!("invoke retained token({argument})"),
             Self::Sequence(_) => "sequence".into(),
             Self::Call(name, _) => format!("call {name}"),
             Self::Emit(value, _) => format!("emit {value}"),
@@ -156,7 +166,6 @@ enum Kind {
 }
 #[derive(Clone, Copy)]
 struct Context {
-    function: FuncId,
     capture: u32,
     class: u32,
     payload: u32,
@@ -182,7 +191,7 @@ struct Compiler {
     boolean: ContractId,
     services: Services,
     source: String,
-    anchors: BTreeMap<(u32, u32), Range<usize>>,
+    mappings: Vec<SourceMapping>,
     capture: i64,
 }
 impl Compiler {
@@ -251,7 +260,7 @@ impl Compiler {
             boolean,
             services,
             source: String::new(),
-            anchors: BTreeMap::new(),
+            mappings: Vec::new(),
             capture,
         })
     }
@@ -263,9 +272,8 @@ impl Compiler {
         self.source.push('\n');
         start..end
     }
-    fn mark(&mut self, context: Context, a: &Asm, range: &Range<usize>) {
-        self.anchors
-            .insert((context.function.0, a.pc()), range.clone());
+    fn mark(&self, body: &mut Asm, range: &Range<usize>) {
+        body.source(SourceId(0), range.clone());
     }
     fn integer(a: &mut Asm, value: i64) -> u32 {
         let register = a.alloc_register(ValueType::I64);
@@ -275,7 +283,6 @@ impl Compiler {
     fn context(&mut self, function: FuncId, kind: Kind, body: &mut Asm) -> Result<Context> {
         if matches!(kind, Kind::Entry) {
             return Ok(Context {
-                function,
                 capture: Self::integer(body, self.capture),
                 class: Self::integer(body, -1),
                 payload: Self::integer(body, 0),
@@ -292,7 +299,6 @@ impl Compiler {
             argument = closure.argument(0)?;
         }
         Ok(Context {
-            function,
             capture,
             class,
             payload,
@@ -360,12 +366,12 @@ impl Compiler {
         self.builder.set_function_name(function, &name)?;
         let header = self.line(indent, &format!("fn {name}:"));
         let mut a = self.builder.function_asm(function)?;
-        self.anchors.insert((function.0, 0), header.clone());
+        a.source(SourceId(0), header);
         let context = self.context(function, kind, &mut a)?;
         let body_start = self.source.len() + 2 * (indent + 1);
         let body_range = body_start..body_start + expr.label().len();
         let (value, flag) = self.expression(&mut a, context, expr, indent + 1)?;
-        self.mark(context, &a, &body_range);
+        self.mark(&mut a, &body_range);
         match kind {
             Kind::Handler { accepted } => {
                 let accept = a.alloc_register(ValueType::Bool);
@@ -379,6 +385,7 @@ impl Compiler {
                 a.ret(0, &[value, flag]);
             }
         }
+        self.mappings.extend(a.source_mappings(function));
         self.builder.define_function(function, a)?;
         Ok(function)
     }
@@ -401,7 +408,7 @@ impl Compiler {
         let name = Self::integer(a, name);
         let found = a.alloc_register(ValueType::Bool);
         let token = a.alloc_register(ValueType::Obj(RESTART_TOKEN));
-        self.mark(context, a, range);
+        self.mark(a, range);
         a.host_call_sig_id(
             0,
             self.services.find,
@@ -419,7 +426,7 @@ impl Compiler {
         indent: usize,
     ) -> Result<(u32, u32)> {
         let range = self.line(indent, &expr.label());
-        self.mark(context, a, &range);
+        self.mark(a, &range);
         let answer = a.alloc_register(ValueType::I64);
         let flag = a.alloc_register(ValueType::Bool);
         match expr {
@@ -431,7 +438,7 @@ impl Compiler {
             Expr::Signal(class, payload) => {
                 let class = Self::integer(a, class.code());
                 let payload = Self::term(a, context, payload);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(
                     0,
                     self.services.signal,
@@ -446,7 +453,7 @@ impl Compiler {
                 let yes_label = a.label();
                 let no_label = a.label();
                 let join = a.block(&[answer, flag]);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.i64_eq(condition, context.class, expected)
                     .br(condition, yes_label, no_label);
                 a.place(yes_label)?;
@@ -455,8 +462,8 @@ impl Compiler {
                 a.place(no_label)?;
                 let (value, result_flag) = self.expression(a, context, no, indent + 1)?;
                 a.jmp(join.with_args(&[value, result_flag]));
+                self.mark(a, &range);
                 a.place(join)?;
-                self.mark(context, a, &range);
             }
             Expr::Handle {
                 class,
@@ -479,7 +486,7 @@ impl Compiler {
                 let class = Self::integer(a, class.code());
                 let policy_reg = a.alloc_register(ValueType::U64);
                 a.const_u64(policy_reg, *policy as u64);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(
                     0,
                     self.services.handle,
@@ -504,7 +511,7 @@ impl Compiler {
                 let mode_reg = a.alloc_register(ValueType::U64);
                 a.const_u64(mode_reg, *mode as u64);
                 let class = Self::integer(a, class.code());
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(
                     0,
                     self.services.restart,
@@ -518,7 +525,7 @@ impl Compiler {
                 let body = self.function("protected_body", Kind::Body, body, indent + 1)?;
                 let cleanup = self.closure(a, context, cleanup)?;
                 let body = self.closure(a, context, body)?;
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(
                     0,
                     self.services.protect,
@@ -530,7 +537,7 @@ impl Compiler {
             Expr::Invoke(name, argument) => {
                 let token = self.lookup(a, context, *name, &range);
                 let argument = Self::term(a, context, argument);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(
                     0,
                     self.services.invoke,
@@ -541,7 +548,7 @@ impl Compiler {
             }
             Expr::Remember(name) => {
                 let token = self.lookup(a, context, *name, &range);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(0, self.services.save, 0, &[token], &[])
                     .const_i64(answer, 0)
                     .const_bool(flag, true);
@@ -550,7 +557,7 @@ impl Compiler {
                 let token = a.alloc_register(ValueType::Obj(RESTART_TOKEN));
                 a.host_call_sig_id(0, self.services.load, 0, &[], &[token]);
                 let argument = Self::term(a, context, argument);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(
                     0,
                     self.services.invoke,
@@ -572,12 +579,12 @@ impl Compiler {
             Expr::Call(name, body) => {
                 let callee = self.function(name, Kind::Body, body, indent + 1)?;
                 let env = Self::environment(a, context);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.call(0, callee, 0, &[env], &[answer, flag]);
             }
             Expr::Emit(value, body) => {
                 let value = Self::integer(a, *value);
-                self.mark(context, a, &range);
+                self.mark(a, &range);
                 a.host_call_sig_id(0, self.services.emit, 0, &[value], &[]);
                 return self.expression(a, context, body, indent + 1);
             }
@@ -594,39 +601,13 @@ pub(super) fn compile(expression: Expr, capture: i64) -> Result<Fixture> {
     let mut compiler = Compiler::new(capture)?;
     let entry = compiler.function("main", Kind::Entry, &expression, 0)?;
     let program = Arc::new(compiler.builder.build_verified()?);
-    // Expand frontend interval anchors into exact instruction mappings outside VM preparation.
-    // Source inspection never points into the Rust compiler implementation or guesses a filename.
-    let mut mappings = Vec::new();
-    for function in program.functions() {
-        let source = disassemble_function(program.program(), function.id()).map_err(|error| {
-            format!(
-                "cannot map compiled function {}: {error:?}",
-                function.id().0
-            )
-        })?;
-        for instruction in source.instrs() {
-            let (_, range) = compiler
-                .anchors
-                .range((function.id().0, 0)..=(function.id().0, instruction.pc()))
-                .next_back()
-                .ok_or("missing expression anchor")?;
-            mappings.push(SourceMapping {
-                location: execution_tape::trace::TraceLocation {
-                    func: function.id(),
-                    pc: instruction.pc(),
-                },
-                document: SourceId(0),
-                range: range.clone(),
-            });
-        }
-    }
     let sources = SourceMap::new(
         program.program(),
         vec![SourceDocument {
             name: "conditions.expr (assembled AST)".into(),
             text: compiler.source,
         }],
-        mappings,
+        compiler.mappings,
         SourceLimits::default(),
     )?;
     Ok(Fixture {
@@ -801,7 +782,9 @@ pub(super) fn scenario(name: &str) -> Result<Fixture> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape::{program::Program, source::SourceError, trace::TraceLocation};
+    use execution_tape::{
+        disasm::disassemble_function, program::Program, source::SourceError, trace::TraceLocation,
+    };
 
     #[test]
     fn every_scenario_has_exact_source_for_each_verified_instruction() {
