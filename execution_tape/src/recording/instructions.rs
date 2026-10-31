@@ -144,6 +144,8 @@ pub(crate) struct History {
     returning_callback: bool,
     pub(crate) started: bool,
     pub(crate) finished: bool,
+    // An explicit root transfer may close an older host attempt after newer callback steps.
+    pub(crate) root_exit: Option<usize>,
 }
 
 impl History {
@@ -182,6 +184,7 @@ impl History {
             returning_callback: false,
             started: false,
             finished: false,
+            root_exit: None,
         }
     }
 
@@ -220,8 +223,11 @@ impl History {
     pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
-    pub(crate) fn begin_transfer(&mut self) {
+    pub(crate) fn begin_transfer(&mut self, target: u64) {
         self.control_boundary = true;
+        if target == 0 {
+            self.root_exit = self.current();
+        }
     }
     pub(crate) fn begin_callback(&mut self, location: TraceLocation) {
         if self.status == InstructionStatus::Incomplete {
