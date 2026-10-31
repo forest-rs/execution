@@ -116,7 +116,7 @@ This release has an [MSRV][] of 1.88.
   `InstructionOutcome::Abandoned` and `ControlAction::Abandon`. Migration: handle the new variants
   in exhaustive matches; explicit termination is a recorded embedding decision with no successful
   instruction writes. `RunStatus` and the invocation result types are unchanged; the terminal
-  `Err(Trap::Abandoned)` is intentional control termination, distinct from dropped execution.
+  `TrapInfo` containing `Trap::Abandoned` is intentional control termination, distinct from dropped execution.
 
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include

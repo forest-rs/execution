@@ -231,6 +231,8 @@ pub struct TaskExplorer<'a> {
     focus: Focus,
     source_offset: usize,
     values_offset: usize,
+    choices: Vec<String>,
+    chosen: Option<usize>,
 }
 impl fmt::Debug for TaskExplorer<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -280,6 +282,8 @@ impl<'a> TaskExplorer<'a> {
             },
             source_offset: 0,
             values_offset: 0,
+            choices: Vec::new(),
+            chosen: None,
         })
     }
     /// Enumerates the exact bounded frame inventory shown by the UI, outermost first.
@@ -336,6 +340,46 @@ impl<'a> TaskExplorer<'a> {
     /// Opens the read-only task view; leaving it returns control to the language driver.
     pub fn run(&mut self) -> io::Result<()> {
         crate::interact(self)
+    }
+
+    /// Presents up to three embedding-supplied choices and returns the selected index.
+    ///
+    /// Number keys select a choice and leave the view; `q`/Escape returns `None`. No choice
+    /// executes inside this borrowed view. Drop the inspection borrow before the driver acts.
+    pub fn choose(&mut self, choices: &[&str]) -> io::Result<Option<usize>> {
+        self.offer(choices)?;
+        let result = crate::interact(&mut *self);
+        self.choices.clear();
+        let chosen = self.chosen.take();
+        result.map(|()| chosen)
+    }
+
+    /// Renders the same offered choices headlessly without selecting or executing one.
+    pub fn render_choices(
+        &mut self,
+        choices: &[&str],
+        width: u16,
+        height: u16,
+    ) -> io::Result<String> {
+        self.offer(choices)?;
+        let result = self.render_text(width, height);
+        self.choices.clear();
+        result
+    }
+
+    fn offer(&mut self, choices: &[&str]) -> io::Result<()> {
+        if choices.is_empty() || choices.len() > 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "offer between one and three task choices",
+            ));
+        }
+        self.choices = choices
+            .iter()
+            .map(|label| source_context::label_preview(label, 64))
+            .collect();
+        self.chosen = None;
+        Ok(())
     }
 
     fn source_lines(&self) -> Vec<String> {
@@ -442,7 +486,11 @@ impl Screen for TaskExplorer<'_> {
             Constraint::Length(2),
             Constraint::Percentage(35),
             Constraint::Min(8),
-            Constraint::Length(2),
+            Constraint::Length(if self.choices.is_empty() {
+                2
+            } else {
+                u16::try_from(self.choices.len()).expect("at most three choices") + 1
+            }),
         ])
         .split(area);
         let work = self.work().map_or_else(
@@ -461,7 +509,15 @@ impl Screen for TaskExplorer<'_> {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(
-                    "PAUSED LANGUAGE TASK · read-only · embedding owns scheduling",
+                    format!(
+                        "PAUSED LANGUAGE TASK · {} invocations · {}",
+                        self.invocations.len(),
+                        if self.choices.is_empty() {
+                            "read-only inspection"
+                        } else {
+                            "choices return to driver"
+                        }
+                    ),
                     Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
                 ),
                 Line::styled(work, Style::default().fg(CYAN)),
@@ -493,12 +549,25 @@ impl Screen for TaskExplorer<'_> {
             })
             .collect();
         let omitted: usize = self.invocations.iter().map(|input| input.omitted).sum();
+        let position = format!(
+            "{}/{} · ↑ callers",
+            if self.rows.is_empty() {
+                0
+            } else {
+                self.selected_frame + 1
+            },
+            self.rows.len()
+        );
+        let inventory = if omitted == 0 {
+            format!("{position} · supplied order")
+        } else {
+            format!("{omitted} omitted · {position}")
+        };
         frame.render_stateful_widget(
             List::new(items)
                 .block(
-                    render::panel(" TASK STACK ", self.focus == Focus::Stack).title_bottom(
-                        format!("supplied causal order · {omitted} outer guest frames omitted"),
-                    ),
+                    render::panel(" TASK STACK ", self.focus == Focus::Stack)
+                        .title_bottom(inventory),
                 )
                 .highlight_symbol("▸ ")
                 .highlight_style(Style::default().bg(ratatui::style::Color::Indexed(23))),
@@ -558,10 +627,35 @@ impl Screen for TaskExplorer<'_> {
                 .wrap(Wrap { trim: false }),
             bottom[1],
         );
-        frame.render_widget(Paragraph::new("Tab active panel · ↑/↓ select or scroll · q return to driver\nFrame selection shows that invocation's source/values; decisions show native policy source.").style(Style::default().fg(MUTED)), layout[3]);
+        let mut footer = vec![Line::styled(
+            "Tab active panel · ↑/↓ select or scroll · q return to driver",
+            Style::default().fg(MUTED),
+        )];
+        if self.choices.is_empty() {
+            footer.push(Line::styled("Frame selection shows that invocation's source/values; decisions show native policy source.", Style::default().fg(MUTED)));
+        } else {
+            footer.extend(self.choices.iter().enumerate().map(|(index, label)| {
+                Line::styled(
+                    format!("{} · {label} → driver", index + 1),
+                    Style::default().fg(GOLD),
+                )
+            }));
+        }
+        frame.render_widget(Paragraph::new(footer), layout[3]);
     }
     fn key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Char(key @ '1'..='3') => {
+                let index = match key {
+                    '1' => 0,
+                    '2' => 1,
+                    _ => 2,
+                };
+                if index < self.choices.len() {
+                    self.chosen = Some(index);
+                    return false;
+                }
+            }
             KeyCode::Char('q') | KeyCode::Esc => return false,
             KeyCode::Tab => {
                 self.focus = match self.focus {
@@ -789,6 +883,20 @@ mod tests {
         assert_eq!(terminal.backend().buffer()[(60, 2)].symbol(), "╔");
         assert_eq!(terminal.backend().buffer()[(0, 2)].symbol(), "┌");
         assert!(view.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)));
+        let menu = view
+            .render_choices(&["Recover", "Cancel"], 120, 40)
+            .unwrap();
+        assert!(menu.contains("1 · Recover → driver"));
+        assert!(menu.contains("2 · Cancel → driver"));
+        assert!(
+            view.choices.is_empty(),
+            "headless choices do not remain armed"
+        );
+        assert!(view.render_choices(&[], 120, 40).is_err());
+        view.offer(&["Recover", "Cancel"]).unwrap();
+        assert!(!view.key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)));
+        assert_eq!(view.chosen, Some(1));
+        view.choices.clear();
         assert!(!view.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
         drop(view);
         assert_eq!(first.work().checked_add(second.work()), Some(work));

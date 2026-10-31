@@ -140,7 +140,7 @@ fn waiting_preserves_budget_events_and_exact_sources_across_local_id_collisions(
     assert_eq!(
         stack.len(),
         4,
-        "returned factory is absent; its escaped block is active"
+        "returned relay is absent; the lexical block is active"
     );
     let sources: Vec<_> = stack
         .iter()
@@ -302,11 +302,11 @@ fn future_lookup_executes_replacement_cleanup_with_its_own_source() {
     let current = task.methods.current();
     assert!(Arc::ptr_eq(
         current.callable().program(),
-        &task.replacement.program
+        &task.code.replacement.program
     ));
     let mut method = Frame::start(
         "future method",
-        Arc::clone(&task.replacement),
+        Arc::clone(&task.code.replacement),
         current.callable(),
         vec![Value::U64(BLOCK_TOKEN)],
         1_000,
@@ -324,7 +324,7 @@ fn future_lookup_executes_replacement_cleanup_with_its_own_source() {
     let callable = method.retain(cleanup).unwrap();
     let mut cleanup = Frame::start(
         "future cleanup",
-        Arc::clone(&task.replacement),
+        Arc::clone(&task.code.replacement),
         &callable,
         vec![],
         fuel,
@@ -348,7 +348,8 @@ fn future_lookup_executes_replacement_cleanup_with_its_own_source() {
         "through.st · Runtime cleaned: 100"
     );
     assert!(
-        task.method_code
+        task.code
+            .method
             .sources
             .bind(cleanup.call.program().program())
             .is_err(),
@@ -471,4 +472,32 @@ fn task_explorer_selects_each_real_code_domain_without_spending_work() {
         "retired handler's original source remains selectable"
     );
     assert!(text.contains("Runtime chooseRecovery"));
+}
+
+#[test]
+fn return_block_is_created_at_its_actual_lexical_home_and_only_relayed_by_the_helper() {
+    use execution_tape::opcode::Opcode;
+    let code = program::home(true).unwrap();
+    let functions: Vec<_> = code.program.functions().collect();
+    let creation = functions[0]
+        .instructions()
+        .find(|instruction| instruction.opcode == Opcode::ClosureNew)
+        .expect("run creates its lexical block");
+    assert_eq!(
+        functions[1]
+            .instructions()
+            .map(|instruction| instruction.opcode)
+            .collect::<Vec<_>>(),
+        vec![Opcode::Ret],
+        "keep: only returns its supplied block"
+    );
+    let sources = code.sources.bind(code.program.program()).unwrap();
+    let source = sources
+        .lookup(TraceLocation {
+            func: functions[0].id(),
+            pc: creation.pc,
+        })
+        .unwrap();
+    assert!(source.text().contains("[ | answer |"));
+    assert!(source.range().start < source.document().text.find("\nkeep: block").unwrap());
 }

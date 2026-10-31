@@ -21,6 +21,24 @@ pub(super) struct Compiled {
     pub(super) sources: SourceMap,
 }
 
+/// Exact immutable code and source owners retained for execution and composed replay.
+#[derive(Clone)]
+pub(super) struct Programs {
+    pub(super) home: Arc<Compiled>,
+    pub(super) method: Arc<Compiled>,
+    pub(super) replacement: Arc<Compiled>,
+    pub(super) handler: Arc<Compiled>,
+}
+
+pub(super) fn compile(non_local: bool) -> Result<Programs> {
+    Ok(Programs {
+        home: home(non_local)?,
+        method: method(10)?,
+        replacement: method(100)?,
+        handler: handler()?,
+    })
+}
+
 struct Author {
     builder: ProgramBuilder,
     text: String,
@@ -82,7 +100,7 @@ impl Author {
     }
 }
 
-/// The factory has returned before its block runs, but `run` is still the lexical home.
+/// `run` creates the block at its lexical site; a relay returns without changing that home.
 pub(super) fn home(non_local: bool) -> Result<Arc<Compiled>> {
     let return_expression = if non_local {
         "Runtime return: answer to: home"
@@ -90,9 +108,9 @@ pub(super) fn home(non_local: bool) -> Result<Arc<Compiled>> {
         "answer"
     };
     let text = format!(
-        "run\n    | home block answer |\n    home := Runtime home.\n    block := self makeBlockFor: home.\n    answer := Runtime send: (Runtime retain: block).\n    Runtime afterSend.\n    ^ answer\n\nmakeBlockFor: home\n    ^ [ | answer |\n        answer := Runtime signal: #NeedValue.\n        {return_expression} ]\n"
+        "run\n    | home block answer |\n    home := Runtime home.\n    block := self keep: [ | answer |\n        answer := Runtime signal: #NeedValue.\n        {return_expression} ].\n    answer := Runtime send: (Runtime retain: block).\n    Runtime afterSend.\n    ^ answer\n\nkeep: block\n    ^ block\n"
     );
-    let mut author = Author::new("Lexical home and block factory", &text);
+    let mut author = Author::new("Lexical home and block relay", &text);
     let home = author.import("Runtime.home", &[], &[ValueType::U64]);
     let retain = author.import("Runtime.retain", &[ValueType::Closure], &[ValueType::U64]);
     let send = author.import("Runtime.send", &[ValueType::U64], &[ValueType::I64]);
@@ -107,8 +125,8 @@ pub(super) fn home(non_local: bool) -> Result<Arc<Compiled>> {
         arg_types: vec![],
         ret_types: vec![ValueType::I64],
     })?;
-    let factory = author.builder.declare_function(FunctionSig {
-        arg_types: vec![ValueType::U64],
+    let relay = author.builder.declare_function(FunctionSig {
+        arg_types: vec![ValueType::Closure],
         ret_types: vec![ValueType::Closure],
     })?;
     let block = author.builder.declare_closure(
@@ -134,22 +152,21 @@ pub(super) fn home(non_local: bool) -> Result<Arc<Compiled>> {
     } else {
         body.ret(0, &[answer]);
     }
-    author.define(block.function(), "makeBlockFor: / escaped block", body)?;
+    author.define(block.function(), "run / lexical return block", body)?;
 
-    let mut body = author.builder.function_asm(factory)?;
-    let lexical_home = author.builder.argument(factory, 0)?;
-    author.at(&mut body, "^ [ | answer |");
-    let value = block.instantiate(&mut body, &[lexical_home])?;
+    let mut body = author.builder.function_asm(relay)?;
+    let value = author.builder.argument(relay, 0)?;
+    author.at(&mut body, "^ block");
     body.ret(0, &[value]);
-    author.define(factory, "makeBlockFor:", body)?;
+    author.define(relay, "keep:", body)?;
 
     let mut body = author.builder.function_asm(entry)?;
     author.at(&mut body, "Runtime home");
     let [lexical_home] = author.builder.emit_call(&mut body, home, &[])?;
-    author.at(&mut body, "self makeBlockFor: home");
-    let [block] = author
-        .builder
-        .emit_call(&mut body, factory, &[lexical_home])?;
+    author.at(&mut body, "[ | answer |");
+    let value = block.instantiate(&mut body, &[lexical_home])?;
+    author.at(&mut body, "self keep:");
+    let [block] = author.builder.emit_call(&mut body, relay, &[value])?;
     author.at(&mut body, "Runtime retain: block");
     let [token] = author.builder.emit_call(&mut body, retain, &[block])?;
     author.at(&mut body, "Runtime send: (Runtime retain: block)");

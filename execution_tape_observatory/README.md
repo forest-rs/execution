@@ -327,7 +327,10 @@ Selecting a frame shows its code/source and read-only values. Selecting a decisi
 native decision's original source, even when its invocation has already returned.
 
 Tab highlights the active panel with a double green border. Arrows select or scroll; `q`
-returns to the language driver. This view performs no stepping, host dispatch or recovery action.
+returns to the language driver. `choose` optionally presents up to three driver-supplied choices;
+number keys return an index and `q` returns `None`. `render_choices` shows the same menu headlessly
+without selecting. The driver acts after dropping the inspection borrow. This view performs no
+stepping, host dispatch or recovery action itself.
 Its input limits are 64 invocations and 4,096 decisions, with explicit omission of outer guest
 frames beyond 64 per invocation and registers beyond 128. Text and source previews are bounded.
 

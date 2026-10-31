@@ -9,6 +9,8 @@ cargo run -p execution_tape_examples --bin live_language -- --explain
 cargo run -p execution_tape_examples --bin live_language -- --normal-return --explain
 cargo run -p execution_tape_examples --bin live_language -- --snapshot
 cargo run -p execution_tape_examples --bin live_language -- --explore
+cargo run -p execution_tape_examples --bin live_language -- --recover 77
+cargo run -p execution_tape_examples --bin live_language -- --cancel-at cleanup --explain
 cargo test -p execution_tape_examples --bin live_language
 ```
 
@@ -22,8 +24,9 @@ restart selection and cleanup that signals or replaces an exit.
 
 ## Follow one message across code owners
 
-1. `run` records its exact lexical activation and calls a block factory. The factory returns
-   a closure capturing that home; its own activation ends before the block is invoked.
+1. `run` records its exact lexical activation and creates the return block at that lexical site.
+   A `keep:` helper returns the block without invoking it. That helper's activation ends before
+   the block runs; passing a block through another method does not change its lexical home.
 2. The task explicitly retains the closure with its original program and immutable environment.
    A scalar block token crosses the message boundary. No raw closure or aggregate handle is
    interpreted in another program.
@@ -49,15 +52,17 @@ Language task → independent VM frames (outermost first):
   NeedValue handler: handler.st · Runtime chooseRecovery
 ```
 
-These are real paused VM frames grouped by their independent invocations. The returned factory
+These are real paused VM frames grouped by their independent invocations. The returned relay
 is absent. Program-local function IDs intentionally overlap, so every source lookup carries its
 exact code owner. The text explanation also shows the different stack at the cleanup wait and
 the source of each language decision.
 
 `--snapshot` renders Observatory's read-only task view at the handler and cleanup waits.
-`--explore` opens it interactively: Tab selects the active panel, arrows select frames or decisions
-and scroll source/values, and `q` returns to the driver. The driver then publishes/recovers or
-completes native cleanup work. The view performs no guest execution or host dispatch.
+`--explore` opens it interactively: Tab selects the active panel; arrows select frames or decisions
+and scroll source/values. The number keys return the offered recovery, native completion or
+cancellation choice to the driver. `q` leaves without a choice, which this driver treats as an
+explicit task stop. The view performs no guest execution or host dispatch; the driver acts after
+its inspection borrow ends. `--recover N` changes the offered recovery value from `42`.
 
 Selecting a task frame shows that invocation's exact source, instruction and initialized registers;
 pending reply destinations remain unavailable. Selecting a language decision shows native policy
@@ -84,10 +89,22 @@ and home return successfully and are also replayed independently. The home recor
 transfer at its pending send; the separate language event identifies the block's initiating return
 source. Core validates each local operation; the task owns their causal relationship.
 
-Successful guest replay checks each complete invocation under recorded host outcomes and
+Independent guest replay checks each complete invocation under recorded host outcomes and
 control commands. It does not reexecute method lookup, verify the task's handler choice, or
-reconstruct this language cleanup policy. The native task tests independently check those
-decisions. This example establishes no portable task recording or combined replay guarantee.
+reconstruct this language cleanup policy.
+
+The fixture also performs a separate **composed task replay**. It retains exact immutable code
+and source owners plus accepted driver inputs, retires the original VMs, then runs fresh VMs and
+the native task policy again. Publication, recovery and cleanup choices are applied only at their
+actual waits. The check compares typed policy events and source ownership, work totals, each VM's
+boundary values, instruction paths, ancestry and outcomes. Aggregate identities are normalized
+by first observation; equal-but-distinct nodes remain distinct. Each complete VM recording also
+passes its ordinary checked replay. Unexpected evidence outside this finite protocol is rejected.
+
+This is an in-memory checker for the accompanying fixture. It establishes no portable task archive,
+replay of arbitrary language runtimes, or reconstruction of external object state/native effects.
+The [replay checker](src/bin/live_language/replay.rs) uses typed observations from the public
+recording API; it does not compare formatted diagnostics or treat recording-local IDs as global.
 
 Instruction fuel is shared by capping each scheduling quantum against the task's remaining
 fuel and debiting actual VM fuel consumption, including the final typed transfer. Polling native
@@ -99,14 +116,19 @@ checks, imported closure captures and pending host staging. Fuel counts actually
 the other counters retain their respective VM units. This accounting does not install shared
 host-call, contract or allocation ceilings. Native capture copies are outside the VM work meter.
 
-Cancelling or exhausting fuel retires the task without running further guest cleanup. Native
-effects already performed remain real. The example's tests also execute the retained block
+An explicit driver stop at the handler or cleanup wait records abandonment for every crossed
+VM, with no answer or further guest cleanup. That choice supports composed replay. `--cancel-at`
+exercises the same decision headlessly. Dropping unfinished execution or exhausting hard fuel
+preserves incomplete cancellation evidence and rejects composed replay. Native effects already
+performed remain real. The example's tests also execute the retained block
 after its home ends: its code and captures remain valid, but its lexical return is denied.
 
 ## What this slice establishes
 
 Retained callables, compatible code publication, exact activations and existing source mappings
 can compose into this finite language task without changing core opcodes or the wire format.
-The remaining seams are visible: shared resource enforcement, composed task evidence,
-multi-invocation debugging, and a deliberate ABI for general dynamic values. Those need further
-design before this task policy becomes reusable infrastructure.
+The fixture uses scalar task-local tokens to connect retained callables and exact activation
+identities. General dynamic values and mutable objects remain language-runtime responsibilities;
+this work adds no universal object ABI. Shared resource enforcement beyond scheduling fuel and
+a reusable production task scheduler remain separate design work. The current task view and
+composed replay expose this finite policy's decisions without installing it in the core VM.

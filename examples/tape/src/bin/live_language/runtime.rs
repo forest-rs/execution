@@ -22,6 +22,17 @@ use std::{cell::RefCell, error::Error, fmt, rc::Rc, sync::Arc};
 const HOME_TOKEN: u64 = 1;
 const BLOCK_TOKEN: u64 = 2;
 
+#[path = "replay.rs"]
+mod replay;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Input {
+    Publish,
+    Recover(i64),
+    CleanupReady,
+    Stop,
+}
+
 /// Every host request in this fixture is deliberately handled by the language task.
 struct Services;
 impl Host for Services {
@@ -73,6 +84,7 @@ pub(super) enum Action {
     HomeReturned,
     AfterMethod,
     AfterSend,
+    Stopped,
 }
 
 pub(super) struct Event {
@@ -86,6 +98,7 @@ pub(super) enum Status {
     NeedValue,
     CleanupWaiting,
     Complete,
+    Stopped,
     Cancelled,
 }
 
@@ -265,6 +278,7 @@ enum Phase {
     Handler,
     Cleanup,
     Complete,
+    Stopped,
     Cancelled,
 }
 
@@ -280,9 +294,9 @@ pub(super) struct Task {
     home: Option<Home>,
     retained_block: Option<Callable>,
     retained_cleanup: Option<Callable>,
-    method_code: Arc<Compiled>,
-    replacement: Arc<Compiled>,
-    handler_code: Arc<Compiled>,
+    code: program::Programs,
+    inputs: Vec<Input>,
+    initial_fuel: u64,
     methods: CodeSlot,
     transfer: Option<Transfer>,
     body_answer: Option<i64>,
@@ -336,15 +350,21 @@ impl Task {
     }
 
     pub(super) fn new(non_local: bool, fuel: u64) -> Result<Self> {
-        let home = program::home(non_local)?;
-        let method_code = program::method(10)?;
-        let replacement = program::method(100)?;
-        let handler_code = program::handler()?;
-        let callable = Callable::function(Arc::clone(&home.program), home.entry)?;
-        let root = Frame::start("lexical home", home, &callable, vec![], fuel)?;
+        Self::with_code(program::compile(non_local)?, fuel)
+    }
+
+    fn with_code(code: program::Programs, fuel: u64) -> Result<Self> {
+        let callable = Callable::function(Arc::clone(&code.home.program), code.home.entry)?;
+        let root = Frame::start(
+            "lexical home",
+            Arc::clone(&code.home),
+            &callable,
+            vec![],
+            fuel,
+        )?;
         let methods = CodeSlot::new(Callable::function(
-            Arc::clone(&method_code.program),
-            method_code.entry,
+            Arc::clone(&code.method.program),
+            code.method.entry,
         )?);
         Ok(Self {
             phase: Phase::Home,
@@ -357,9 +377,9 @@ impl Task {
             home: None,
             retained_block: None,
             retained_cleanup: None,
-            method_code,
-            replacement,
-            handler_code,
+            code,
+            inputs: Vec::new(),
+            initial_fuel: fuel,
             methods,
             transfer: None,
             body_answer: None,
@@ -412,6 +432,9 @@ impl Task {
         if self.phase == Phase::Complete {
             return Ok(Status::Complete);
         }
+        if self.phase == Phase::Stopped {
+            return Ok(Status::Stopped);
+        }
         if self.phase == Phase::Cancelled {
             return Ok(Status::Cancelled);
         }
@@ -460,7 +483,7 @@ impl Task {
                 let current = self.methods.current();
                 self.method = Some(Frame::start(
                     "protected method / revision 0",
-                    Arc::clone(&self.method_code),
+                    Arc::clone(&self.code.method),
                     current.callable(),
                     vec![Value::U64(BLOCK_TOKEN)],
                     self.remaining_fuel,
@@ -488,12 +511,12 @@ impl Task {
             }
             (Phase::Block, "Runtime.signal", []) => {
                 let callable = Callable::function(
-                    Arc::clone(&self.handler_code.program),
-                    self.handler_code.entry,
+                    Arc::clone(&self.code.handler.program),
+                    self.code.handler.entry,
                 )?;
                 self.handler = Some(Frame::start(
                     "NeedValue handler",
-                    Arc::clone(&self.handler_code),
+                    Arc::clone(&self.code.handler),
                     &callable,
                     vec![],
                     self.remaining_fuel,
@@ -689,8 +712,8 @@ impl Task {
             );
         }
         let callable = Callable::function(
-            Arc::clone(&self.replacement.program),
-            self.replacement.entry,
+            Arc::clone(&self.code.replacement.program),
+            self.code.replacement.entry,
         )?;
         let CodeUpdate::Replaced { .. } = self.methods.replace(callable)? else {
             return Err(Failure::Protocol("expected a compatible method replacement").into());
@@ -700,6 +723,7 @@ impl Task {
             site,
             action: Action::Published(self.revision()),
         });
+        self.inputs.push(Input::Publish);
         Ok(())
     }
 
@@ -714,6 +738,7 @@ impl Task {
             site,
             action: Action::Recovery(answer),
         });
+        self.inputs.push(Input::Recover(answer));
         self.waiting = None;
         Ok(())
     }
@@ -726,12 +751,53 @@ impl Task {
             .as_mut()
             .expect("waiting cleanup")
             .reply(vec![])?;
+        self.inputs.push(Input::CleanupReady);
         self.waiting = None;
         Ok(())
     }
 
+    pub(super) fn stopped(&self) -> bool {
+        self.phase == Phase::Stopped
+    }
+
+    /// A recorded user choice at a native wait, distinct from dropping unfinished execution.
+    pub(super) fn stop(&mut self) -> Result<()> {
+        let site = match self.waiting {
+            Some(Status::NeedValue) => self.handler.as_mut().expect("waiting handler").site()?,
+            Some(Status::CleanupWaiting) => {
+                self.cleanup.as_mut().expect("waiting cleanup").site()?
+            }
+            _ => return Err(Failure::Protocol("explicit task stop requires a native wait").into()),
+        };
+        self.inputs.push(Input::Stop);
+        self.events.push(Event {
+            site,
+            action: Action::Stopped,
+        });
+        for frame in [
+            &mut self.cleanup,
+            &mut self.handler,
+            &mut self.block,
+            &mut self.method,
+            &mut self.root,
+        ] {
+            if let Some(frame) = frame.take() {
+                self.evidence.push(frame.abandon());
+            }
+        }
+        self.retained_block = None;
+        self.retained_cleanup = None;
+        self.transfer = None;
+        self.waiting = None;
+        self.phase = Phase::Stopped;
+        Ok(())
+    }
+
     pub(super) fn cancel(&mut self) {
-        if matches!(self.phase, Phase::Complete | Phase::Cancelled) {
+        if matches!(
+            self.phase,
+            Phase::Complete | Phase::Stopped | Phase::Cancelled
+        ) {
             return;
         }
         for frame in [
