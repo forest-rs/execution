@@ -489,7 +489,11 @@ impl<H: Host> Invocation<'_, H> {
                 self.ctx.contract_scratch.clear_proofs();
                 self.vm.memory.rollback(self.checkpoint);
                 self.outputs.clear();
-                TraceOutcome::Trap(error)
+                if matches!(error.trap, Trap::Abandoned) {
+                    TraceOutcome::Abandoned(error)
+                } else {
+                    TraceOutcome::Trap(error)
+                }
             }
         };
         self.trace.finish(self.program.program(), outcome);

@@ -72,7 +72,7 @@ The block and condition examples use one program and invocation. The message-dis
 executes independently owned methods in separate invocations. Their guides explain those control
 boundaries and what checked guest replay does and does not reproduce.
 `live_language` connects independent invocations with an explicit language-owned task; its guide
-explains why crossed child recordings remain incomplete after a lexical exit.
+explains how explicit stops preserve replayable child prefixes during a lexical exit.
 
 ## Tape: recording and profiling
 

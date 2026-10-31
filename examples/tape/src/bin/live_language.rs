@@ -9,6 +9,7 @@ mod program;
 mod runtime;
 
 use execution_tape::recording::ReplayOutcome;
+use execution_tape::vm::Trap;
 use runtime::{Action, Site, Status, Task, Termination};
 
 fn source(site: &Site) -> program::Result<String> {
@@ -65,7 +66,7 @@ fn main() -> program::Result<()> {
             "--fuel" => fuel = arguments.next().ok_or("--fuel needs an integer")?.parse()?,
             "--help" | "-h" => {
                 println!(
-                    "live_language [--normal-return] [--explain] [--fuel N]\n\nA retained block signals through an independently compiled protected method.\nWhile its handler waits, publish a replacement; recover with 42 and run the\noriginal cleanup before returning to the exact lexical home.\n\n--normal-return keeps both callers' following code reachable.\n--explain shows exact source and the separate VM frames at each native wait.\nThe finite language task owns dispatch, handler selection and cleanup policy.\nIts shared instruction fuel does not establish a shared memory/contract quota.\nCrossed child VMs are cancelled; incomplete recordings cannot be replayed."
+                    "live_language [--normal-return] [--explain] [--fuel N]\n\nA retained block signals through an independently compiled protected method.\nWhile its handler waits, publish a replacement; recover with 42 and run the\noriginal cleanup before returning to the exact lexical home.\n\n--normal-return keeps both callers' following code reachable.\n--explain shows exact source and the separate VM frames at each native wait.\nThe finite language task owns dispatch, handler selection and cleanup policy.\nIts shared instruction fuel does not establish a shared memory/contract quota.\nCrossed child VMs are explicitly abandoned; their prefixes are checked by replay."
                 );
                 return Ok(());
             }
@@ -132,6 +133,13 @@ fn main() -> program::Result<()> {
                 .unwrap_or("unnamed program")
         );
         match evidence.termination {
+            Termination::Abandoned => {
+                if !matches!(evidence.recording.replay()?, ReplayOutcome::Trapped(error) if matches!(error.trap, Trap::Abandoned))
+                {
+                    return Err("explicitly stopped invocation did not replay its stop".into());
+                }
+                println!("    explicitly abandoned; checked guest prefix and stop passed");
+            }
             Termination::Returned => {
                 if !matches!(evidence.recording.replay()?, ReplayOutcome::Returned(_)) {
                     return Err("successful invocation did not replay successfully".into());

@@ -15,6 +15,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Label explicit embedding abandonment separately from cancellation and failure, retaining its
+  actual function/PC and closing the outstanding VM scopes.
+
 - Report cancelled resumable invocations distinctly and close logical scopes across quanta.
   Elapsed scope time includes suspension; already performed host effects remain. ([#205][] by [@waywardmonkeys][])
 

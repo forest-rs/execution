@@ -13,7 +13,7 @@ use execution_tape::{
     recording::{InstructionCapture, RecordLimits, Recorder, Recording},
     trace::{TraceLocation, TraceSink},
     value::Value,
-    vm::{ActivationId, ExecutionWork, Invocation, InvocationOptions, Limits, RunStatus, Vm},
+    vm::{ActivationId, ExecutionWork, Invocation, InvocationOptions, Limits, RunStatus, Trap, Vm},
 };
 use std::{cell::RefCell, error::Error, fmt, rc::Rc, sync::Arc};
 
@@ -92,6 +92,7 @@ pub(super) enum Status {
 pub(super) enum Termination {
     Returned,
     Trapped,
+    Abandoned,
     Cancelled,
 }
 
@@ -211,10 +212,19 @@ impl Frame {
         }
     }
 
+    fn abandon(mut self) -> Evidence {
+        self.call
+            .pending_host_call()
+            .expect("crossed pending language operation")
+            .abandon();
+        self.retire()
+    }
+
     fn retire(self) -> Evidence {
         let work = self.call.work();
         let termination = match self.call.result() {
             Some(Ok(_)) => Termination::Returned,
+            Some(Err(error)) if matches!(error.trap, Trap::Abandoned) => Termination::Abandoned,
             Some(Err(_)) => Termination::Trapped,
             None => Termination::Cancelled,
         };
@@ -588,12 +598,12 @@ impl Task {
             action: Action::CleanupFinished,
         });
         if let Some(transfer) = self.transfer.take() {
-            // No raw child heap values cross this boundary. Core cannot unwind other
-            // invocations: their recordings truthfully end in cancellation, not fake returns.
+            // Each crossed VM records its own explicit stop. The language event ties those
+            // stops to the lexical exit; no raw child heap values cross this boundary.
             self.evidence
-                .push(self.block.take().expect("returning block").retire());
+                .push(self.block.take().expect("returning block").abandon());
             self.evidence
-                .push(self.method.take().expect("crossed method").retire());
+                .push(self.method.take().expect("crossed method").abandon());
             if self.remaining_fuel == 0 {
                 return Err(Failure::FuelExhausted.into());
             }

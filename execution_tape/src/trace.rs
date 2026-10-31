@@ -171,6 +171,10 @@ pub enum TraceOutcome<'a> {
     /// Host effects are not undone; abandoned deliveries produce incomplete evidence.
     /// An interrupted instruction attempt has no successful completion.
     Cancelled,
+    /// The embedding explicitly ended this invocation at a pending host boundary.
+    /// The terminal error is [`crate::vm::Trap::Abandoned`]; no guest result or external
+    /// transfer target is implied. Unlike cancellation, this is a recordable control command.
+    Abandoned(&'a TrapInfo),
     /// This instruction or scope was abandoned by a typed non-local return.
     /// The target is an activation ordinal in this invocation, not a function ID.
     /// This is neither a successful instruction completion nor hard cancellation.
@@ -218,6 +222,13 @@ pub enum HostCallOutcome<'a> {
 /// returned identity, or reuse a handle map across runs.
 #[derive(Copy, Clone)]
 pub enum ValueEvent<'a> {
+    /// Explicit termination chosen at a pending host instruction, before discarding staging.
+    Abandon {
+        /// Actual pending instruction in this invocation's code domain.
+        location: TraceLocation,
+        /// Already admitted host construction work discarded by termination.
+        work: DataWork,
+    },
     /// An admitted embedding request to return from an exact live guest activation.
     /// Emitted before result/fuel validation; foreign or expired target denials emit no event.
     ReturnFrom {
@@ -319,6 +330,11 @@ impl core::fmt::Debug for ValueEvent<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Inspect selected values without dumping unrelated backing heap contents.
         match self {
+            Self::Abandon { location, work } => f
+                .debug_struct("Abandon")
+                .field("location", location)
+                .field("work", work)
+                .finish(),
             Self::ReturnFrom {
                 location,
                 target,

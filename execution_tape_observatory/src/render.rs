@@ -123,6 +123,7 @@ fn step_description(
     use execution_tape::recording::InstructionOutcome;
     match step.outcome {
         InstructionOutcome::Pending => "completion not observed".into(),
+        InstructionOutcome::Abandoned => "abandoned by embedding; no successful writes".into(),
         InstructionOutcome::Unwound { target } => {
             format!("abandoned by return from activation #{target}")
         }
@@ -199,6 +200,9 @@ fn title(view: &View<'_>, index: usize) -> String {
         return match boundary {
             Boundary::Host(i) => format!("#{:04}  {}", i, import_name(view, i)),
             Boundary::Command(i) => match &view.commands[i].action {
+                execution_tape::recording::ControlAction::Abandon { .. } => {
+                    "Abandon invocation → embedding".into()
+                }
                 execution_tape::recording::ControlAction::CallGuest { callee, .. } => {
                     format!("Callback #{i} → {}", describe::value(view.record, callee))
                 }
@@ -217,6 +221,9 @@ fn title(view: &View<'_>, index: usize) -> String {
     match view.record.outcome() {
         Some(Outcome::Returned(values)) => {
             format!("Result: {}", describe::values(view.record, values))
+        }
+        Some(Outcome::Trapped(error)) if matches!(error.trap, Trap::Abandoned) => {
+            "ABANDONED · embedding control".into()
         }
         Some(Outcome::Trapped(_)) => "TRAP".into(),
         None => "OUTCOME · missing".into(),
@@ -736,6 +743,12 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             Boundary::Host(i) => call_values(frame, view, area, &view.calls[i]),
             Boundary::Command(i) => {
                 let section = match &view.commands[i].action {
+                    execution_tape::recording::ControlAction::Abandon { work } => ValueSection {
+                        title: " ABANDON INVOCATION ".into(),
+                        note: format!("Embedding control · discarded staging: {} aggregate units, {} payload bytes", work.aggregate, work.payload),
+                        label: "Abandon", values: &[], base: 0,
+                        empty: "No successful result. The guest prefix is checked by replay; the embedding's reason is external policy.".into(),
+                    },
                     execution_tape::recording::ControlAction::CallGuest {
                         callee,
                         args,

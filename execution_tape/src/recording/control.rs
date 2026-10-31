@@ -27,6 +27,11 @@ pub struct ControlCommand<'a> {
 /// An embedding control operation, with values owned by its recording.
 #[derive(Debug)]
 pub enum ControlAction<'a> {
+    /// End this invocation without a guest result or foreign target interpretation.
+    Abandon {
+        /// Admitted host construction work discarded by the command.
+        work: DataWork,
+    },
     /// Return supplied values from an exact live activation, abandoning its active callees.
     ReturnFrom {
         /// Invocation-local target activation ordinal, never a function ID.
@@ -80,6 +85,9 @@ pub(super) struct Command {
 }
 #[derive(Debug)]
 pub(super) enum Action {
+    Abandon {
+        work: DataWork,
+    },
     ReturnFrom {
         target: u64,
         target_location: TraceLocation,
@@ -106,6 +114,7 @@ pub(super) struct Returned {
 impl Command {
     pub(super) fn view<'a>(&'a self, recording: &'a Recording) -> ControlCommand<'a> {
         let action = match &self.action {
+            Action::Abandon { work } => ControlAction::Abandon { work: *work },
             Action::ReturnFrom {
                 target,
                 target_location,
@@ -156,6 +165,7 @@ impl Command {
 impl Action {
     pub(super) fn construction(&self) -> (DataWork, &[AggregateId]) {
         match self {
+            Self::Abandon { work } => (*work, &[]),
             Self::CallGuest {
                 work, constructed, ..
             }

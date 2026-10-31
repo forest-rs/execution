@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- End a pending invocation explicitly with `PendingHostCall::abandon`. The terminal result is
+  `Trap::Abandoned`, with no guest outputs or cleanup. Recording retains the command and discarded
+  staging work; checked replay reexecutes the guest prefix and the explicit stop. Drop cancellation
+  remains incomplete evidence. Cross-invocation ancestry and exit selection remain embedding policy.
+
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
   provides checked snapshot differences and sums across code domains. This is accounting, not
@@ -103,6 +108,12 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Add `Trap::Abandoned`, `TraceOutcome::Abandoned`, `ValueEvent::Abandon`,
+  `InstructionOutcome::Abandoned` and `ControlAction::Abandon`. Migration: handle the new variants
+  in exhaustive matches; explicit termination is a recorded embedding decision with no successful
+  instruction writes. `RunStatus` and the invocation result types are unchanged; the terminal
+  `Err(Trap::Abandoned)` is intentional control termination, distinct from dropped execution.
 
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include
