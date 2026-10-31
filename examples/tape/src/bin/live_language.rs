@@ -57,21 +57,28 @@ fn describe(action: &Action) -> String {
 fn main() -> program::Result<()> {
     let mut non_local = true;
     let mut explain = false;
+    let mut snapshot = false;
+    let mut explore = false;
     let mut fuel = 1_000;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--normal-return" => non_local = false,
             "--explain" => explain = true,
+            "--snapshot" => snapshot = true,
+            "--explore" => explore = true,
             "--fuel" => fuel = arguments.next().ok_or("--fuel needs an integer")?.parse()?,
             "--help" | "-h" => {
                 println!(
-                    "live_language [--normal-return] [--explain] [--fuel N]\n\nA retained block signals through an independently compiled protected method.\nWhile its handler waits, publish a replacement; recover with 42 and run the\noriginal cleanup before returning to the exact lexical home.\n\n--normal-return keeps both callers' following code reachable.\n--explain shows exact source and the separate VM frames at each native wait.\nThe finite language task owns dispatch, handler selection and cleanup policy.\nIts shared instruction fuel does not establish a shared memory/contract quota.\nCrossed child VMs are explicitly abandoned; their prefixes are checked by replay."
+                    "live_language [--normal-return] [--explain] [--snapshot | --explore] [--fuel N]\n\nA retained block signals through an independently compiled protected method.\nWhile its handler waits, publish a replacement; recover with 42 and run the\noriginal cleanup before returning to the exact lexical home.\n\n--normal-return keeps both callers' following code reachable.\n--explain shows exact source and the separate VM frames at each native wait.\n--snapshot renders both paused task views without terminal modes.\n--explore opens the read-only task view; q returns to the driver.\nThe finite language task owns dispatch, handler selection and cleanup policy.\nIts shared instruction fuel does not establish a shared memory/contract quota.\nCrossed child VMs are explicitly abandoned; their prefixes are checked by replay."
                 );
                 return Ok(());
             }
             _ => return Err(format!("unknown argument {argument:?}; use --help").into()),
         }
+    }
+    if snapshot && explore {
+        return Err("choose --snapshot or --explore".into());
     }
     let mut task = Task::new(non_local, fuel)?;
     loop {
@@ -81,6 +88,12 @@ fn main() -> program::Result<()> {
                 println!("NeedValue handler is waiting for an explicit recovery choice.");
                 if explain {
                     print_stack(&task)?;
+                }
+                if snapshot {
+                    print!("{}", task.explorer()?.render_text(160, 48)?);
+                }
+                if explore {
+                    task.explorer()?.run()?;
                 }
                 task.publish_replacement()?;
                 println!(
@@ -93,6 +106,12 @@ fn main() -> program::Result<()> {
                 println!("Original ensure cleanup is waiting for native work.");
                 if explain {
                     print_stack(&task)?;
+                }
+                if snapshot {
+                    print!("{}", task.explorer()?.render_text(160, 48)?);
+                }
+                if explore {
+                    task.explorer()?.run()?;
                 }
                 task.finish_cleanup_wait()?;
             }

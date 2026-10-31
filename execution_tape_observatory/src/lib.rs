@@ -6,6 +6,8 @@
 //! [`LiveExplorer`] steps a real borrow-scoped invocation with an embedding-supplied host.
 //! It shows live activations, initialized values and exact authored source, with instruction
 //! breakpoints and cooperative continuation. Host calls perform real effects when executed.
+//! [`TaskExplorer`] borrows independently owned paused invocations and source-bound embedding
+//! decisions. It presents their supplied causal order without taking over the language scheduler.
 //!
 //! [`browse`] opens functions, instructions, imports, constants and aggregate types without a VM
 //! or host. Verification runs once on opening; rejected programs remain navigable. [`render_program`]
@@ -37,6 +39,8 @@ mod recording_explorer;
 mod render;
 mod source_context;
 mod syntax;
+mod task;
+pub use task::{TaskCode, TaskDecision, TaskExplorer, TaskFrame, TaskFrameInfo, TaskViewError};
 
 #[cfg(test)]
 mod tests;

@@ -7,6 +7,8 @@ A small language-owned task connects them through retained callables and scalar 
 ```sh
 cargo run -p execution_tape_examples --bin live_language -- --explain
 cargo run -p execution_tape_examples --bin live_language -- --normal-return --explain
+cargo run -p execution_tape_examples --bin live_language -- --snapshot
+cargo run -p execution_tape_examples --bin live_language -- --explore
 cargo test -p execution_tape_examples --bin live_language
 ```
 
@@ -50,7 +52,18 @@ Language task → independent VM frames (outermost first):
 These are real paused VM frames grouped by their independent invocations. The returned factory
 is absent. Program-local function IDs intentionally overlap, so every source lookup carries its
 exact code owner. The text explanation also shows the different stack at the cleanup wait and
-the source of each language decision. It does not add a multi-invocation view to Observatory yet.
+the source of each language decision.
+
+`--snapshot` renders Observatory's read-only task view at the handler and cleanup waits.
+`--explore` opens it interactively: Tab selects the active panel, arrows select frames or decisions
+and scroll source/values, and `q` returns to the driver. The driver then publishes/recovers or
+completes native cleanup work. The view performs no guest execution or host dispatch.
+
+Selecting a task frame shows that invocation's exact source, instruction and initialized registers;
+pending reply destinations remain unavailable. Selecting a language decision shows native policy
+source, including the original source of a handler that has already returned. Code/source bindings
+are reused for all references to one prepared program. The header reports live VM work; the final
+CLI report additionally includes retired invocation work.
 
 `--normal-return` lets the block return normally instead of selecting its lexical home. The
 same original cleanup runs, then both the protected method and sender execute their following

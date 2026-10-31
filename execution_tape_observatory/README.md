@@ -313,3 +313,30 @@ activation. Their values are labeled as embedding inputs; they are not presented
 normal callback returns. Target metadata retains the actual suspended call/host source separately
 from the initiating instruction. Unwound instruction attempts are labeled as abandoned, including
 an older parent host attempt that closes after later callback instructions.
+
+## Inspecting a paused language task
+
+`TaskExplorer` borrows real paused invocations, including invocations with different host types.
+Build one `TaskCode` per prepared owner, bind its exact source map once, and reuse it for
+`TaskFrame` inputs and `TaskDecision` locations. The explorer rejects duplicate invocations,
+foreign code owners and invalid decision instructions before entering terminal modes.
+
+Inputs carry the embedding's causal order and native decisions. The VM supplies actual guest
+frames, initialized registers and work; it does not certify the embedding's ancestry or policy.
+Selecting a frame shows its code/source and read-only values. Selecting a decision shows that
+native decision's original source, even when its invocation has already returned.
+
+Tab highlights the active panel with a double green border. Arrows select or scroll; `q`
+returns to the language driver. This view performs no stepping, host dispatch or recovery action.
+Its input limits are 64 invocations and 4,096 decisions, with explicit omission of outer guest
+frames beyond 64 per invocation and registers beyond 128. Text and source previews are bounded.
+
+Try the complete fixture at both native waits:
+
+```sh
+cargo run -p execution_tape_examples --bin live_language -- --snapshot
+cargo run -p execution_tape_examples --bin live_language -- --explore
+```
+
+The header sums live VM work once; it excludes retired invocations and native policy work.
+The example's final report includes retired VM work separately. Neither report is a heap bound.

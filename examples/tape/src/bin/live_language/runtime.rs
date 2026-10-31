@@ -15,6 +15,7 @@ use execution_tape::{
     value::Value,
     vm::{ActivationId, ExecutionWork, Invocation, InvocationOptions, Limits, RunStatus, Trap, Vm},
 };
+use execution_tape_observatory::{TaskCode, TaskDecision, TaskExplorer, TaskFrame};
 use std::{cell::RefCell, error::Error, fmt, rc::Rc, sync::Arc};
 
 // Private identities in this single task. They are not VM handles or inter-task capabilities.
@@ -292,6 +293,48 @@ pub(super) struct Task {
 }
 
 impl Task {
+    /// Borrows every actual paused invocation and the source-bound native decisions.
+    pub(super) fn explorer(&self) -> Result<TaskExplorer<'_>> {
+        fn code<'a>(compiled: &'a Compiled, cache: &mut Vec<TaskCode<'a>>) -> Result<TaskCode<'a>> {
+            if let Some(code) = cache
+                .iter()
+                .find(|code| std::ptr::eq(code.program(), compiled.program.as_ref()))
+            {
+                return Ok(*code);
+            }
+            let code = TaskCode::new(&compiled.program).sources(&compiled.sources)?;
+            cache.push(code);
+            Ok(code)
+        }
+        let mut cache = Vec::new();
+        let mut frames = Vec::new();
+        for frame in [
+            &self.root,
+            &self.method,
+            &self.block,
+            &self.handler,
+            &self.cleanup,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            frames.push(TaskFrame::new(
+                frame.label,
+                frame.call.inspect(),
+                code(&frame.code, &mut cache)?,
+            )?);
+        }
+        let mut decisions = Vec::new();
+        for event in &self.events {
+            decisions.push(TaskDecision::new(
+                &crate::describe(&event.action),
+                code(&event.site.code, &mut cache)?,
+                event.site.location,
+            )?);
+        }
+        Ok(TaskExplorer::new(frames, decisions)?)
+    }
+
     pub(super) fn new(non_local: bool, fuel: u64) -> Result<Self> {
         let home = program::home(non_local)?;
         let method_code = program::method(10)?;

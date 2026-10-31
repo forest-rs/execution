@@ -14,13 +14,13 @@ fn escaped(ch: char) -> String {
         ch.to_string()
     }
 }
-fn safe_label(label: &str) -> String {
+pub(super) fn label_preview(label: &str, limit: usize) -> String {
     let mut output = String::new();
     let mut count = 0;
     for ch in label.chars() {
         let escaped = escaped(ch);
         let width = escaped.chars().count();
-        if count + width > 120 {
+        if count + width > limit {
             output.push('…');
             break;
         }
@@ -47,7 +47,7 @@ pub(super) fn context_lines(
         "Source: line {} byte {} · {} · bytes {}..{}",
         context.start.line,
         context.start.byte_column,
-        safe_label(context.name),
+        label_preview(context.name, 120),
         context.range.start,
         context.range.end
     )];

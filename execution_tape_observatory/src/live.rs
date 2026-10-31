@@ -637,7 +637,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     }
 }
 
-fn value_text(value: ValueRef<'_>) -> String {
+pub(super) fn value_preview(value: ValueRef<'_>) -> String {
     match value {
         ValueRef::Str(text) => format!(
             "\"{}\" · {} UTF-8 bytes",
@@ -657,10 +657,10 @@ fn value_text(value: ValueRef<'_>) -> String {
         ValueRef::F64(value) => value.to_string(),
         ValueRef::Decimal(value) => format!("{}e-{}", value.mantissa(), value.scale()),
         ValueRef::Obj(object) => format!(
-            "object #{} · host type {} · Enter to inspect",
+            "object #{} · host type {}",
             object.handle.0, object.host_type.0
         ),
-        ValueRef::Agg(handle) => format!("aggregate @{} · Enter to inspect", handle.0),
+        ValueRef::Agg(handle) => format!("aggregate @{}", handle.0),
         ValueRef::Func(func) => format!("function f{}", func.0),
         ValueRef::Closure(closure) => format!(
             "closure f{} · environment @{}",
@@ -798,3 +798,12 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
 mod request_tests;
 #[cfg(test)]
 mod tests;
+
+fn value_text(value: ValueRef<'_>) -> String {
+    let text = value_preview(value);
+    if matches!(value, ValueRef::Obj(_) | ValueRef::Agg(_)) {
+        format!("{text} · Enter to inspect")
+    } else {
+        text
+    }
+}
