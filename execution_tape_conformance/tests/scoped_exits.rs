@@ -578,6 +578,7 @@ fn payload_ingress_is_charged_once_before_transfer_and_stays_cumulative() {
 }
 
 #[test]
+#[cfg(panic = "unwind")]
 fn panicking_transfer_observers_cannot_expose_caller_results_or_retry_the_operation() {
     struct Panics {
         on_scope: bool,
