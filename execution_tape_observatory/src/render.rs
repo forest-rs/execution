@@ -221,7 +221,15 @@ fn title(view: &View<'_>, index: usize) -> String {
             || "Invocation · missing".into(),
             |entry| {
                 format!(
-                    "App → {}",
+                    "{} → {}",
+                    view.execution
+                        .segments()
+                        .find(|segment| segment.id == view.segment)
+                        .and_then(|segment| segment.parent)
+                        .map_or_else(
+                            || "App".into(),
+                            |parent| format!("Caller #{}:{}", parent.segment, parent.activation)
+                        ),
                     describe::function(view.record.program().program(), entry.entry)
                 )
             },

@@ -231,6 +231,16 @@ mod tests {
     #[test]
     fn recorded_segments_select_exact_sources_and_replay_the_owning_execution() {
         let (record, root_map, child_map, child) = fixture();
+        let entry_view = RecordingExplorer::new(&record)
+            .segment(1)
+            .unwrap()
+            .render_text(140, 40)
+            .unwrap();
+        assert!(entry_view.contains("Caller #0:0 →"), "{entry_view}");
+        assert!(
+            !entry_view.contains("App →"),
+            "a child did not enter from the application"
+        );
         assert!(matches!(
             record
                 .segments()
