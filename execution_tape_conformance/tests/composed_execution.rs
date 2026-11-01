@@ -964,7 +964,10 @@ fn rejected_nonlocal_results_retain_both_the_initiating_code_and_contract_owner(
         };
         assert!(boundary.program.shares_definition_with(&parent));
         assert!(
-            matches!(*boundary.error, Trap::ContractMismatch { function, .. } if function == entry)
+            matches!(
+                boundary.error,
+                execution_tape::vm::ContractBoundaryFailure::Mismatch(_)
+            ) && boundary.function == entry
         );
         assert!(run.program().shares_definition_with(&child));
     }

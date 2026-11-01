@@ -1296,13 +1296,12 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
     if a.func != b.func || a.pc != b.pc || a.span_id != b.span_id {
         return false;
     }
-    same_trap_kind(&a.trap, &b.trap)
-}
-
-fn same_trap_kind(a: &Trap, b: &Trap) -> bool {
-    match (a, b) {
+    match (&a.trap, &b.trap) {
         (Trap::ContractBoundary(a), Trap::ContractBoundary(b)) => {
-            a.program.shares_definition_with(&b.program) && same_trap_kind(&a.error, &b.error)
+            a.program.shares_definition_with(&b.program)
+                && a.function == b.function
+                && a.position == b.position
+                && a.error == b.error
         }
         (Trap::CrossInstanceValue { kind: a }, Trap::CrossInstanceValue { kind: b }) => a == b,
         (Trap::FuelExceeded, Trap::FuelExceeded)

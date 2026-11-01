@@ -156,26 +156,58 @@ impl Default for Limits {
 pub struct ContractBoundaryError {
     /// Exact definition which owns the failing boundary's identities.
     pub program: VerifiedProgram,
-    /// The boundary's contract mismatch or contract-work exhaustion.
-    pub error: Box<Trap>,
+    /// Function whose declared contract is being checked.
+    pub function: FuncId,
+    /// Argument or result position in that function's signature.
+    pub position: ContractPosition,
+    /// Contract mismatch or exhausted checking allowance.
+    pub error: ContractBoundaryFailure,
+}
+
+/// Why a boundary owned by another code definition could not be admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContractBoundaryFailure {
+    /// A concrete value violated the declared contract.
+    Mismatch(ContractViolation),
+    /// Contract validation or provenance checking exhausted the execution's shared allowance.
+    WorkExceeded {
+        /// Configured execution-wide contract-work limit.
+        limit: u64,
+    },
 }
 impl Trap {
     fn in_contract_definition(self, program: &VerifiedProgram) -> Self {
-        match self {
-            Self::ContractMismatch { .. } | Self::ContractWorkExceeded { .. } => {
-                Self::ContractBoundary(ContractBoundaryError {
-                    program: program.clone(),
-                    error: Box::new(self),
-                })
-            }
-            _ => self,
-        }
+        let (function, position, error) = match self {
+            Self::ContractMismatch {
+                function,
+                position,
+                error,
+            } => (function, position, ContractBoundaryFailure::Mismatch(error)),
+            Self::ContractWorkExceeded {
+                function,
+                position,
+                limit,
+            } => (
+                function,
+                position,
+                ContractBoundaryFailure::WorkExceeded { limit },
+            ),
+            _ => return self,
+        };
+        Self::ContractBoundary(Box::new(ContractBoundaryError {
+            program: program.clone(),
+            function,
+            position,
+            error,
+        }))
     }
 }
 impl fmt::Debug for ContractBoundaryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContractBoundaryError")
             .field("program", &self.program.program().name())
+            .field("function", &self.function)
+            .field("position", &self.position)
             .field("error", &self.error)
             .finish()
     }
@@ -184,15 +216,24 @@ impl fmt::Display for ContractBoundaryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "boundary in {:?}: {}",
-            self.program.program().name(),
-            self.error
-        )
+            "boundary in {:?}, function #{}: ",
+            self.program.program().name().unwrap_or("unnamed code"),
+            self.function.0
+        )?;
+        match &self.error {
+            ContractBoundaryFailure::Mismatch(error) => error.fmt_at(f, self.position),
+            ContractBoundaryFailure::WorkExceeded { limit } => {
+                write!(f, "contract work exceeded {limit} at {:?}", self.position)
+            }
+        }
     }
 }
 impl core::error::Error for ContractBoundaryError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(self.error.as_ref())
+        match &self.error {
+            ContractBoundaryFailure::Mismatch(error) => Some(error),
+            ContractBoundaryFailure::WorkExceeded { .. } => None,
+        }
     }
 }
 
@@ -213,7 +254,7 @@ pub enum Trap {
         kind: ValueType,
     },
     /// The initiating instruction checked a contract owned by another code definition.
-    ContractBoundary(ContractBoundaryError),
+    ContractBoundary(Box<ContractBoundaryError>),
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
     AggregateWorkExceeded {
         /// Configured node-and-field work limit.

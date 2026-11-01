@@ -20,14 +20,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 
 pub(super) fn trap_text(trap: &Trap) -> String {
     match trap {
-        Trap::ContractBoundary(boundary) => format!(
-            "boundary in {}: {}",
-            preview(
-                boundary.program.program().name().unwrap_or("unnamed code"),
-                40
-            ),
-            trap_text(&boundary.error)
-        ),
+        Trap::ContractBoundary(boundary) => preview(&boundary.to_string(), 240),
         Trap::HostCallFailed { symbol, error, .. } => {
             format!("{}: {}", preview(symbol, 40), host_error(error))
         }
