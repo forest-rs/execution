@@ -10,6 +10,7 @@ use execution_tape::{
     source::{BoundSources, SourceError, SourceMap},
     trace::TraceLocation,
     value::{AggHandle, AggType, Obj, Value},
+    verifier::VerifiedProgram,
     vm::{ActivationId, Invocation, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo},
 };
 mod objects;
@@ -88,6 +89,8 @@ enum ValueTarget {
 pub struct LiveExplorer<'view, 'vm, H: Host> {
     invocation: Invocation<'vm, H>,
     sources: Option<BoundSources<'view>>,
+    sources_program: Option<VerifiedProgram>,
+    additional_sources: Vec<(VerifiedProgram, BoundSources<'view>)>,
     origin: Option<RequestOrigin<'view>>,
     origin_selected: bool,
     showing_origin: bool,
@@ -96,6 +99,7 @@ pub struct LiveExplorer<'view, 'vm, H: Host> {
     focus: Focus,
     code: Vec<(u32, String)>,
     code_func: Option<execution_tape::value::FuncId>,
+    code_owner: Option<VerifiedProgram>,
     code_selected: usize,
     flow: Flow,
     values: Vec<String>,
@@ -106,7 +110,8 @@ pub struct LiveExplorer<'view, 'vm, H: Host> {
     source_lines: Vec<String>,
     source_offset: usize,
     roots: bool,
-    breakpoints: BTreeSet<(u32, u32)>,
+    breakpoints: BTreeSet<(usize, u32, u32)>,
+    breakpoint_programs: Vec<VerifiedProgram>,
     motion: Option<Motion>,
     skip_breakpoint: bool,
     status: String,
@@ -129,6 +134,8 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         let mut view = Self {
             invocation,
             sources: None,
+            sources_program: None,
+            additional_sources: Vec::new(),
             origin: None,
             origin_selected: false,
             showing_origin: false,
@@ -137,6 +144,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             focus: Focus::Code,
             code: Vec::new(),
             code_func: None,
+            code_owner: None,
             code_selected: 0,
             flow: Flow::default(),
             values: Vec::new(),
@@ -148,6 +156,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             source_offset: 0,
             roots: false,
             breakpoints: BTreeSet::new(),
+            breakpoint_programs: Vec::new(),
             motion: None,
             skip_breakpoint: false,
             status: "PAUSED · before next instruction".into(),
@@ -159,6 +168,20 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     /// Attaches exact frontend source snapshots, rejecting stale maps before terminal entry.
     pub fn sources(mut self, map: &'view SourceMap) -> Result<Self, SourceError> {
         self.sources = Some(map.bind(self.invocation.program().program())?);
+        self.sources_program = Some(self.invocation.program().clone());
+        self.refresh_source();
+        Ok(self)
+    }
+
+    /// Attaches exact source for another code definition in the same live execution.
+    /// A frame always selects sources by its retained definition, including an old revision.
+    pub fn sources_for(
+        mut self,
+        program: &VerifiedProgram,
+        map: &'view SourceMap,
+    ) -> Result<Self, SourceError> {
+        let bound = map.bind(program.program())?;
+        self.additional_sources.push((program.clone(), bound));
         self.refresh_source();
         Ok(self)
     }
@@ -249,12 +272,33 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         })
     }
 
+    fn has_breakpoint(&self, program: &VerifiedProgram, location: TraceLocation) -> bool {
+        self.breakpoint_programs
+            .iter()
+            .position(|owner| owner.shares_definition_with(program))
+            .is_some_and(|domain| {
+                self.breakpoints
+                    .contains(&(domain, location.func.0, location.pc))
+            })
+    }
+
     fn refresh_source(&mut self) {
         self.source_offset = 0;
         let sources = if self.showing_origin {
             self.origin.as_ref().and_then(|origin| origin.sources)
         } else {
-            self.sources
+            let code = self.code_definition();
+            self.additional_sources
+                .iter()
+                .find(|(owner, _)| owner.shares_definition_with(code))
+                .map(|(_, map)| *map)
+                .or_else(|| {
+                    self.sources.filter(|_| {
+                        self.sources_program
+                            .as_ref()
+                            .is_some_and(|owner| owner.shares_definition_with(code))
+                    })
+                })
         };
         self.source_lines = match (sources, self.location()) {
             (Some(map), Some(loc)) => source_context::context_lines(map, loc, 6, 100),
@@ -269,8 +313,12 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.show_location_in(location, false);
     }
     fn show_location_in(&mut self, location: TraceLocation, origin: bool) {
-        let changed = self.code_func != Some(location.func) || self.showing_origin != origin;
         self.showing_origin = origin;
+        let changed = self.code_func != Some(location.func)
+            || !self
+                .code_owner
+                .as_ref()
+                .is_some_and(|owner| owner.shares_definition_with(self.code_definition()));
         if changed {
             let (flow, code) = {
                 let program = self.code_program();
@@ -288,6 +336,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             self.flow = flow;
             self.code = code;
             self.code_func = Some(location.func);
+            self.code_owner = Some(self.code_definition().clone());
         }
         self.code_selected = self
             .code
@@ -564,11 +613,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                 self.motion = None;
                 break;
             };
-            if !self.skip_breakpoint
-                && self
-                    .breakpoints
-                    .contains(&(leaf.location.func.0, leaf.location.pc))
-            {
+            if !self.skip_breakpoint && self.has_breakpoint(&leaf.program, leaf.location) {
                 self.motion = None;
                 self.status = "PAUSED · instruction breakpoint (before execution)".into();
                 break;
@@ -739,8 +784,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                 }
                 if let Some(loc) = self.location() {
                     if !self
-                        .invocation
-                        .program()
+                        .code_definition()
                         .function(loc.func)
                         .is_some_and(|f| f.instructions().any(|i| i.pc == loc.pc))
                     {
@@ -750,7 +794,16 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                         }
                         return true;
                     }
-                    let point = (loc.func.0, loc.pc);
+                    let owner = self.code_definition().clone();
+                    let domain = self
+                        .breakpoint_programs
+                        .iter()
+                        .position(|program| program.shares_definition_with(&owner))
+                        .unwrap_or_else(|| {
+                            self.breakpoint_programs.push(owner);
+                            self.breakpoint_programs.len() - 1
+                        });
+                    let point = (domain, loc.func.0, loc.pc);
                     if !self.breakpoints.remove(&point) {
                         self.breakpoints.insert(point);
                     }
@@ -794,6 +847,8 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
     }
 }
 
+#[cfg(test)]
+mod composition_tests;
 #[cfg(test)]
 mod request_tests;
 #[cfg(test)]

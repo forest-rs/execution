@@ -30,6 +30,12 @@ The `▸` row in Values is the value Enter will open. Values and source scroll w
 Invocations started with `InvocationOptions::yield_host_calls()` show **AWAITING HOST** at an
 admitted request. Stepping/continuing does not silently invoke it. `h` explicitly dispatches
 through the embedding's existing host and finishes that instruction, including its real effects.
+Composed instance calls expose their actual suspended parents in the live stack. Each frame
+selects disassembly, registers and breakpoints using its retained code definition, even when
+multiple definitions use `f0`. Attach additional source bundles with
+`LiveExplorer::sources_for(&definition, &source_map)`; switching frames preserves exact source
+connections and existing revisions remain independently inspectable.
+
 `LiveExplorer::into_invocation` leaves presentation while preserving the pending handle for an
 external or asynchronous completion. Dropping an unfinished explorer still cancels its guest.
 
