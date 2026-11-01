@@ -1239,6 +1239,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         (Trap::FuelExceeded, Trap::FuelExceeded)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
+        | (Trap::InstanceLimitExceeded, Trap::InstanceLimitExceeded)
         | (Trap::AggregateSizeOverflow, Trap::AggregateSizeOverflow)
         | (Trap::PayloadSizeOverflow, Trap::PayloadSizeOverflow)
         | (Trap::InvalidPc, Trap::InvalidPc)

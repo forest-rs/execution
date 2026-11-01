@@ -467,6 +467,8 @@ pub mod format;
 pub mod host;
 pub mod host_binding;
 pub mod host_catalog;
+/// Store-bound namespaces for verified code.
+pub mod instance;
 pub(crate) mod instr_operands;
 pub mod opcode;
 pub mod program;

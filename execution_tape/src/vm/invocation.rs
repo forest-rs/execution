@@ -220,7 +220,7 @@ impl<H: Host> Vm<H> {
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
-    fn prepare(
+    pub(super) fn prepare(
         vm: BorrowedOrOwned<'a, Vm<H>>,
         program: CodeOwner,
         entry: FuncId,
@@ -378,6 +378,7 @@ impl<H: Host> Invocation<'_, H> {
         let program = match &self.continuation.program {
             CodeOwner::Original(program) => Arc::clone(program),
             CodeOwner::Definition(program) => Arc::new(program.clone()),
+            CodeOwner::Instance(instance) => Arc::new(instance.program().clone()),
         };
         Callable::retain(program, self.aggregates(), ValueRef::from_value(value))
     }
@@ -430,9 +431,16 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn program_owner(&self) -> Option<&Arc<VerifiedProgram>> {
         match &self.continuation.program {
-            CodeOwner::Definition(_) => None,
+            CodeOwner::Definition(_) | CodeOwner::Instance(_) => None,
             CodeOwner::Original(program) => Some(program),
         }
+    }
+
+    /// The active store instance, if explicitly selected or admitted by a host boundary.
+    /// Scalar entries may have no instance yet; inspecting this query creates none.
+    #[must_use]
+    pub fn instance(&self) -> Option<&Instance> {
+        self.continuation.ctx.instance.as_ref()
     }
 
     /// Borrows aggregate storage. Values observed while suspended belong to this heap.

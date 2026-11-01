@@ -250,7 +250,7 @@ impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>
 /// The context also carries the optional incremental-execution access sink for hosts whose results
 /// depend on external state.
 pub struct HostContext<'vm, 'access> {
-    program: &'vm Program,
+    instance: &'vm crate::instance::Instance,
     host_sig_id: HostSigId,
     aggregates: &'vm AggHeap,
     results: &'access mut HostResults,
@@ -261,7 +261,7 @@ pub struct HostContext<'vm, 'access> {
 impl fmt::Debug for HostContext<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostContext")
-            .field("program_name", &self.program.name())
+            .field("program_name", &self.instance.program().program().name())
             .field("host_sig_id", &self.host_sig_id)
             .field("aggregate_count", &self.aggregates.len_u32())
             .field("construction_work", &self.results.work)
@@ -273,7 +273,7 @@ impl fmt::Debug for HostContext<'_, '_> {
 impl<'vm, 'access> HostContext<'vm, 'access> {
     /// Creates a host context for one VM host call.
     pub(crate) fn new(
-        program: &'vm Program,
+        instance: &'vm crate::instance::Instance,
         host_sig_id: HostSigId,
         aggregates: &'vm AggHeap,
         results: &'access mut HostResults,
@@ -281,7 +281,7 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         access: Option<&'access mut dyn AccessSink>,
     ) -> Self {
         Self {
-            program,
+            instance,
             host_sig_id,
             aggregates,
             results,
@@ -304,10 +304,17 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         }
     }
 
+    /// The exact code instance whose host import is being dispatched.
+    /// The handle is a store-bound namespace key; mutable host state stays with the VM.
+    #[must_use]
+    pub fn instance(&self) -> &crate::instance::Instance {
+        self.instance
+    }
+
     /// Returns the verified program being executed.
     #[must_use]
     pub fn program(&self) -> &Program {
-        self.program
+        self.instance.program().program()
     }
 
     /// Returns the declared host import being called in [`Self::program`].
@@ -756,7 +763,8 @@ mod tests {
 
     #[test]
     fn retained_arguments_are_independent_of_the_source_heap() {
-        let program = crate::asm::ProgramBuilder::new().build();
+        let definition = crate::asm::ProgramBuilder::new().build_verified().unwrap();
+        let instance = crate::instance::Instance::new(definition, Arc::new(()), 0, false);
         let mut heap = AggHeap::new();
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
@@ -764,7 +772,7 @@ mod tests {
         let mut results = HostResults::default();
         let mut budget = crate::vm::budget::DataBudget::default();
         let snapshot = HostContext::new(
-            &program,
+            &instance,
             HostSigId(0),
             &heap,
             &mut results,

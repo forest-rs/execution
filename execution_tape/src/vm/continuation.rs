@@ -15,6 +15,7 @@ use alloc::sync::Arc;
 pub(super) enum CodeOwner {
     Definition(VerifiedProgram),
     Original(Arc<VerifiedProgram>),
+    Instance(Instance),
 }
 impl core::ops::Deref for CodeOwner {
     type Target = VerifiedProgram;
@@ -22,6 +23,16 @@ impl core::ops::Deref for CodeOwner {
         match self {
             Self::Definition(program) => program,
             Self::Original(program) => program,
+            Self::Instance(instance) => instance.program(),
+        }
+    }
+}
+
+impl CodeOwner {
+    fn instance(&self) -> Option<&Instance> {
+        match self {
+            Self::Instance(instance) => Some(instance),
+            _ => None,
         }
     }
 }
@@ -90,6 +101,7 @@ impl<'a> Continuation<'a> {
                 self.entry,
                 &self.args,
                 &mut self.trace,
+                self.program.instance(),
             )?;
         } else {
             vm.initialize_run::<NoTracePolicy>(
@@ -99,6 +111,7 @@ impl<'a> Continuation<'a> {
                 self.entry,
                 &self.args,
                 &mut self.trace,
+                self.program.instance(),
             )?;
         }
         Ok(())

@@ -167,7 +167,7 @@ impl HostContext<'_, '_> {
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, HostError> {
         self.results.allocate(
             self.aggregates,
-            self.program,
+            self.instance.program().program(),
             AggType::Tuple {
                 arity: u32::try_from(values.len()).unwrap_or(u32::MAX),
             },
@@ -185,7 +185,7 @@ impl HostContext<'_, '_> {
     ) -> Result<AggHandle, HostError> {
         self.results.allocate(
             self.aggregates,
-            self.program,
+            self.instance.program().program(),
             AggType::Struct { type_id },
             values,
             self.budget,
@@ -200,7 +200,7 @@ impl HostContext<'_, '_> {
     ) -> Result<AggHandle, HostError> {
         self.results.allocate(
             self.aggregates,
-            self.program,
+            self.instance.program().program(),
             AggType::Array { elem_type_id },
             values,
             self.budget,

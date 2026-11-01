@@ -17,6 +17,7 @@ use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
 use crate::contract::{Contract, ContractPosition, ContractViolation};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
+use crate::instance::Instance;
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::program_memory::{Checkpoint, ProgramMemory};
@@ -37,6 +38,7 @@ mod continuation;
 use budget::Budget;
 mod host_call;
 mod inspection;
+mod instances;
 mod invocation;
 use inspection::ExecutionControl;
 pub use inspection::{
@@ -152,6 +154,8 @@ pub enum Trap {
     CallDepthExceeded,
     /// Host call count limit exceeded.
     HostCallLimitExceeded,
+    /// The VM cannot represent another live code instance.
+    InstanceLimitExceeded,
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
     AggregateWorkExceeded {
         /// Configured node-and-field work limit.
@@ -268,6 +272,7 @@ impl fmt::Display for Trap {
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
+            Self::InstanceLimitExceeded => write!(f, "VM instance capacity exhausted"),
             Self::AggregateWorkExceeded {
                 limit,
                 used,
@@ -463,6 +468,7 @@ pub struct ExecutionContext {
 
 #[derive(Debug, Default)]
 struct Registers {
+    instance: Option<Instance>,
     /// Arena backing bytes/strings and other out-of-line temporaries.
     arena: ValueArena,
 
@@ -517,6 +523,7 @@ impl ExecutionContext {
 
 impl Registers {
     fn clear(&mut self) {
+        self.instance = None;
         self.frames.clear();
         self.bools.clear();
         self.i64s.clear();
@@ -552,6 +559,7 @@ pub struct Vm<H: Host> {
 
     /// Retained aggregates and temporary allocations from the active run.
     memory: ProgramMemory,
+    instances: instances::Instances,
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -1132,6 +1140,7 @@ impl<H: Host> Vm<H> {
             host,
             limits,
             memory: ProgramMemory::new(),
+            instances: instances::Instances::default(),
         }
     }
 
@@ -1254,7 +1263,7 @@ impl<H: Host> Vm<H> {
         trace: &mut TraceCtx<'_>,
         access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        self.initialize_run::<P>(ctx, budget, program, entry, args, trace)?;
+        self.initialize_run::<P>(ctx, budget, program, entry, args, trace, None)?;
         let mut register_state = P::RegisterState::default();
         let first_output = outputs.len();
         let progress = self.execute_loop::<P, false>(
@@ -1292,10 +1301,12 @@ impl<H: Host> Vm<H> {
         entry: FuncId,
         args: &[Value],
         trace: &mut TraceCtx<'_>,
+        instance: Option<&Instance>,
     ) -> Result<(), TrapInfo> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         ctx.clear();
+        ctx.instance = instance.cloned();
 
         let entry_fn = program_ref
             .functions
@@ -2218,6 +2229,13 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::HostCallLimitExceeded));
                     }
                     budget.host_calls += 1;
+                    if ctx.instance.is_none() {
+                        ctx.instance = Some(
+                            self.instances
+                                .default_for(program)
+                                .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?,
+                        );
+                    }
 
                     let hs = program_ref
                         .host_sig(*host_sig)
@@ -2301,7 +2319,7 @@ impl<H: Host> Vm<H> {
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
                     let host_ctx = HostContext::new(
-                        program_ref,
+                        ctx.instance.as_ref().expect("admitted host instance"),
                         *host_sig,
                         self.memory.aggs(),
                         &mut host_results,

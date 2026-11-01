@@ -30,6 +30,7 @@ cargo run -p execution_graph_examples --bin transforms
 | Example | What it is for |
 | --- | --- |
 | [`bound_host`](tape/src/bin/bound_host.rs) | Bind complete host signatures before execution, reuse bindings with independent state, and preserve an owned domain error. |
+| [`instance_namespaces`](tape/src/bin/instance_namespaces.rs) | Run shared verified code in two distinct host namespaces within one VM store. |
 | [`disasm`](tape/src/bin/disasm.rs) | Assemble a small program and print its decoded instructions and control flow. |
 | [`block_parameters`](tape/src/bin/block_parameters.rs) | Compare explicit register moves with typed block arguments in equivalent loops; inspect prepared execution requirements. |
 | [`nested_contracts`](tape/src/bin/nested_contracts.rs) | Construct and project nested aggregate contracts through assembly, encoding, verification and execution. Optionally write a tape for inspection. |

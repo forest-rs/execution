@@ -16,6 +16,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Instantiate shared verified code in a VM store with `Vm::instantiate`. `Instance::start`
+  rejects foreign stores before observing or entering guest code. Hosts and pending requests
+  expose the exact instance namespace; default entries create it lazily at their first host
+  boundary. Instance handles retain code and identity without retaining the VM or host state.
+  Migration: handle `Trap::InstanceLimitExceeded` in exhaustive matches. Raw function, aggregate
+  and nominal IDs still require their original domains; this does not make them portable.
+
 - Keep verified code alive across suspended raw entries. `VerifiedProgram::clone` shares its
   immutable program, prepared instructions and signature cache; every `Vm::start` retains that
   definition. `retain_callable` now supports successful raw-entry function/closure results.

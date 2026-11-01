@@ -139,6 +139,17 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn program(&self) -> &VerifiedProgram {
         &self.running.continuation.program
     }
+    /// The exact store-bound namespace that admitted this request.
+    #[must_use]
+    pub fn instance(&self) -> &Instance {
+        self.running
+            .continuation
+            .ctx
+            .instance
+            .as_ref()
+            .expect("admitted host instance")
+    }
+
     /// Borrows the heap that gives this request's aggregate argument handles their meaning.
     #[must_use]
     pub fn aggregates(&self) -> &AggHeap {
@@ -216,7 +227,11 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let import = self.import();
         let inv = &mut self.running;
         HostContext::new(
-            inv.continuation.program.program(),
+            inv.continuation
+                .ctx
+                .instance
+                .as_ref()
+                .expect("admitted host instance"),
             import,
             inv.vm.memory.aggs(),
             inv.continuation.host_results.get_or_insert_default(),
@@ -358,7 +373,11 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             &mut ret_vec
         };
         let context = HostContext::new(
-            self.continuation.program.program(),
+            self.continuation
+                .ctx
+                .instance
+                .as_ref()
+                .expect("admitted host instance"),
             site.import,
             vm.memory.aggs(),
             self.continuation.host_results.get_or_insert_default(),
