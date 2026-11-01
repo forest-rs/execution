@@ -69,7 +69,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// retains the command and its actual return; checked replay reexecutes the guest callback.
     pub fn call_guest(mut self, callee: Value, args: Vec<Value>) -> Result<(), TrapInfo> {
         self.delivering = true;
-        let result = self.invocation.begin_callback(callee, args);
+        let result = self.running.begin_callback(callee, args);
         self.delivering = false;
         result
     }
@@ -80,7 +80,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Handles use this request's original heap/code. Inspection spends no guest work.
     #[must_use]
     pub fn callback_results(&self) -> Option<&[Value]> {
-        self.invocation
+        self.running
+            .continuation
             .control
             .callbacks
             .as_ref()?
@@ -95,15 +96,25 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Taking values does not retain them independently. Completing the host operation discards
     /// untaken slots. Use the request context's `retain` for an independent aggregate snapshot.
     pub fn take_callback_results(&mut self) -> Option<Vec<Value>> {
-        self.invocation.control.callbacks.as_mut()?.returned.take()
+        self.running
+            .continuation
+            .control
+            .callbacks
+            .as_mut()?
+            .returned
+            .take()
     }
 }
 
-impl<H: Host> Invocation<'_, H> {
+impl<H: Host> Running<'_, '_, H> {
     fn begin_callback(&mut self, callee: Value, args: Vec<Value>) -> Result<(), TrapInfo> {
-        let pending = self.control.pending_host.expect("pending host guard");
-        let span = self.ctx.span_at(
-            self.program.program(),
+        let pending = self
+            .continuation
+            .control
+            .pending_host
+            .expect("pending host guard");
+        let span = self.continuation.ctx.span_at(
+            self.continuation.program.program(),
             pending.location.func,
             pending.location.pc,
         );
@@ -111,10 +122,13 @@ impl<H: Host> Invocation<'_, H> {
         match result {
             Ok(()) => Ok(()),
             Err(trap) => {
-                self.control.pending_host = None;
-                let error = self
-                    .ctx
-                    .trap(pending.location.func, pending.location.pc, span, trap);
+                self.continuation.control.pending_host = None;
+                let error = self.continuation.ctx.trap(
+                    pending.location.func,
+                    pending.location.pc,
+                    span,
+                    trap,
+                );
                 self.finish(Err(error.clone()));
                 Err(error)
             }
@@ -129,33 +143,37 @@ impl<H: Host> Invocation<'_, H> {
     ) -> Result<(), Trap> {
         debug_assert_eq!(
             pending.depth,
-            self.ctx.frames.len(),
+            self.continuation.ctx.frames.len(),
             "only the active host request can enter a callback"
         );
         let mut staging = self
+            .continuation
             .host_results
             .take()
-            .unwrap_or_else(|| self.ctx.host_results());
+            .unwrap_or_else(|| self.continuation.ctx.host_results());
         let work = staging.work;
-        self.ctx.aggregate_work += work.aggregate;
-        self.ctx.payload_work += work.payload;
+        self.continuation.ctx.aggregate_work += work.aggregate;
+        self.continuation.ctx.payload_work += work.payload;
         let created = staging
             .promote(self.vm.memory.aggs_mut())
             .map_err(Trap::AggError)?;
-        self.trace
-            .values(self.program.program(), || ValueEvent::CallbackEnter {
-                location: pending.location,
-                callee,
-                args: &args,
-                work,
-                created: &created,
-                aggregates: self.vm.memory.aggs(),
+        self.continuation
+            .trace
+            .values(self.continuation.program.program(), || {
+                ValueEvent::CallbackEnter {
+                    location: pending.location,
+                    callee,
+                    args: &args,
+                    work,
+                    created: &created,
+                    aggregates: self.vm.memory.aggs(),
+                }
             });
-        if self.ctx.fuel == 0 {
+        if self.continuation.ctx.fuel == 0 {
             return Err(Trap::FuelExceeded);
         }
-        self.ctx.fuel -= 1;
-        if self.ctx.frames.len() >= self.vm.limits.max_call_depth {
+        self.continuation.ctx.fuel -= 1;
+        if self.continuation.ctx.frames.len() >= self.vm.limits.max_call_depth {
             return Err(Trap::CallDepthExceeded);
         }
         let (function, environment) = match callee {
@@ -168,7 +186,7 @@ impl<H: Host> Invocation<'_, H> {
                 });
             }
         };
-        let program = self.program.program();
+        let program = self.continuation.program.program();
         let body = program
             .functions
             .get(function.0 as usize)
@@ -189,19 +207,31 @@ impl<H: Host> Invocation<'_, H> {
             };
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
-        self.ctx.charge_payload_bytes(payload, 1)?;
-        let prepared = self.program.verified(function).ok_or(Trap::InvalidPc)?;
-        let base = self.ctx.alloc_frame(prepared);
+        self.continuation.ctx.charge_payload_bytes(payload, 1)?;
+        let prepared = self
+            .continuation
+            .program
+            .verified(function)
+            .ok_or(Trap::InvalidPc)?;
+        let base = self.continuation.ctx.alloc_frame(prepared);
         for (register, value) in prepared.reg_layout.arg_regs.iter().copied().zip(args) {
-            self.ctx.write_owned_value(base, register, value)?;
+            self.continuation
+                .ctx
+                .write_owned_value(base, register, value)?;
         }
-        self.vm
-            .check_arg_contracts(&mut self.ctx, program, function, prepared, base)?;
+        self.vm.check_arg_contracts(
+            &mut self.continuation.ctx,
+            program,
+            function,
+            prepared,
+            base,
+        )?;
         if let Some(environment) = environment {
             // An opaque Agg contract must still resolve a closure's environment before entry.
             let contract = program.verified_contracts(body.arg_types)[0];
             if matches!(program.contracts.get(contract), Some(Contract::Kind(_))) {
-                self.ctx
+                self.continuation
+                    .ctx
                     .contract_scratch
                     .check_value(
                         program,
@@ -222,7 +252,7 @@ impl<H: Host> Invocation<'_, H> {
                     })?;
             }
         }
-        self.ctx.frames.push(Frame {
+        self.continuation.ctx.frames.push(Frame {
             func: function,
             pc: prepared.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
@@ -230,13 +260,14 @@ impl<H: Host> Invocation<'_, H> {
             base,
             return_to: None,
         });
-        self.control.enter(pending.location);
+        self.continuation.control.enter(pending.location);
         let callbacks = self
+            .continuation
             .control
             .callbacks
             .get_or_insert_with(|| Box::new(Callbacks::default()));
         callbacks.returned = None;
-        let instruction = self.trace.pending.take();
+        let instruction = self.continuation.trace.pending.take();
         debug_assert!(
             instruction.is_none_or(|location| location == pending.location),
             "the outstanding instruction must be this host call"
@@ -245,10 +276,10 @@ impl<H: Host> Invocation<'_, H> {
             host: pending,
             instruction: instruction.is_some(),
         });
-        self.control.pending_host = None;
-        self.trace.call_scope_enter_if_enabled(
+        self.continuation.control.pending_host = None;
+        self.continuation.trace.call_scope_enter_if_enabled(
             program,
-            self.ctx.frames.len(),
+            self.continuation.ctx.frames.len(),
             function,
             prepared.pc_at_ix(0).unwrap_or(0),
             prepared.span_at_ix(0).map(|span| span.get()),

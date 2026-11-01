@@ -14,19 +14,7 @@ pub use exits::ControlError;
 pub use host_request::PendingHostCall;
 pub(super) mod callback;
 
-pub(super) enum ProgramRef<'a> {
-    Borrowed(&'a VerifiedProgram),
-    Owned(Arc<VerifiedProgram>),
-}
-impl core::ops::Deref for ProgramRef<'_> {
-    type Target = VerifiedProgram;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Borrowed(program) => program,
-            Self::Owned(program) => program,
-        }
-    }
-}
+use super::continuation::ProgramRef;
 
 /// Progress after executing an invocation's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,27 +110,45 @@ impl<'a> InvocationOptions<'a> {
 /// [`Self::result`] until dropped, and owned outputs can be taken with [`Self::take_outputs`].
 pub struct Invocation<'a, H: Host> {
     pub(super) vm: BorrowedOrOwned<'a, Vm<H>>,
-    pub(super) program: ProgramRef<'a>,
-    pub(super) entry: FuncId,
-    pub(super) args: Cow<'a, [Value]>,
-    pub(super) ctx: ExecutionContext,
-    pub(super) control: ExecutionControl,
+    pub(super) continuation: continuation::Continuation<'a>,
     checkpoint: Checkpoint,
-    trace: TraceCtx<'a>,
-    access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
-    host_results: Option<crate::host::HostResults>,
-    register_state: observations::RegisterState,
-    outputs: Vec<Value>,
-    outcome: Option<Result<(), TrapInfo>>,
+}
+
+/// Temporary authority to operate one control stack in its execution transaction.
+/// This is deliberately separate from both the public owning facade and suspended state.
+pub(super) struct Running<'request, 'state, H: Host> {
+    pub(super) vm: &'request mut Vm<H>,
+    pub(super) continuation: &'request mut continuation::Continuation<'state>,
+    checkpoint: Checkpoint,
+}
+
+impl<'a, H: Host> Invocation<'a, H> {
+    pub(super) fn running(&mut self) -> Running<'_, 'a, H> {
+        Running::new(&mut self.vm, &mut self.continuation, self.checkpoint)
+    }
+}
+
+impl<'request, 'state, H: Host> Running<'request, 'state, H> {
+    pub(super) fn new(
+        vm: &'request mut Vm<H>,
+        continuation: &'request mut continuation::Continuation<'state>,
+        checkpoint: Checkpoint,
+    ) -> Self {
+        Self {
+            vm,
+            continuation,
+            checkpoint,
+        }
+    }
 }
 
 impl<H: Host> fmt::Debug for Invocation<'_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Invocation")
-            .field("entry", &self.entry)
-            .field("frames", &self.ctx.frames.len())
-            .field("remaining_fuel", &self.ctx.fuel)
-            .field("outcome", &self.outcome)
+            .field("entry", &self.continuation.entry)
+            .field("frames", &self.continuation.ctx.frames.len())
+            .field("remaining_fuel", &self.continuation.ctx.fuel)
+            .field("outcome", &self.continuation.outcome)
             .finish_non_exhaustive()
     }
 }
@@ -213,63 +219,15 @@ impl<'a, H: Host> Invocation<'a, H> {
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
-        let yield_host_calls = options.yield_host_calls;
         let mut invocation = Invocation {
             vm,
-            program,
-            entry,
-            args,
-            ctx: ExecutionContext::new(),
-            control: ExecutionControl::default(),
             checkpoint,
-            trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
-            access: options.access,
-            host_results: None,
-            register_state: observations::RegisterState::default(),
-            outputs: Vec::new(),
-            outcome: None,
+            continuation: continuation::Continuation::new(program, entry, args, options),
         };
-        invocation
-            .trace
-            .run_start(invocation.program.program(), entry, invocation.args.len());
-        invocation
-            .trace
-            .values(invocation.program.program(), || ValueEvent::Entry {
-                entry,
-                args: &invocation.args,
-                aggregates: invocation.vm.memory.aggs(),
-                limits: &invocation.vm.limits,
-                work,
-            });
-        let result = work
-            .check(&invocation.vm.limits)
-            .map_err(|trap| invocation.ctx.trap(entry, 0, None, trap))
-            .and_then(|()| {
-                if invocation.trace.active() {
-                    invocation.vm.initialize_run::<WithTracePolicy>(
-                        &mut invocation.ctx,
-                        &invocation.program,
-                        entry,
-                        &invocation.args,
-                        &mut invocation.trace,
-                    )
-                } else {
-                    invocation.vm.initialize_run::<NoTracePolicy>(
-                        &mut invocation.ctx,
-                        &invocation.program,
-                        entry,
-                        &invocation.args,
-                        &mut invocation.trace,
-                    )
-                }
-            });
-        if let Err(error) = result {
-            invocation.finish(Err(error.clone()));
+        if let Err(error) = invocation.continuation.initialize(&mut invocation.vm, work) {
+            invocation.running().finish(Err(error.clone()));
             return Err(error);
         }
-        invocation.ctx.aggregate_work = work.aggregate;
-        invocation.ctx.payload_work = work.payload;
-        invocation.control = ExecutionControl::start(yield_host_calls);
         Ok(invocation)
     }
 }
@@ -285,51 +243,49 @@ impl<H: Host> Invocation<'_, H> {
     /// [`RunStatus::AwaitingHost`]. Resuming while it waits spends nothing and never dispatches
     /// the host. Completing the request finishes that instruction without admitting another.
     pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
-        if let Some(outcome) = &self.outcome {
+        if let Some(outcome) = &self.continuation.outcome {
             return outcome.clone().map(|()| RunStatus::Complete);
         }
-        if let Some(pending) = &self.control.pending_host {
+        if let Some(pending) = self.continuation.control.pending_host {
             if pending.abandoned {
-                return Err(self.finish_abandoned_host(*pending));
+                return Err(self.running().finish_abandoned_host(pending));
             }
             return Ok(RunStatus::AwaitingHost);
         }
-        self.control.remaining = quantum;
-        let access = self
-            .access
-            .as_mut()
-            .map(|sink| &mut **sink as &mut dyn AccessSink);
-        let result = if self.trace.active() {
-            self.vm.execute_loop::<WithTracePolicy, true>(
-                &mut self.ctx,
-                &self.program,
-                self.entry,
-                &self.args,
-                &mut self.outputs,
-                self.checkpoint,
-                &mut self.trace,
-                access,
-                &mut self.register_state,
-                &mut self.control,
-            )
-        } else {
-            self.vm.execute_loop::<NoTracePolicy, true>(
-                &mut self.ctx,
-                &self.program,
-                self.entry,
-                &self.args,
-                &mut self.outputs,
-                self.checkpoint,
-                &mut self.trace,
-                access,
-                &mut (),
-                &mut self.control,
-            )
-        };
+        let result = self
+            .continuation
+            .advance(&mut self.vm, quantum)
+            .and_then(|progress| match progress {
+                Progress::Suspended => Ok(RunStatus::Suspended),
+                Progress::AwaitingHost => Ok(RunStatus::AwaitingHost),
+                Progress::Returned(site) => {
+                    let continuation = &mut self.continuation;
+                    if continuation.trace.active() {
+                        self.vm.commit_return::<WithTracePolicy>(
+                            &mut continuation.ctx,
+                            continuation.program.program(),
+                            self.checkpoint,
+                            &mut continuation.outputs,
+                            &mut continuation.trace,
+                            site,
+                        )?;
+                    } else {
+                        self.vm.commit_return::<NoTracePolicy>(
+                            &mut continuation.ctx,
+                            continuation.program.program(),
+                            self.checkpoint,
+                            &mut continuation.outputs,
+                            &mut continuation.trace,
+                            site,
+                        )?;
+                    }
+                    Ok(RunStatus::Complete)
+                }
+            });
         match &result {
             Ok(RunStatus::Suspended | RunStatus::AwaitingHost) => {}
-            Ok(RunStatus::Complete) => self.finish(Ok(())),
-            Err(error) => self.finish(Err(error.clone())),
+            Ok(RunStatus::Complete) => self.running().finish(Ok(())),
+            Err(error) => self.running().finish(Err(error.clone())),
         }
         result
     }
@@ -337,9 +293,11 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows the committed outputs or terminal trap; `None` means execution is suspended.
     #[must_use]
     pub fn result(&self) -> Option<Result<&[Value], &TrapInfo>> {
-        self.outcome
-            .as_ref()
-            .map(|result| result.as_ref().map(|()| self.outputs.as_slice()))
+        self.continuation.outcome.as_ref().map(|result| {
+            result
+                .as_ref()
+                .map(|()| self.continuation.outputs.as_slice())
+        })
     }
 
     /// Takes committed owned outputs, leaving an empty result buffer. Returns `None` before a
@@ -348,7 +306,8 @@ impl<H: Host> Invocation<'_, H> {
     /// owner. Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
     /// invocation when its lookup handle has already been discarded.
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
-        matches!(self.outcome, Some(Ok(()))).then(|| core::mem::take(&mut self.outputs))
+        matches!(self.continuation.outcome, Some(Ok(())))
+            .then(|| core::mem::take(&mut self.continuation.outputs))
     }
 
     /// Consumes a successful invocation and retains its result independently of the VM.
@@ -364,10 +323,10 @@ impl<H: Host> Invocation<'_, H> {
     /// invocation cancels it. Inspect [`Self::result`] first to preserve a trap diagnostic.
     /// If outputs were already taken, the snapshot is empty.
     pub fn into_snapshot(mut self) -> Result<Option<crate::aggregates::ValueSnapshot>, AggError> {
-        if !matches!(self.outcome, Some(Ok(()))) {
+        if !matches!(self.continuation.outcome, Some(Ok(()))) {
             return Ok(None);
         }
-        let outputs = core::mem::take(&mut self.outputs);
+        let outputs = core::mem::take(&mut self.continuation.outputs);
         let snapshot = match &mut self.vm {
             BorrowedOrOwned::Borrowed(vm) => vm.memory.aggs().snapshot_owned(outputs)?,
             BorrowedOrOwned::Owned(vm) => {
@@ -399,7 +358,7 @@ impl<H: Host> Invocation<'_, H> {
                 actual: value.value_type(),
             });
         }
-        let ProgramRef::Owned(program) = &self.program else {
+        let ProgramRef::Owned(program) = &self.continuation.program else {
             return Err(CallableError::MissingCodeOwner);
         };
         Callable::retain(
@@ -412,7 +371,7 @@ impl<H: Host> Invocation<'_, H> {
     /// Remaining hard instruction/host fuel, including after completion or a trap.
     #[must_use]
     pub fn remaining_fuel(&self) -> u64 {
-        self.ctx.fuel
+        self.continuation.ctx.fuel
     }
 
     /// Cumulative admitted VM work, including entry checks, host staging and control operations.
@@ -427,9 +386,9 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn work(&self) -> ExecutionWork {
         ExecutionWork {
-            fuel: self.vm.limits.fuel - self.ctx.fuel,
-            host_calls: self.ctx.host_calls,
-            contract: self.ctx.contract_scratch.work_used(),
+            fuel: self.vm.limits.fuel - self.continuation.ctx.fuel,
+            host_calls: self.continuation.ctx.host_calls,
+            contract: self.continuation.ctx.contract_scratch.work_used(),
             data: self.data_work(),
         }
     }
@@ -441,17 +400,25 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn data_work(&self) -> DataWork {
         DataWork {
-            aggregate: self.ctx.aggregate_work
-                + self.host_results.as_ref().map_or(0, |r| r.work.aggregate),
-            payload: self.ctx.payload_work
-                + self.host_results.as_ref().map_or(0, |r| r.work.payload),
+            aggregate: self.continuation.ctx.aggregate_work
+                + self
+                    .continuation
+                    .host_results
+                    .as_ref()
+                    .map_or(0, |r| r.work.aggregate),
+            payload: self.continuation.ctx.payload_work
+                + self
+                    .continuation
+                    .host_results
+                    .as_ref()
+                    .map_or(0, |r| r.work.payload),
         }
     }
 
     /// The immutable verified program whose local identities this invocation uses.
     #[must_use]
     pub fn program(&self) -> &VerifiedProgram {
-        &self.program
+        &self.continuation.program
     }
 
     /// Exact retained code owner for callable entries, including independently owned executions.
@@ -462,7 +429,7 @@ impl<H: Host> Invocation<'_, H> {
     /// their embedding remains responsible for that program's lifetime and identity.
     #[must_use]
     pub fn program_owner(&self) -> Option<&Arc<VerifiedProgram>> {
-        match &self.program {
+        match &self.continuation.program {
             ProgramRef::Borrowed(_) => None,
             ProgramRef::Owned(program) => Some(program),
         }
@@ -479,46 +446,60 @@ impl<H: Host> Invocation<'_, H> {
     pub fn host(&self) -> &H {
         &self.vm.host
     }
+}
 
+impl<H: Host> Running<'_, '_, H> {
     fn finish(&mut self, result: Result<(), TrapInfo>) {
-        self.outcome = Some(result);
-        let result = self.outcome.as_ref().expect("terminal outcome installed");
+        self.continuation.outcome = Some(result);
+        let result = self
+            .continuation
+            .outcome
+            .as_ref()
+            .expect("terminal outcome installed");
         let outcome = match result {
             Ok(()) => TraceOutcome::Ok,
             Err(error) => {
-                self.ctx.contract_scratch.clear_proofs();
+                self.continuation.ctx.contract_scratch.clear_proofs();
                 self.vm.memory.rollback(self.checkpoint);
-                self.outputs.clear();
+                self.continuation.outputs.clear();
                 TraceOutcome::Trap(error)
             }
         };
-        self.trace.finish(self.program.program(), outcome);
+        self.continuation
+            .trace
+            .finish(self.continuation.program.program(), outcome);
         callback::finish_instructions(
-            &mut self.control,
-            &mut self.trace,
-            self.program.program(),
+            &mut self.continuation.control,
+            &mut self.continuation.trace,
+            self.continuation.program.program(),
             outcome,
         );
-        self.trace.run_end(self.program.program(), outcome);
+        self.continuation
+            .trace
+            .run_end(self.continuation.program.program(), outcome);
     }
-}
-
-impl<H: Host> Drop for Invocation<'_, H> {
-    fn drop(&mut self) {
-        if self.outcome.is_some() {
+    pub(super) fn cancel(&mut self) {
+        if self.continuation.outcome.is_some() {
             return;
         }
         let location = self
+            .continuation
             .trace
             .pending
-            .or_else(|| self.control.pending_host.map(|pending| pending.location))
             .or_else(|| {
-                self.ctx.frames.last().map(|frame| {
+                self.continuation
+                    .control
+                    .pending_host
+                    .map(|pending| pending.location)
+            })
+            .or_else(|| {
+                self.continuation.ctx.frames.last().map(|frame| {
                     let pc = if matches!(
-                        self.trace.scopes.last(),
+                        self.continuation.trace.scopes.last(),
                         Some((ScopeKind::HostCall { .. }, _))
                     ) {
-                        self.program
+                        self.continuation
+                            .program
                             .verified(frame.func)
                             .and_then(|body| body.pc_at_ix(frame.instr_ix.saturating_sub(1)))
                             .unwrap_or(frame.pc)
@@ -532,23 +513,34 @@ impl<H: Host> Drop for Invocation<'_, H> {
                 })
             })
             .unwrap_or(TraceLocation {
-                func: self.entry,
+                func: self.continuation.entry,
                 pc: 0,
             });
-        let span = self
-            .ctx
-            .span_at(self.program.program(), location.func, location.pc);
+        let span = self.continuation.ctx.span_at(
+            self.continuation.program.program(),
+            location.func,
+            location.pc,
+        );
         self.vm.memory.rollback(self.checkpoint);
-        self.ctx.clear();
-        self.trace.cancel(self.program.program(), location, span);
+        self.continuation.ctx.clear();
+        self.continuation
+            .trace
+            .cancel(self.continuation.program.program(), location, span);
         callback::finish_instructions(
-            &mut self.control,
-            &mut self.trace,
-            self.program.program(),
+            &mut self.continuation.control,
+            &mut self.continuation.trace,
+            self.continuation.program.program(),
             TraceOutcome::Cancelled,
         );
-        self.trace
-            .run_end(self.program.program(), TraceOutcome::Cancelled);
+        self.continuation
+            .trace
+            .run_end(self.continuation.program.program(), TraceOutcome::Cancelled);
+    }
+}
+
+impl<H: Host> Drop for Invocation<'_, H> {
+    fn drop(&mut self) {
+        self.running().cancel();
     }
 }
 

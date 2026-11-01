@@ -59,32 +59,41 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         target: &ActivationId,
         values: Vec<Value>,
     ) -> Result<(), ControlError> {
-        let index = self.invocation.control.target_index(target)?;
+        let index = self.running.continuation.control.target_index(target)?;
         self.delivering = true;
-        let result = self.invocation.return_from(index, target.ordinal(), values);
+        let result = self.running.return_from(index, target.ordinal(), values);
         self.delivering = false;
         result.map_err(ControlError::Trapped)
     }
 }
 
-impl<H: Host> Invocation<'_, H> {
+impl<H: Host> Running<'_, '_, H> {
     fn return_from(
         &mut self,
         index: usize,
         ordinal: u64,
         values: Vec<Value>,
     ) -> Result<(), TrapInfo> {
-        let pending = self.control.pending_host.expect("pending host guard");
+        let pending = self
+            .continuation
+            .control
+            .pending_host
+            .expect("pending host guard");
         let location = pending.location;
-        let span = self
-            .ctx
-            .span_at(self.program.program(), location.func, location.pc);
+        let span = self.continuation.ctx.span_at(
+            self.continuation.program.program(),
+            location.func,
+            location.pc,
+        );
         let result = self
             .prepare_exit(index, ordinal, &values)
             .and_then(|()| self.apply_exit(index, ordinal, values));
         if let Err(trap) = result {
-            self.control.pending_host = None;
-            let error = self.ctx.trap(location.func, location.pc, span, trap);
+            self.continuation.control.pending_host = None;
+            let error = self
+                .continuation
+                .ctx
+                .trap(location.func, location.pc, span, trap);
             self.finish(Err(error.clone()));
             return Err(error);
         }
@@ -92,37 +101,48 @@ impl<H: Host> Invocation<'_, H> {
     }
 
     fn prepare_exit(&mut self, index: usize, ordinal: u64, values: &[Value]) -> Result<(), Trap> {
-        let pending = self.control.pending_host.expect("pending host guard");
+        let pending = self
+            .continuation
+            .control
+            .pending_host
+            .expect("pending host guard");
         let mut staging = self
+            .continuation
             .host_results
             .take()
-            .unwrap_or_else(|| self.ctx.host_results());
+            .unwrap_or_else(|| self.continuation.ctx.host_results());
         let work = staging.work;
-        self.ctx.aggregate_work += work.aggregate;
-        self.ctx.payload_work += work.payload;
+        self.continuation.ctx.aggregate_work += work.aggregate;
+        self.continuation.ctx.payload_work += work.payload;
         let created = staging
             .promote(self.vm.memory.aggs_mut())
             .map_err(Trap::AggError)?;
-        let program = self.program.program();
-        self.trace.values(program, || ValueEvent::ReturnFrom {
-            location: pending.location,
-            target: ordinal,
-            target_location: self.control.paused_location(&self.ctx, index),
-            unwound_callbacks: self
-                .control
-                .callbacks
-                .as_ref()
-                .map_or(0, |callbacks| callbacks.count_exited(index)),
-            values,
-            work,
-            created: &created,
-            aggregates: self.vm.memory.aggs(),
-        });
-        if self.ctx.fuel == 0 {
+        let program = self.continuation.program.program();
+        self.continuation
+            .trace
+            .values(program, || ValueEvent::ReturnFrom {
+                location: pending.location,
+                target: ordinal,
+                target_location: self
+                    .continuation
+                    .control
+                    .paused_location(&self.continuation.ctx, index),
+                unwound_callbacks: self
+                    .continuation
+                    .control
+                    .callbacks
+                    .as_ref()
+                    .map_or(0, |callbacks| callbacks.count_exited(index)),
+                values,
+                work,
+                created: &created,
+                aggregates: self.vm.memory.aggs(),
+            });
+        if self.continuation.ctx.fuel == 0 {
             return Err(Trap::FuelExceeded);
         }
-        self.ctx.fuel -= 1;
-        let function = self.ctx.frames[index].func;
+        self.continuation.ctx.fuel -= 1;
+        let function = self.continuation.ctx.frames[index].func;
         let body = &program.functions[function.0 as usize];
         let kinds = body.ret_types(program).map_err(|_| Trap::InvalidPc)?;
         if kinds.len() != values.len() {
@@ -139,13 +159,15 @@ impl<H: Host> Invocation<'_, H> {
             };
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
-        self.ctx.charge_payload_bytes(bytes, 1)?;
+        self.continuation.ctx.charge_payload_bytes(bytes, 1)?;
         let prepared = self
+            .continuation
             .program
             .verified(function)
             .expect("active verified function");
         for check in &prepared.contract_checks[prepared.arg_check_count as usize..] {
-            self.ctx
+            self.continuation
+                .ctx
                 .contract_scratch
                 .check_value(
                     program,
@@ -172,38 +194,50 @@ impl<H: Host> Invocation<'_, H> {
         mut values: Vec<Value>,
     ) -> Result<(), Trap> {
         let location = self
+            .continuation
             .control
             .pending_host
             .expect("pending host guard")
             .location;
-        let target = &self.ctx.frames[index];
+        let target = &self.continuation.ctx.frames[index];
         let returns_to_guest = target.return_to;
-        let program = self.program.program();
+        let program = self.continuation.program.program();
         if index == 0 {
-            self.trace.values(program, || ValueEvent::ReturnCandidate {
-                location,
-                values: &values,
-                aggregates: self.vm.memory.aggs(),
-            });
+            self.continuation
+                .trace
+                .values(program, || ValueEvent::ReturnCandidate {
+                    location,
+                    values: &values,
+                    aggregates: self.vm.memory.aggs(),
+                });
         }
         let outcome = TraceOutcome::Unwound { target: ordinal };
         let target_base = target.base;
-        let span = self.ctx.span_at(program, location.func, location.pc);
+        let span = self
+            .continuation
+            .ctx
+            .span_at(program, location.func, location.pc);
         // Emit exits while all actual frames/banks remain intact. If a sink panics, the guard
         // poisons the original host request and inspection must still see waiting callers,
         // never the uninitialized result banks of a prematurely popped child.
         self.close_exited_host(location, outcome);
         let mut restored = None;
-        for depth in (index + 1..=self.ctx.frames.len()).rev() {
-            self.trace
-                .exit_frame(self.program.program(), depth, location, span, outcome);
+        for depth in (index + 1..=self.continuation.ctx.frames.len()).rev() {
+            self.continuation.trace.exit_frame(
+                self.continuation.program.program(),
+                depth,
+                location,
+                span,
+                outcome,
+            );
             let waiting = self
+                .continuation
                 .control
                 .callbacks
                 .as_ref()
                 .and_then(|callbacks| callbacks.waiting_at(depth - 1));
             if let Some((host, instruction)) = waiting {
-                self.trace.pending = instruction.then_some(host.location);
+                self.continuation.trace.pending = instruction.then_some(host.location);
                 if depth - 1 == index {
                     restored = Some(host);
                 } else {
@@ -211,11 +245,11 @@ impl<H: Host> Invocation<'_, H> {
                 }
             }
         }
-        self.ctx.frames.truncate(index);
-        self.ctx.truncate_to(target_base);
-        self.control.truncate(index);
-        self.control.pending_host = restored;
-        if let Some(callbacks) = &mut self.control.callbacks {
+        self.continuation.ctx.frames.truncate(index);
+        self.continuation.ctx.truncate_to(target_base);
+        self.continuation.control.truncate(index);
+        self.continuation.control.pending_host = restored;
+        if let Some(callbacks) = &mut self.continuation.control.callbacks {
             callbacks.discard_exited(index);
             if restored.is_some() {
                 callbacks.returned = Some(values);
@@ -223,16 +257,20 @@ impl<H: Host> Invocation<'_, H> {
             }
         }
         if index == 0 {
-            self.ctx.contract_scratch.clear_proofs();
+            self.continuation.ctx.contract_scratch.clear_proofs();
             self.vm
                 .memory
                 .commit(self.checkpoint, &mut values)
                 .map_err(Trap::AggError)?;
-            self.outputs = values;
+            self.continuation.outputs = values;
             self.finish(Ok(()));
         } else {
-            let caller = self.ctx.frames.last().expect("target caller");
-            let body = self.program.verified(caller.func).expect("verified caller");
+            let caller = self.continuation.ctx.frames.last().expect("target caller");
+            let body = self
+                .continuation
+                .program
+                .verified(caller.func)
+                .expect("verified caller");
             let destinations =
                 body.vregs(returns_to_guest.expect("noncallback continuation").dst_rets);
             if destinations.len() != values.len() {
@@ -240,21 +278,28 @@ impl<H: Host> Invocation<'_, H> {
             }
             let base = caller.base;
             for (&destination, value) in destinations.iter().zip(values) {
-                self.ctx.write_owned_value(base, destination, value)?;
+                self.continuation
+                    .ctx
+                    .write_owned_value(base, destination, value)?;
             }
         }
         Ok(())
     }
 
     fn close_exited_host(&mut self, location: TraceLocation, outcome: TraceOutcome<'_>) {
-        self.trace.exit_host(
-            self.program.program(),
+        self.continuation.trace.exit_host(
+            self.continuation.program.program(),
             location,
-            self.ctx
-                .span_at(self.program.program(), location.func, location.pc),
+            self.continuation.ctx.span_at(
+                self.continuation.program.program(),
+                location.func,
+                location.pc,
+            ),
             outcome,
         );
-        self.trace.instr_end(self.program.program(), None, outcome);
+        self.continuation
+            .trace
+            .instr_end(self.continuation.program.program(), None, outcome);
     }
 }
 

@@ -232,16 +232,7 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows paused state. Expensive register facts are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        InvocationInspection {
-            program: &self.program,
-            ctx: &self.ctx,
-            args: &self.args,
-            outputs: self.result().and_then(Result::ok).unwrap_or(&[]),
-            aggregates: self.vm.memory.aggs(),
-            control: &self.control,
-            active: self.result().is_none(),
-            functions: BTreeMap::new(),
-        }
+        inspection(&self.continuation, self.vm.memory.aggs())
     }
 
     /// Mutates host state between quanta. Preserve the validity of referenced object handles.
@@ -249,6 +240,32 @@ impl<H: Host> Invocation<'_, H> {
     /// external roots; this API does not choose a garbage-collection or object-lifetime policy.
     pub fn host_mut(&mut self) -> &mut H {
         &mut self.vm.host
+    }
+}
+
+impl<H: Host> invocation::Running<'_, '_, H> {
+    pub(super) fn inspect(&self) -> InvocationInspection<'_> {
+        inspection(self.continuation, self.vm.memory.aggs())
+    }
+}
+
+fn inspection<'a>(
+    continuation: &'a continuation::Continuation<'_>,
+    aggregates: &'a AggHeap,
+) -> InvocationInspection<'a> {
+    InvocationInspection {
+        program: &continuation.program,
+        ctx: &continuation.ctx,
+        args: &continuation.args,
+        outputs: continuation
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.as_ref().ok())
+            .map_or(&[][..], |()| continuation.outputs.as_slice()),
+        aggregates,
+        control: &continuation.control,
+        active: continuation.outcome.is_none(),
+        functions: BTreeMap::new(),
     }
 }
 

@@ -32,6 +32,7 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
+mod continuation;
 mod host_call;
 mod inspection;
 mod invocation;
@@ -587,6 +588,18 @@ impl ExecutionContext {
         self.aggregate_work += requested;
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReturnSite {
+    location: TraceLocation,
+    span: Option<u64>,
+}
+
+enum Progress {
+    Suspended,
+    AwaitingHost,
+    Returned(ReturnSite),
 }
 
 /// A simple register VM.
@@ -1293,19 +1306,29 @@ impl<H: Host> Vm<H> {
     ) -> Result<(), TrapInfo> {
         self.initialize_run::<P>(ctx, program, entry, args, trace)?;
         let mut register_state = P::RegisterState::default();
-        self.execute_loop::<P, false>(
+        let first_output = outputs.len();
+        let progress = self.execute_loop::<P, false>(
             ctx,
             program,
             entry,
             args,
             outputs,
-            checkpoint,
             trace,
             access,
             &mut register_state,
             &mut ExecutionControl::default(),
+        )?;
+        let Progress::Returned(site) = progress else {
+            unreachable!("synchronous execution cannot suspend");
+        };
+        self.commit_return::<P>(
+            ctx,
+            program.program(),
+            checkpoint,
+            &mut outputs[first_output..],
+            trace,
+            site,
         )
-        .map(|_| ())
     }
 
     #[inline]
@@ -1374,12 +1397,11 @@ impl<H: Host> Vm<H> {
         entry: FuncId,
         args: &[Value],
         outputs: &mut Vec<Value>,
-        checkpoint: Checkpoint,
         trace: &mut TraceCtx<'_>,
         mut access: Option<&mut dyn AccessSink>,
         register_state: &mut P::RegisterState,
         control: &mut ExecutionControl,
-    ) -> Result<RunStatus, TrapInfo> {
+    ) -> Result<Progress, TrapInfo> {
         let root_args = args;
         let output_start = outputs.len();
         let program_ref = program.program();
@@ -1389,7 +1411,7 @@ impl<H: Host> Vm<H> {
         loop {
             if YIELD {
                 if control.remaining == 0 {
-                    return Ok(RunStatus::Suspended);
+                    return Ok(Progress::Suspended);
                 }
                 control.remaining -= 1;
             }
@@ -2137,7 +2159,7 @@ impl<H: Host> Vm<H> {
                             span_id,
                             base,
                         )?;
-                        return Ok(RunStatus::AwaitingHost);
+                        return Ok(Progress::AwaitingHost);
                     }
                     if ctx.frames.len() == 1 {
                         let rets = vf.vregs(*rets);
@@ -2155,23 +2177,10 @@ impl<H: Host> Vm<H> {
                         });
                         self.check_result_contracts(ctx, program_ref, func_id, vf, base, rets)
                             .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
-                        // Proof keys use precommit handles and must not survive compaction.
-                        ctx.contract_scratch.clear_proofs();
-                        self.memory
-                            .commit(checkpoint, &mut outputs[output_start..])
-                            .map_err(|error| {
-                                ctx.trap(func_id, pc, span_id, Trap::AggError(error))
-                            })?;
-                        P::call_scope_exit(
-                            trace,
-                            program_ref,
-                            ctx.frames.len(),
-                            func_id,
-                            pc,
-                            span_id,
-                        );
-                        P::instr_end(trace, program_ref, None);
-                        return Ok(RunStatus::Complete);
+                        return Ok(Progress::Returned(ReturnSite {
+                            location: TraceLocation { func: func_id, pc },
+                            span: span_id,
+                        }));
                     }
 
                     self.check_result_contracts(
@@ -2304,7 +2313,7 @@ impl<H: Host> Vm<H> {
                             depth: frame_index + 1,
                             abandoned: false,
                         });
-                        return Ok(RunStatus::AwaitingHost);
+                        return Ok(Progress::AwaitingHost);
                     }
                     let mut inline_rets: [Value; 8] = core::array::from_fn(|_| Value::Unit);
                     let mut fallback_rets;
@@ -3227,6 +3236,37 @@ impl<H: Host> Vm<H> {
                 }),
             );
         }
+    }
+
+    fn commit_return<P: TracePolicy>(
+        &mut self,
+        ctx: &mut ExecutionContext,
+        program: &Program,
+        checkpoint: Checkpoint,
+        outputs: &mut [Value],
+        trace: &mut TraceCtx<'_>,
+        site: ReturnSite,
+    ) -> Result<(), TrapInfo> {
+        // Proof keys use precommit handles and must not survive compaction.
+        ctx.contract_scratch.clear_proofs();
+        self.memory.commit(checkpoint, outputs).map_err(|error| {
+            ctx.trap(
+                site.location.func,
+                site.location.pc,
+                site.span,
+                Trap::AggError(error),
+            )
+        })?;
+        P::call_scope_exit(
+            trace,
+            program,
+            ctx.frames.len(),
+            site.location.func,
+            site.location.pc,
+            site.span,
+        );
+        P::instr_end(trace, program, None);
+        Ok(())
     }
 
     fn contract_value(ctx: &ExecutionContext, base: RegBase, register: VReg) -> Value {
