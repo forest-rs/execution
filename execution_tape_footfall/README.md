@@ -21,6 +21,12 @@ it stays on one thread. Dropping it closes remaining scopes from inner to outer,
 creating completion events for an interrupted run.
 After catching a host panic, drop and recreate the sink before another run, regardless of mask.
 
+Nested instance calls preserve their waiting parent run and host scopes. Child completion closes
+only the child run. Use `with_program_context(&definition, context.handle())` for each independently
+compiled definition, with separate exported program/source pairs under those registered contexts.
+Cloned definition handles share the mapping; unmatched code uses the sink's default context.
+The sink retains mapped code, while the application owns context registration and source artifacts.
+
 Context labels must identify the program and revision when combining programs. Function,
 import and PC identifiers are program-local. Keep the corresponding encoded program with
 the capture to resolve names, spans, typed joins and instruction operands later.

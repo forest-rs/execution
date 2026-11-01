@@ -37,6 +37,7 @@ use core::marker::PhantomData;
 use execution_tape::program::Program;
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::FuncId;
+use execution_tape::verifier::VerifiedProgram;
 use footfall::{Args, ContextHandle, EventDesc, ScopeDesc, ScopeGuard};
 
 static RUN: ScopeDesc = ScopeDesc::new("execution_tape.run");
@@ -60,9 +61,15 @@ static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
 /// callbacks omitted by that run's mask; pass an explicit mask when that behavior is needed.
 pub struct FootfallSink {
     context: ContextHandle,
-    run: Option<ScopeGuard>,
+    runs: Vec<RunScope>,
     scopes: Vec<ScopeGuard>,
+    programs: Vec<(VerifiedProgram, ContextHandle)>,
     thread: PhantomData<Rc<()>>,
+}
+
+struct RunScope {
+    guard: ScopeGuard,
+    scope_base: usize,
 }
 
 impl FootfallSink {
@@ -74,10 +81,42 @@ impl FootfallSink {
     pub const fn new(context: ContextHandle) -> Self {
         Self {
             context,
-            run: None,
+            runs: Vec::new(),
             scopes: Vec::new(),
+            programs: Vec::new(),
             thread: PhantomData,
         }
+    }
+
+    /// Attributes one exact code definition to an application-registered source context.
+    ///
+    /// Use separate contexts and exported program/source pairs when independently compiled
+    /// definitions execute together. Cloned verified handles share this mapping. The mapping
+    /// retains code so address reuse cannot change its meaning; unmatched code uses the default
+    /// context. The application keeps each context registered for the sink's lifetime.
+    #[must_use]
+    pub fn with_program_context(
+        mut self,
+        program: &VerifiedProgram,
+        context: ContextHandle,
+    ) -> Self {
+        if let Some((_, bound)) = self
+            .programs
+            .iter_mut()
+            .find(|(owner, _)| owner.shares_definition_with(program))
+        {
+            *bound = context;
+        } else {
+            self.programs.push((program.clone(), context));
+        }
+        self
+    }
+
+    fn context_for(&self, program: &Program) -> ContextHandle {
+        self.programs
+            .iter()
+            .find(|(owner, _)| core::ptr::eq(owner.program(), program))
+            .map_or(self.context, |(_, context)| *context)
     }
 
     fn outcome(
@@ -85,29 +124,41 @@ impl FootfallSink {
         ok_desc: &'static EventDesc,
         trap_desc: &'static EventDesc,
         args: &Args,
+        context: ContextHandle,
         outcome: TraceOutcome<'_>,
     ) {
         match outcome {
-            TraceOutcome::Ok => footfall::message_with(ok_desc, self.context, "ok", args),
+            TraceOutcome::Ok => footfall::message_with(ok_desc, context, "ok", args),
             TraceOutcome::Unwound { .. } => {
-                footfall::message_with(ok_desc, self.context, "unwound", args);
+                footfall::message_with(ok_desc, context, "unwound", args);
             }
             TraceOutcome::Cancelled => {
-                footfall::message_with(ok_desc, self.context, "cancelled", args);
+                footfall::message_with(ok_desc, context, "cancelled", args);
             }
             TraceOutcome::Trap(_) => {
                 // Custom host diagnostics can be arbitrarily large. The VM result owns them;
                 // profiling records the outcome/location without formatting or copying payloads.
-                footfall::message_with(trap_desc, self.context, "trap", args);
+                footfall::message_with(trap_desc, context, "trap", args);
             }
         }
     }
 
+    fn close_run(&mut self) {
+        if let Some(run) = self.runs.pop() {
+            while self.scopes.len() > run.scope_base {
+                self.scopes.pop();
+            }
+            drop(run.guard);
+        }
+    }
+
     fn close_scopes(&mut self) {
+        while !self.runs.is_empty() {
+            self.close_run();
+        }
         while let Some(scope) = self.scopes.pop() {
             drop(scope);
         }
-        self.run.take();
     }
 }
 
@@ -115,7 +166,7 @@ impl core::fmt::Debug for FootfallSink {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FootfallSink")
             .field("context", &self.context)
-            .field("run_active", &self.run.is_some())
+            .field("run_depth", &self.runs.len())
             .field("scope_depth", &self.scopes.len())
             .finish_non_exhaustive()
     }
@@ -136,31 +187,40 @@ impl TraceSink for FootfallSink {
         }
     }
 
-    fn run_start(&mut self, _program: &Program, entry: FuncId, arg_count: usize) {
-        self.close_scopes();
+    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+        let context = self.context_for(program);
         let args = Args::none()
             .with("entry", entry.0)
             .with("arg_count", arg_count as u64);
-        self.run = Some(footfall::scope_with(&RUN, self.context, &args));
+        self.runs.push(RunScope {
+            guard: footfall::scope_with(&RUN, context, &args),
+            scope_base: self.scopes.len(),
+        });
     }
 
-    fn run_end(&mut self, _program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         let mut args = Args::none();
-        if let Some(run) = &self.run
-            && run.token().is_valid()
+        if let Some(run) = self.runs.last()
+            && run.guard.token().is_valid()
         {
-            args = args.with("scope_token", run.token().get());
+            args = args.with("scope_token", run.guard.token().get());
         }
         if let TraceOutcome::Trap(error) = outcome {
             args = args.with("func", error.func.0).with("pc", error.pc);
         }
-        self.outcome(&RUN_END, &RUN_TRAP, &args, outcome);
-        self.close_scopes();
+        self.outcome(
+            &RUN_END,
+            &RUN_TRAP,
+            &args,
+            self.context_for(program),
+            outcome,
+        );
+        self.close_run();
     }
 
     fn instr(
         &mut self,
-        _program: &Program,
+        program: &Program,
         func: FuncId,
         pc: u32,
         _next_pc: u32,
@@ -174,12 +234,12 @@ impl TraceSink for FootfallSink {
         if let Some(span) = span_id {
             args = args.with("span_id", span);
         }
-        footfall::message_with(&INSTR, self.context, "attempt", &args);
+        footfall::message_with(&INSTR, self.context_for(program), "attempt", &args);
     }
 
     fn instr_end(
         &mut self,
-        _program: &Program,
+        program: &Program,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
@@ -190,12 +250,18 @@ impl TraceSink for FootfallSink {
         if let Some(next) = next {
             args = args.with("next_func", next.func.0).with("next_pc", next.pc);
         }
-        self.outcome(&INSTR_END, &INSTR_TRAP, &args, outcome);
+        self.outcome(
+            &INSTR_END,
+            &INSTR_TRAP,
+            &args,
+            self.context_for(program),
+            outcome,
+        );
     }
 
     fn scope_enter(
         &mut self,
-        _program: &Program,
+        program: &Program,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -211,12 +277,12 @@ impl TraceSink for FootfallSink {
             ScopeKind::HostCall { host_sig, .. } => (&HOST, args.with("host_sig", host_sig.0)),
         };
         self.scopes
-            .push(footfall::scope_with(desc, self.context, &args));
+            .push(footfall::scope_with(desc, self.context_for(program), &args));
     }
 
     fn scope_exit(
         &mut self,
-        _program: &Program,
+        program: &Program,
         _kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -233,7 +299,71 @@ impl TraceSink for FootfallSink {
         {
             args = args.with("scope_token", scope.token().get());
         }
-        self.outcome(&SCOPE_END, &SCOPE_TRAP, &args, outcome);
+        self.outcome(
+            &SCOPE_END,
+            &SCOPE_TRAP,
+            &args,
+            self.context_for(program),
+            outcome,
+        );
         self.scopes.pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use execution_tape::asm::ProgramBuilder;
+
+    #[test]
+    fn a_nested_run_retains_the_waiting_parent_scope() {
+        let code = ProgramBuilder::new().build();
+        let mut sink = FootfallSink::new(ContextHandle::ROOT);
+        sink.run_start(&code, FuncId(0), 0);
+        sink.scope_enter(
+            &code,
+            ScopeKind::CallFrame {
+                func: FuncId(0),
+                caller: None,
+            },
+            1,
+            FuncId(0),
+            0,
+            None,
+        );
+        sink.run_start(&code, FuncId(0), 0);
+        assert_eq!(sink.runs.len(), 2, "child entry retains the parent run");
+        assert_eq!(
+            sink.scopes.len(),
+            1,
+            "child entry retains the parent's actual waiting frame"
+        );
+        sink.scope_enter(
+            &code,
+            ScopeKind::CallFrame {
+                func: FuncId(0),
+                caller: None,
+            },
+            1,
+            FuncId(0),
+            0,
+            None,
+        );
+        sink.run_end(&code, TraceOutcome::Ok);
+        assert_eq!(
+            sink.runs.len(),
+            1,
+            "child completion closes only its own run"
+        );
+        assert_eq!(
+            sink.scopes.len(),
+            1,
+            "parent scope remains live until its own outcome"
+        );
+        sink.run_end(&code, TraceOutcome::Cancelled);
+        assert!(
+            sink.runs.is_empty() && sink.scopes.is_empty(),
+            "root completion closes the remaining scopes"
+        );
     }
 }
