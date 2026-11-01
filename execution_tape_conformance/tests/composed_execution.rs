@@ -3,6 +3,10 @@
 
 //! Cross-code control uses one VM, heap transaction and resource authority.
 
+use execution_tape::recording::{
+    CaptureFault, CaptureResource, InstructionCapture, InstructionStatus, Outcome, RecordLimits,
+    RecordedValue, Recorder, Recording, TransferAction,
+};
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -12,7 +16,279 @@ use execution_tape::{
     verifier::VerifiedProgram,
     vm::{ControlError, InvocationOptions, Limits, RunStatus, Trap, Vm},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+fn recorded_composition(nonlocal: bool, limits: RecordLimits) -> Recording {
+    let (parent, entry) = parent();
+    let parent = Arc::new(parent);
+    let (child, method) = if nonlocal {
+        signalling_child()
+    } else {
+        child()
+    };
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let instance = vm.instantiate(&child).unwrap();
+    let mut recorder =
+        Recorder::new(parent.clone(), limits).with_instructions(InstructionCapture::default());
+    {
+        let mask = recorder.mask();
+        let mut run = vm
+            .start(
+                &parent,
+                entry,
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let home = run.inspect().frames().next().unwrap().activation;
+        let request = run.pending_host_call().unwrap();
+        let argument = request.arguments().next().unwrap().to_value();
+        request
+            .call_instance(
+                &instance,
+                method,
+                vec![argument.clone()],
+                InvocationOptions::default().yield_host_calls(),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        if nonlocal {
+            run.pending_host_call()
+                .unwrap()
+                .return_from(&home, vec![argument])
+                .unwrap();
+        } else {
+            let mut request = run.pending_host_call().unwrap();
+            let mut values = request.take_callback_results().unwrap();
+            request.complete(&mut values, Ok(0)).unwrap();
+        }
+        assert_eq!(
+            run.resume(100).unwrap(),
+            RunStatus::Complete,
+            "capture admission never changes guest execution"
+        );
+    }
+    drop(vm);
+    drop(parent);
+    recorder.finish()
+}
+
+#[test]
+fn composed_capture_retains_exact_code_and_sharing_after_the_store_is_gone() {
+    let record = recorded_composition(false, RecordLimits::default());
+    assert_eq!(
+        record.status(),
+        Ok(()),
+        "all child evidence and actual return relationships are owned"
+    );
+    let segments: Vec<_> = record.segments().collect();
+    assert_eq!(
+        segments.len(),
+        2,
+        "the actual child has its own evidence domain"
+    );
+    assert_eq!(
+        segments[1].program.program().name(),
+        Some("independent method"),
+        "overlapping local function IDs keep their exact definitions"
+    );
+    assert_eq!(
+        segments[1].parent.unwrap().segment,
+        0,
+        "the child's actual parent is retained"
+    );
+    let transfers: Vec<_> = record.transfers().collect();
+    assert_eq!(
+        transfers.len(),
+        2,
+        "entry and actual successful child return are distinct observations"
+    );
+    let TransferAction::Enter {
+        args: [RecordedValue::Agg(parent_id)],
+        ..
+    } = transfers[0].action
+    else {
+        panic!("aggregate argument")
+    };
+    let child = segments[1].recording.expect("observed child");
+    let [RecordedValue::Agg(child_id)] = child.invocation().unwrap().args else {
+        panic!("child aggregate argument")
+    };
+    assert_eq!(
+        record.aggregate_identity(*parent_id),
+        child.aggregate_identity(*child_id),
+        "cross-segment identity preserves the same original shared node"
+    );
+    assert_eq!(
+        record.instruction_status(),
+        Some(InstructionStatus::Complete),
+        "retained root instructions remain complete across child execution"
+    );
+    assert!(
+        record.replay().is_ok(),
+        "checked replay must execute the child in the same fresh store: {:?}",
+        record.replay()
+    );
+}
+
+#[test]
+fn composed_capture_distinguishes_unwind_from_an_unobserved_or_successful_child_return() {
+    let record = recorded_composition(true, RecordLimits::default());
+    assert_eq!(
+        record.status(),
+        Ok(()),
+        "a fully observed non-local transfer is complete evidence"
+    );
+    let segments: Vec<_> = record.segments().collect();
+    assert!(
+        matches!(
+            segments[1].recording.unwrap().outcome(),
+            Some(Outcome::Transferred {
+                segment: 0,
+                activation: 0
+            })
+        ),
+        "the child was abandoned by the actual root transfer"
+    );
+    assert!(
+        matches!(record.transfers().last().unwrap().action, TransferAction::ReturnFrom { target, .. } if target.segment == 0),
+        "the initiating command retains its qualified target"
+    );
+    assert_eq!(
+        record.instruction_status(),
+        Some(InstructionStatus::Complete),
+        "cross-code exit completion is recorded without inventing a local control command"
+    );
+    assert!(
+        record.replay().is_ok(),
+        "checked replay must reissue the actual cross-code non-local transfer: {:?}",
+        record.replay()
+    );
+}
+
+#[test]
+fn capture_limits_do_not_reset_for_a_new_segment() {
+    let record = recorded_composition(
+        false,
+        RecordLimits {
+            aggregates: 1,
+            ..RecordLimits::default()
+        },
+    );
+    assert!(
+        matches!(
+            record.status(),
+            Err(CaptureFault::Budget {
+                resource: CaptureResource::Aggregates,
+                limit: 1
+            })
+        ),
+        "parent and child arena retention share one capture allowance"
+    );
+    assert!(
+        record.stats().aggregates <= 1,
+        "the capture rejects further allocation before exceeding the global limit"
+    );
+    assert_eq!(
+        record.fault_program().unwrap().program().name(),
+        Some("independent method"),
+        "a shared capture failure retains the child's source domain"
+    );
+}
+
+#[test]
+fn an_explicit_child_observer_cannot_silently_create_a_complete_parent_recording() {
+    struct Ignore;
+    impl TraceSink for Ignore {}
+    let (parent, entry) = parent();
+    let parent = Arc::new(parent);
+    let (child, method) = child();
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let instance = vm.instantiate(&child).unwrap();
+    let mut recorder = Recorder::new(parent.clone(), RecordLimits::default());
+    let mut ignored = Ignore;
+    {
+        let mask = recorder.mask();
+        let mut run = vm
+            .start(
+                &parent,
+                entry,
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let request = run.pending_host_call().unwrap();
+        let argument = request.arguments().next().unwrap().to_value();
+        request
+            .call_instance(
+                &instance,
+                method,
+                vec![argument],
+                InvocationOptions::default().trace(TraceMask::RUN, &mut ignored),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let mut request = run.pending_host_call().unwrap();
+        let mut values = request.take_callback_results().unwrap();
+        request.complete(&mut values, Ok(0)).unwrap();
+        run.resume(100).unwrap();
+    }
+    let record = recorder.finish();
+    assert_eq!(record.status(), Err(&CaptureFault::MissingCompletion));
+    assert!(
+        !record.segments().nth(1).unwrap().denied_before_entry,
+        "absent child evidence does not prove denial"
+    );
+    assert!(record.replay().is_err());
+}
+
+#[test]
+fn a_denied_entry_is_complete_trap_evidence_without_a_fabricated_child_run() {
+    let (parent, entry) = parent();
+    let parent = Arc::new(parent);
+    let (child, method) = child();
+    let mut vm = Vm::new(
+        NoHost,
+        Limits {
+            fuel: 3,
+            ..Limits::default()
+        },
+    );
+    let instance = vm.instantiate(&child).unwrap();
+    let mut recorder = Recorder::new(parent.clone(), RecordLimits::default());
+    {
+        let mask = recorder.mask();
+        let mut run = vm
+            .start(
+                &parent,
+                entry,
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let request = run.pending_host_call().unwrap();
+        let argument = request.arguments().next().unwrap().to_value();
+        assert!(
+            matches!(request.call_instance(&instance, method, vec![argument], InvocationOptions::default()), Err(ControlError::Trapped(error)) if matches!(error.trap, Trap::FuelExceeded))
+        );
+    }
+    let record = recorder.finish();
+    assert_eq!(record.status(), Ok(()));
+    let child = record.segments().nth(1).unwrap();
+    assert!(child.denied_before_entry && child.recording.is_none());
+    assert!(
+        matches!(record.replay().unwrap(), execution_tape::recording::ReplayOutcome::Trapped(error) if matches!(error.trap, Trap::FuelExceeded))
+    );
+}
 
 #[derive(Default)]
 struct Audit {
@@ -69,6 +345,7 @@ impl TraceSink for Audit {
     fn control(&mut self, _: &execution_tape::program::Program, event: ControlEvent<'_>) {
         let (kind, source, target) = match event {
             ControlEvent::EnterInstance { parent, child, .. } => ("enter", parent, child),
+            ControlEvent::RejectInstance { parent, child, .. } => ("reject", parent, child),
             ControlEvent::ReturnInstance { child, parent, .. } => ("return", child, parent),
             ControlEvent::ReturnAcross { source, target, .. } => ("exit", source, target),
         };
@@ -587,5 +864,215 @@ fn dropping_an_active_child_cancels_the_whole_execution() {
             .unwrap(),
         [Value::Agg(fresh)],
         "the store remains usable after cancelling all control"
+    );
+}
+
+#[test]
+fn rejected_nonlocal_results_retain_both_the_initiating_code_and_contract_owner() {
+    use execution_tape::{asm::FunctionAbi, contract::Contract};
+    let mut builder = ProgramBuilder::new();
+    builder.set_program_name("lexical home");
+    let member = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let tuple = builder.contract(Contract::Tuple(&[Some(member)])).unwrap();
+    let entry = builder
+        .declare_function(FunctionAbi {
+            args: vec![],
+            rets: vec![tuple.into()],
+        })
+        .unwrap();
+    let pause = builder.host_sig_for(
+        "method",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::Agg],
+        },
+    );
+    let mut body = builder.function_asm(entry).unwrap();
+    let [answer] = builder.emit_call(&mut body, pause, &[]).unwrap();
+    body.ret(0, &[answer]);
+    builder.define_function(entry, body).unwrap();
+    let parent = Arc::new(builder.build_verified().unwrap());
+
+    let mut builder = ProgramBuilder::new();
+    builder.set_program_name("independent handler");
+    // Deliberately overlap the home's contract IDs with incompatible child contracts.
+    let member = builder.contract(Contract::Kind(ValueType::Bool)).unwrap();
+    builder.contract(Contract::Tuple(&[Some(member)])).unwrap();
+    let method = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![],
+        })
+        .unwrap();
+    let pause = builder.host_sig_for(
+        "escape",
+        HostSig {
+            args: vec![ValueType::Agg],
+            rets: vec![],
+        },
+    );
+    let mut body = builder.function_asm(method).unwrap();
+    let boolean = body.alloc_register(ValueType::Bool);
+    let aggregate = body.alloc_register(ValueType::Agg);
+    body.const_bool(boolean, true)
+        .tuple_new(aggregate, &[boolean]);
+    let [] = builder.emit_call(&mut body, pause, &[aggregate]).unwrap();
+    body.ret(0, &[]);
+    builder.define_function(method, body).unwrap();
+    let child = builder.build_verified().unwrap();
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let instance = vm.instantiate(&child).unwrap();
+    let mut recorder = Recorder::new(parent.clone(), RecordLimits::default());
+    {
+        let mask = recorder.mask();
+        let mut run = vm
+            .start(
+                &parent,
+                entry,
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        let home = run.inspect().frames().next().unwrap().activation;
+        run.resume(100).unwrap();
+        run.pending_host_call()
+            .unwrap()
+            .call_instance(
+                &instance,
+                method,
+                vec![],
+                InvocationOptions::default().yield_host_calls(),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let request = run.pending_host_call().unwrap();
+        let site = request.location();
+        let argument = request.arguments().next().unwrap().to_value();
+        let ControlError::Trapped(trap) = request.return_from(&home, vec![argument]).unwrap_err()
+        else {
+            panic!("fatal boundary failure");
+        };
+        assert_eq!(
+            (trap.func, trap.pc),
+            (site.func, site.pc),
+            "the error points at the initiating handler instruction"
+        );
+        let Trap::ContractBoundary(boundary) = trap.trap else {
+            panic!("the result contract's owner must be retained");
+        };
+        assert!(boundary.program.shares_definition_with(&parent));
+        assert!(
+            matches!(*boundary.error, Trap::ContractMismatch { function, .. } if function == entry)
+        );
+        assert!(run.program().shares_definition_with(&child));
+    }
+    let record = recorder.finish();
+    assert_eq!(record.status(), Ok(()));
+    assert!(
+        record
+            .outcome_program()
+            .unwrap()
+            .shares_definition_with(&child)
+    );
+    assert!(
+        matches!(
+            record.replay().unwrap(),
+            execution_tape::recording::ReplayOutcome::Trapped(_)
+        ),
+        "checked replay preserves the qualified contract failure"
+    );
+}
+
+#[test]
+fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
+    let mut builder = ProgramBuilder::new();
+    let signature = FunctionSig {
+        arg_types: vec![ValueType::Agg],
+        ret_types: vec![ValueType::Agg],
+    };
+    let entry = builder.declare_function(signature.clone()).unwrap();
+    let callback = builder.declare_function(signature).unwrap();
+    for (function, symbol) in [(entry, "outer"), (callback, "inner")] {
+        let pause = builder.host_sig_for(
+            symbol,
+            HostSig {
+                args: vec![ValueType::Agg],
+                rets: vec![ValueType::Agg],
+            },
+        );
+        let mut body = builder.function_asm(function).unwrap();
+        let [answer] = builder.emit_call(&mut body, pause, &[1]).unwrap();
+        body.ret(0, &[answer]);
+        builder.define_function(function, body).unwrap();
+    }
+    let parent = Arc::new(builder.build_verified().unwrap());
+    let (child, method) = signalling_child();
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let instance = vm.instantiate(&child).unwrap();
+    let tuple = Value::Agg(vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap());
+    let mut recorder = Recorder::new(parent.clone(), RecordLimits::default())
+        .with_instructions(InstructionCapture::default());
+    {
+        let mask = recorder.mask();
+        let args = [tuple.clone()];
+        let mut run = vm
+            .start(
+                &parent,
+                entry,
+                &args,
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        run.pending_host_call()
+            .unwrap()
+            .call_guest(Value::Func(callback), vec![tuple.clone()])
+            .unwrap();
+        run.resume(100).unwrap();
+        let home = run.inspect().frames().next().unwrap().activation;
+        assert_ne!(
+            home.ordinal(),
+            0,
+            "target the actual callback root, not the segment root"
+        );
+        run.pending_host_call()
+            .unwrap()
+            .call_instance(
+                &instance,
+                method,
+                vec![tuple.clone()],
+                InvocationOptions::default().yield_host_calls(),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        assert_eq!(run.inspect().frames().count(), 3);
+        run.pending_host_call()
+            .unwrap()
+            .return_from(&home, vec![tuple.clone()])
+            .unwrap();
+        let mut request = run.pending_host_call().unwrap();
+        assert_eq!(
+            request.symbol(),
+            "outer",
+            "the original operation survives the callback's exit"
+        );
+        let mut values = request.take_callback_results().unwrap();
+        assert_eq!(values, [tuple]);
+        request.complete(&mut values, Ok(0)).unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
+    }
+    let record = recorder.finish();
+    assert_eq!(record.status(), Ok(()));
+    assert_eq!(
+        record.instruction_status(),
+        Some(InstructionStatus::Complete)
+    );
+    assert!(
+        record.replay().is_ok(),
+        "the journal composes same-code callbacks with cross-code exits"
     );
 }

@@ -73,6 +73,7 @@ pub struct Aggregate<'a> {
 
 #[derive(Debug)]
 pub(crate) struct Node {
+    pub origin: u32,
     pub kind: Option<AggType>,
     pub fields: Range<usize>,
     pub initial: bool,
@@ -263,6 +264,7 @@ impl Builder {
             }
         })?);
         self.arena.nodes.push(Node {
+            origin: handle.0,
             kind: None,
             fields: 0..0,
             initial: handle.0 < self.initial_count,

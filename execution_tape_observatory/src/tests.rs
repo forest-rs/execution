@@ -992,7 +992,7 @@ fn typed_transfer_rows_name_the_target_and_distinguish_embedding_inputs_from_gue
     press(&mut view, KeyCode::Char('i'));
     let screen = text(&mut view, 180, 42);
     assert!(
-        screen.contains("abandoned by return from activation #0"),
+        screen.contains("abandoned by return from local activation #0"),
         "{screen}"
     );
 }

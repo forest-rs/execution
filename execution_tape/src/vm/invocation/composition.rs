@@ -178,7 +178,8 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 &self.vm.limits,
                 entry,
                 true,
-            )?;
+            )
+            .map_err(|trap| trap.in_contract_definition(instance.program()))?;
             Ok(())
         })();
         if let Err(trap) = result {
@@ -186,6 +187,16 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 .continuation
                 .ctx
                 .trap(location.func, location.pc, span, trap);
+            self.continuation
+                .trace
+                .control(self.continuation.program.program(), || {
+                    ControlEvent::RejectInstance {
+                        location,
+                        parent: &parent_id,
+                        child: &child_id,
+                        error: &error,
+                    }
+                });
             self.finish(Err(error.clone()));
             return Err(error);
         }

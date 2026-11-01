@@ -52,6 +52,17 @@ pub enum ControlEvent<'a> {
         /// Shared storage after staging promotion and before entry validation.
         aggregates: &'a AggHeap,
     },
+    /// A requested child was rejected before entry or child observations began.
+    RejectInstance {
+        /// Initiating instruction in the callback's program.
+        location: TraceLocation,
+        /// Exact pending caller.
+        parent: &'a ActivationId,
+        /// Requested child root, which never entered.
+        child: &'a ActivationId,
+        /// Original admission failure; the execution subsequently terminates with this trap.
+        error: &'a TrapInfo,
+    },
     /// A child's checked result returned to its original pending host instruction.
     ReturnInstance {
         /// Actual child return/exit instruction, in `instance`'s definition.
@@ -77,6 +88,10 @@ pub enum ControlEvent<'a> {
         target: &'a ActivationId,
         /// Code instance that interprets the target's result contracts.
         instance: &'a Instance,
+        /// Actual suspended instruction in the target's definition.
+        target_location: TraceLocation,
+        /// Same-segment callbacks abandoned in the target, independently of crossed segments.
+        unwound_callbacks: usize,
         /// Raw proposed results, before boundary validation.
         values: &'a [Value],
         /// Staged host work admitted before the command.

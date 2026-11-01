@@ -15,6 +15,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+mod execution;
+
 /// Difference between the replay and the captured boundary contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Divergence {
@@ -93,6 +95,11 @@ pub enum Divergence {
 /// Boundary being checked when replay diverged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReplayBoundary {
+    /// Checking one execution-wide cross-instance transfer observation.
+    Transfer {
+        /// Ordinal in [`Recording::transfers`].
+        index: usize,
+    },
     /// Checking one retained instruction attempt or completion.
     Instruction {
         /// Zero-based attempt ordinal.
@@ -125,6 +132,16 @@ pub enum ReplayBoundary {
 /// Replay could not establish the captured invocation's result.
 #[derive(Clone, Debug)]
 pub enum ReplayError {
+    /// A child segment shares control, storage and budgets with its owning execution.
+    /// Replay the root recording to check this segment in its actual context.
+    ExecutionContextRequired,
+    /// A divergence or incomplete segment inside a composed execution.
+    InSegment {
+        /// Execution-local segment whose exact definition interprets the source location.
+        segment: u64,
+        /// Underlying boundary diagnostic.
+        error: alloc::boxed::Box<Self>,
+    },
     /// A partial capture cannot be replayed as complete.
     Incomplete(CaptureFault),
     /// Guest execution diverged from recorded boundary values or outcomes.
@@ -142,12 +159,20 @@ pub enum ReplayError {
 
 impl core::fmt::Display for ReplayError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "replay failed: {self:?}")
+        match self {
+            Self::ExecutionContextRequired => f.write_str(
+                "child evidence requires its execution context; replay the owning root recording",
+            ),
+            Self::InSegment { segment, error } => write!(f, "segment #{segment}: {error}"),
+            _ => write!(f, "replay failed: {self:?}"),
+        }
     }
 }
 impl core::error::Error for ReplayError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            Self::InSegment { error, .. } => Some(error.as_ref()),
+            Self::ExecutionContextRequired => None,
             Self::Incomplete(error) => Some(error),
             Self::Aggregate(error) => Some(error),
             Self::Diverged { .. } => None,
@@ -182,6 +207,8 @@ struct State {
     top: Option<crate::recording::frames::FrameId>,
     final_top: Option<crate::recording::frames::FrameId>,
     error: Option<ReplayError>,
+    global: Option<Rc<RefCell<execution::Identities>>>,
+    origins: Vec<u32>,
 }
 
 impl State {
@@ -203,6 +230,15 @@ impl State {
         }
         if self.inverse.contains_key(&handle.0) {
             return Err(self.mismatch(Divergence::Identity { aggregate: id }));
+        }
+        if let Some(global) = &self.global {
+            let origin = *self
+                .origins
+                .get(id.0 as usize)
+                .ok_or_else(|| self.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
+            if !global.borrow_mut().bind(origin, handle) {
+                return Err(self.mismatch(Divergence::Identity { aggregate: id }));
+            }
         }
         self.bindings.insert(id, handle);
         self.inverse.insert(handle.0, id);
@@ -342,10 +378,16 @@ impl State {
             // even when only observed initial nodes were restored. Check contents/aliasing
             // before using this mapping; no host mutation or guessed persistent ID needed.
             let node = &record.arena.nodes[id.0 as usize];
-            let handle = node
-                .created_offset
-                .and_then(|offset| self.initial_count.checked_add(offset))
-                .map(AggHandle)
+            let shared = self
+                .global
+                .as_ref()
+                .and_then(|global| global.borrow().handle(node.origin));
+            let handle = shared
+                .or_else(|| {
+                    node.created_offset
+                        .and_then(|offset| self.initial_count.checked_add(offset))
+                        .map(AggHandle)
+                })
                 .ok_or_else(|| self.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
             self.matches(
                 record,
@@ -725,7 +767,11 @@ impl TraceSink for Check<'_> {
         if state.error.is_some() {
             return;
         }
-        if matches!(outcome, TraceOutcome::Trap(_)) && state.final_top.is_none() {
+        if matches!(
+            outcome,
+            TraceOutcome::Trap(_) | TraceOutcome::Unwound { .. }
+        ) && state.final_top.is_none()
+        {
             state.final_top = state.top;
         }
         state.top = state
@@ -1059,6 +1105,12 @@ impl Recording {
     pub fn replay(&self) -> Result<ReplayOutcome, ReplayError> {
         self.status()
             .map_err(|fault| ReplayError::Incomplete(fault.clone()))?;
+        if self.context_required {
+            return Err(ReplayError::ExecutionContextRequired);
+        }
+        if self.execution.is_some() {
+            return execution::replay(self);
+        }
         let entry = self.entry.as_ref().expect("complete recording entry");
         let state = Rc::new(RefCell::new(State::default()));
         let mut recorded_host = RecordedHost {
@@ -1165,44 +1217,7 @@ impl Recording {
             return Err(error.clone());
         }
         state.boundary = ReplayBoundary::Completion;
-        if let Some(history) = &self.history
-            && (state.instructions < history.steps.len()
-                || (history.status == crate::recording::InstructionStatus::Complete
-                    && state.instructions != history.steps.len()))
-        {
-            return Err(state.mismatch(Divergence::Instruction));
-        }
-        if state.calls != self.calls.len() {
-            return Err(state.mismatch(Divergence::HostCalls {
-                expected: self.calls.len(),
-                actual: state.calls,
-            }));
-        }
-        if state.commands != self.commands.len() {
-            return Err(state.mismatch(Divergence::ControlCommands {
-                expected: self.commands.len(),
-                actual: state.commands,
-            }));
-        }
-        if !state.pending.is_empty()
-            || state.active_commands.iter().any(|&index| {
-                matches!(
-                    &self.commands[index].action,
-                    Action::CallGuest {
-                        returned: Some(_),
-                        ..
-                    }
-                )
-            })
-            || (matches!(self.end, Some(End::Returned)) && !state.active_commands.is_empty())
-        {
-            return Err(state.mismatch(Divergence::Outcome));
-        }
-        if state.frames != self.frames.len()
-            || (!self.frames.is_empty() && self.outcome_frame != state.final_top)
-        {
-            return Err(state.mismatch(Divergence::CallStack));
-        }
+        check_finished(self, &mut state)?;
         match (
             self.end.as_ref().expect("complete recording outcome"),
             result,
@@ -1220,6 +1235,52 @@ impl Recording {
     }
 }
 
+fn check_finished(record: &Recording, state: &mut State) -> Result<(), ReplayError> {
+    if let Some(error) = &state.error {
+        return Err(error.clone());
+    }
+    state.boundary = ReplayBoundary::Completion;
+    if let Some(history) = &record.history
+        && (state.instructions < history.steps.len()
+            || (history.status == crate::recording::InstructionStatus::Complete
+                && state.instructions != history.steps.len()))
+    {
+        return Err(state.mismatch(Divergence::Instruction));
+    }
+    if state.calls != record.calls.len() {
+        return Err(state.mismatch(Divergence::HostCalls {
+            expected: record.calls.len(),
+            actual: state.calls,
+        }));
+    }
+    if state.commands != record.commands.len() {
+        return Err(state.mismatch(Divergence::ControlCommands {
+            expected: record.commands.len(),
+            actual: state.commands,
+        }));
+    }
+    if !state.pending.is_empty()
+        || state.active_commands.iter().any(|&index| {
+            matches!(
+                &record.commands[index].action,
+                Action::CallGuest {
+                    returned: Some(_),
+                    ..
+                }
+            )
+        })
+        || (matches!(record.end, Some(End::Returned)) && !state.active_commands.is_empty())
+    {
+        return Err(state.mismatch(Divergence::Outcome));
+    }
+    if state.frames != record.frames.len()
+        || (!record.frames.is_empty() && record.outcome_frame != state.final_top)
+    {
+        return Err(state.mismatch(Divergence::CallStack));
+    }
+    Ok(())
+}
+
 fn same_host_error(a: &HostError, b: &HostError) -> bool {
     match (a, b) {
         (HostError::UnknownSymbol, HostError::UnknownSymbol)
@@ -1235,7 +1296,15 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
     if a.func != b.func || a.pc != b.pc || a.span_id != b.span_id {
         return false;
     }
-    match (&a.trap, &b.trap) {
+    same_trap_kind(&a.trap, &b.trap)
+}
+
+fn same_trap_kind(a: &Trap, b: &Trap) -> bool {
+    match (a, b) {
+        (Trap::ContractBoundary(a), Trap::ContractBoundary(b)) => {
+            a.program.shares_definition_with(&b.program) && same_trap_kind(&a.error, &b.error)
+        }
+        (Trap::CrossInstanceValue { kind: a }, Trap::CrossInstanceValue { kind: b }) => a == b,
         (Trap::FuelExceeded, Trap::FuelExceeded)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
@@ -1869,6 +1938,7 @@ mod tests {
         let node = &record.arena.nodes[original.0 as usize];
         let duplicate = AggregateId(u32::try_from(record.arena.nodes.len()).unwrap());
         record.arena.nodes.push(crate::recording::values::Node {
+            origin: u32::MAX,
             kind: node.kind,
             fields: node.fields.clone(),
             initial: true,

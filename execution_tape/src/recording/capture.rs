@@ -1,6 +1,9 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+mod session;
+pub use session::Recorder;
+
 use crate::host::ValueRef;
 use crate::program::Program;
 use crate::recording::{
@@ -28,7 +31,7 @@ use core::ops::Range;
 /// Capture failure stops value/graph retention; guest execution and live host effects continue.
 /// The final VM trap is still retained when its payload budget permits. Create a new
 /// recorder for each invocation. The recorder never changes the VM, host or supplied values.
-pub struct Recorder {
+pub(super) struct SegmentRecorder {
     history: Option<alloc::boxed::Box<History>>,
     program: Arc<VerifiedProgram>,
     builder: Builder,
@@ -45,11 +48,12 @@ pub struct Recorder {
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
     started: bool,
+    external_root_exit: bool,
 }
 
-impl Recorder {
+impl SegmentRecorder {
     /// Creates a recorder sharing `program`; execution must use this same prepared instance.
-    pub fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
+    pub(super) fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
         Self {
             history: None,
             program,
@@ -67,6 +71,7 @@ impl Recorder {
             fault: None,
             fault_location: None,
             started: false,
+            external_root_exit: false,
         }
     }
 
@@ -75,7 +80,7 @@ impl Recorder {
     /// Requests instruction callbacks in [`Self::mask`]. Reaching `max_steps` preserves a
     /// labelled prefix; boundary recording and guest execution continue normally.
     #[must_use]
-    pub fn with_instructions(mut self, config: InstructionCapture) -> Self {
+    pub(super) fn with_instructions(mut self, config: InstructionCapture) -> Self {
         self.history = Some(alloc::boxed::Box::new(History::new(config)));
         if self.started {
             self.history.as_mut().expect("installed history").status =
@@ -87,7 +92,7 @@ impl Recorder {
     /// Freezes retained observations and discards construction lookup indexes.
     ///
     /// Inspect [`Recording::status`] before relying on the record; replay enforces it as well.
-    pub fn finish(mut self) -> Recording {
+    pub(super) fn finish(mut self, identity: Arc<()>) -> Recording {
         if let Some(history) = &mut self.history {
             history.finish();
             if self.fault.is_some() {
@@ -102,13 +107,14 @@ impl Recorder {
                     .is_some_and(|step| {
                         (step.outcome == InstructionOutcome::Completed
                             || (step.outcome == InstructionOutcome::Unwound { target: 0 }
-                                && self.commands.last().is_some_and(|command| {
-                                    command.location == step.location
-                                        && matches!(
-                                            command.action,
-                                            Action::ReturnFrom { target: 0, .. }
-                                        )
-                                })))
+                                && (self.external_root_exit
+                                    || self.commands.last().is_some_and(|command| {
+                                        command.location == step.location
+                                            && matches!(
+                                                command.action,
+                                                Action::ReturnFrom { target: 0, .. }
+                                            )
+                                    }))))
                             && step.next.is_none()
                             && self
                                 .candidate
@@ -125,8 +131,16 @@ impl Recorder {
         if self.end.is_none() {
             self.fail(CaptureFault::MissingCompletion);
         }
+        let heap_base = self.builder.initial_count;
         let (arena, initial) = self.builder.finish();
         Recording {
+            execution: None,
+            context_required: false,
+            identity,
+            local_outcome: None,
+            outcome_definition: None,
+            fault_definition: None,
+            heap_base,
             history: self.history,
             program: self.program,
             arena,
@@ -399,19 +413,16 @@ impl Recorder {
     }
 }
 
-impl core::fmt::Debug for Recorder {
+impl core::fmt::Debug for SegmentRecorder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Recorder")
+        f.debug_struct("SegmentRecorder")
             .field("fault", &self.fault)
             .field("host_calls", &self.calls.len())
             .finish_non_exhaustive()
     }
 }
 
-impl TraceSink for Recorder {
-    fn control(&mut self, _: &Program, _: crate::trace::ControlEvent<'_>) {
-        self.fail(CaptureFault::UnsupportedComposition);
-    }
+impl TraceSink for SegmentRecorder {
     fn run_mask(&mut self, program: &Program, mask: TraceMask) {
         if !self.check(program) {
             return;
@@ -660,7 +671,11 @@ impl TraceSink for Recorder {
             );
             return;
         }
-        if matches!(outcome, TraceOutcome::Trap(_)) && self.outcome_frame.is_none() {
+        if matches!(
+            outcome,
+            TraceOutcome::Trap(_) | TraceOutcome::Unwound { .. }
+        ) && self.outcome_frame.is_none()
+        {
             // The first exit still has the entire leaf-to-root ancestry. Later exits are unwind.
             self.outcome_frame = Some(top);
         }

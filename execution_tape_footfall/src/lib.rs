@@ -55,6 +55,7 @@ static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
 static ENTER_INSTANCE: EventDesc = EventDesc::new("execution_tape.enter_instance");
 static RETURN_INSTANCE: EventDesc = EventDesc::new("execution_tape.return_instance");
 static RETURN_ACROSS: EventDesc = EventDesc::new("execution_tape.return_across");
+static REJECT_INSTANCE: EventDesc = EventDesc::new("execution_tape.reject_instance");
 
 /// Translates VM events into Footfall observations under an application-owned context.
 ///
@@ -195,6 +196,7 @@ impl TraceSink for FootfallSink {
     fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
         let (kind, source, target) = match event {
             ControlEvent::EnterInstance { parent, child, .. } => (&ENTER_INSTANCE, parent, child),
+            ControlEvent::RejectInstance { parent, child, .. } => (&REJECT_INSTANCE, parent, child),
             ControlEvent::ReturnInstance { child, parent, .. } => (&RETURN_INSTANCE, child, parent),
             ControlEvent::ReturnAcross { source, target, .. } => (&RETURN_ACROSS, source, target),
         };

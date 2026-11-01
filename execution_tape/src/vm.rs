@@ -148,6 +148,54 @@ impl Default for Limits {
     }
 }
 
+/// A contract failure whose numeric identities belong to independently compiled code.
+///
+/// The enclosing [`TrapInfo`] identifies the initiating instruction. This retained definition
+/// identifies the function, contract and result position in the boundary being checked.
+#[derive(Clone)]
+pub struct ContractBoundaryError {
+    /// Exact definition which owns the failing boundary's identities.
+    pub program: VerifiedProgram,
+    /// The boundary's contract mismatch or contract-work exhaustion.
+    pub error: Box<Trap>,
+}
+impl Trap {
+    fn in_contract_definition(self, program: &VerifiedProgram) -> Self {
+        match self {
+            Self::ContractMismatch { .. } | Self::ContractWorkExceeded { .. } => {
+                Self::ContractBoundary(ContractBoundaryError {
+                    program: program.clone(),
+                    error: Box::new(self),
+                })
+            }
+            _ => self,
+        }
+    }
+}
+impl fmt::Debug for ContractBoundaryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContractBoundaryError")
+            .field("program", &self.program.program().name())
+            .field("error", &self.error)
+            .finish()
+    }
+}
+impl fmt::Display for ContractBoundaryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "boundary in {:?}: {}",
+            self.program.program().name(),
+            self.error
+        )
+    }
+}
+impl core::error::Error for ContractBoundaryError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+
 /// A runtime trap.
 #[derive(Clone, Debug)]
 pub enum Trap {
@@ -164,6 +212,8 @@ pub enum Trap {
         /// Storage kind containing a code-local identity.
         kind: ValueType,
     },
+    /// The initiating instruction checked a contract owned by another code definition.
+    ContractBoundary(ContractBoundaryError),
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
     AggregateWorkExceeded {
         /// Configured node-and-field work limit.
@@ -282,6 +332,7 @@ impl fmt::Display for Trap {
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
             Self::InstanceLimitExceeded => write!(f, "VM instance capacity exhausted"),
             Self::CrossInstanceValue { kind } => write!(f, "cannot transfer code-local {kind:?} to another instance"),
+            Self::ContractBoundary(error) => fmt::Display::fmt(error, f),
             Self::AggregateWorkExceeded {
                 limit,
                 used,
@@ -370,6 +421,7 @@ impl fmt::Display for Trap {
 impl core::error::Error for Trap {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            Self::ContractBoundary(error) => Some(error),
             Self::HostCallFailed { error, .. } => Some(error),
             Self::AggError(error) => Some(error),
             Self::ContractMismatch { error, .. } => Some(error),

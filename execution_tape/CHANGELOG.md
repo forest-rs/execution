@@ -21,12 +21,25 @@ This release has an [MSRV][] of 1.88.
   Suspended parents share the store and all resource budgets; only the root commits or rolls back
   aggregate storage. `return_from` can target a live activation across those code boundaries.
   Inspection exposes the real parent chain and each frame's exact code and instance. Control
-  transfers are observable separately from host completion; single-program recordings reject
-  unsupported composed evidence. Raw callable IDs remain instance-local and nominal aggregates
+  transfers are observable separately from host completion. Raw callable IDs remain instance-local and nominal aggregates
   require their original definition when crossing a boundary. Host objects share the VM's host.
   Migration: handle `ControlError::ForeignStore`, `Trap::CrossInstanceValue`, and
-  `CaptureFault::UnsupportedComposition` in exhaustive matches. `PausedFrame` has code, namespace
+  `Trap::ContractBoundary` in exhaustive matches. Cross-code contract errors retain the
+  boundary's definition independently of the initiating trap location. `PausedFrame` has code, namespace
   and parent fields; activation display ordinals are local to a segment, so compare opaque IDs.
+
+- Record the actual cross-code execution tree through one root `Recorder`. `segments` retains
+  exact definitions, requested entries and parent activations; `transfers` distinguishes admitted
+  entry, rejected entry, checked return and typed non-local return. Capture quotas cover all
+  segments, and `aggregate_identity` compares sharing across their owned value arenas. Checked
+  replay drives one fresh VM and invocation, executes child code again under shared limits, and
+  checks namespace ownership, cross-segment identity and actual target activation. Missing child
+  observations make capture incomplete. Migration: handle `Outcome::Transferred`,
+  `ReplayError::{InSegment,ExecutionContextRequired}`, and `ReplayBoundary::Transfer` in exhaustive
+  matches. Child evidence is inspectable but must be replayed through its owning root recording.
+  `outcome_program` qualifies the final trap's numeric IDs and returns `None` if partial evidence
+  cannot establish their owner. Trace-forwarding wrappers must forward `TraceSink::control`;
+  `TraceMask::CONTROL` subscribes without requesting guest values, while `VALUES` includes control.
 
 - Instantiate shared verified code in a VM store with `Vm::instantiate`. `Instance::start`
   rejects foreign stores before observing or entering guest code. Hosts and pending requests

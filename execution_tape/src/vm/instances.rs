@@ -101,6 +101,17 @@ impl Instance {
         args: &'a [Value],
         options: InvocationOptions<'a>,
     ) -> Result<Invocation<'a, H>, InstanceError> {
+        self.start_prepaid(vm, entry, args, options, DataWork::default())
+    }
+
+    pub(crate) fn start_prepaid<'a, H: Host>(
+        &self,
+        vm: &'a mut Vm<H>,
+        entry: FuncId,
+        args: &'a [Value],
+        options: InvocationOptions<'a>,
+        work: DataWork,
+    ) -> Result<Invocation<'a, H>, InstanceError> {
         if !vm.owns_instance(self) {
             return Err(InstanceError::ForeignStore);
         }
@@ -112,7 +123,7 @@ impl Instance {
             Cow::Borrowed(args),
             options,
             checkpoint,
-            DataWork::default(),
+            work,
         )
         .map_err(InstanceError::Trapped)
     }

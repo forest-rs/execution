@@ -210,6 +210,14 @@ impl<H: Host> Running<'_, '_, H> {
                         source: &source,
                         target: target_id,
                         instance: destination.ctx.instance.as_ref().expect("target instance"),
+                        target_location: destination
+                            .control
+                            .paused_location(&destination.ctx, index),
+                        unwound_callbacks: destination
+                            .control
+                            .callbacks
+                            .as_ref()
+                            .map_or(0, |callbacks| callbacks.count_exited(index)),
                         values: &values,
                         work,
                         created: &created,
@@ -234,9 +242,11 @@ impl<H: Host> Running<'_, '_, H> {
                 &self.vm.limits,
                 target.ctx.frames[index].func,
                 false,
-            )?;
+            )
+            .map_err(|trap| trap.in_contract_definition(&target.program))?;
             self.budget.select(&target.control);
             check_exit_values(self.vm, self.budget, target, index, &values)
+                .map_err(|trap| trap.in_contract_definition(&target.program))
         })();
         if let Err(trap) = result {
             let error = self

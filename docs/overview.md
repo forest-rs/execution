@@ -311,6 +311,37 @@ The boundary recorder captures the embedding's command and the callback's actual
 from native host outcomes. Checked replay issues that command into the same invocation, executes
 the guest body again and verifies its actual result.
 
+## Composing independently compiled code
+
+`Vm::instantiate` gives a shared verified definition a namespace within one VM store.
+`PendingHostCall::call_instance` enters that instance while keeping the admitting host request
+and its guest callers suspended. Every segment retains its exact code, registers and parent
+activation. A checked child return restores the original request and its callback result slots;
+the embedding still chooses how to complete that operation. Only the execution root commits
+or rolls back the shared aggregate transaction. Child returns preserve live parent handles.
+
+Instruction fuel, live call depth, host admission, contract work and aggregate/payload work are
+shared across this tree. No child entry replenishes a budget. Structural tuples and host objects
+can cross instance boundaries without snapshot/import. Raw function and closure IDs remain
+instance-local; nominal schemas require their exact defining code. Iterative provenance checks
+also inspect nested members and spend contract work. A foreign-store instance is denied before
+admission, while an invalid admitted boundary terminates the whole execution.
+
+Typed `return_from` can target an actual live ancestor across these code boundaries. It validates
+the target's result contracts before abandoning intervening activations. `TrapInfo` still names
+the initiating instruction; `Trap::ContractBoundary` separately retains an independent target
+definition when its contract IDs are involved. Language runtimes choose condition matching,
+returning restarts, lexical homes and protected cleanup. The
+[composed conditions example](../examples/tape/composed-conditions.md) demonstrates these policies,
+including replacing a method while its old revision remains suspended.
+
+One optional root recorder retains this actual tree, with a combined capture allowance and
+code-qualified transfers. Checked replay uses one fresh store and invocation, executes the
+child computations again, and checks cross-segment identity, budgets and exact live targets.
+Native effects remain recorded inputs. Live and recorded Observatory views resolve source
+through each retained definition. Ordinary verification and execution retain no recording or
+source map; inspection and capture are requested explicitly.
+
 ## Program serialization
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
 - Function table and constant pool indices are bounds-checked by the verifier.

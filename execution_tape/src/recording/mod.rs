@@ -26,6 +26,24 @@
 //! inputs, whereas normal callback returns are computed again by the guest. Foreign/expired target
 //! denials spend no guest work and are not recorded as admitted commands.
 //!
+//! Independently compiled calls through `PendingHostCall::call_instance` belong to the same
+//! execution. Install one recorder at the root; children inherit it unless explicitly replaced.
+//! [`Recording::segments`] exposes exact code definitions and actual parents. Each segment owns
+//! its local host/callback/instruction evidence; [`Recording::transfers`] links them with actual
+//! admissions, denied entries, checked child returns and cross-code typed exits. Transfer values
+//! use the admitting segment's arena, while `RecordedTransfer::program` qualifies its source.
+//! [`Recording::aggregate_identity`] compares shared nodes across these separate owned arenas.
+//! One capture allowance bounds their combined retention. Replacing a child observer without
+//! preserving its evidence makes the root capture incomplete; missing evidence never proves denial.
+//!
+//! Replay the owning root: it drives one fresh VM and one invocation, reinstantiates the recorded
+//! namespaces, and reissues actual transfers under one shared hard budget. It recomputes child
+//! results and checks sharing instead of substituting saved results. A child record alone returns
+//! [`ReplayError::ExecutionContextRequired`]. [`Outcome::Transferred`] is positive unwind evidence,
+//! not a successful child return or missing completion. Replay diagnostics identify the failing
+//! segment. Final trap identities use [`Recording::outcome_program`]; a contract error against
+//! another definition retains that boundary separately in `Trap::ContractBoundary`.
+//!
 //! ```
 //! use std::sync::Arc;
 //! use execution_tape::{
@@ -116,13 +134,14 @@
 //! no observation maps are retained in ordinary prepared programs. Watched values use the existing
 //! value/aggregate/payload budgets; exhausting one still makes boundary capture incomplete.
 //!
-//! Trace forwarding wrappers must forward [`TraceSink::run_mask`] as well as instruction/value
+//! Trace forwarding wrappers must forward [`TraceSink::control`] and [`TraceSink::run_mask`] as well as instruction/value
 //! callbacks. The VM reports the actual nonempty subscription before event delivery, independently
 //! of `RUN`; `NONE` still emits no callbacks. History uses that evidence to distinguish zero attempts
 //! from disabled callbacks. A recommended mask alone does not establish which events were enabled.
 
 mod capture;
 mod control;
+mod execution;
 mod frames;
 mod instructions;
 mod replay;
@@ -140,6 +159,9 @@ use core::ops::Range;
 
 pub use capture::Recorder;
 pub use control::{ControlAction, ControlCommand, GuestReturn};
+pub use execution::{
+    AggregateIdentity, RecordedActivation, RecordedSegment, RecordedTransfer, TransferAction,
+};
 pub use frames::CallStack;
 pub use instructions::{
     InstructionCapture, InstructionOutcome, InstructionStatus, InstructionStep,
@@ -227,8 +249,6 @@ pub enum CaptureFault {
     },
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
-    /// A single-program recorder observed composed execution without its child evidence.
-    UnsupportedComposition,
 }
 
 impl core::fmt::Display for CaptureFault {
@@ -294,6 +314,13 @@ pub enum Outcome<'a> {
     Returned(&'a [RecordedValue]),
     /// Original VM trap, with its typed error payload intact.
     Trapped(&'a TrapInfo),
+    /// This child segment was abandoned by a validated transfer to an ancestor activation.
+    Transferred {
+        /// Execution-local target segment.
+        segment: u64,
+        /// Activation ordinal in that target.
+        activation: u64,
+    },
 }
 
 /// Used capture-owned storage, excluding the shared program and opaque error payloads.
@@ -342,6 +369,10 @@ enum CallOutcome {
 enum End {
     Returned,
     Trapped(TrapInfo),
+    Transferred {
+        target: RecordedActivation,
+        location: TraceLocation,
+    },
 }
 
 /// Immutable observations of one invocation, including an explicit completeness result.
@@ -350,6 +381,13 @@ enum End {
 /// this recording, not to a VM heap. Incomplete recordings remain inspectable, but replay rejects
 /// them before executing guest code. Callback arguments and outcome payloads are never formatted.
 pub struct Recording {
+    execution: Option<alloc::boxed::Box<execution::ExecutionData>>,
+    context_required: bool,
+    identity: Arc<()>,
+    local_outcome: Option<TraceLocation>,
+    outcome_definition: Option<Arc<VerifiedProgram>>,
+    fault_definition: Option<Arc<VerifiedProgram>>,
+    heap_base: u32,
     history: Option<alloc::boxed::Box<instructions::History>>,
     program: Arc<VerifiedProgram>,
     arena: values::Arena,
@@ -434,6 +472,13 @@ impl Recording {
         self.fault_location
     }
 
+    /// Exact definition interpreting [`Self::fault_location`], when capture failed.
+    /// A root capture allowance can be exhausted in an independently compiled child.
+    pub fn fault_program(&self) -> Option<&VerifiedProgram> {
+        self.fault.as_ref()?;
+        Some(self.fault_definition.as_deref().unwrap_or(&self.program))
+    }
+
     /// Borrows the shared prepared program that gives function/import IDs their meaning.
     pub fn program(&self) -> &VerifiedProgram {
         &self.program
@@ -492,6 +537,10 @@ impl Recording {
                 .as_ref()
                 .map(|(_, values)| Outcome::Returned(self.arena.slice(values))),
             End::Trapped(error) => Some(Outcome::Trapped(error)),
+            End::Transferred { target, .. } => Some(Outcome::Transferred {
+                segment: target.segment,
+                activation: target.activation,
+            }),
         }
     }
 
@@ -500,8 +549,12 @@ impl Recording {
     /// Rejected invocations can report the VM's synthetic entry location. A root return's
     /// location refers to its precommit candidate, before aggregate handles are compacted.
     pub fn outcome_location(&self) -> Option<TraceLocation> {
+        if self.local_outcome.is_some() {
+            return self.local_outcome;
+        }
         match self.end.as_ref()? {
             End::Returned => self.candidate.as_ref().map(|(location, _)| *location),
+            End::Transferred { location, .. } => Some(*location),
             End::Trapped(trap) => Some(TraceLocation {
                 func: trap.func,
                 pc: trap.pc,
@@ -525,7 +578,7 @@ impl Recording {
 
     /// Returns used storage counts, not allocator traffic, capacity or RSS.
     pub fn stats(&self) -> RecordStats {
-        RecordStats {
+        let mut stats = RecordStats {
             instructions: self.history.as_ref().map_or(0, |h| h.steps.len()),
             values: self.arena.values.len(),
             aggregates: self.arena.nodes.len(),
@@ -533,7 +586,25 @@ impl Recording {
             control_commands: self.commands.len(),
             call_frames: self.frames.len(),
             payload_bytes: self.arena.payload_bytes,
+        };
+        if let Some(execution) = &self.execution {
+            for child in execution.children.iter().flatten() {
+                let used = child.stats();
+                stats.instructions += used.instructions;
+                stats.values += used.values;
+                stats.aggregates += used.aggregates;
+                stats.host_calls += used.host_calls;
+                stats.control_commands += used.control_commands;
+                stats.call_frames += used.call_frames;
+                stats.payload_bytes += used.payload_bytes;
+            }
+            stats.control_commands += execution
+                .transfers
+                .iter()
+                .filter(|transfer| transfer.action.is_command())
+                .count();
         }
+        stats
     }
 }
 
