@@ -18,6 +18,7 @@ enum Mode {
 fn main() -> program::Result<()> {
     let mut mode = Mode::Resume;
     let mut snapshot = false;
+    let mut recording = false;
     let mut explain = false;
     let mut disassemble = false;
     let mut fuel = 10_000;
@@ -28,12 +29,13 @@ fn main() -> program::Result<()> {
             "recover" => mode = Mode::Recover,
             "escape" => mode = Mode::Escape,
             "--snapshot" => snapshot = true,
+            "--recording" => recording = true,
             "--explain" => explain = true,
             "--disassemble" => disassemble = true,
             "--fuel" => fuel = args.next().ok_or("--fuel needs an integer")?.parse()?,
             "--help" => {
                 println!(
-                    "composed_conditions [resume | recover | escape] [--explain] [--snapshot] [--disassemble] [--fuel N]\n\nresume: invoke a scoped returning restart, then finish old and replacement methods\nrecover: let the dynamic handler supply a resumption value directly\nescape: run guest cleanup, then return across handler and method to the lexical home\n\nAll cases use one VM store and one execution budget. Source and stack views use actual retained frames."
+                    "composed_conditions [resume | recover | escape] [--explain] [--snapshot] [--recording] [--disassemble] [--fuel N]\n\nresume: invoke a scoped returning restart, then finish old and replacement methods\nrecover: let the dynamic handler supply a resumption value directly\nescape: run guest cleanup, then return across handler and method to the lexical home\n\nAll cases use one VM store and one execution budget. Source and stack views use actual retained frames. Every successful execution is recorded and checked by re-execution. --recording opens that evidence in the terminal; --snapshot prints live and recorded views."
                 );
                 return Ok(());
             }
@@ -51,5 +53,5 @@ fn main() -> program::Result<()> {
         return Ok(());
     }
     let mut store = runtime::store(fuel);
-    runtime::Runtime::new(&programs, &mut store, mode, snapshot, explain)?.run()
+    runtime::Runtime::new(&programs, &mut store, mode, snapshot, explain, recording)?.run()
 }

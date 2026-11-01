@@ -4,6 +4,7 @@
 cargo run -p execution_tape_examples --bin composed_conditions -- resume --explain
 cargo run -p execution_tape_examples --bin composed_conditions -- recover
 cargo run -p execution_tape_examples --bin composed_conditions -- escape --snapshot
+cargo run -p execution_tape_examples --bin composed_conditions -- resume --recording
 ```
 
 The example compiles seven small definitions independently. Each uses local function `f0`.
@@ -59,13 +60,26 @@ to keep those display identities distinct.
 `--explain` walks the VM's actual stack at each pending boundary and resolves each frame through
 its own exact source map. `--snapshot` opens a static Observatory view at the handler's pending
 restart request. Selectable parent frames belong to the same invocation, so the browser uses
-their own code, registers, source and breakpoint domains. `--disassemble` prints every compiled
+their own code, registers, source and breakpoint domains. It also prints the retained handler
+recording after execution finishes. `--disassemble` prints every compiled
 definition, including the division's typed control-flow join.
 
 The authored snippets and exact byte ranges are supplied by this example's tiny frontend in
 [`program.rs`](src/bin/composed_conditions/program.rs). The policy and ordinary native host live
 in [`runtime.rs`](src/bin/composed_conditions/runtime.rs). Source snapshots are embedded strings;
 viewing them opens no source file and does not infer guest locations from the Rust compiler code.
+
+Every successful run freezes one root recording, lists the actually entered segments and their
+real parents, then performs checked replay. Replay enters guest methods, handlers, restarts and
+cleanup in one fresh VM, preserving their shared budget and aggregate identity. It does not
+dispatch native effects again. In `escape`, the value `42` is an explicit language-supplied exit
+payload; replay reissues that command and validates the lexical home's contract. In `resume`,
+the guest recomputes `141` from the old method's `42` and the replacement's `99`.
+
+`--recording` opens the finished handler evidence in Observatory. `[` and `]` navigate the actual
+segments; the header names their ancestry. The timeline includes cross-code entry, return and
+exit observations alongside native outcomes. Source follows the selected event's exact retained
+definition. `r` replays the whole owning execution even while a child segment is selected.
 
 ## The core boundary
 

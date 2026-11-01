@@ -20,6 +20,10 @@ fn returning_restart_keeps_old_code_live_and_uses_replacement_on_the_next_lookup
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(
+        text.contains("Checked replay matched: [I64(141)]"),
+        "the recorded restart and replacement execute again under checked replay"
+    );
+    assert!(
         text.contains("Restart returned [I64(2)]"),
         "the restart body actually executed"
     );
@@ -28,7 +32,7 @@ fn returning_restart_keeps_old_code_live_and_uses_replacement_on_the_next_lookup
         "old and replacement definitions retain their separate behavior"
     );
     assert!(
-        text.contains("Result computed by guest code: [I64(141)]"),
+        text.contains("Execution result: [I64(141)]"),
         "main combines actual guest results"
     );
     assert!(
@@ -52,8 +56,9 @@ fn direct_recovery_returns_without_invoking_the_restart() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Checked replay matched: [I64(141)]"));
     assert!(
-        text.contains("Result computed by guest code: [I64(141)]"),
+        text.contains("Execution result: [I64(141)]"),
         "the handler's direct resumption reaches the same computation"
     );
     assert!(
@@ -72,6 +77,15 @@ fn nonlocal_exit_waits_for_guest_cleanup_and_skips_the_second_send() {
     );
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(
+        text.contains("Checked replay matched: [I64(42)]"),
+        "replay reissues the cross-code escape after guest cleanup"
+    );
+    assert_eq!(
+        text.matches("Native cleanup effect runs").count(),
+        1,
+        "replay never dispatches the original native effect"
+    );
+    assert!(
         text.contains("ensure_cleanup · f0:") && text.contains("native_cleanup()"),
         "cleanup is an actual source-linked guest frame"
     );
@@ -86,8 +100,7 @@ fn nonlocal_exit_waits_for_guest_cleanup_and_skips_the_second_send() {
         "language cleanup finishes before the cross-code non-local return"
     );
     assert!(
-        text.contains("Result computed by guest code: [I64(42)]")
-            && text.contains("Cleanup effects: 1"),
+        text.contains("Execution result: [I64(42)]") && text.contains("Cleanup effects: 1"),
         "root transfer preserves the performed host effect"
     );
     assert!(

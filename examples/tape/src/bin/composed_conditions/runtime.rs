@@ -10,10 +10,13 @@ use super::{
 use execution_tape::{
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash},
     instance::Instance,
+    recording::{InstructionCapture, RecordLimits, Recorder, ReplayOutcome},
+    trace::TraceSink,
     value::{FuncId, Value},
     vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, Vm},
 };
-use execution_tape_observatory::LiveExplorer;
+use execution_tape_observatory::{LiveExplorer, RecordingExplorer};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Native {
@@ -72,6 +75,7 @@ struct Restart {
 pub(super) struct Runtime<'code, 'vm> {
     programs: &'code Programs,
     invocation: Option<Invocation<'vm, Native>>,
+    recorder: Option<Rc<RefCell<Recorder>>>,
     home: ActivationId,
     method: Entry,
     replacement: Entry,
@@ -84,6 +88,7 @@ pub(super) struct Runtime<'code, 'vm> {
     snapshot: bool,
     explained: bool,
     explain: bool,
+    explore: bool,
 }
 
 impl<'code, 'vm> Runtime<'code, 'vm> {
@@ -93,6 +98,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
         mode: Mode,
         snapshot: bool,
         explain: bool,
+        explore: bool,
     ) -> Result<Self> {
         let method = Entry::bind(vm, &programs.divide)?;
         let replacement = Entry::bind(vm, &programs.replacement)?;
@@ -106,11 +112,21 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                 &programs.handler
             },
         )?;
+        let recorder = Rc::new(RefCell::new(
+            Recorder::new(
+                Arc::new(programs.main.code.clone()),
+                RecordLimits::default(),
+            )
+            .with_instructions(InstructionCapture::default()),
+        ));
+        let mask = recorder.borrow().mask();
         let invocation = vm.start(
             &programs.main.code,
             programs.main.entry,
             &[],
-            InvocationOptions::default().yield_host_calls(),
+            InvocationOptions::default()
+                .yield_host_calls()
+                .trace_owned(mask, recorder.clone()),
         )?;
         let home = invocation
             .inspect()
@@ -121,6 +137,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
         Ok(Self {
             programs,
             invocation: Some(invocation),
+            recorder: Some(recorder),
             home: home.clone(),
             method,
             replacement,
@@ -137,6 +154,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
             snapshot,
             explained: false,
             explain,
+            explore,
         })
     }
 
@@ -304,7 +322,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                 RunStatus::Complete => {
                     let run = self.invocation.as_mut().expect("execution owner");
                     println!(
-                        "Result computed by guest code: {:?}",
+                        "Execution result: {:?}",
                         run.take_outputs().expect("root return")
                     );
                     println!(
@@ -312,6 +330,7 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                         run.host().cleanups,
                         run.work()
                     );
+                    self.replay()?;
                     return Ok(());
                 }
                 RunStatus::AwaitingHost => {
@@ -334,6 +353,70 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                 }
             }
         }
+    }
+
+    fn replay(&mut self) -> Result<()> {
+        // The execution must release its observer before its evidence can be frozen. This
+        // also proves replay has no access to the original invocation or its host effects.
+        drop(self.invocation.take());
+        let recorder = Rc::try_unwrap(self.recorder.take().expect("capture owner"))
+            .map_err(|_| "execution still holds the recorder")?
+            .into_inner();
+        let record = recorder.finish();
+        record.status().map_err(Clone::clone)?;
+        println!("Recorded execution, in actual admission order:");
+        for segment in record.segments() {
+            println!(
+                "  #{} · {} · parent {}",
+                segment.id,
+                segment.program.program().name().unwrap_or("unnamed"),
+                segment.parent.map_or_else(
+                    || "application".into(),
+                    |parent| format!("#{}:{}", parent.segment, parent.activation)
+                )
+            );
+        }
+        match record.replay()? {
+            ReplayOutcome::Returned(values) => {
+                println!("Checked replay matched: {:?}", values.values());
+            }
+            ReplayOutcome::Trapped(error) => return Err(error.into()),
+        }
+        println!(
+            "Replay executes guest code and recorded control; native effects are not repeated."
+        );
+        if self.snapshot || self.explore {
+            let handler = record
+                .segments()
+                .find(|segment| {
+                    segment
+                        .program
+                        .shares_definition_with(&self.programs.handler.code)
+                        || segment
+                            .program
+                            .shares_definition_with(&self.programs.recovery.code)
+                })
+                .ok_or("handler evidence missing")?;
+            let configured = || -> Result<RecordingExplorer<'_>> {
+                let mut view = RecordingExplorer::new(&record)
+                    .segment(handler.id)?
+                    .instructions();
+                for definition in self.programs.all() {
+                    view = view.sources_for(&definition.code, &definition.sources)?;
+                }
+                Ok(view)
+            };
+            if self.snapshot {
+                println!(
+                    "Recorded handler evidence (execution already finished):\n{}",
+                    configured()?.render_text(148, 46)?
+                );
+            }
+            if self.explore {
+                configured()?.run()?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -4,6 +4,22 @@ A terminal browser for compiled Execution Tape programs, live invocations and re
 recording; capture, immutable value ownership, completeness and replay remain in
 `execution_tape::recording`. The core VM and recorder have no terminal dependencies.
 
+For independently compiled methods, handlers, restarts and cleanup in one execution, try:
+
+```sh
+cargo run -p execution_tape_examples --bin composed_conditions -- resume --recording
+cargo run -p execution_tape_examples --bin composed_conditions -- escape --snapshot
+```
+
+The finished recording opens at the actual handler segment. `[` and `]` navigate recorded
+segments, whose headers show their real parent ancestry. Cross-code admission, checked return
+and non-local exit are timeline events, with inspectable values. Their source view resolves
+against the exact retained definition, including when all definitions call their entry `f0`.
+Attach maps with `RecordingExplorer::sources_for`; `.segment(id)` selects an observed segment.
+`r` always replays the owning execution, including the child guest computations and shared
+budgets. A denied entry has no fabricated child timeline; its rejection remains in the parent's
+evidence. A recording with missing child observations stays partial and cannot be replayed.
+
 Try live execution with real host objects and authored source:
 
 ```sh
