@@ -104,7 +104,7 @@ fn arguments<'a>(
 /// If delivery or an observer panics, the invocation cannot retry that operation. Drop it, or
 /// observe [`Trap::HostCallAbandoned`] on resumption; cancelled trace evidence is incomplete.
 pub struct PendingHostCall<'request, 'vm, H: Host> {
-    pub(super) invocation: &'request mut Invocation<'vm, H>,
+    pub(super) running: Running<'request, 'vm, H>,
     pub(super) delivering: bool,
     original: PendingHost,
 }
@@ -119,9 +119,13 @@ impl<H: Host> fmt::Debug for PendingHostCall<'_, '_, H> {
 impl<H: Host> PendingHostCall<'_, '_, H> {
     fn site(&self) -> Site<'_> {
         site(
-            &self.invocation.program,
-            &self.invocation.ctx,
-            self.invocation.control.pending_host.expect("pending guard"),
+            &self.running.continuation.program,
+            &self.running.continuation.ctx,
+            self.running
+                .continuation
+                .control
+                .pending_host
+                .expect("pending guard"),
         )
     }
     /// Exact source instruction that admitted this request.
@@ -137,12 +141,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Exact code whose import and nominal value identities this request uses.
     #[must_use]
     pub fn program(&self) -> &VerifiedProgram {
-        &self.invocation.program
+        &self.running.continuation.program
     }
     /// Borrows the heap that gives this request's aggregate argument handles their meaning.
     #[must_use]
     pub fn aggregates(&self) -> &AggHeap {
-        self.invocation.vm.memory.aggs()
+        self.running.vm.memory.aggs()
     }
     /// Borrows the actual caller's frames and initialized registers while this request waits.
     ///
@@ -150,7 +154,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// shown before its result, preserving uninitialized destinations as unavailable.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        self.invocation.inspect()
+        self.running.inspect()
     }
     /// Declared host symbol, without allocating a label.
     #[must_use]
@@ -174,19 +178,24 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     }
     /// Borrows actual arguments without copying byte/string payloads.
     pub fn arguments(&self) -> impl ExactSizeIterator<Item = ValueRef<'_>> {
-        let inv = &self.invocation;
+        let inv = &self.running;
         let site = self.site();
         arguments(
-            &inv.ctx,
-            ValueSources::new(inv.program.program(), &inv.args, inv.vm.memory.aggs()),
+            &inv.continuation.ctx,
+            ValueSources::new(
+                inv.continuation.program.program(),
+                &inv.continuation.args,
+                inv.vm.memory.aggs(),
+            ),
             site.base,
             site.args,
         )
     }
     pub(crate) fn restore_host_work(&mut self, work: DataWork) -> Result<(), Trap> {
-        let inv = &mut self.invocation;
-        inv.host_results
-            .get_or_insert_with(|| inv.ctx.host_results())
+        let inv = &mut self.running;
+        inv.continuation
+            .host_results
+            .get_or_insert_with(|| inv.continuation.ctx.host_results())
             .prepaid(work)
     }
     pub(crate) fn restore_host_node(
@@ -194,9 +203,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         kind: crate::value::AggType,
         values: Vec<Value>,
     ) -> Result<AggHandle, AggError> {
-        let inv = &mut self.invocation;
-        inv.host_results
-            .get_or_insert_with(|| inv.ctx.host_results())
+        let inv = &mut self.running;
+        inv.continuation
+            .host_results
+            .get_or_insert_with(|| inv.continuation.ctx.host_results())
             .restore_node(inv.vm.memory.aggs(), kind, values)
     }
 
@@ -208,14 +218,16 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// this context mutably to record reads or writes, as in an ordinary host implementation.
     pub fn context(&mut self) -> HostContext<'_, '_> {
         let import = self.import();
-        let inv = &mut self.invocation;
+        let inv = &mut self.running;
         HostContext::new(
-            inv.program.program(),
+            inv.continuation.program.program(),
             import,
             inv.vm.memory.aggs(),
-            inv.host_results
-                .get_or_insert_with(|| inv.ctx.host_results()),
-            inv.access
+            inv.continuation
+                .host_results
+                .get_or_insert_with(|| inv.continuation.ctx.host_results()),
+            inv.continuation
+                .access
                 .as_mut()
                 .map(|sink| &mut **sink as &mut dyn AccessSink),
         )
@@ -234,7 +246,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
         self.delivering = true;
-        let result = self.invocation.complete_pending(values, outcome);
+        let result = self.running.complete_pending(values, outcome);
         self.delivering = false;
         result
     }
@@ -255,7 +267,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             Ok((values, fuel)) => (values, Ok(fuel)),
             Err(error) => (Vec::new(), Err(error)),
         };
-        let result = self.invocation.complete_pending(&mut values, outcome);
+        let result = self.running.complete_pending(&mut values, outcome);
         self.delivering = false;
         result
     }
@@ -265,16 +277,17 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// instruction was already admitted: dispatch spends no second instruction/host-call debit.
     pub fn dispatch(mut self) -> Result<(), TrapInfo> {
         self.delivering = true;
-        let result = self.invocation.dispatch_pending();
+        let result = self.running.dispatch_pending();
         self.delivering = false;
         result
     }
 }
 impl<H: Host> Drop for PendingHostCall<'_, '_, H> {
     fn drop(&mut self) {
-        if self.delivering && self.invocation.outcome.is_none() {
+        if self.delivering && self.running.continuation.outcome.is_none() {
             let pending = self
-                .invocation
+                .running
+                .continuation
                 .control
                 .pending_host
                 .get_or_insert(self.original);
@@ -289,22 +302,37 @@ impl<'vm, H: Host> Invocation<'vm, H> {
     /// The guard prevents resuming or completing another invocation by accident. Repeated
     /// queries and dropped views do not execute the host or replenish hard budgets.
     pub fn pending_host_call(&mut self) -> Option<PendingHostCall<'_, 'vm, H>> {
-        if self.outcome.is_some() {
+        self.running().pending_host_call()
+    }
+}
+
+impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
+    pub(in crate::vm) fn pending_host_call(self) -> Option<PendingHostCall<'request, 'vm, H>> {
+        if self.continuation.outcome.is_some() {
             return None;
         }
-        self.control
+        self.continuation
+            .control
             .pending_host
             .filter(|pending| !pending.abandoned)?;
         Some(PendingHostCall {
-            original: self.control.pending_host.expect("pending guard"),
-            invocation: self,
+            original: self
+                .continuation
+                .control
+                .pending_host
+                .expect("pending guard"),
+            running: self,
             delivering: false,
         })
     }
 
     fn dispatch_pending(&mut self) -> Result<(), TrapInfo> {
-        let pending = self.control.pending_host.expect("pending guard");
-        let site = site(&self.program, &self.ctx, pending);
+        let pending = self
+            .continuation
+            .control
+            .pending_host
+            .expect("pending guard");
+        let site = site(&self.continuation.program, &self.continuation.ctx, pending);
         let vm = &mut *self.vm;
         let mut inline_args = [ValueRef::Unit; 8];
         let mut arg_vec;
@@ -315,8 +343,12 @@ impl<'vm, H: Host> Invocation<'vm, H> {
             &mut arg_vec
         };
         for (slot, value) in args.iter_mut().zip(arguments(
-            &self.ctx,
-            ValueSources::new(self.program.program(), &self.args, vm.memory.aggs()),
+            &self.continuation.ctx,
+            ValueSources::new(
+                self.continuation.program.program(),
+                &self.continuation.args,
+                vm.memory.aggs(),
+            ),
             site.base,
             site.args,
         )) {
@@ -331,12 +363,14 @@ impl<'vm, H: Host> Invocation<'vm, H> {
             &mut ret_vec
         };
         let context = HostContext::new(
-            self.program.program(),
+            self.continuation.program.program(),
             site.import,
             vm.memory.aggs(),
-            self.host_results
-                .get_or_insert_with(|| self.ctx.host_results()),
-            self.access
+            self.continuation
+                .host_results
+                .get_or_insert_with(|| self.continuation.ctx.host_results()),
+            self.continuation
+                .access
                 .as_mut()
                 .map(|sink| &mut **sink as &mut dyn AccessSink),
         );
@@ -351,85 +385,94 @@ impl<'vm, H: Host> Invocation<'vm, H> {
         values: &mut [Value],
         outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
-        if let Some(callbacks) = &mut self.control.callbacks {
+        if let Some(callbacks) = &mut self.continuation.control.callbacks {
             callbacks.returned = None;
         }
         let mut results = self
+            .continuation
             .host_results
             .take()
-            .unwrap_or_else(|| self.ctx.host_results());
+            .unwrap_or_else(|| self.continuation.ctx.host_results());
         let work = results.work;
         let created = results.adopt(self.vm.memory.aggs_mut(), values, outcome.is_ok());
-        self.ctx.aggregate_work += work.aggregate;
-        self.ctx.payload_work += work.payload;
-        let result = if self.trace.active() {
+        self.continuation.ctx.aggregate_work += work.aggregate;
+        self.continuation.ctx.payload_work += work.payload;
+        let result = if self.continuation.trace.active() {
             finish_pending::<WithTracePolicy>(
-                &mut self.ctx,
-                &self.program,
-                &self.args,
+                &mut self.continuation.ctx,
+                &self.continuation.program,
+                &self.continuation.args,
                 self.vm.memory.aggs(),
-                self.control.pending_host.expect("pending guard"),
+                self.continuation
+                    .control
+                    .pending_host
+                    .expect("pending guard"),
                 values,
                 outcome,
                 work,
                 created.clone(),
-                &mut self.trace,
-                &mut self.register_state,
+                &mut self.continuation.trace,
+                &mut self.continuation.register_state,
             )
         } else {
             finish_pending::<NoTracePolicy>(
-                &mut self.ctx,
-                &self.program,
-                &self.args,
+                &mut self.continuation.ctx,
+                &self.continuation.program,
+                &self.continuation.args,
                 self.vm.memory.aggs(),
-                self.control.pending_host.expect("pending guard"),
+                self.continuation
+                    .control
+                    .pending_host
+                    .expect("pending guard"),
                 values,
                 outcome,
                 work,
                 created.clone(),
-                &mut self.trace,
+                &mut self.continuation.trace,
                 &mut (),
             )
         };
-        self.control.pending_host = None;
+        self.continuation.control.pending_host = None;
         if let Err(error) = &result {
             self.finish(Err(error.clone()));
         }
         result
     }
     pub(super) fn finish_abandoned_host(&mut self, pending: PendingHost) -> TrapInfo {
-        if let Some(results) = self.host_results.take() {
-            self.ctx.aggregate_work += results.work.aggregate;
-            self.ctx.payload_work += results.work.payload;
+        if let Some(results) = self.continuation.host_results.take() {
+            self.continuation.ctx.aggregate_work += results.work.aggregate;
+            self.continuation.ctx.payload_work += results.work.payload;
         }
-        let span = self.ctx.span_at(
-            self.program.program(),
+        let span = self.continuation.ctx.span_at(
+            self.continuation.program.program(),
             pending.location.func,
             pending.location.pc,
         );
-        let error = self.ctx.trap(
+        let error = self.continuation.ctx.trap(
             pending.location.func,
             pending.location.pc,
             span,
             Trap::HostCallAbandoned,
         );
         self.vm.memory.rollback(self.checkpoint);
-        self.ctx.contract_scratch.clear_proofs();
-        self.outputs.clear();
-        self.control.pending_host = None;
+        self.continuation.ctx.contract_scratch.clear_proofs();
+        self.continuation.outputs.clear();
+        self.continuation.control.pending_host = None;
         // Install the terminal state before invoking observers, as in normal finish.
         // Unwinding from cancellation must not expose the fallthrough continuation.
-        self.outcome = Some(Err(error.clone()));
-        self.trace
-            .cancel(self.program.program(), pending.location, span);
+        self.continuation.outcome = Some(Err(error.clone()));
+        self.continuation
+            .trace
+            .cancel(self.continuation.program.program(), pending.location, span);
         callback::finish_instructions(
-            &mut self.control,
-            &mut self.trace,
-            self.program.program(),
+            &mut self.continuation.control,
+            &mut self.continuation.trace,
+            self.continuation.program.program(),
             TraceOutcome::Cancelled,
         );
-        self.trace
-            .run_end(self.program.program(), TraceOutcome::Cancelled);
+        self.continuation
+            .trace
+            .run_end(self.continuation.program.program(), TraceOutcome::Cancelled);
         error
     }
 }
