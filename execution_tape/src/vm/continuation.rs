@@ -10,22 +10,24 @@ use super::*;
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
-pub(super) enum ProgramRef<'a> {
-    Borrowed(&'a VerifiedProgram),
-    Owned(Arc<VerifiedProgram>),
+/// Both forms retain the verified definition. Preserve a callable's original outer `Arc`
+/// for code-owner observers without requiring that extra wrapper for raw entries.
+pub(super) enum CodeOwner {
+    Definition(VerifiedProgram),
+    Original(Arc<VerifiedProgram>),
 }
-impl core::ops::Deref for ProgramRef<'_> {
+impl core::ops::Deref for CodeOwner {
     type Target = VerifiedProgram;
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::Borrowed(program) => program,
-            Self::Owned(program) => program,
+            Self::Definition(program) => program,
+            Self::Original(program) => program,
         }
     }
 }
 
 pub(super) struct Continuation<'a> {
-    pub(super) program: ProgramRef<'a>,
+    pub(super) program: CodeOwner,
     pub(super) entry: FuncId,
     pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: Registers,
@@ -40,7 +42,7 @@ pub(super) struct Continuation<'a> {
 
 impl<'a> Continuation<'a> {
     pub(super) fn new(
-        program: ProgramRef<'a>,
+        program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
@@ -195,7 +197,7 @@ mod tests {
         program: Arc<VerifiedProgram>,
     ) -> Continuation<'static> {
         let mut continuation = Continuation::new(
-            ProgramRef::Owned(program),
+            CodeOwner::Original(program),
             FuncId(0),
             Cow::Owned(vec![]),
             InvocationOptions::default().yield_host_calls(),
@@ -421,7 +423,7 @@ mod tests {
             Ok(Progress::Suspended)
         ));
         let mut second = Continuation::new(
-            ProgramRef::Owned(program("second")),
+            CodeOwner::Original(program("second")),
             FuncId(0),
             Cow::Owned(vec![]),
             InvocationOptions::default(),
@@ -467,7 +469,7 @@ mod tests {
             let mut budget = Budget::new(&vm.limits);
             let tuple = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
             let mut first = Continuation::new(
-                ProgramRef::Owned(checked_identity(ValueType::I64)),
+                CodeOwner::Original(checked_identity(ValueType::I64)),
                 FuncId(0),
                 Cow::Owned(vec![Value::Agg(tuple)]),
                 InvocationOptions::default(),
@@ -479,7 +481,7 @@ mod tests {
             assert_eq!(before, 3);
             // The contract and heap IDs collide, but the second program requires bool.
             let mut second = Continuation::new(
-                ProgramRef::Owned(checked_identity(ValueType::Bool)),
+                CodeOwner::Original(checked_identity(ValueType::Bool)),
                 FuncId(0),
                 Cow::Owned(vec![Value::Agg(tuple)]),
                 InvocationOptions::default(),

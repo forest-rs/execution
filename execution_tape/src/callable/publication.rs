@@ -455,7 +455,7 @@ fn compare(current: &Callable, proposed: &Callable) -> Result<(), SignatureDiffe
     Comparison {
         current: current.program().program(),
         proposed: proposed.program().program(),
-        same_program: Arc::ptr_eq(current.program(), proposed.program()),
+        same_program: current.program().shares_definition_with(proposed.program()),
         links: Vec::new(),
         pending: Vec::new(),
         visited: BTreeSet::new(),

@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Treat cloned `VerifiedProgram` handles as one code-definition domain when validating tape
+  edges and comparing function/closure values. Independently verified programs remain separate,
+  even with equal contents and colliding local IDs. Migration: verify again when a distinct
+  definition is required; cloning retains code identity.
+
 - Own deferred node continuations through `NodeTask`, `NodeOutcome::Deferred` and
   `FnNode::deferred`. Independent work progresses while consumers wait. Provisional reads
   protect publication across edits; cancellation retires tentative results while published

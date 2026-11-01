@@ -657,7 +657,7 @@ fn consume_borrowed_results_preserves_raw_handles_and_unfinished_consumption_can
         .unwrap();
     assert!(
         call.program_owner().is_none(),
-        "raw entry only borrows its code"
+        "raw entry retains the definition without an outer Arc"
     );
     call.resume(u64::MAX).unwrap();
     let Value::Agg(original) = call.result().unwrap().unwrap()[0] else {

@@ -268,9 +268,13 @@
 //! make foreign handles portable. Use `retain` for results needed outside the host call.
 //! After successful execution, `Invocation::into_snapshot` consumes the invocation and moves
 //! an owned VM's reachable results out without copying payloads. A borrowed VM copies its
-//! reachable graph and keeps its existing raw handles valid. Clone `Invocation::program_owner`
+//! reachable graph and keeps its existing raw handles valid. Use `invocation.program().clone()`
 //! before consumption to retain the exact code domain for nominal/callable snapshot IDs, even
 //! after the original lookup handle has been dropped.
+//! `VerifiedProgram` clones share the immutable authored program and prepared execution artifacts.
+//! Every started invocation retains that definition, including raw `Vm::start` entries; a compiler
+//! can release its own handle while guest work is suspended. Cloning code does not instantiate it
+//! or share mutable VM state.
 //! Recordings preserve adopted node identities and all successful construction debits, so
 //! replay restores rich results without repeating native work or replenishing guest budgets.
 //!

@@ -14,7 +14,7 @@ pub use exits::ControlError;
 pub use host_request::PendingHostCall;
 pub(super) mod callback;
 
-use super::continuation::ProgramRef;
+use super::continuation::CodeOwner;
 
 /// Progress after executing an invocation's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +100,7 @@ impl<'a> InvocationOptions<'a> {
 ///
 /// `Vm::start` and `Callable::start` borrow their VM. `Callable::start_owned` transfers its VM
 /// into this same invocation type. Observers can be borrowed or owned. Raw entries borrow
-/// code/inputs; callable entries retain their exact code and inputs. These domains remain
+/// inputs; every entry retains its exact code definition. These domains remain
 /// intact while suspended. Host calls dispatch synchronously by default; opting into yielded
 /// requests retains an admitted host instruction until the embedding supplies its completion.
 /// Dropping an active invocation cancels it, discards its new aggregates, and closes trace scopes
@@ -171,7 +171,7 @@ impl<H: Host> Vm<H> {
     /// A rejected entry returns its ordinary trap and leaves no new aggregates behind.
     pub fn start<'a>(
         &'a mut self,
-        program: &'a VerifiedProgram,
+        program: &VerifiedProgram,
         entry: FuncId,
         args: &'a [Value],
         options: InvocationOptions<'a>,
@@ -181,7 +181,7 @@ impl<H: Host> Vm<H> {
 
     pub(crate) fn start_prepaid<'a>(
         &'a mut self,
-        program: &'a VerifiedProgram,
+        program: &VerifiedProgram,
         entry: FuncId,
         args: &'a [Value],
         options: InvocationOptions<'a>,
@@ -189,7 +189,7 @@ impl<H: Host> Vm<H> {
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let checkpoint = self.memory.checkpoint();
         self.start_with_inputs(
-            ProgramRef::Borrowed(program),
+            CodeOwner::Definition(program.clone()),
             entry,
             Cow::Borrowed(args),
             options,
@@ -200,7 +200,7 @@ impl<H: Host> Vm<H> {
 
     fn start_with_inputs<'a>(
         &'a mut self,
-        program: ProgramRef<'a>,
+        program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
@@ -222,7 +222,7 @@ impl<H: Host> Vm<H> {
 impl<'a, H: Host> Invocation<'a, H> {
     fn prepare(
         vm: BorrowedOrOwned<'a, Vm<H>>,
-        program: ProgramRef<'a>,
+        program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
@@ -333,8 +333,8 @@ impl<H: Host> Invocation<'_, H> {
     /// An owned VM transfers its reachable aggregate graph without copying byte/string payloads.
     /// A borrowed VM copies reachable aggregates, leaving its existing retained handles valid.
     /// Both paths move root payloads, preserve sharing and discard unreachable snapshot nodes.
-    /// Function/closure/nominal IDs still need their original program; clone [`Self::program_owner`]
-    /// before consumption to retain that exact owner. Host objects stay host-owned. Snapshot work
+    /// Function/closure/nominal IDs still need their original program; clone [`Self::program`]
+    /// before consumption to retain that exact definition. Host objects stay host-owned. Snapshot work
     /// is explicit embedding work outside guest budgets.
     ///
     /// Returns `None` after a trap or before successful completion; consuming an unfinished
@@ -358,8 +358,7 @@ impl<H: Host> Invocation<'_, H> {
 
     /// Retains one successful function/closure result with its exact code and captures.
     ///
-    /// Start through [`Callable::start`] to supply the owning program handle. A raw `Vm::start`
-    /// only borrows its program and returns [`CallableError::MissingCodeOwner`]. The result
+    /// Every entry retains its exact verified definition, including [`Vm::start`]. The result
     /// remains in the invocation; retention explicitly copies its reachable immutable captures
     /// outside guest work budgets. The retained callable survives this invocation and VM.
     pub fn retain_callable(&self, index: usize) -> Result<Callable, CallableError> {
@@ -376,14 +375,11 @@ impl<H: Host> Invocation<'_, H> {
                 actual: value.value_type(),
             });
         }
-        let ProgramRef::Owned(program) = &self.continuation.program else {
-            return Err(CallableError::MissingCodeOwner);
+        let program = match &self.continuation.program {
+            CodeOwner::Original(program) => Arc::clone(program),
+            CodeOwner::Definition(program) => Arc::new(program.clone()),
         };
-        Callable::retain(
-            Arc::clone(program),
-            self.aggregates(),
-            ValueRef::from_value(value),
-        )
+        Callable::retain(program, self.aggregates(), ValueRef::from_value(value))
     }
 
     /// Remaining hard instruction/host fuel, including after completion or a trap.
@@ -426,17 +422,16 @@ impl<H: Host> Invocation<'_, H> {
         &self.continuation.program
     }
 
-    /// Exact retained code owner for callable entries, including independently owned executions.
+    /// The original shared program handle supplied by a callable entry, when available.
     ///
-    /// Clone this handle before consuming the invocation when a retained aggregate snapshot
-    /// contains function, closure or nominal type IDs. It remains available after the original
-    /// callable lookup is dropped. Raw `Vm::start` entries only borrow code and return `None`;
-    /// their embedding remains responsible for that program's lifetime and identity.
+    /// All entries retain their verified definition. Use `program().clone()` to keep that
+    /// definition independently of any invocation. Callable entries additionally expose their
+    /// original `Arc` here; raw [`Vm::start`] entries return `None`.
     #[must_use]
     pub fn program_owner(&self) -> Option<&Arc<VerifiedProgram>> {
         match &self.continuation.program {
-            ProgramRef::Borrowed(_) => None,
-            ProgramRef::Owned(program) => Some(program),
+            CodeOwner::Definition(_) => None,
+            CodeOwner::Original(program) => Some(program),
         }
     }
 
@@ -575,7 +570,7 @@ impl Callable {
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let (checkpoint, args, work) = self.prepare_inputs(vm, args)?;
         vm.start_with_inputs(
-            ProgramRef::Owned(Arc::clone(self.program())),
+            CodeOwner::Original(Arc::clone(self.program())),
             self.function_id(),
             Cow::Owned(args),
             options,
@@ -602,7 +597,7 @@ impl Callable {
         let (checkpoint, args, work) = self.prepare_inputs(&mut vm, args)?;
         Invocation::prepare(
             BorrowedOrOwned::Owned(Box::new(vm)),
-            ProgramRef::Owned(Arc::clone(self.program())),
+            CodeOwner::Original(Arc::clone(self.program())),
             self.function_id(),
             Cow::Owned(args),
             options,

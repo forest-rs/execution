@@ -89,6 +89,43 @@ fn escaped() -> Callable {
     invocation.retain_callable(0).unwrap()
 }
 
+#[test]
+fn raw_entries_keep_code_after_the_compiler_handle_is_dropped() {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let args = [Value::I64(40)];
+    let (mut invocation, original_owner) = {
+        let (program, factory) = maker();
+        let original_owner = Arc::downgrade(&program);
+        let invocation = vm
+            .start(&program, factory, &args, InvocationOptions::default())
+            .unwrap();
+        (invocation, original_owner)
+    };
+    assert!(
+        original_owner.upgrade().is_none(),
+        "the compiler's outer Arc is gone"
+    );
+    invocation.resume(u64::MAX).unwrap();
+    let block = invocation.retain_callable(0).unwrap();
+    assert!(block.program().shares_definition_with(invocation.program()));
+    drop(invocation);
+    drop(vm);
+    assert_eq!(finish(&block, &[Value::I64(2)]), [Value::I64(42)]);
+}
+
+#[test]
+fn function_identity_follows_the_verified_definition_across_outer_handles() {
+    use execution_tape::verifier::{VerifyConfig, verify_program_owned};
+    let (program, factory) = maker();
+    let first = Callable::function(Arc::clone(&program), factory).unwrap();
+    let alias = Callable::function(Arc::new(program.as_ref().clone()), factory).unwrap();
+    assert_eq!(first, alias);
+    let independent =
+        verify_program_owned(program.program().clone(), &VerifyConfig::default()).unwrap();
+    let independent = Callable::function(Arc::new(independent), factory).unwrap();
+    assert_ne!(first, independent);
+}
+
 fn finish(callable: &Callable, args: &[Value]) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut invocation = callable
@@ -533,10 +570,14 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
         .start(&program, factory, &args, InvocationOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
-    assert_eq!(
-        run.retain_callable(0).unwrap_err(),
-        CallableError::MissingCodeOwner
-    );
+    let retained = run.retain_callable(0).unwrap();
+    assert!(retained.program().shares_definition_with(&program));
+    drop(run);
+    let mut run = retained
+        .start(&mut vm, vec![Value::I64(40)], InvocationOptions::default())
+        .unwrap();
+    run.resume(u64::MAX).unwrap();
+    assert_eq!(run.result().unwrap().unwrap(), [Value::I64(42)]);
 }
 
 #[test]

@@ -22,6 +22,7 @@ pub use contracts::inspection::{
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
 
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -57,9 +58,16 @@ use crate::vm::Vm;
 /// still validating host ABI conformance at runtime.
 ///
 /// Internally, a [`VerifiedProgram`] also carries a decoded instruction stream so the VM does not
-/// need to decode bytecode at runtime.
+/// need to decode bytecode at runtime. Cloning shares this immutable definition, including its
+/// source program, prepared instructions and signature cache. It does not instantiate code or
+/// share mutable VM state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedProgram {
+    definition: Arc<VerifiedDefinition>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VerifiedDefinition {
     program: Program,
     verified_functions: Vec<ExecFunc>,
     signature_cache: SignatureCache,
@@ -134,10 +142,20 @@ pub enum VerifyLint {
 }
 
 impl VerifiedProgram {
+    /// Whether these handles retain the same immutable verified definition.
+    ///
+    /// Clones share one definition. Independently verifying equal program contents creates
+    /// distinct definitions, even when structural equality reports them equal. This does not
+    /// identify an instantiated program, host bindings, or an execution store.
+    #[must_use]
+    pub fn shares_definition_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.definition, &other.definition)
+    }
+
     /// Returns the underlying program.
     #[must_use]
     pub fn program(&self) -> &Program {
-        &self.program
+        &self.definition.program
     }
 
     /// Borrows the prepared execution facts for `func`, or returns `None` for an unknown id.
@@ -147,32 +165,34 @@ impl VerifiedProgram {
         Some(VerifiedFunction {
             program: self,
             id: func,
-            definition: self.program.functions.get(func.0 as usize)?,
+            definition: self.definition.program.functions.get(func.0 as usize)?,
             executable: self.verified(func)?,
         })
     }
 
     /// Iterates prepared functions in function-id order without allocation or decoding.
     pub fn functions(&self) -> impl ExactSizeIterator<Item = VerifiedFunction<'_>> + '_ {
-        self.verified_functions
+        self.definition
+            .verified_functions
             .iter()
             .enumerate()
             .map(|(index, executable)| VerifiedFunction {
                 program: self,
                 id: FuncId(u32::try_from(index).expect("verified function index")),
-                definition: &self.program.functions[index],
+                definition: &self.definition.program.functions[index],
                 executable,
             })
     }
 
     #[must_use]
     pub(crate) fn verified(&self, func: FuncId) -> Option<&ExecFunc> {
-        self.verified_functions.get(func.0 as usize)
+        self.definition.verified_functions.get(func.0 as usize)
     }
 
     #[must_use]
     pub(crate) fn call_sig_fingerprint(&self, call_sig: CallSigId) -> Option<SigFingerprint> {
-        self.signature_cache
+        self.definition
+            .signature_cache
             .call_sigs
             .get(call_sig.0 as usize)
             .copied()
@@ -180,7 +200,8 @@ impl VerifiedProgram {
 
     #[must_use]
     pub(crate) fn function_direct_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
-        self.signature_cache
+        self.definition
+            .signature_cache
             .functions
             .get(func.0 as usize)
             .map(|s| s.direct)
@@ -188,16 +209,23 @@ impl VerifiedProgram {
 
     #[must_use]
     pub(crate) fn function_closure_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
-        self.signature_cache
+        self.definition
+            .signature_cache
             .functions
             .get(func.0 as usize)
             .and_then(|s| s.closure)
     }
 
-    /// Consumes `self` and returns the underlying program.
+    /// Consumes this handle and returns the underlying authored program.
+    ///
+    /// Moves it when this is the last definition owner; otherwise clones only the authored
+    /// program, leaving other handles and their prepared execution artifacts intact.
     #[must_use]
     pub fn into_program(self) -> Program {
-        self.program
+        match Arc::try_unwrap(self.definition) {
+            Ok(definition) => definition.program,
+            Err(definition) => definition.program.clone(),
+        }
     }
 }
 
@@ -1068,9 +1096,11 @@ pub fn verify_program_owned(
     }
 
     Ok(VerifiedProgram {
-        program,
-        verified_functions,
-        signature_cache,
+        definition: Arc::new(VerifiedDefinition {
+            program,
+            verified_functions,
+            signature_cache,
+        }),
     })
 }
 
@@ -1096,9 +1126,11 @@ pub fn verify_program_owned_with_lints(
 
     Ok((
         VerifiedProgram {
-            program,
-            verified_functions,
-            signature_cache,
+            definition: Arc::new(VerifiedDefinition {
+                program,
+                verified_functions,
+                signature_cache,
+            }),
         },
         lints,
     ))
@@ -3448,6 +3480,56 @@ mod tests {
     };
     use crate::value::FuncId;
     use alloc::vec;
+
+    fn shared_identity_program() -> VerifiedProgram {
+        let mut builder = ProgramBuilder::new();
+        let function = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(function).unwrap();
+        body.ret(0, &[1]);
+        builder.define_function(function, body).unwrap();
+        builder.build_verified().unwrap()
+    }
+
+    #[test]
+    fn cloned_definitions_share_authored_and_prepared_storage() {
+        let original = shared_identity_program();
+        let clone = original.clone();
+        assert!(original.shares_definition_with(&clone));
+        assert!(core::ptr::eq(original.program(), clone.program()));
+        assert!(core::ptr::eq(
+            original.verified(FuncId(0)).unwrap(),
+            clone.verified(FuncId(0)).unwrap()
+        ));
+        let independent =
+            verify_program_owned(original.program().clone(), &VerifyConfig::default()).unwrap();
+        assert_eq!(original, independent);
+        assert!(!original.shares_definition_with(&independent));
+    }
+
+    #[test]
+    fn consuming_a_definition_moves_unique_source_and_preserves_shared_code() {
+        let unique = shared_identity_program();
+        let pointer = unique.program().bytecode_data.as_ptr();
+        let source = unique.into_program();
+        assert_eq!(source.bytecode_data.as_ptr(), pointer);
+
+        let shared = shared_identity_program();
+        let prepared = shared.verified(FuncId(0)).unwrap() as *const ExecFunc;
+        let mut source = shared.clone().into_program();
+        assert_eq!(&source, shared.program());
+        assert_ne!(
+            source.bytecode_data.as_ptr(),
+            shared.program().bytecode_data.as_ptr()
+        );
+        source.bytecode_data.clear();
+        assert!(!shared.program().bytecode_data.is_empty());
+        assert!(core::ptr::eq(shared.verified(FuncId(0)).unwrap(), prepared));
+    }
 
     fn tuple_contract(
         pb: &mut ProgramBuilder,

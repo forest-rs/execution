@@ -132,8 +132,9 @@ pub(crate) struct Capture {
 /// This does not implement cross-program guest calls or transfer program-local IDs between code
 /// revisions. Host objects, mutable cells and their collection remain embedding responsibilities.
 ///
-/// Equality compares code-owner/target identity for functions and shared retained-capture identity
-/// for closures. Clones compare equal; independently retained closure snapshots remain distinct.
+/// Equality requires the same verified definition. Functions also compare their target;
+/// closures compare their retained capture identity. Cloned definition handles identify the same code;
+/// independently verified definitions and independently retained closure snapshots remain distinct.
 #[derive(Clone)]
 pub struct Callable {
     program: Arc<VerifiedProgram>,
@@ -156,7 +157,7 @@ impl fmt::Debug for Callable {
 }
 impl PartialEq for Callable {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.program, &other.program)
+        self.program.shares_definition_with(&other.program)
             && match (&self.target, &other.target) {
                 (Target::Function(a), Target::Function(b)) => a == b,
                 (Target::Closure(a), Target::Closure(b)) => Arc::ptr_eq(a, b),

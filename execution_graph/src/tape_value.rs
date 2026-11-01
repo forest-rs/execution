@@ -303,7 +303,7 @@ impl TapeValue {
         }
         if self
             .program()
-            .is_some_and(|owner| !Arc::ptr_eq(owner, program))
+            .is_some_and(|owner| !owner.shares_definition_with(program))
         {
             return Err(TapeError::ProgramMismatch { input: index });
         }
@@ -396,7 +396,7 @@ impl PartialEq for TapeValue {
             },
             (Value::Func(a), Value::Func(b)) => {
                 a == b
-                    && matches!((self.program(), other.program()), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
+                    && matches!((self.program(), other.program()), (Some(a), Some(b)) if a.shares_definition_with(b))
             }
             (Value::Closure(a), Value::Closure(b)) => {
                 a.func == b.func
@@ -410,7 +410,7 @@ impl PartialEq for TapeValue {
                             },
                         ) => {
                             a_owner.origins.key(a.env) == b_owner.origins.key(b.env)
-                                && matches!((self.program(), other.program()), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
+                                && matches!((self.program(), other.program()), (Some(a), Some(b)) if a.shares_definition_with(b))
                         }
                         _ => false,
                     }

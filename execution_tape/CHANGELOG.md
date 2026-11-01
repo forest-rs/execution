@@ -16,6 +16,14 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Keep verified code alive across suspended raw entries. `VerifiedProgram::clone` shares its
+  immutable program, prepared instructions and signature cache; every `Vm::start` retains that
+  definition. `retain_callable` now supports successful raw-entry function/closure results.
+  `shares_definition_with` distinguishes shared definitions from independently verified equal
+  contents. Function `Callable` identity follows the shared definition. Migration: verify again
+  when a distinct definition is required; cloning retains code identity. `program_owner` remains
+  the optional original outer `Arc`; `program().clone()` retains code for every entry.
+
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
   provides checked snapshot differences and sums across code domains. This is accounting, not

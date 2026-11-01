@@ -309,7 +309,11 @@ fn callable_program_domain_is_enforced_before_execution() {
         .add_tape_node(Arc::clone(&a), entries.function, vec![])
         .unwrap();
     let same = graph
-        .add_tape_node(a, entries.invoke, vec!["f".into()])
+        .add_tape_node(
+            Arc::new(a.as_ref().clone()),
+            entries.invoke,
+            vec!["f".into()],
+        )
         .unwrap();
     let foreign = graph
         .add_tape_node(b, other.invoke, vec!["f".into()])
