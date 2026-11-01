@@ -14,12 +14,8 @@ pub(super) struct Budget {
     pub(super) frames: usize,
     /// Number of host calls performed so far in the current run.
     pub(super) host_calls: u64,
-    /// Successfully charged logical byte/string work and the current run's limit.
-    pub(super) payload_work: u64,
-    pub(super) payload_limit: u64,
-    /// Successfully charged guest aggregate nodes/fields and the current run's limit.
-    pub(super) aggregate_work: u64,
-    pub(super) aggregate_limit: u64,
+    /// Work admitted by all guest and host construction in this execution.
+    pub(super) data: DataBudget,
 
     pub(super) contract_scratch: ContractScratch,
     proof_owner: Option<Arc<()>>,
@@ -36,10 +32,7 @@ impl Budget {
         self.fuel = 0;
         self.frames = 0;
         self.host_calls = 0;
-        self.payload_work = 0;
-        self.payload_limit = 0;
-        self.aggregate_work = 0;
-        self.aggregate_limit = 0;
+        self.data = DataBudget::default();
         self.contract_scratch.reset();
         self.proof_owner = None;
     }
@@ -47,8 +40,10 @@ impl Budget {
     pub(super) fn reset(&mut self, limits: &Limits) {
         self.clear();
         self.fuel = limits.fuel;
-        self.payload_limit = limits.max_payload_work;
-        self.aggregate_limit = limits.max_aggregate_work;
+        self.data = DataBudget::new(DataWork {
+            aggregate: limits.max_aggregate_work,
+            payload: limits.max_payload_work,
+        });
     }
 
     pub(super) fn select(&mut self, control: &ExecutionControl) {
@@ -66,37 +61,49 @@ impl Budget {
     }
 
     pub(super) fn charge_import(&mut self, work: DataWork) -> Result<(), Trap> {
-        if work.aggregate > self.aggregate_limit - self.aggregate_work {
+        self.data.charge(work)
+    }
+}
+
+/// Mutable resource authority lent to guest operations and host staging alike.
+/// Staged results retain their own debit for observation, but never copy the remaining allowance.
+#[derive(Debug, Default)]
+pub(crate) struct DataBudget {
+    pub(super) used: DataWork,
+    pub(super) limits: DataWork,
+}
+
+impl DataBudget {
+    pub(crate) fn new(limits: DataWork) -> Self {
+        Self {
+            used: DataWork::default(),
+            limits,
+        }
+    }
+
+    pub(crate) fn check(&self, work: DataWork) -> Result<(), Trap> {
+        if work.aggregate > self.limits.aggregate - self.used.aggregate {
             return Err(Trap::AggregateWorkExceeded {
-                limit: self.aggregate_limit,
-                used: self.aggregate_work,
+                limit: self.limits.aggregate,
+                used: self.used.aggregate,
                 requested: work.aggregate,
             });
         }
-        if work.payload > self.payload_limit - self.payload_work {
+        if work.payload > self.limits.payload - self.used.payload {
             return Err(Trap::PayloadWorkExceeded {
-                limit: self.payload_limit,
-                used: self.payload_work,
+                limit: self.limits.payload,
+                used: self.used.payload,
                 requested: work.payload,
             });
         }
-        self.aggregate_work += work.aggregate;
-        self.payload_work += work.payload;
         Ok(())
     }
 
-    #[inline]
-    pub(super) fn host_results(&self) -> crate::host::HostResults {
-        crate::host::HostResults::new(
-            DataWork {
-                aggregate: self.aggregate_work,
-                payload: self.payload_work,
-            },
-            DataWork {
-                aggregate: self.aggregate_limit,
-                payload: self.payload_limit,
-            },
-        )
+    pub(crate) fn charge(&mut self, work: DataWork) -> Result<(), Trap> {
+        self.check(work)?;
+        self.used.aggregate += work.aggregate;
+        self.used.payload += work.payload;
+        Ok(())
     }
 
     pub(super) fn charge_payload_bytes(&mut self, len: usize, factor: u64) -> Result<(), Trap> {
@@ -104,14 +111,14 @@ impl Budget {
             .ok()
             .and_then(|len| len.checked_mul(factor))
             .ok_or(Trap::PayloadSizeOverflow)?;
-        if requested > self.payload_limit - self.payload_work {
+        if requested > self.limits.payload - self.used.payload {
             return Err(Trap::PayloadWorkExceeded {
-                limit: self.payload_limit,
-                used: self.payload_work,
+                limit: self.limits.payload,
+                used: self.used.payload,
                 requested,
             });
         }
-        self.payload_work += requested;
+        self.used.payload += requested;
         Ok(())
     }
 
@@ -120,14 +127,14 @@ impl Budget {
             .ok()
             .and_then(|count| count.checked_add(1))
             .ok_or(Trap::AggregateSizeOverflow)?;
-        if requested > self.aggregate_limit - self.aggregate_work {
+        if requested > self.limits.aggregate - self.used.aggregate {
             return Err(Trap::AggregateWorkExceeded {
-                limit: self.aggregate_limit,
-                used: self.aggregate_work,
+                limit: self.limits.aggregate,
+                used: self.used.aggregate,
                 requested,
             });
         }
-        self.aggregate_work += requested;
+        self.used.aggregate += requested;
         Ok(())
     }
 }

@@ -32,7 +32,7 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
-mod budget;
+pub(crate) mod budget;
 mod continuation;
 use budget::Budget;
 mod host_call;
@@ -2296,7 +2296,7 @@ impl<H: Host> Vm<H> {
                         fallback_rets = vec![Value::Unit; ret_types.len()];
                         &mut fallback_rets
                     };
-                    let mut host_results = budget.host_results();
+                    let mut host_results = crate::host::HostResults::default();
                     let access_for_call = access
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
@@ -2305,6 +2305,7 @@ impl<H: Host> Vm<H> {
                         *host_sig,
                         self.memory.aggs(),
                         &mut host_results,
+                        &mut budget.data,
                         access_for_call,
                     );
                     let host_result =
@@ -2313,8 +2314,7 @@ impl<H: Host> Vm<H> {
                     let work = host_results.work;
                     let created =
                         host_results.adopt(self.memory.aggs_mut(), ret_slots, host_result.is_ok());
-                    budget.aggregate_work += work.aggregate;
-                    budget.payload_work += work.payload;
+
                     if P::values_enabled(trace) {
                         let sources = ValueSources::new(program_ref, root_args, self.memory.aggs());
                         let observed_args: Vec<_> = args
@@ -2644,6 +2644,7 @@ impl<H: Host> Vm<H> {
                 ExecInstr::TupleNew { dst, values } => {
                     let values = vf.vregs(*values);
                     budget
+                        .data
                         .charge_aggregate(values.len())
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
@@ -2700,6 +2701,7 @@ impl<H: Host> Vm<H> {
                     }
 
                     budget
+                        .data
                         .charge_aggregate(values.len())
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
@@ -2761,6 +2763,7 @@ impl<H: Host> Vm<H> {
                     }
 
                     budget
+                        .data
                         .charge_aggregate(values.len())
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
@@ -3007,6 +3010,7 @@ impl<H: Host> Vm<H> {
                         if a.len() == b.len() { a.len() } else { 0 }
                     };
                     budget
+                        .data
                         .charge_payload_bytes(work, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let a = ctx
@@ -3029,6 +3033,7 @@ impl<H: Host> Vm<H> {
                         if a.len() == b.len() { a.len() } else { 0 }
                     };
                     budget
+                        .data
                         .charge_payload_bytes(work, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let a = ctx
@@ -3056,6 +3061,7 @@ impl<H: Host> Vm<H> {
                             })?
                     };
                     budget
+                        .data
                         .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
@@ -3090,6 +3096,7 @@ impl<H: Host> Vm<H> {
                             })?
                     };
                     budget
+                        .data
                         .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
@@ -3145,6 +3152,7 @@ impl<H: Host> Vm<H> {
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?
                         .len();
                     budget
+                        .data
                         .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = ctx
@@ -3170,6 +3178,7 @@ impl<H: Host> Vm<H> {
                         }
                     }
                     budget
+                        .data
                         .charge_payload_bytes(end - start, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = String::from(
@@ -3187,6 +3196,7 @@ impl<H: Host> Vm<H> {
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
                         .len();
                     budget
+                        .data
                         .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
@@ -3205,6 +3215,7 @@ impl<H: Host> Vm<H> {
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
                         .len();
                     budget
+                        .data
                         .charge_payload_bytes(len, 2)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
@@ -3570,7 +3581,7 @@ impl Registers {
                     .bytes(handle, sources)
                     .ok_or(Trap::InvalidPc)?
                     .len();
-                budget.charge_payload_bytes(len, 1)?;
+                budget.data.charge_payload_bytes(len, 1)?;
                 Value::Bytes(
                     self.arena
                         .bytes(handle, sources)
@@ -3585,7 +3596,7 @@ impl Registers {
                     .str(handle, sources)
                     .ok_or(Trap::InvalidPc)?
                     .len();
-                budget.charge_payload_bytes(len, 1)?;
+                budget.data.charge_payload_bytes(len, 1)?;
                 Value::Str(String::from(
                     self.arena.str(handle, sources).ok_or(Trap::InvalidPc)?,
                 ))

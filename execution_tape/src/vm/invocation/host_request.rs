@@ -191,8 +191,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let inv = &mut self.running;
         inv.continuation
             .host_results
-            .get_or_insert_with(|| inv.budget.host_results())
-            .prepaid(work)
+            .get_or_insert_default()
+            .prepaid(work, &mut inv.budget.data)
     }
     pub(crate) fn restore_host_node(
         &mut self,
@@ -202,7 +202,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let inv = &mut self.running;
         inv.continuation
             .host_results
-            .get_or_insert_with(|| inv.budget.host_results())
+            .get_or_insert_default()
             .restore_node(inv.vm.memory.aggs(), kind, values)
     }
 
@@ -219,9 +219,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             inv.continuation.program.program(),
             import,
             inv.vm.memory.aggs(),
-            inv.continuation
-                .host_results
-                .get_or_insert_with(|| inv.budget.host_results()),
+            inv.continuation.host_results.get_or_insert_default(),
+            &mut inv.budget.data,
             inv.continuation
                 .access
                 .as_mut()
@@ -362,9 +361,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             self.continuation.program.program(),
             site.import,
             vm.memory.aggs(),
-            self.continuation
-                .host_results
-                .get_or_insert_with(|| self.budget.host_results()),
+            self.continuation.host_results.get_or_insert_default(),
+            &mut self.budget.data,
             self.continuation
                 .access
                 .as_mut()
@@ -384,15 +382,10 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         if let Some(callbacks) = &mut self.continuation.control.callbacks {
             callbacks.returned = None;
         }
-        let mut results = self
-            .continuation
-            .host_results
-            .take()
-            .unwrap_or_else(|| self.budget.host_results());
+        let mut results = self.continuation.host_results.take().unwrap_or_default();
         let work = results.work;
         let created = results.adopt(self.vm.memory.aggs_mut(), values, outcome.is_ok());
-        self.budget.aggregate_work += work.aggregate;
-        self.budget.payload_work += work.payload;
+
         let result = if self.continuation.trace.active() {
             finish_pending::<WithTracePolicy>(
                 &mut self.continuation.ctx,
@@ -437,10 +430,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         result
     }
     pub(super) fn finish_abandoned_host(&mut self, pending: PendingHost) -> TrapInfo {
-        if let Some(results) = self.continuation.host_results.take() {
-            self.budget.aggregate_work += results.work.aggregate;
-            self.budget.payload_work += results.work.payload;
-        }
+        self.continuation.host_results = None;
         let span = self.continuation.ctx.span_at(
             self.continuation.program.program(),
             pending.location.func,

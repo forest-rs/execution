@@ -240,7 +240,7 @@ impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>
     }
 }
 
-/// Read-only VM context available during one host call.
+/// Borrowed VM data, staged results and work admission for one host call.
 ///
 /// A host context gives embedders access to VM-owned immutable data that cannot be represented by
 /// [`ValueRef`] alone. In particular, aggregate arguments are passed as [`AggHandle`]s in
@@ -254,6 +254,7 @@ pub struct HostContext<'vm, 'access> {
     host_sig_id: HostSigId,
     aggregates: &'vm AggHeap,
     results: &'access mut HostResults,
+    budget: &'access mut crate::vm::budget::DataBudget,
     access: Option<&'access mut dyn AccessSink>,
 }
 
@@ -276,6 +277,7 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         host_sig_id: HostSigId,
         aggregates: &'vm AggHeap,
         results: &'access mut HostResults,
+        budget: &'access mut crate::vm::budget::DataBudget,
         access: Option<&'access mut dyn AccessSink>,
     ) -> Self {
         Self {
@@ -283,6 +285,7 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
             host_sig_id,
             aggregates,
             results,
+            budget,
             access,
         }
     }
@@ -758,13 +761,18 @@ mod tests {
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
             .unwrap();
-        let mut results = HostResults::new(
-            crate::vm::DataWork::default(),
-            crate::vm::DataWork::default(),
-        );
-        let snapshot = HostContext::new(&program, HostSigId(0), &heap, &mut results, None)
-            .retain(&[ValueRef::Agg(root)])
-            .unwrap();
+        let mut results = HostResults::default();
+        let mut budget = crate::vm::budget::DataBudget::default();
+        let snapshot = HostContext::new(
+            &program,
+            HostSigId(0),
+            &heap,
+            &mut results,
+            &mut budget,
+            None,
+        )
+        .retain(&[ValueRef::Agg(root)])
+        .unwrap();
         heap.clear();
         let Value::Agg(root) = snapshot.values()[0] else {
             unreachable!()

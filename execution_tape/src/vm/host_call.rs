@@ -73,6 +73,7 @@ pub(super) fn admit_return(
         })
         .map_err(|error| trap(ctx, error))?;
     budget
+        .data
         .charge_payload_bytes(bytes, 1)
         .map_err(|error| trap(ctx, error))?;
     for (&destination, value) in site.destinations.iter().zip(values) {

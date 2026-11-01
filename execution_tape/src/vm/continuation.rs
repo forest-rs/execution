@@ -372,8 +372,8 @@ mod tests {
             if limits.fuel == 7 {
                 assert!(matches!(error.trap, Trap::FuelExceeded));
                 assert_eq!(budget.fuel, 0);
-                assert_eq!(budget.aggregate_work, 6);
-                assert_eq!(budget.payload_work, 6);
+                assert_eq!(budget.data.used.aggregate, 6);
+                assert_eq!(budget.data.used.payload, 6);
             } else if limits.max_aggregate_work == 5 {
                 assert!(matches!(
                     error.trap,
@@ -383,7 +383,7 @@ mod tests {
                         ..
                     }
                 ));
-                assert_eq!(budget.aggregate_work, 4);
+                assert_eq!(budget.data.used.aggregate, 4);
             } else {
                 assert!(matches!(
                     error.trap,
@@ -393,7 +393,7 @@ mod tests {
                         ..
                     }
                 ));
-                assert_eq!(budget.payload_work, 3);
+                assert_eq!(budget.data.used.payload, 3);
             }
             let Value::Agg(handle) = first.outputs[0] else {
                 panic!("expected tuple")
@@ -539,5 +539,97 @@ mod tests {
         };
         assert!(matches!(error.trap, Trap::HostCallLimitExceeded));
         assert_eq!(budget.host_calls, 1);
+    }
+
+    #[test]
+    fn pending_hosts_cannot_each_spend_the_same_data_allowance() {
+        use super::super::invocation::Running;
+        use crate::host::HostSig;
+
+        let mut builder = ProgramBuilder::new();
+        let pause = builder.host_sig_for(
+            "pause",
+            HostSig {
+                args: vec![],
+                rets: vec![ValueType::Agg],
+            },
+        );
+        let entry = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::Agg],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(entry).unwrap();
+        let [answer] = builder.emit_call(&mut body, pause, &[]).unwrap();
+        body.ret(0, &[answer]);
+        builder.define_function(entry, body).unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+
+        for limits in [
+            Limits {
+                max_aggregate_work: 3,
+                ..Limits::default()
+            },
+            Limits {
+                max_payload_work: 5,
+                ..Limits::default()
+            },
+        ] {
+            let mut vm = Vm::new(NoHost, limits.clone());
+            let mut budget = Budget::new(&limits);
+            let checkpoint = vm.memory.checkpoint();
+            let mut first = start(&mut vm, &mut budget, Arc::clone(&program));
+            let mut second = start(&mut vm, &mut budget, Arc::clone(&program));
+            for stack in [&mut first, &mut second] {
+                assert!(matches!(
+                    stack.advance(&mut vm, &mut budget, 1),
+                    Ok(Progress::AwaitingHost)
+                ));
+            }
+            Running::new(&mut vm, &mut first, &mut budget, checkpoint)
+                .pending_host_call()
+                .unwrap()
+                .context()
+                .tuple_new(vec![Value::Str("one".into())])
+                .unwrap();
+            let error = Running::new(&mut vm, &mut second, &mut budget, checkpoint)
+                .pending_host_call()
+                .unwrap()
+                .context()
+                .tuple_new(vec![Value::Str("two".into())])
+                .unwrap_err();
+            let HostError::Custom(error) = error else {
+                panic!("typed denial")
+            };
+            if limits.max_aggregate_work == 3 {
+                assert!(matches!(
+                    error.downcast_ref::<Trap>(),
+                    Some(Trap::AggregateWorkExceeded {
+                        used: 2,
+                        requested: 2,
+                        ..
+                    })
+                ));
+            } else {
+                assert!(matches!(
+                    error.downcast_ref::<Trap>(),
+                    Some(Trap::PayloadWorkExceeded {
+                        used: 3,
+                        requested: 3,
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(
+                (budget.data.used.aggregate, budget.data.used.payload),
+                (2, 3)
+            );
+            assert_eq!(
+                vm.aggregates().len_u32(),
+                0,
+                "neither pending result was promoted"
+            );
+        }
     }
 }

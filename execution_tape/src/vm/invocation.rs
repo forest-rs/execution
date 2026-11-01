@@ -417,20 +417,7 @@ impl<H: Host> Invocation<'_, H> {
     /// arbitrary native allocations and contract work remain separate.
     #[must_use]
     pub fn data_work(&self) -> DataWork {
-        DataWork {
-            aggregate: self.budget.aggregate_work
-                + self
-                    .continuation
-                    .host_results
-                    .as_ref()
-                    .map_or(0, |r| r.work.aggregate),
-            payload: self.budget.payload_work
-                + self
-                    .continuation
-                    .host_results
-                    .as_ref()
-                    .map_or(0, |r| r.work.payload),
-        }
+        self.budget.data.used
     }
 
     /// The immutable verified program whose local identities this invocation uses.

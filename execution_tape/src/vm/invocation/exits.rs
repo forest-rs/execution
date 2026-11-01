@@ -106,14 +106,9 @@ impl<H: Host> Running<'_, '_, H> {
             .control
             .pending_host
             .expect("pending host guard");
-        let mut staging = self
-            .continuation
-            .host_results
-            .take()
-            .unwrap_or_else(|| self.budget.host_results());
+        let mut staging = self.continuation.host_results.take().unwrap_or_default();
         let work = staging.work;
-        self.budget.aggregate_work += work.aggregate;
-        self.budget.payload_work += work.payload;
+
         let created = staging
             .promote(self.vm.memory.aggs_mut())
             .map_err(Trap::AggError)?;
@@ -159,7 +154,7 @@ impl<H: Host> Running<'_, '_, H> {
             };
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
-        self.budget.charge_payload_bytes(bytes, 1)?;
+        self.budget.data.charge_payload_bytes(bytes, 1)?;
         let prepared = self
             .continuation
             .program
