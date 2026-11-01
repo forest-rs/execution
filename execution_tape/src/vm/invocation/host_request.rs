@@ -239,7 +239,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             inv.continuation
                 .access
                 .as_mut()
-                .map(|sink| &mut **sink as &mut dyn AccessSink),
+                .map(|sink| sink as &mut dyn AccessSink),
         )
     }
     /// Completes this instruction with return slots and extra host fuel, or a host error.
@@ -385,7 +385,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             self.continuation
                 .access
                 .as_mut()
-                .map(|sink| &mut **sink as &mut dyn AccessSink),
+                .map(|sink| sink as &mut dyn AccessSink),
         );
         let outcome = vm
             .host
@@ -461,26 +461,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             span,
             Trap::HostCallAbandoned,
         );
-        self.vm.memory.rollback(self.checkpoint);
-        self.budget.frames -= self.continuation.ctx.frames.len();
-        self.budget.contract_scratch.clear_proofs();
-        self.continuation.outputs.clear();
+        self.finish_outcome(Err(error.clone()), true);
         self.continuation.control.pending_host = None;
-        // Install the terminal state before invoking observers, as in normal finish.
-        // Unwinding from cancellation must not expose the fallthrough continuation.
-        self.continuation.outcome = Some(Err(error.clone()));
-        self.continuation
-            .trace
-            .cancel(self.continuation.program.program(), pending.location, span);
-        callback::finish_instructions(
-            &mut self.continuation.control,
-            &mut self.continuation.trace,
-            self.continuation.program.program(),
-            TraceOutcome::Cancelled,
-        );
-        self.continuation
-            .trace
-            .run_end(self.continuation.program.program(), TraceOutcome::Cancelled);
         error
     }
 }

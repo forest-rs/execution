@@ -9,7 +9,7 @@ use crate::verifier::{FunctionAnalysis, ProgramAnalysis, ValueFact};
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::hash::{Hash, Hasher};
 
-/// An activation identity valid only in its originating invocation.
+/// An activation identity valid only in its originating execution.
 ///
 /// Cloning retains the opaque identity domain, preventing address reuse from making an old ID
 /// refer to a later invocation. Inspection rejects IDs from other invocations, even when their
@@ -17,10 +17,12 @@ use core::hash::{Hash, Hasher};
 #[derive(Clone)]
 pub struct ActivationId {
     owner: Arc<()>,
+    execution: Arc<()>,
     ordinal: u64,
 }
 impl ActivationId {
-    /// Local display ordinal; it is unique within one invocation, not across invocations.
+    /// Display ordinal local to one code segment. Compare opaque identities across segments;
+    /// equal ordinals alone never identify the same activation.
     #[must_use]
     pub const fn ordinal(&self) -> u64 {
         self.ordinal
@@ -41,7 +43,8 @@ impl Hash for ActivationId {
 impl fmt::Debug for ActivationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActivationId")
-            .field("invocation", &Arc::as_ptr(&self.owner))
+            .field("control", &Arc::as_ptr(&self.owner))
+            .field("execution", &Arc::as_ptr(&self.execution))
             .field("ordinal", &self.ordinal)
             .finish()
     }
@@ -61,6 +64,7 @@ pub(super) struct ExecutionControl {
     pub(super) pending_host: Option<host_call::PendingHost>,
     pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
     owner: Option<Arc<()>>,
+    execution: Option<Arc<()>>,
     frames: Vec<Activation>,
     last: u64,
 }
@@ -70,12 +74,14 @@ impl ExecutionControl {
     }
 
     pub(super) fn start(yield_host_calls: bool) -> Self {
+        let owner = Arc::new(());
         Self {
             remaining: 0,
             yield_host_calls,
             pending_host: None,
             callbacks: None,
-            owner: Some(Arc::new(())),
+            owner: Some(Arc::clone(&owner)),
+            execution: Some(owner),
             frames: vec![Activation {
                 ordinal: 0,
                 caller: None,
@@ -83,6 +89,32 @@ impl ExecutionControl {
             last: 0,
         }
     }
+    pub(super) fn activation(&self, index: usize) -> ActivationId {
+        ActivationId {
+            owner: Arc::clone(self.owner()),
+            execution: Arc::clone(self.execution.as_ref().expect("execution identity")),
+            ordinal: self.frames[index].ordinal,
+        }
+    }
+
+    pub(super) fn root_activation(&self) -> ActivationId {
+        ActivationId {
+            owner: Arc::clone(self.owner()),
+            execution: Arc::clone(self.execution.as_ref().expect("execution identity")),
+            ordinal: 0,
+        }
+    }
+
+    pub(super) fn inherit_execution(&mut self, parent: &Self) {
+        self.execution = parent.execution.clone();
+    }
+
+    pub(super) fn belongs_to_execution(&self, id: &ActivationId) -> bool {
+        self.execution
+            .as_ref()
+            .is_some_and(|owner| Arc::ptr_eq(owner, &id.execution))
+    }
+
     pub(super) fn paused_location(&self, ctx: &Registers, index: usize) -> TraceLocation {
         if index + 1 < ctx.frames.len() {
             self.frames[index + 1]
@@ -132,8 +164,14 @@ impl ExecutionControl {
 }
 
 /// Metadata for one paused activation; the frame order is innermost first.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct PausedFrame {
+    /// Exact code definition interpreting this frame's local location and registers.
+    pub program: VerifiedProgram,
+    /// Store namespace, when the frame belongs to an explicitly selected or admitted instance.
+    pub instance: Option<Instance>,
+    /// Actual caller activation, including a caller in another code instance.
+    pub parent: Option<ActivationId>,
     /// Identity retained across resumes until this activation returns.
     pub activation: ActivationId,
     /// Next instruction for the active leaf; pending call instruction for a waiting caller.
@@ -145,6 +183,20 @@ pub struct PausedFrame {
     /// Number of source register declarations, including r0 and unused registers.
     pub register_count: u32,
 }
+
+impl PartialEq for PausedFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.program.shares_definition_with(&other.program)
+            && self.instance == other.instance
+            && self.parent == other.parent
+            && self.activation == other.activation
+            && self.location == other.location
+            && self.caller == other.caller
+            && self.waiting_for_return == other.waiting_for_return
+            && self.register_count == other.register_count
+    }
+}
+impl Eq for PausedFrame {}
 
 /// A source register's storage kind and safely inspectable value at a suspension.
 #[derive(Clone, Copy, Debug)]
@@ -222,6 +274,8 @@ pub struct InvocationInspection<'a> {
     control: &'a ExecutionControl,
     active: bool,
     functions: BTreeMap<u32, FunctionInspection<'a>>,
+    ancestors: Vec<Self>,
+    parent: Option<(ActivationId, TraceLocation)>,
 }
 impl fmt::Debug for InvocationInspection<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -236,7 +290,14 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows paused state. Expensive register facts are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(&self.continuation, self.vm.memory.aggs())
+        let mut view = inspection(&self.continuation, self.vm.memory.aggs());
+        view.ancestors = self
+            .parents
+            .iter()
+            .rev()
+            .map(|parent| inspection(parent, self.vm.memory.aggs()))
+            .collect();
+        view
     }
 
     /// Mutates host state between quanta. Preserve the validity of referenced object handles.
@@ -249,7 +310,15 @@ impl<H: Host> Invocation<'_, H> {
 
 impl<H: Host> invocation::Running<'_, '_, H> {
     pub(super) fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(self.continuation, self.vm.memory.aggs())
+        let mut view = inspection(self.continuation, self.vm.memory.aggs());
+        if let Some(parents) = &self.parents {
+            view.ancestors = parents
+                .iter()
+                .rev()
+                .map(|parent| inspection(parent, self.vm.memory.aggs()))
+                .collect();
+        }
+        view
     }
 }
 
@@ -270,6 +339,8 @@ fn inspection<'a>(
         control: &continuation.control,
         active: continuation.outcome.is_none(),
         functions: BTreeMap::new(),
+        ancestors: Vec::new(),
+        parent: continuation.parent.clone(),
     }
 }
 
@@ -285,12 +356,22 @@ impl<'a> InvocationInspection<'a> {
         let waiting = child || pending.is_some();
         let location = self.control.paused_location(self.ctx, index);
         PausedFrame {
+            program: self.program.clone(),
+            instance: self.ctx.instance.clone(),
+            parent: if index > 0 {
+                Some(self.control.activation(index - 1))
+            } else {
+                self.parent.as_ref().map(|(id, _)| id.clone())
+            },
             activation: ActivationId {
                 owner: Arc::clone(self.control.owner.as_ref().expect("invocation identity")),
+                execution: Arc::clone(self.control.execution.as_ref().expect("execution identity")),
                 ordinal: activation.ordinal,
             },
             location,
-            caller: activation.caller,
+            caller: activation
+                .caller
+                .or_else(|| self.parent.as_ref().map(|(_, location)| *location)),
             waiting_for_return: waiting,
             register_count: self.program.program().functions[frame.func.0 as usize].reg_count,
         }
@@ -311,21 +392,37 @@ impl<'a> InvocationInspection<'a> {
             .position(|frame| frame.ordinal == id.ordinal)
     }
 
-    /// Visits active frames, innermost first, without constructing register indexes.
+    /// Visits active and suspended parent frames, innermost first. Frame metadata is materialized
+    /// on demand; this query constructs no verifier or register indexes.
     pub fn frames(&self) -> impl ExactSizeIterator<Item = PausedFrame> + DoubleEndedIterator + '_ {
-        let count = if self.active {
-            self.ctx.frames.len()
-        } else {
-            0
-        };
-        (0..count).rev().map(|index| self.frame_at(index))
+        let mut frames = Vec::new();
+        self.append_frames(&mut frames);
+        frames.into_iter()
+    }
+
+    fn append_frames(&self, frames: &mut Vec<PausedFrame>) {
+        if self.active {
+            frames.extend(
+                (0..self.ctx.frames.len())
+                    .rev()
+                    .map(|index| self.frame_at(index)),
+            );
+        }
+        for ancestor in &self.ancestors {
+            ancestor.append_frames(frames);
+        }
     }
 
     /// Queries one register. Unknown, retired or foreign activations and absent registers return
     /// `None`. A known declaration without definite initialization returns a value with `None`.
     /// Waiting callers use facts before their pending call, never hypothetical returned values.
     pub fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
-        let index = self.index(id)?;
+        let Some(index) = self.index(id) else {
+            return self
+                .ancestors
+                .iter_mut()
+                .find_map(|ancestor| ancestor.register(id, register));
+        };
         let frame = self.frame_at(index);
         let function = self
             .functions
@@ -377,7 +474,10 @@ impl<'a> InvocationInspection<'a> {
         &mut self,
         id: &ActivationId,
     ) -> Option<impl Iterator<Item = RegisterValue<'a>> + '_> {
-        let count = self.frame_at(self.index(id)?).register_count;
+        let count = self
+            .frames()
+            .find(|frame| &frame.activation == id)?
+            .register_count;
         let id = id.clone();
         Some((0..count).filter_map(move |register| self.register(&id, register)))
     }
@@ -392,6 +492,14 @@ impl<'a> InvocationInspection<'a> {
     /// snapshots and other external roots. Object identity, relocation and reclamation belong to
     /// that collector. This method performs no collection or host-state mutation.
     pub fn visit_objects(&mut self, mut visit: impl FnMut(ObjectRoot)) {
+        self.visit_objects_dyn(&mut visit, true);
+    }
+
+    fn visit_objects_dyn(&mut self, visit: &mut dyn FnMut(ObjectRoot), shared_heap: bool) {
+        for ancestor in &mut self.ancestors {
+            ancestor.visit_objects_dyn(visit, false);
+        }
+
         for index in (0..if self.active {
             self.ctx.frames.len()
         } else {
@@ -443,11 +551,13 @@ impl<'a> InvocationInspection<'a> {
                 }
             }
         }
-        for (aggregate, index, object) in self.aggregates.object_references() {
-            visit(ObjectRoot {
-                object,
-                origin: ObjectRootOrigin::Aggregate { aggregate, index },
-            });
+        if shared_heap {
+            for (aggregate, index, object) in self.aggregates.object_references() {
+                visit(ObjectRoot {
+                    object,
+                    origin: ObjectRootOrigin::Aggregate { aggregate, index },
+                });
+            }
         }
     }
 }

@@ -72,7 +72,7 @@ impl ContractScratch {
         self.frames.clear();
         self.proven.clear();
     }
-    fn charge(&mut self, limit: u64) -> Result<(), CheckError> {
+    pub(crate) fn charge(&mut self, limit: u64) -> Result<(), CheckError> {
         if self.work >= limit {
             return Err(CheckError::Limit);
         }

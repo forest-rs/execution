@@ -409,6 +409,9 @@ impl core::fmt::Debug for Recorder {
 }
 
 impl TraceSink for Recorder {
+    fn control(&mut self, _: &Program, _: crate::trace::ControlEvent<'_>) {
+        self.fail(CaptureFault::UnsupportedComposition);
+    }
     fn run_mask(&mut self, program: &Program, mask: TraceMask) {
         if !self.check(program) {
             return;

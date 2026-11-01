@@ -43,7 +43,7 @@ pub(super) fn emit(
         return;
     }
     let location = TraceLocation { func, pc };
-    let Some(sink) = &mut trace.sink else {
+    let Some(mut sink) = trace.sink.as_mut().map(Observer::borrow_mut) else {
         return;
     };
     if !sink.wants_registers(location, phase) {

@@ -45,6 +45,8 @@ pub use inspection::{
     ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
 };
 mod observations;
+mod observer;
+use observer::Observer;
 mod ownership;
 mod work;
 pub use invocation::{ControlError, Invocation, InvocationOptions, PendingHostCall, RunStatus};
@@ -62,7 +64,8 @@ pub struct Limits {
     pub max_call_depth: usize,
     /// Maximum host calls.
     pub max_host_calls: u64,
-    /// Maximum aggregate contract work per run: visited value/contract pairs and child edges.
+    /// Maximum aggregate contract and transfer-provenance work per execution:
+    /// visited value/contract pairs and child edges.
     /// Separate from guest instruction fuel; shared subgraphs reuse successful proofs.
     pub max_contract_work: u64,
     /// Maximum aggregate construction/import work per run (1,000,000 by default).
@@ -156,6 +159,11 @@ pub enum Trap {
     HostCallLimitExceeded,
     /// The VM cannot represent another live code instance.
     InstanceLimitExceeded,
+    /// A raw code-local value cannot be interpreted in another code instance.
+    CrossInstanceValue {
+        /// Storage kind containing a code-local identity.
+        kind: ValueType,
+    },
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
     AggregateWorkExceeded {
         /// Configured node-and-field work limit.
@@ -273,6 +281,7 @@ impl fmt::Display for Trap {
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
             Self::InstanceLimitExceeded => write!(f, "VM instance capacity exhausted"),
+            Self::CrossInstanceValue { kind } => write!(f, "cannot transfer code-local {kind:?} to another instance"),
             Self::AggregateWorkExceeded {
                 limit,
                 used,
@@ -576,7 +585,7 @@ impl<H: Host> fmt::Debug for Vm<H> {
 /// per-run context while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
     mask: TraceMask,
-    sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
+    sink: Option<Observer<'a, dyn TraceSink + 'a>>,
     scopes: Vec<(ScopeKind, usize)>,
     pending: Option<TraceLocation>,
 }
@@ -593,7 +602,7 @@ impl<'a> TraceCtx<'a> {
     ) -> Self {
         Self {
             mask,
-            sink,
+            sink: sink.map(Observer::Unique),
             scopes: Vec::new(),
             pending: None,
         }
@@ -616,14 +625,14 @@ impl<'a> TraceCtx<'a> {
     #[inline]
     fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
         if self.mask != TraceMask::NONE
-            && let Some(sink) = self.sink.as_mut()
+            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             sink.run_mask(program, self.mask);
         }
         if self.enabled(TraceMask::RUN)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             t.run_start(program, entry, arg_count);
         }
     }
@@ -631,9 +640,9 @@ impl<'a> TraceCtx<'a> {
     #[inline]
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         if self.enabled(TraceMask::RUN)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             t.run_end(program, outcome);
         }
     }
@@ -641,9 +650,21 @@ impl<'a> TraceCtx<'a> {
     #[inline]
     fn values<'event>(&mut self, program: &Program, event: impl FnOnce() -> ValueEvent<'event>) {
         if self.enabled(TraceMask::VALUES)
-            && let Some(sink) = self.sink.as_mut()
+            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             sink.values(program, event());
+        }
+    }
+
+    fn control<'event>(
+        &mut self,
+        program: &Program,
+        event: impl FnOnce() -> crate::trace::ControlEvent<'event>,
+    ) {
+        if self.enabled(TraceMask::VALUES)
+            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+        {
+            sink.control(program, event());
         }
     }
 
@@ -658,9 +679,9 @@ impl<'a> TraceCtx<'a> {
         opcode: u8,
     ) {
         if self.enabled(TraceMask::INSTR)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             self.pending = Some(TraceLocation { func, pc });
             t.instr(program, func, pc, next_pc, span_id, opcode);
         }
@@ -677,9 +698,9 @@ impl<'a> TraceCtx<'a> {
         caller: Option<TraceLocation>,
     ) {
         if self.enabled(TraceMask::CALL)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             self.scopes
                 .push((ScopeKind::CallFrame { func, caller }, depth));
             t.scope_enter(
@@ -703,9 +724,9 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
     ) {
         if self.enabled(TraceMask::CALL)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             let (kind, _) = self.scopes.pop().expect("entered call frame");
             t.scope_exit(program, kind, depth, func, pc, span_id, TraceOutcome::Ok);
         }
@@ -724,9 +745,9 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
     ) {
         if self.enabled(TraceMask::HOST)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             self.scopes.push((
                 ScopeKind::HostCall {
                     host_sig,
@@ -763,9 +784,9 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
     ) {
         if self.enabled(TraceMask::HOST)
-            && let Some(t) = self.sink.as_mut()
+            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            let t: &mut dyn TraceSink = &mut **t;
+            let t: &mut dyn TraceSink = &mut *t;
             self.scopes.pop();
             t.scope_exit(
                 program,
@@ -789,7 +810,7 @@ impl<'a> TraceCtx<'a> {
         outcome: TraceOutcome<'_>,
     ) {
         if let Some(location) = self.pending.take()
-            && let Some(sink) = self.sink.as_mut()
+            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             sink.instr_end(program, location, next, outcome);
         }
@@ -805,7 +826,7 @@ impl<'a> TraceCtx<'a> {
         // A host failure/cancellation closes the host scope before its instruction attempt.
         if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
             let (kind, depth) = self.scopes.pop().expect("open host scope");
-            if let Some(sink) = self.sink.as_mut() {
+            if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
                 sink.scope_exit(
                     program,
                     kind,
@@ -819,7 +840,7 @@ impl<'a> TraceCtx<'a> {
         }
         self.instr_end(program, None, outcome);
         while let Some((kind, depth)) = self.scopes.pop() {
-            if let Some(sink) = self.sink.as_mut() {
+            if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
                 sink.scope_exit(
                     program,
                     kind,

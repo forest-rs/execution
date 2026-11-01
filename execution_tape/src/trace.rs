@@ -16,10 +16,75 @@ use crate::vm::Vm;
 
 use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
+use crate::instance::Instance;
 use crate::program::Program;
 use crate::program::{HostSigId, SymbolId};
 use crate::value::{FuncId, Value};
+use crate::vm::ActivationId;
 use crate::vm::{DataWork, Limits, TrapInfo};
+
+/// A real transfer between code-qualified segments of one execution.
+///
+/// Enabled by [`TraceMask::VALUES`]. Activation identities are opaque live capabilities;
+/// numeric function and instruction locations are interpreted by the accompanying code owners.
+#[derive(Clone, Copy, Debug)]
+pub enum ControlEvent<'a> {
+    /// An admitted command to enter another instance while the parent host call waits.
+    EnterInstance {
+        /// Parent's pending host instruction, in the callback's `program`.
+        location: TraceLocation,
+        /// Exact waiting parent activation.
+        parent: &'a ActivationId,
+        /// Identity allocated for the requested child root, including a rejected entry.
+        child: &'a ActivationId,
+        /// Child's code and store namespace.
+        instance: &'a Instance,
+        /// Program-local entry in the child definition.
+        entry: FuncId,
+        /// Supplied arguments, in the shared store.
+        args: &'a [Value],
+        /// Staged host construction already charged before promotion.
+        work: DataWork,
+        /// Promoted handles in their actual construction order.
+        created: &'a core::ops::Range<u32>,
+        /// Shared storage after staging promotion and before entry validation.
+        aggregates: &'a AggHeap,
+    },
+    /// A child's checked result returned to its original pending host instruction.
+    ReturnInstance {
+        /// Actual child return/exit instruction, in `instance`'s definition.
+        location: TraceLocation,
+        /// Returning segment's exact root identity.
+        child: &'a ActivationId,
+        /// Resumed waiting activation, in the callback's `program`.
+        parent: &'a ActivationId,
+        /// Exact code instance that produced the result.
+        instance: &'a Instance,
+        /// Result slots; no heap compaction occurred.
+        values: &'a [Value],
+        /// Shared execution storage.
+        aggregates: &'a AggHeap,
+    },
+    /// A non-local return initiated in one segment and targeting an ancestor segment.
+    ReturnAcross {
+        /// Initiating pending host instruction, in the callback's `program`.
+        location: TraceLocation,
+        /// Initiating activation.
+        source: &'a ActivationId,
+        /// Exact target activation; unrelated equal local ordinals do not identify it.
+        target: &'a ActivationId,
+        /// Code instance that interprets the target's result contracts.
+        instance: &'a Instance,
+        /// Raw proposed results, before boundary validation.
+        values: &'a [Value],
+        /// Staged host work admitted before the command.
+        work: DataWork,
+        /// Promoted nodes, before the transfer changes control.
+        created: &'a core::ops::Range<u32>,
+        /// Shared execution storage.
+        aggregates: &'a AggHeap,
+    },
+}
 
 /// A set of trace events requested by a [`TraceSink`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -462,6 +527,10 @@ pub trait TraceSink {
     /// policy. Invalid graphs and opaque host state/errors require explicit handling.
     fn values(&mut self, _program: &Program, _event: ValueEvent<'_>) {}
 
+    /// Observes execution-owned cross-instance control, separately from a host outcome.
+    /// Enabled by [`TraceMask::VALUES`]. These commands never imply native host completion.
+    fn control(&mut self, _program: &Program, _event: ControlEvent<'_>) {}
+
     /// Called before each attempted instruction, before any of its effects.
     ///
     /// Called only if the run mask includes [`TraceMask::INSTR`].
@@ -586,6 +655,9 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     }
     fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
         self.as_ref().borrow_mut().values(program, event);
+    }
+    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+        self.as_ref().borrow_mut().control(program, event);
     }
     fn instr(
         &mut self,

@@ -8,6 +8,7 @@ use crate::callable::{Callable, CallableError};
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
+mod composition;
 mod exits;
 mod host_request;
 pub use exits::ControlError;
@@ -108,9 +109,15 @@ impl<'a> InvocationOptions<'a> {
 ///
 /// Completed invocations cannot execute again. Their result remains available through
 /// [`Self::result`] until dropped, and owned outputs can be taken with [`Self::take_outputs`].
+///
+/// [`PendingHostCall::call_instance`] can enter other verified code in the same store. Suspended
+/// callers share its budgets and are visible in [`Self::inspect`]. Only the root publishes
+/// results or reclaims new aggregate storage. A fatal trap or hard cancellation terminates
+/// every retained segment; host effects remain outside the transaction.
 pub struct Invocation<'a, H: Host> {
     pub(super) vm: BorrowedOrOwned<'a, Vm<H>>,
     pub(super) continuation: continuation::Continuation<'a>,
+    pub(super) parents: Vec<continuation::Continuation<'a>>,
     checkpoint: Checkpoint,
     budget: Budget,
 }
@@ -120,18 +127,21 @@ pub struct Invocation<'a, H: Host> {
 pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) vm: &'request mut Vm<H>,
     pub(super) continuation: &'request mut continuation::Continuation<'state>,
+    pub(super) parents: Option<&'request mut Vec<continuation::Continuation<'state>>>,
     checkpoint: Checkpoint,
     pub(super) budget: &'request mut Budget,
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
     pub(super) fn running(&mut self) -> Running<'_, 'a, H> {
-        Running::new(
+        let mut running = Running::new(
             &mut self.vm,
             &mut self.continuation,
             &mut self.budget,
             self.checkpoint,
-        )
+        );
+        running.parents = Some(&mut self.parents);
+        running
     }
 }
 
@@ -146,6 +156,7 @@ impl<'request, 'state, H: Host> Running<'request, 'state, H> {
         Self {
             vm,
             continuation,
+            parents: None,
             budget,
             checkpoint,
         }
@@ -235,6 +246,7 @@ impl<'a, H: Host> Invocation<'a, H> {
             budget,
             checkpoint,
             continuation: continuation::Continuation::new(program, entry, args, options),
+            parents: Vec::new(),
         };
         if let Err(error) =
             invocation
@@ -260,7 +272,11 @@ impl<H: Host> Invocation<'_, H> {
     /// the host. Completing the request finishes that instruction without admitting another.
     pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         if let Some(outcome) = &self.continuation.outcome {
-            return outcome.clone().map(|()| RunStatus::Complete);
+            return if outcome.is_ok() && !self.parents.is_empty() {
+                self.restore_parent()
+            } else {
+                outcome.clone().map(|()| RunStatus::Complete)
+            };
         }
         if let Some(pending) = self.continuation.control.pending_host {
             if pending.abandoned {
@@ -274,6 +290,10 @@ impl<H: Host> Invocation<'_, H> {
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
                 Progress::AwaitingHost => Ok(RunStatus::AwaitingHost),
+                Progress::Returned(site) if !self.parents.is_empty() => {
+                    self.finish_segment_return(site)?;
+                    self.restore_parent()
+                }
                 Progress::Returned(site) => {
                     let continuation = &mut self.continuation;
                     if continuation.trace.active() {
@@ -311,10 +331,15 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows the committed outputs or terminal trap; `None` means execution is suspended.
     #[must_use]
     pub fn result(&self) -> Option<Result<&[Value], &TrapInfo>> {
-        self.continuation.outcome.as_ref().map(|result| {
-            result
-                .as_ref()
-                .map(|()| self.continuation.outputs.as_slice())
+        self.continuation.outcome.as_ref().and_then(|result| {
+            if result.is_ok() && !self.parents.is_empty() {
+                return None;
+            }
+            Some(
+                result
+                    .as_ref()
+                    .map(|()| self.continuation.outputs.as_slice()),
+            )
         })
     }
 
@@ -324,7 +349,7 @@ impl<H: Host> Invocation<'_, H> {
     /// owner. Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
     /// invocation when its lookup handle has already been discarded.
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
-        matches!(self.continuation.outcome, Some(Ok(())))
+        (self.parents.is_empty() && matches!(self.continuation.outcome, Some(Ok(()))))
             .then(|| core::mem::take(&mut self.continuation.outputs))
     }
 
@@ -341,7 +366,7 @@ impl<H: Host> Invocation<'_, H> {
     /// invocation cancels it. Inspect [`Self::result`] first to preserve a trap diagnostic.
     /// If outputs were already taken, the snapshot is empty.
     pub fn into_snapshot(mut self) -> Result<Option<crate::aggregates::ValueSnapshot>, AggError> {
-        if !matches!(self.continuation.outcome, Some(Ok(()))) {
+        if !self.parents.is_empty() || !matches!(self.continuation.outcome, Some(Ok(()))) {
             return Ok(None);
         }
         let outputs = core::mem::take(&mut self.continuation.outputs);
@@ -417,7 +442,8 @@ impl<H: Host> Invocation<'_, H> {
         self.budget.data.used
     }
 
-    /// The immutable verified program whose local identities this invocation uses.
+    /// The active segment's exact verified definition. It changes when control enters or returns
+    /// from another instance. After a trap, it identifies the segment that actually failed.
     #[must_use]
     pub fn program(&self) -> &VerifiedProgram {
         &self.continuation.program
@@ -458,36 +484,55 @@ impl<H: Host> Invocation<'_, H> {
 
 impl<H: Host> Running<'_, '_, H> {
     fn finish(&mut self, result: Result<(), TrapInfo>) {
+        self.finish_outcome(result, false);
+    }
+
+    fn finish_outcome(&mut self, result: Result<(), TrapInfo>, abandoned: bool) {
         self.continuation.outcome = Some(result);
         let result = self
             .continuation
             .outcome
-            .as_ref()
+            .clone()
             .expect("terminal outcome installed");
-        let outcome = match result {
-            Ok(()) => TraceOutcome::Ok,
-            Err(error) => {
-                self.budget.frames -= self.continuation.ctx.frames.len();
-                self.budget.contract_scratch.clear_proofs();
-                self.vm.memory.rollback(self.checkpoint);
-                self.continuation.outputs.clear();
-                TraceOutcome::Trap(error)
+        if let Err(error) = &result {
+            self.budget.frames -= self.continuation.ctx.frames.len();
+            self.budget.contract_scratch.clear_proofs();
+            if let Some(parents) = self.parents.as_deref_mut() {
+                for parent in parents.iter_mut().rev() {
+                    if parent.outcome.is_none() {
+                        self.budget.frames -= parent.ctx.frames.len();
+                        parent.outcome = Some(Err(error.clone()));
+                    }
+                }
             }
+            self.vm.memory.rollback(self.checkpoint);
+            self.continuation.outputs.clear();
+        }
+        let outcome = match &result {
+            Ok(()) => TraceOutcome::Ok,
+            Err(_) if abandoned => TraceOutcome::Cancelled,
+            Err(error) => TraceOutcome::Trap(error),
         };
-        self.continuation
-            .trace
-            .finish(self.continuation.program.program(), outcome);
-        callback::finish_instructions(
-            &mut self.continuation.control,
-            &mut self.continuation.trace,
-            self.continuation.program.program(),
-            outcome,
-        );
-        self.continuation
-            .trace
-            .run_end(self.continuation.program.program(), outcome);
+        finish_control_trace(self.continuation, outcome);
+        if result.is_err()
+            && let Some(parents) = self.parents.as_deref_mut()
+        {
+            for parent in parents.iter_mut().rev() {
+                finish_control_trace(parent, outcome);
+            }
+        }
     }
+
     pub(super) fn cancel(&mut self) {
+        self.cancel_current();
+        if let Some(parents) = self.parents.as_deref_mut() {
+            for parent in parents.iter_mut().rev() {
+                Running::new(self.vm, parent, self.budget, self.checkpoint).cancel_current();
+            }
+        }
+    }
+
+    fn cancel_current(&mut self) {
         if self.continuation.outcome.is_some() {
             return;
         }
@@ -546,6 +591,48 @@ impl<H: Host> Running<'_, '_, H> {
             .trace
             .run_end(self.continuation.program.program(), TraceOutcome::Cancelled);
     }
+}
+
+fn finish_control_trace(
+    continuation: &mut continuation::Continuation<'_>,
+    outcome: TraceOutcome<'_>,
+) {
+    if !matches!(outcome, TraceOutcome::Ok) {
+        let location = continuation
+            .control
+            .pending_host
+            .map(|pending| pending.location)
+            .or(continuation.trace.pending)
+            .or_else(|| {
+                continuation.ctx.frames.last().map(|frame| TraceLocation {
+                    func: frame.func,
+                    pc: frame.pc,
+                })
+            })
+            .unwrap_or(TraceLocation {
+                func: continuation.entry,
+                pc: 0,
+            });
+        let span =
+            continuation
+                .ctx
+                .span_at(continuation.program.program(), location.func, location.pc);
+        continuation
+            .trace
+            .unwind(continuation.program.program(), location, span, outcome);
+    }
+    continuation
+        .trace
+        .finish(continuation.program.program(), outcome);
+    callback::finish_instructions(
+        &mut continuation.control,
+        &mut continuation.trace,
+        continuation.program.program(),
+        outcome,
+    );
+    continuation
+        .trace
+        .run_end(continuation.program.program(), outcome);
 }
 
 impl<H: Host> Drop for Invocation<'_, H> {

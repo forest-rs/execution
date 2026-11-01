@@ -12,9 +12,21 @@ Changes for Execution Tape [0.1.0](#010-2026-10-27), dated 2026-10-27, are docum
 
 ## [Unreleased][]
 
+
 This release has an [MSRV][] of 1.88.
 
 ### Added
+
+- Keep independently compiled guest calls in one execution through `PendingHostCall::call_instance`.
+  Suspended parents share the store and all resource budgets; only the root commits or rolls back
+  aggregate storage. `return_from` can target a live activation across those code boundaries.
+  Inspection exposes the real parent chain and each frame's exact code and instance. Control
+  transfers are observable separately from host completion; single-program recordings reject
+  unsupported composed evidence. Raw callable IDs remain instance-local and nominal aggregates
+  require their original definition when crossing a boundary. Host objects share the VM's host.
+  Migration: handle `ControlError::ForeignStore`, `Trap::CrossInstanceValue`, and
+  `CaptureFault::UnsupportedComposition` in exhaustive matches. `PausedFrame` has code, namespace
+  and parent fields; activation display ordinals are local to a segment, so compare opaque IDs.
 
 - Instantiate shared verified code in a VM store with `Vm::instantiate`. `Instance::start`
   rejects foreign stores before observing or entering guest code. Hosts and pending requests

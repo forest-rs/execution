@@ -40,11 +40,13 @@ impl CodeOwner {
 pub(super) struct Continuation<'a> {
     pub(super) program: CodeOwner,
     pub(super) entry: FuncId,
+    pub(super) parent: Option<(ActivationId, TraceLocation)>,
+    pub(super) returned_at: Option<TraceLocation>,
     pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: Registers,
     pub(super) control: ExecutionControl,
     pub(super) trace: TraceCtx<'a>,
-    pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
+    pub(super) access: Option<Observer<'a, dyn AccessSink + 'a>>,
     pub(super) host_results: Option<crate::host::HostResults>,
     pub(super) register_state: observations::RegisterState,
     pub(super) outputs: Vec<Value>,
@@ -61,11 +63,13 @@ impl<'a> Continuation<'a> {
         Self {
             program,
             entry,
+            parent: None,
+            returned_at: None,
             args,
             ctx: Registers::default(),
             control: ExecutionControl::start(options.yield_host_calls),
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
-            access: options.access,
+            access: options.access.map(Observer::Unique),
             host_results: None,
             register_state: observations::RegisterState::default(),
             outputs: Vec::new(),
@@ -129,10 +133,7 @@ impl Continuation<'_> {
     ) -> Result<Progress, TrapInfo> {
         budget.select(&self.control);
         self.control.remaining = quantum;
-        let access = self
-            .access
-            .as_mut()
-            .map(|sink| &mut **sink as &mut dyn AccessSink);
+        let access = self.access.as_mut().map(|sink| sink as &mut dyn AccessSink);
         if self.trace.active() {
             vm.execute_loop::<WithTracePolicy, true>(
                 &mut self.ctx,

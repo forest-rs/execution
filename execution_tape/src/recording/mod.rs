@@ -227,6 +227,8 @@ pub enum CaptureFault {
     },
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
+    /// A single-program recorder observed composed execution without its child evidence.
+    UnsupportedComposition,
 }
 
 impl core::fmt::Display for CaptureFault {

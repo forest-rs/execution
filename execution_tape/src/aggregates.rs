@@ -850,6 +850,10 @@ impl AggHeap {
             .ok_or(AggError::OutOfBounds)
     }
 
+    pub(crate) fn fields(&self, handle: AggHandle) -> Result<&[Value], AggError> {
+        Ok(self.node(handle)?.values())
+    }
+
     fn node(&self, handle: AggHandle) -> Result<&AggNode, AggError> {
         self.nodes.get(handle.0 as usize).ok_or(AggError::BadHandle)
     }
