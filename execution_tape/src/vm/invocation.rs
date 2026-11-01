@@ -112,6 +112,7 @@ pub struct Invocation<'a, H: Host> {
     pub(super) vm: BorrowedOrOwned<'a, Vm<H>>,
     pub(super) continuation: continuation::Continuation<'a>,
     checkpoint: Checkpoint,
+    budget: Budget,
 }
 
 /// Temporary authority to operate one control stack in its execution transaction.
@@ -120,11 +121,17 @@ pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) vm: &'request mut Vm<H>,
     pub(super) continuation: &'request mut continuation::Continuation<'state>,
     checkpoint: Checkpoint,
+    pub(super) budget: &'request mut Budget,
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
     pub(super) fn running(&mut self) -> Running<'_, 'a, H> {
-        Running::new(&mut self.vm, &mut self.continuation, self.checkpoint)
+        Running::new(
+            &mut self.vm,
+            &mut self.continuation,
+            &mut self.budget,
+            self.checkpoint,
+        )
     }
 }
 
@@ -132,11 +139,14 @@ impl<'request, 'state, H: Host> Running<'request, 'state, H> {
     pub(super) fn new(
         vm: &'request mut Vm<H>,
         continuation: &'request mut continuation::Continuation<'state>,
+        budget: &'request mut Budget,
         checkpoint: Checkpoint,
     ) -> Self {
+        budget.select(&continuation.control);
         Self {
             vm,
             continuation,
+            budget,
             checkpoint,
         }
     }
@@ -147,7 +157,7 @@ impl<H: Host> fmt::Debug for Invocation<'_, H> {
         f.debug_struct("Invocation")
             .field("entry", &self.continuation.entry)
             .field("frames", &self.continuation.ctx.frames.len())
-            .field("remaining_fuel", &self.continuation.ctx.fuel)
+            .field("remaining_fuel", &self.budget.fuel)
             .field("outcome", &self.continuation.outcome)
             .finish_non_exhaustive()
     }
@@ -219,12 +229,18 @@ impl<'a, H: Host> Invocation<'a, H> {
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
+        let budget = Budget::new(&vm.limits);
         let mut invocation = Invocation {
             vm,
+            budget,
             checkpoint,
             continuation: continuation::Continuation::new(program, entry, args, options),
         };
-        if let Err(error) = invocation.continuation.initialize(&mut invocation.vm, work) {
+        if let Err(error) =
+            invocation
+                .continuation
+                .initialize(&mut invocation.vm, &mut invocation.budget, work)
+        {
             invocation.running().finish(Err(error.clone()));
             return Err(error);
         }
@@ -254,7 +270,7 @@ impl<H: Host> Invocation<'_, H> {
         }
         let result = self
             .continuation
-            .advance(&mut self.vm, quantum)
+            .advance(&mut self.vm, &mut self.budget, quantum)
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
                 Progress::AwaitingHost => Ok(RunStatus::AwaitingHost),
@@ -263,6 +279,7 @@ impl<H: Host> Invocation<'_, H> {
                     if continuation.trace.active() {
                         self.vm.commit_return::<WithTracePolicy>(
                             &mut continuation.ctx,
+                            &mut self.budget,
                             continuation.program.program(),
                             self.checkpoint,
                             &mut continuation.outputs,
@@ -272,6 +289,7 @@ impl<H: Host> Invocation<'_, H> {
                     } else {
                         self.vm.commit_return::<NoTracePolicy>(
                             &mut continuation.ctx,
+                            &mut self.budget,
                             continuation.program.program(),
                             self.checkpoint,
                             &mut continuation.outputs,
@@ -371,7 +389,7 @@ impl<H: Host> Invocation<'_, H> {
     /// Remaining hard instruction/host fuel, including after completion or a trap.
     #[must_use]
     pub fn remaining_fuel(&self) -> u64 {
-        self.continuation.ctx.fuel
+        self.budget.fuel
     }
 
     /// Cumulative admitted VM work, including entry checks, host staging and control operations.
@@ -386,9 +404,9 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn work(&self) -> ExecutionWork {
         ExecutionWork {
-            fuel: self.vm.limits.fuel - self.continuation.ctx.fuel,
-            host_calls: self.continuation.ctx.host_calls,
-            contract: self.continuation.ctx.contract_scratch.work_used(),
+            fuel: self.vm.limits.fuel - self.budget.fuel,
+            host_calls: self.budget.host_calls,
+            contract: self.budget.contract_scratch.work_used(),
             data: self.data_work(),
         }
     }
@@ -400,13 +418,13 @@ impl<H: Host> Invocation<'_, H> {
     #[must_use]
     pub fn data_work(&self) -> DataWork {
         DataWork {
-            aggregate: self.continuation.ctx.aggregate_work
+            aggregate: self.budget.aggregate_work
                 + self
                     .continuation
                     .host_results
                     .as_ref()
                     .map_or(0, |r| r.work.aggregate),
-            payload: self.continuation.ctx.payload_work
+            payload: self.budget.payload_work
                 + self
                     .continuation
                     .host_results
@@ -459,7 +477,8 @@ impl<H: Host> Running<'_, '_, H> {
         let outcome = match result {
             Ok(()) => TraceOutcome::Ok,
             Err(error) => {
-                self.continuation.ctx.contract_scratch.clear_proofs();
+                self.budget.frames -= self.continuation.ctx.frames.len();
+                self.budget.contract_scratch.clear_proofs();
                 self.vm.memory.rollback(self.checkpoint);
                 self.continuation.outputs.clear();
                 TraceOutcome::Trap(error)
@@ -522,6 +541,7 @@ impl<H: Host> Running<'_, '_, H> {
             location.pc,
         );
         self.vm.memory.rollback(self.checkpoint);
+        self.budget.frames -= self.continuation.ctx.frames.len();
         self.continuation.ctx.clear();
         self.continuation
             .trace

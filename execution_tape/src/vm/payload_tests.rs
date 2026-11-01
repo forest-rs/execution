@@ -74,7 +74,7 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
         );
         if limit == required {
             result.unwrap();
-            assert_eq!(ctx.payload_work, required);
+            assert_eq!(ctx.budget.payload_work, required);
         } else {
             let error = result.unwrap_err();
             let Trap::PayloadWorkExceeded {
@@ -87,7 +87,7 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
             };
             assert_eq!(actual, limit);
             assert_eq!(used + requested, required);
-            assert_eq!(ctx.payload_work, used);
+            assert_eq!(ctx.budget.payload_work, used);
             assert_eq!(outputs, [Value::I64(99)]);
             assert_eq!(vm.aggregates().len_u32(), 1);
             assert_eq!(
@@ -154,7 +154,7 @@ fn doubling_traps_before_next_copy_and_context_resets() {
                 requested: 128
             }
         ));
-        assert_eq!(ctx.payload_work, 126);
+        assert_eq!(ctx.budget.payload_work, 126);
         assert_eq!(outputs, [Value::I64(99)]);
         vm.limits.max_payload_work = 254;
         for _ in 0..2 {
@@ -171,10 +171,10 @@ fn doubling_traps_before_next_copy_and_context_resets() {
             )
             .unwrap();
             assert_eq!(outputs, [Value::U64(128)]);
-            assert_eq!(ctx.payload_work, 254);
+            assert_eq!(ctx.budget.payload_work, 254);
         }
         ctx.clear();
-        assert_eq!((ctx.payload_work, ctx.payload_limit), (0, 0));
+        assert_eq!((ctx.budget.payload_work, ctx.budget.payload_limit), (0, 0));
     }
 }
 
@@ -535,7 +535,7 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
             Trap::HostCallFailed { .. } if fail => {}
             other => panic!("{other:?}"),
         }
-        assert_eq!(ctx.payload_work, 0);
+        assert_eq!(ctx.budget.payload_work, 0);
     }
     let mut vm = Vm::new(
         Returning {
@@ -556,10 +556,14 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
 #[test]
 fn overflow_is_explicit_and_rejected_debits_do_not_change_usage() {
     let mut ctx = ExecutionContext::new();
-    ctx.reset(0, u64::MAX);
-    ctx.charge_payload_bytes(1, u64::MAX).unwrap();
+    ctx.budget.reset(&Limits {
+        fuel: 0,
+        max_payload_work: u64::MAX,
+        ..Limits::default()
+    });
+    ctx.budget.charge_payload_bytes(1, u64::MAX).unwrap();
     assert!(matches!(
-        ctx.charge_payload_bytes(1, 1),
+        ctx.budget.charge_payload_bytes(1, 1),
         Err(Trap::PayloadWorkExceeded {
             limit: u64::MAX,
             used: u64::MAX,
@@ -567,10 +571,10 @@ fn overflow_is_explicit_and_rejected_debits_do_not_change_usage() {
         })
     ));
     assert!(matches!(
-        ctx.charge_payload_bytes(2, u64::MAX),
+        ctx.budget.charge_payload_bytes(2, u64::MAX),
         Err(Trap::PayloadSizeOverflow)
     ));
-    assert_eq!(ctx.payload_work, u64::MAX);
+    assert_eq!(ctx.budget.payload_work, u64::MAX);
 }
 
 #[test]

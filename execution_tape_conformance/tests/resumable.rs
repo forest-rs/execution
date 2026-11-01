@@ -323,6 +323,90 @@ fn host_panic_unwinding_cancels_scopes_and_restores_the_vm() {
 }
 
 #[test]
+#[cfg(panic = "unwind")]
+fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
+    struct PanicAtReturn {
+        instruction: bool,
+        fired: bool,
+    }
+    impl TraceSink for PanicAtReturn {
+        fn instr_end(
+            &mut self,
+            _: &Program,
+            _: execution_tape::trace::TraceLocation,
+            next: Option<execution_tape::trace::TraceLocation>,
+            outcome: TraceOutcome<'_>,
+        ) {
+            if self.instruction
+                && !self.fired
+                && next.is_none()
+                && matches!(outcome, TraceOutcome::Ok)
+            {
+                self.fired = true;
+                panic!("injected return instruction observer panic");
+            }
+        }
+        fn scope_exit(
+            &mut self,
+            _: &Program,
+            _: ScopeKind,
+            _: usize,
+            _: FuncId,
+            _: u32,
+            _: Option<u64>,
+            outcome: TraceOutcome<'_>,
+        ) {
+            if !self.instruction && !self.fired && matches!(outcome, TraceOutcome::Ok) {
+                self.fired = true;
+                panic!("injected return scope observer panic");
+            }
+        }
+    }
+    let mut builder = ProgramBuilder::new();
+    let entry = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::Agg],
+        })
+        .unwrap();
+    let mut body = builder.function_asm(entry).unwrap();
+    let tuple = body.alloc_register(ValueType::Agg);
+    body.tuple_new(tuple, &[]).ret(0, &[tuple]);
+    builder.define_function(entry, body).unwrap();
+    let program = builder.build_verified().unwrap();
+    for instruction in [false, true] {
+        let mut vm = Vm::new(Echo::default(), Limits::default());
+        let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+        let mut observer = PanicAtReturn {
+            instruction,
+            fired: false,
+        };
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut invocation = vm
+                    .start(
+                        &program,
+                        entry,
+                        &[],
+                        InvocationOptions::default()
+                            .trace(TraceMask::CALL | TraceMask::INSTR, &mut observer),
+                    )
+                    .unwrap();
+                invocation.resume(u64::MAX).unwrap();
+            }))
+            .is_err()
+        );
+        assert!(observer.fired);
+        assert_eq!(vm.aggregates().len_u32(), 1);
+        assert_eq!(
+            vm.aggregates().tuple_get(retained, 0).unwrap(),
+            Value::I64(99)
+        );
+        assert!(vm.run(&program, entry, &[], TraceMask::NONE, None).is_ok());
+    }
+}
+
+#[test]
 fn contract_proof_work_and_successful_proofs_survive_suspension() {
     use execution_tape::{asm::FunctionAbi, contract::Contract};
     let mut b = ProgramBuilder::new();

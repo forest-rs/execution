@@ -27,14 +27,14 @@ pub(super) struct HostReturnSite<'a> {
 
 #[inline(always)]
 pub(super) fn admit_return(
-    ctx: &mut ExecutionContext,
+    ctx: &mut Registers,
+    budget: &mut Budget,
     site: HostReturnSite<'_>,
     values: &mut [Value],
     outcome: Result<u64, HostError>,
 ) -> Result<(), TrapInfo> {
-    let trap = |ctx: &ExecutionContext, trap| {
-        ctx.trap(site.location.func, site.location.pc, site.span, trap)
-    };
+    let trap =
+        |ctx: &Registers, trap| ctx.trap(site.location.func, site.location.pc, site.span, trap);
     let fuel = outcome.map_err(|error| {
         trap(
             ctx,
@@ -45,7 +45,7 @@ pub(super) fn admit_return(
             },
         )
     })?;
-    ctx.fuel = ctx.fuel.saturating_sub(fuel);
+    budget.fuel = budget.fuel.saturating_sub(fuel);
     // Ordinary hosts fill a VM-sized slice; external deliveries supply an owned vector.
     if values.len() != site.expected.len() {
         return Err(trap(
@@ -72,7 +72,8 @@ pub(super) fn admit_return(
             total.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })
         .map_err(|error| trap(ctx, error))?;
-    ctx.charge_payload_bytes(bytes, 1)
+    budget
+        .charge_payload_bytes(bytes, 1)
         .map_err(|error| trap(ctx, error))?;
     for (&destination, value) in site.destinations.iter().zip(values) {
         let value = core::mem::replace(value, Value::Unit);

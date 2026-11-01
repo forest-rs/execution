@@ -110,10 +110,10 @@ impl<H: Host> Running<'_, '_, H> {
             .continuation
             .host_results
             .take()
-            .unwrap_or_else(|| self.continuation.ctx.host_results());
+            .unwrap_or_else(|| self.budget.host_results());
         let work = staging.work;
-        self.continuation.ctx.aggregate_work += work.aggregate;
-        self.continuation.ctx.payload_work += work.payload;
+        self.budget.aggregate_work += work.aggregate;
+        self.budget.payload_work += work.payload;
         let created = staging
             .promote(self.vm.memory.aggs_mut())
             .map_err(Trap::AggError)?;
@@ -138,10 +138,10 @@ impl<H: Host> Running<'_, '_, H> {
                 created: &created,
                 aggregates: self.vm.memory.aggs(),
             });
-        if self.continuation.ctx.fuel == 0 {
+        if self.budget.fuel == 0 {
             return Err(Trap::FuelExceeded);
         }
-        self.continuation.ctx.fuel -= 1;
+        self.budget.fuel -= 1;
         let function = self.continuation.ctx.frames[index].func;
         let body = &program.functions[function.0 as usize];
         let kinds = body.ret_types(program).map_err(|_| Trap::InvalidPc)?;
@@ -159,15 +159,14 @@ impl<H: Host> Running<'_, '_, H> {
             };
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
-        self.continuation.ctx.charge_payload_bytes(bytes, 1)?;
+        self.budget.charge_payload_bytes(bytes, 1)?;
         let prepared = self
             .continuation
             .program
             .verified(function)
             .expect("active verified function");
         for check in &prepared.contract_checks[prepared.arg_check_count as usize..] {
-            self.continuation
-                .ctx
+            self.budget
                 .contract_scratch
                 .check_value(
                     program,
@@ -245,6 +244,7 @@ impl<H: Host> Running<'_, '_, H> {
                 }
             }
         }
+        self.budget.frames -= self.continuation.ctx.frames.len() - index;
         self.continuation.ctx.frames.truncate(index);
         self.continuation.ctx.truncate_to(target_base);
         self.continuation.control.truncate(index);
@@ -257,7 +257,7 @@ impl<H: Host> Running<'_, '_, H> {
             }
         }
         if index == 0 {
-            self.continuation.ctx.contract_scratch.clear_proofs();
+            self.budget.contract_scratch.clear_proofs();
             self.vm
                 .memory
                 .commit(self.checkpoint, &mut values)
