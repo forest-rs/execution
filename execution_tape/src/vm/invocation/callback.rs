@@ -150,10 +150,10 @@ impl<H: Host> Running<'_, '_, H> {
             .continuation
             .host_results
             .take()
-            .unwrap_or_else(|| self.continuation.ctx.host_results());
+            .unwrap_or_else(|| self.budget.host_results());
         let work = staging.work;
-        self.continuation.ctx.aggregate_work += work.aggregate;
-        self.continuation.ctx.payload_work += work.payload;
+        self.budget.aggregate_work += work.aggregate;
+        self.budget.payload_work += work.payload;
         let created = staging
             .promote(self.vm.memory.aggs_mut())
             .map_err(Trap::AggError)?;
@@ -169,11 +169,11 @@ impl<H: Host> Running<'_, '_, H> {
                     aggregates: self.vm.memory.aggs(),
                 }
             });
-        if self.continuation.ctx.fuel == 0 {
+        if self.budget.fuel == 0 {
             return Err(Trap::FuelExceeded);
         }
-        self.continuation.ctx.fuel -= 1;
-        if self.continuation.ctx.frames.len() >= self.vm.limits.max_call_depth {
+        self.budget.fuel -= 1;
+        if self.budget.frames >= self.vm.limits.max_call_depth {
             return Err(Trap::CallDepthExceeded);
         }
         let (function, environment) = match callee {
@@ -207,7 +207,7 @@ impl<H: Host> Running<'_, '_, H> {
             };
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
-        self.continuation.ctx.charge_payload_bytes(payload, 1)?;
+        self.budget.charge_payload_bytes(payload, 1)?;
         let prepared = self
             .continuation
             .program
@@ -221,6 +221,7 @@ impl<H: Host> Running<'_, '_, H> {
         }
         self.vm.check_arg_contracts(
             &mut self.continuation.ctx,
+            self.budget,
             program,
             function,
             prepared,
@@ -230,8 +231,7 @@ impl<H: Host> Running<'_, '_, H> {
             // An opaque Agg contract must still resolve a closure's environment before entry.
             let contract = program.verified_contracts(body.arg_types)[0];
             if matches!(program.contracts.get(contract), Some(Contract::Kind(_))) {
-                self.continuation
-                    .ctx
+                self.budget
                     .contract_scratch
                     .check_value(
                         program,
@@ -252,6 +252,7 @@ impl<H: Host> Running<'_, '_, H> {
                     })?;
             }
         }
+        self.budget.frames += 1;
         self.continuation.ctx.frames.push(Frame {
             func: function,
             pc: prepared.pc_at_ix(0).unwrap_or(0),
@@ -300,7 +301,8 @@ pub(in crate::vm) fn returns_to_host(control: &ExecutionControl, depth: usize) -
 
 pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     vm: &mut Vm<H>,
-    ctx: &mut ExecutionContext,
+    ctx: &mut Registers,
+    budget: &mut Budget,
     prepared: &VerifiedProgram,
     root_args: &[Value],
     control: &mut ExecutionControl,
@@ -312,12 +314,13 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     base: RegBase,
 ) -> Result<(), TrapInfo> {
     let program = prepared.program();
-    vm.check_result_contracts(ctx, program, location.func, body, base, rets)
+    vm.check_result_contracts(ctx, budget, program, location.func, body, base, rets)
         .map_err(|trap| ctx.trap(location.func, location.pc, span, trap))?;
     let mut values = Vec::with_capacity(rets.len());
     for &reg in rets {
         values.push(
             ctx.materialize_vreg(
+                budget,
                 base,
                 reg,
                 ValueSources::new(program, root_args, vm.memory.aggs()),
@@ -337,6 +340,7 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     callbacks.returned = Some(values);
     let depth = ctx.frames.len();
     ctx.frames.pop().expect("callback root frame");
+    budget.frames -= 1;
     ctx.truncate_to(base);
     control.leave();
     control.pending_host = Some(waiting.host);

@@ -32,7 +32,7 @@ pub(super) fn emit(
     register_state: &mut RegisterState,
     trace: &mut TraceCtx<'_>,
     program: &Program,
-    ctx: &ExecutionContext,
+    ctx: &Registers,
     func: FuncId,
     pc: u32,
     base: RegBase,

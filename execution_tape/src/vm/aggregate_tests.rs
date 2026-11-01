@@ -85,7 +85,7 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
                 matches!(error.trap, Trap::AggregateWorkExceeded { limit, used, requested }
                 if limit == 2 * cost - 1 && used == cost && requested == cost)
             );
-            assert_eq!(ctx.aggregate_work, cost);
+            assert_eq!(ctx.budget.aggregate_work, cost);
             assert_eq!(outputs, [Value::Bool(true)]);
             assert_eq!(vm.aggregates().len_u32(), 1);
             assert_eq!(
@@ -108,11 +108,14 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
                     None,
                 )
                 .unwrap();
-                assert_eq!(ctx.aggregate_work, 2 * cost);
-                assert_eq!(ctx.payload_work, 0);
+                assert_eq!(ctx.budget.aggregate_work, 2 * cost);
+                assert_eq!(ctx.budget.payload_work, 0);
             }
             ctx.clear();
-            assert_eq!((ctx.aggregate_work, ctx.aggregate_limit), (0, 0));
+            assert_eq!(
+                (ctx.budget.aggregate_work, ctx.budget.aggregate_limit),
+                (0, 0)
+            );
         }
     }
 }
@@ -170,29 +173,27 @@ fn aggregate_budget_is_shared_by_guest_calls_and_checked_replay() {
 
 #[test]
 fn aggregate_work_arithmetic_rejects_overflow_without_charging() {
-    let mut ctx = ExecutionContext {
-        aggregate_limit: u64::MAX,
-        ..ExecutionContext::default()
-    };
+    let mut ctx = ExecutionContext::new();
+    ctx.budget.aggregate_limit = u64::MAX;
     // Exercise the accounting boundary without allocating an enormous guest value.
     if usize::BITS == 64 {
         assert!(matches!(
-            ctx.charge_aggregate(usize::MAX),
+            ctx.budget.charge_aggregate(usize::MAX),
             Err(Trap::AggregateSizeOverflow)
         ));
-        assert_eq!(ctx.aggregate_work, 0);
+        assert_eq!(ctx.budget.aggregate_work, 0);
     }
-    ctx.aggregate_work = u64::MAX - 1;
-    ctx.charge_aggregate(0).unwrap();
+    ctx.budget.aggregate_work = u64::MAX - 1;
+    ctx.budget.charge_aggregate(0).unwrap();
     assert!(matches!(
-        ctx.charge_aggregate(0),
+        ctx.budget.charge_aggregate(0),
         Err(Trap::AggregateWorkExceeded {
             limit: u64::MAX,
             used: u64::MAX,
             requested: 1
         })
     ));
-    assert_eq!(ctx.aggregate_work, u64::MAX);
+    assert_eq!(ctx.budget.aggregate_work, u64::MAX);
 }
 
 #[test]

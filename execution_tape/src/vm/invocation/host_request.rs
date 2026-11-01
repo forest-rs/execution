@@ -20,11 +20,7 @@ struct Site<'a> {
     destinations: &'a [VReg],
     ret_types: &'a [ValueType],
 }
-fn site<'a>(
-    program: &'a VerifiedProgram,
-    ctx: &ExecutionContext,
-    pending: PendingHost,
-) -> Site<'a> {
+fn site<'a>(program: &'a VerifiedProgram, ctx: &Registers, pending: PendingHost) -> Site<'a> {
     let body = program
         .verified(pending.location.func)
         .expect("admitted function");
@@ -60,7 +56,7 @@ fn site<'a>(
     }
 }
 fn arguments<'a>(
-    ctx: &'a ExecutionContext,
+    ctx: &'a Registers,
     sources: ValueSources<'a>,
     base: RegBase,
     regs: &'a [VReg],
@@ -195,7 +191,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let inv = &mut self.running;
         inv.continuation
             .host_results
-            .get_or_insert_with(|| inv.continuation.ctx.host_results())
+            .get_or_insert_with(|| inv.budget.host_results())
             .prepaid(work)
     }
     pub(crate) fn restore_host_node(
@@ -206,7 +202,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let inv = &mut self.running;
         inv.continuation
             .host_results
-            .get_or_insert_with(|| inv.continuation.ctx.host_results())
+            .get_or_insert_with(|| inv.budget.host_results())
             .restore_node(inv.vm.memory.aggs(), kind, values)
     }
 
@@ -225,7 +221,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             inv.vm.memory.aggs(),
             inv.continuation
                 .host_results
-                .get_or_insert_with(|| inv.continuation.ctx.host_results()),
+                .get_or_insert_with(|| inv.budget.host_results()),
             inv.continuation
                 .access
                 .as_mut()
@@ -368,7 +364,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             vm.memory.aggs(),
             self.continuation
                 .host_results
-                .get_or_insert_with(|| self.continuation.ctx.host_results()),
+                .get_or_insert_with(|| self.budget.host_results()),
             self.continuation
                 .access
                 .as_mut()
@@ -392,14 +388,15 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             .continuation
             .host_results
             .take()
-            .unwrap_or_else(|| self.continuation.ctx.host_results());
+            .unwrap_or_else(|| self.budget.host_results());
         let work = results.work;
         let created = results.adopt(self.vm.memory.aggs_mut(), values, outcome.is_ok());
-        self.continuation.ctx.aggregate_work += work.aggregate;
-        self.continuation.ctx.payload_work += work.payload;
+        self.budget.aggregate_work += work.aggregate;
+        self.budget.payload_work += work.payload;
         let result = if self.continuation.trace.active() {
             finish_pending::<WithTracePolicy>(
                 &mut self.continuation.ctx,
+                self.budget,
                 &self.continuation.program,
                 &self.continuation.args,
                 self.vm.memory.aggs(),
@@ -417,6 +414,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         } else {
             finish_pending::<NoTracePolicy>(
                 &mut self.continuation.ctx,
+                self.budget,
                 &self.continuation.program,
                 &self.continuation.args,
                 self.vm.memory.aggs(),
@@ -440,8 +438,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     }
     pub(super) fn finish_abandoned_host(&mut self, pending: PendingHost) -> TrapInfo {
         if let Some(results) = self.continuation.host_results.take() {
-            self.continuation.ctx.aggregate_work += results.work.aggregate;
-            self.continuation.ctx.payload_work += results.work.payload;
+            self.budget.aggregate_work += results.work.aggregate;
+            self.budget.payload_work += results.work.payload;
         }
         let span = self.continuation.ctx.span_at(
             self.continuation.program.program(),
@@ -455,7 +453,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             Trap::HostCallAbandoned,
         );
         self.vm.memory.rollback(self.checkpoint);
-        self.continuation.ctx.contract_scratch.clear_proofs();
+        self.budget.frames -= self.continuation.ctx.frames.len();
+        self.budget.contract_scratch.clear_proofs();
         self.continuation.outputs.clear();
         self.continuation.control.pending_host = None;
         // Install the terminal state before invoking observers, as in normal finish.
@@ -478,7 +477,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
 }
 
 fn finish_pending<P: TracePolicy>(
-    ctx: &mut ExecutionContext,
+    ctx: &mut Registers,
+    budget: &mut Budget,
     prepared: &VerifiedProgram,
     root_args: &[Value],
     heap: &AggHeap,
@@ -526,6 +526,7 @@ fn finish_pending<P: TracePolicy>(
     })?;
     admit_return(
         ctx,
+        budget,
         HostReturnSite {
             location: site.pending.location,
             span: site.span,

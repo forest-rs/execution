@@ -28,7 +28,7 @@ pub(super) struct Continuation<'a> {
     pub(super) program: ProgramRef<'a>,
     pub(super) entry: FuncId,
     pub(super) args: Cow<'a, [Value]>,
-    pub(super) ctx: ExecutionContext,
+    pub(super) ctx: Registers,
     pub(super) control: ExecutionControl,
     pub(super) trace: TraceCtx<'a>,
     pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
@@ -49,7 +49,7 @@ impl<'a> Continuation<'a> {
             program,
             entry,
             args,
-            ctx: ExecutionContext::new(),
+            ctx: Registers::default(),
             control: ExecutionControl::start(options.yield_host_calls),
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access,
@@ -63,8 +63,10 @@ impl<'a> Continuation<'a> {
     pub(super) fn initialize<H: Host>(
         &mut self,
         vm: &mut Vm<H>,
+        budget: &mut Budget,
         work: DataWork,
     ) -> Result<(), TrapInfo> {
+        budget.select(&self.control);
         self.trace
             .run_start(self.program.program(), self.entry, self.args.len());
         self.trace
@@ -75,11 +77,13 @@ impl<'a> Continuation<'a> {
                 limits: &vm.limits,
                 work,
             });
-        work.check(&vm.limits)
+        budget
+            .charge_import(work)
             .map_err(|trap| self.ctx.trap(self.entry, 0, None, trap))?;
         if self.trace.active() {
             vm.initialize_run::<WithTracePolicy>(
                 &mut self.ctx,
+                budget,
                 &self.program,
                 self.entry,
                 &self.args,
@@ -88,14 +92,13 @@ impl<'a> Continuation<'a> {
         } else {
             vm.initialize_run::<NoTracePolicy>(
                 &mut self.ctx,
+                budget,
                 &self.program,
                 self.entry,
                 &self.args,
                 &mut self.trace,
             )?;
         }
-        self.ctx.aggregate_work = work.aggregate;
-        self.ctx.payload_work = work.payload;
         Ok(())
     }
 }
@@ -106,8 +109,10 @@ impl Continuation<'_> {
     pub(super) fn advance<H: Host>(
         &mut self,
         vm: &mut Vm<H>,
+        budget: &mut Budget,
         quantum: u64,
     ) -> Result<Progress, TrapInfo> {
+        budget.select(&self.control);
         self.control.remaining = quantum;
         let access = self
             .access
@@ -116,6 +121,7 @@ impl Continuation<'_> {
         if self.trace.active() {
             vm.execute_loop::<WithTracePolicy, true>(
                 &mut self.ctx,
+                budget,
                 &self.program,
                 self.entry,
                 &self.args,
@@ -128,6 +134,7 @@ impl Continuation<'_> {
         } else {
             vm.execute_loop::<NoTracePolicy, true>(
                 &mut self.ctx,
+                budget,
                 &self.program,
                 self.entry,
                 &self.args,
@@ -182,31 +189,38 @@ mod tests {
         Arc::new(builder.build_verified().unwrap())
     }
 
-    fn start(vm: &mut Vm<NoHost>, program: Arc<VerifiedProgram>) -> Continuation<'static> {
+    fn start(
+        vm: &mut Vm<NoHost>,
+        budget: &mut Budget,
+        program: Arc<VerifiedProgram>,
+    ) -> Continuation<'static> {
         let mut continuation = Continuation::new(
             ProgramRef::Owned(program),
             FuncId(0),
             Cow::Owned(vec![]),
             InvocationOptions::default().yield_host_calls(),
         );
-        continuation.initialize(vm, DataWork::default()).unwrap();
+        continuation
+            .initialize(vm, budget, DataWork::default())
+            .unwrap();
         continuation
     }
 
     #[test]
     fn returning_control_does_not_compact_another_suspended_stacks_values() {
         let mut vm = Vm::new(NoHost, Limits::default());
+        let mut budget = Budget::new(&vm.limits);
         let checkpoint = vm.memory.checkpoint();
-        let mut parent = start(&mut vm, program("parent"));
+        let mut parent = start(&mut vm, &mut budget, program("parent"));
         assert!(matches!(
-            parent.advance(&mut vm, 3),
+            parent.advance(&mut vm, &mut budget, 3),
             Ok(Progress::Suspended)
         ));
         assert_eq!(vm.aggregates().len_u32(), 2);
 
-        let mut child = start(&mut vm, program("child"));
+        let mut child = start(&mut vm, &mut budget, program("child"));
         assert!(matches!(
-            child.advance(&mut vm, 10),
+            child.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
         assert_eq!(vm.aggregates().len_u32(), 4);
@@ -216,7 +230,7 @@ mod tests {
             Value::Str("parent".into())
         );
         assert!(matches!(
-            parent.advance(&mut vm, 10),
+            parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
         assert_eq!(parent.outputs, [Value::Agg(AggHandle(1))]);
@@ -240,19 +254,20 @@ mod tests {
     #[test]
     fn suspended_payload_sources_keep_their_exact_code_owner() {
         let mut vm = Vm::new(NoHost, Limits::default());
-        let mut parent = start(&mut vm, program("old revision"));
+        let mut budget = Budget::new(&vm.limits);
+        let mut parent = start(&mut vm, &mut budget, program("old revision"));
         // The register holds a borrowed constant source, not a materialized payload copy.
         assert!(matches!(
-            parent.advance(&mut vm, 1),
+            parent.advance(&mut vm, &mut budget, 1),
             Ok(Progress::Suspended)
         ));
-        let mut replacement = start(&mut vm, program("new revision"));
+        let mut replacement = start(&mut vm, &mut budget, program("new revision"));
         assert!(matches!(
-            replacement.advance(&mut vm, 10),
+            replacement.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
         assert!(matches!(
-            parent.advance(&mut vm, 10),
+            parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
         for (continuation, expected) in [(&parent, "old revision"), (&replacement, "new revision")]
@@ -292,25 +307,30 @@ mod tests {
         builder.define_function(entry, body).unwrap();
 
         let mut vm = Vm::new(NoHost, Limits::default());
+        let mut budget = Budget::new(&vm.limits);
         let checkpoint = vm.memory.checkpoint();
-        let mut parent = start(&mut vm, Arc::new(builder.build_verified().unwrap()));
+        let mut parent = start(
+            &mut vm,
+            &mut budget,
+            Arc::new(builder.build_verified().unwrap()),
+        );
         assert!(matches!(
-            parent.advance(&mut vm, 10),
+            parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::AwaitingHost)
         ));
-        let mut child = start(&mut vm, program("shared result"));
+        let mut child = start(&mut vm, &mut budget, program("shared result"));
         assert!(matches!(
-            child.advance(&mut vm, 10),
+            child.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
         let child_output = child.outputs[0].clone();
-        Running::new(&mut vm, &mut parent, checkpoint)
+        Running::new(&mut vm, &mut parent, &mut budget, checkpoint)
             .pending_host_call()
             .unwrap()
             .complete(&mut [child_output.clone()], Ok(0))
             .unwrap();
         assert!(matches!(
-            parent.advance(&mut vm, 10),
+            parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
         ));
         assert_eq!(parent.outputs, [child_output]);
@@ -319,5 +339,205 @@ mod tests {
             2,
             "no import or intermediate compaction"
         );
+    }
+
+    #[test]
+    fn independent_stacks_share_instruction_and_data_limits() {
+        for limits in [
+            Limits {
+                fuel: 7,
+                ..Limits::default()
+            },
+            Limits {
+                max_aggregate_work: 5,
+                ..Limits::default()
+            },
+            Limits {
+                max_payload_work: 5,
+                ..Limits::default()
+            },
+        ] {
+            let mut budget = Budget::new(&limits);
+            let mut vm = Vm::new(NoHost, limits.clone());
+            let mut first = start(&mut vm, &mut budget, program("one"));
+            assert!(matches!(
+                first.advance(&mut vm, &mut budget, 10),
+                Ok(Progress::Returned(_))
+            ));
+            let mut second = start(&mut vm, &mut budget, program("two"));
+            let error = match second.advance(&mut vm, &mut budget, 10) {
+                Err(error) => error,
+                Ok(_) => panic!("the second stack replenished the shared limit"),
+            };
+            if limits.fuel == 7 {
+                assert!(matches!(error.trap, Trap::FuelExceeded));
+                assert_eq!(budget.fuel, 0);
+                assert_eq!(budget.aggregate_work, 6);
+                assert_eq!(budget.payload_work, 6);
+            } else if limits.max_aggregate_work == 5 {
+                assert!(matches!(
+                    error.trap,
+                    Trap::AggregateWorkExceeded {
+                        used: 4,
+                        requested: 2,
+                        ..
+                    }
+                ));
+                assert_eq!(budget.aggregate_work, 4);
+            } else {
+                assert!(matches!(
+                    error.trap,
+                    Trap::PayloadWorkExceeded {
+                        used: 3,
+                        requested: 3,
+                        ..
+                    }
+                ));
+                assert_eq!(budget.payload_work, 3);
+            }
+            let Value::Agg(handle) = first.outputs[0] else {
+                panic!("expected tuple")
+            };
+            assert_eq!(
+                vm.aggregates().tuple_get(handle, 0).unwrap(),
+                Value::Str("one".into())
+            );
+        }
+    }
+
+    #[test]
+    fn suspended_stacks_count_toward_the_shared_call_depth() {
+        let mut vm = Vm::new(
+            NoHost,
+            Limits {
+                max_call_depth: 1,
+                ..Limits::default()
+            },
+        );
+        let mut budget = Budget::new(&vm.limits);
+        let mut first = start(&mut vm, &mut budget, program("first"));
+        assert!(matches!(
+            first.advance(&mut vm, &mut budget, 1),
+            Ok(Progress::Suspended)
+        ));
+        let mut second = Continuation::new(
+            ProgramRef::Owned(program("second")),
+            FuncId(0),
+            Cow::Owned(vec![]),
+            InvocationOptions::default(),
+        );
+        let error = second
+            .initialize(&mut vm, &mut budget, DataWork::default())
+            .unwrap_err();
+        assert!(matches!(error.trap, Trap::CallDepthExceeded));
+        assert_eq!(budget.frames, 1);
+        assert!(matches!(
+            first.advance(&mut vm, &mut budget, 10),
+            Ok(Progress::Returned(_))
+        ));
+    }
+
+    fn checked_identity(kind: ValueType) -> Arc<VerifiedProgram> {
+        use crate::asm::FunctionAbi;
+        let mut builder = ProgramBuilder::new();
+        let member = builder.contract(Contract::Kind(kind)).unwrap();
+        let tuple = builder.contract(Contract::Tuple(&[Some(member)])).unwrap();
+        let function = builder
+            .declare_function(FunctionAbi {
+                args: vec![tuple.into()],
+                rets: vec![tuple.into()],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(function).unwrap();
+        body.ret(0, &[1]);
+        builder.define_function(function, body).unwrap();
+        Arc::new(builder.build_verified().unwrap())
+    }
+
+    #[test]
+    fn changing_code_discards_local_proofs_without_resetting_contract_work() {
+        for limit in [3, 100] {
+            let mut vm = Vm::new(
+                NoHost,
+                Limits {
+                    max_contract_work: limit,
+                    ..Limits::default()
+                },
+            );
+            let mut budget = Budget::new(&vm.limits);
+            let tuple = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+            let mut first = Continuation::new(
+                ProgramRef::Owned(checked_identity(ValueType::I64)),
+                FuncId(0),
+                Cow::Owned(vec![Value::Agg(tuple)]),
+                InvocationOptions::default(),
+            );
+            first
+                .initialize(&mut vm, &mut budget, DataWork::default())
+                .unwrap();
+            let before = budget.contract_scratch.work_used();
+            assert_eq!(before, 3);
+            // The contract and heap IDs collide, but the second program requires bool.
+            let mut second = Continuation::new(
+                ProgramRef::Owned(checked_identity(ValueType::Bool)),
+                FuncId(0),
+                Cow::Owned(vec![Value::Agg(tuple)]),
+                InvocationOptions::default(),
+            );
+            let error = second
+                .initialize(&mut vm, &mut budget, DataWork::default())
+                .unwrap_err();
+            if limit == 3 {
+                assert!(matches!(error.trap, Trap::ContractWorkExceeded { .. }));
+                assert_eq!(budget.contract_scratch.work_used(), before);
+            } else {
+                assert!(matches!(error.trap, Trap::ContractMismatch { .. }));
+                assert!(budget.contract_scratch.work_used() > before);
+            }
+        }
+    }
+
+    #[test]
+    fn independent_stacks_share_host_admission_limits() {
+        use crate::host::HostSig;
+        let mut builder = ProgramBuilder::new();
+        let pause = builder.host_sig_for(
+            "pause",
+            HostSig {
+                args: vec![],
+                rets: vec![],
+            },
+        );
+        let entry = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(entry).unwrap();
+        let [] = builder.emit_call(&mut body, pause, &[]).unwrap();
+        body.ret(0, &[]);
+        builder.define_function(entry, body).unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+        let mut vm = Vm::new(
+            NoHost,
+            Limits {
+                max_host_calls: 1,
+                ..Limits::default()
+            },
+        );
+        let mut budget = Budget::new(&vm.limits);
+        let mut first = start(&mut vm, &mut budget, Arc::clone(&program));
+        let mut second = start(&mut vm, &mut budget, program);
+        assert!(matches!(
+            first.advance(&mut vm, &mut budget, 1),
+            Ok(Progress::AwaitingHost)
+        ));
+        let error = match second.advance(&mut vm, &mut budget, 1) {
+            Err(error) => error,
+            Ok(_) => panic!("host limit was replenished"),
+        };
+        assert!(matches!(error.trap, Trap::HostCallLimitExceeded));
+        assert_eq!(budget.host_calls, 1);
     }
 }

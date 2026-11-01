@@ -32,7 +32,9 @@ use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
 mod aggregate_tests;
+mod budget;
 mod continuation;
+use budget::Budget;
 mod host_call;
 mod inspection;
 mod invocation;
@@ -455,20 +457,14 @@ struct ReturnTo {
 /// reuse allocations across runs and is a stepping stone towards re-entrant execution.
 #[derive(Debug, Default)]
 pub struct ExecutionContext {
-    /// Remaining instruction budget for the current run.
-    fuel: u64,
-    /// Number of host calls performed so far in the current run.
-    host_calls: u64,
-    /// Successfully charged logical byte/string work and the current run's limit.
-    payload_work: u64,
-    payload_limit: u64,
-    /// Successfully charged guest aggregate nodes/fields and the current run's limit.
-    aggregate_work: u64,
-    aggregate_limit: u64,
+    registers: Registers,
+    budget: Budget,
+}
 
+#[derive(Debug, Default)]
+struct Registers {
     /// Arena backing bytes/strings and other out-of-line temporaries.
     arena: ValueArena,
-    contract_scratch: ContractScratch,
 
     // Split register file by class (SoA).
     /// Boolean registers.
@@ -514,6 +510,13 @@ impl ExecutionContext {
     /// between runs when an idle embedding should release payloads from its last invocation;
     /// the next run also clears the context automatically.
     pub fn clear(&mut self) {
+        self.registers.clear();
+        self.budget.clear();
+    }
+}
+
+impl Registers {
+    fn clear(&mut self) {
         self.frames.clear();
         self.bools.clear();
         self.i64s.clear();
@@ -527,66 +530,6 @@ impl ExecutionContext {
         self.funcs.clear();
         self.closures.clear();
         self.arena.clear();
-        self.contract_scratch.reset();
-
-        self.fuel = 0;
-        self.host_calls = 0;
-        self.payload_work = 0;
-        self.payload_limit = 0;
-        self.aggregate_work = 0;
-        self.aggregate_limit = 0;
-    }
-
-    fn reset(&mut self, fuel: u64, payload_limit: u64) {
-        self.clear();
-        self.fuel = fuel;
-        self.payload_limit = payload_limit;
-    }
-
-    #[inline]
-    fn host_results(&self) -> crate::host::HostResults {
-        crate::host::HostResults::new(
-            DataWork {
-                aggregate: self.aggregate_work,
-                payload: self.payload_work,
-            },
-            DataWork {
-                aggregate: self.aggregate_limit,
-                payload: self.payload_limit,
-            },
-        )
-    }
-
-    fn charge_payload_bytes(&mut self, len: usize, factor: u64) -> Result<(), Trap> {
-        let requested = u64::try_from(len)
-            .ok()
-            .and_then(|len| len.checked_mul(factor))
-            .ok_or(Trap::PayloadSizeOverflow)?;
-        if requested > self.payload_limit - self.payload_work {
-            return Err(Trap::PayloadWorkExceeded {
-                limit: self.payload_limit,
-                used: self.payload_work,
-                requested,
-            });
-        }
-        self.payload_work += requested;
-        Ok(())
-    }
-
-    fn charge_aggregate(&mut self, fields: usize) -> Result<(), Trap> {
-        let requested = u64::try_from(fields)
-            .ok()
-            .and_then(|count| count.checked_add(1))
-            .ok_or(Trap::AggregateSizeOverflow)?;
-        if requested > self.aggregate_limit - self.aggregate_work {
-            return Err(Trap::AggregateWorkExceeded {
-                limit: self.aggregate_limit,
-                used: self.aggregate_work,
-                requested,
-            });
-        }
-        self.aggregate_work += requested;
-        Ok(())
     }
 }
 
@@ -919,7 +862,7 @@ trait TracePolicy {
         _register_state: &mut Self::RegisterState,
         _trace: &mut TraceCtx<'_>,
         _program: &Program,
-        _ctx: &ExecutionContext,
+        _ctx: &Registers,
         _func: FuncId,
         _pc: u32,
         _base: RegBase,
@@ -1075,7 +1018,7 @@ impl TracePolicy for WithTracePolicy {
         register_state: &mut Self::RegisterState,
         trace: &mut TraceCtx<'_>,
         program: &Program,
-        ctx: &ExecutionContext,
+        ctx: &Registers,
         func: FuncId,
         pc: u32,
         base: RegBase,
@@ -1241,7 +1184,7 @@ impl<H: Host> Vm<H> {
     /// [`Self::run`] delegates to this execution path. Entry validation follows its rules.
     pub fn run_with_ctx(
         &mut self,
-        ctx: &mut ExecutionContext,
+        scratch: &mut ExecutionContext,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
@@ -1250,6 +1193,11 @@ impl<H: Host> Vm<H> {
         trace: Option<&mut dyn TraceSink>,
         access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
+        let ExecutionContext {
+            registers: ctx,
+            budget,
+        } = scratch;
+        budget.reset(&self.limits);
         let original_len = outputs.len();
         let checkpoint = self.memory.checkpoint();
         let program_ref = program.program();
@@ -1269,11 +1217,11 @@ impl<H: Host> Vm<H> {
                 work: DataWork::default(),
             });
             self.run_body::<WithTracePolicy>(
-                ctx, program, entry, args, outputs, checkpoint, &mut trace, access,
+                ctx, budget, program, entry, args, outputs, checkpoint, &mut trace, access,
             )
         } else {
             self.run_body::<NoTracePolicy>(
-                ctx, program, entry, args, outputs, checkpoint, &mut trace, access,
+                ctx, budget, program, entry, args, outputs, checkpoint, &mut trace, access,
             )
         };
 
@@ -1282,7 +1230,8 @@ impl<H: Host> Vm<H> {
             Err(e) => TraceOutcome::Trap(e),
         };
         if result.is_err() {
-            ctx.contract_scratch.clear_proofs();
+            budget.frames -= ctx.frames.len();
+            budget.contract_scratch.clear_proofs();
             self.memory.rollback(checkpoint);
             outputs.truncate(original_len);
         }
@@ -1295,7 +1244,8 @@ impl<H: Host> Vm<H> {
     #[inline]
     fn run_body<P: TracePolicy>(
         &mut self,
-        ctx: &mut ExecutionContext,
+        ctx: &mut Registers,
+        budget: &mut Budget,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
@@ -1304,11 +1254,12 @@ impl<H: Host> Vm<H> {
         trace: &mut TraceCtx<'_>,
         access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        self.initialize_run::<P>(ctx, program, entry, args, trace)?;
+        self.initialize_run::<P>(ctx, budget, program, entry, args, trace)?;
         let mut register_state = P::RegisterState::default();
         let first_output = outputs.len();
         let progress = self.execute_loop::<P, false>(
             ctx,
+            budget,
             program,
             entry,
             args,
@@ -1323,6 +1274,7 @@ impl<H: Host> Vm<H> {
         };
         self.commit_return::<P>(
             ctx,
+            budget,
             program.program(),
             checkpoint,
             &mut outputs[first_output..],
@@ -1334,7 +1286,8 @@ impl<H: Host> Vm<H> {
     #[inline]
     fn initialize_run<P: TracePolicy>(
         &mut self,
-        ctx: &mut ExecutionContext,
+        ctx: &mut Registers,
+        budget: &mut Budget,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
@@ -1342,8 +1295,7 @@ impl<H: Host> Vm<H> {
     ) -> Result<(), TrapInfo> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
-        ctx.reset(self.limits.fuel, self.limits.max_payload_work);
-        ctx.aggregate_limit = self.limits.max_aggregate_work;
+        ctx.clear();
 
         let entry_fn = program_ref
             .functions
@@ -1355,7 +1307,7 @@ impl<H: Host> Vm<H> {
         let entry_vf = program
             .verified(entry)
             .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
-        if max_call_depth == 0 {
+        if budget.frames >= max_call_depth {
             return Err(ctx.trap(
                 entry,
                 0,
@@ -1366,8 +1318,9 @@ impl<H: Host> Vm<H> {
         let entry_base = ctx.alloc_frame(entry_vf);
         ctx.init_args(entry_base, entry_vf, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
-        self.check_arg_contracts(ctx, program_ref, entry, entry_vf, entry_base)
+        self.check_arg_contracts(ctx, budget, program_ref, entry, entry_vf, entry_base)
             .map_err(|t| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), t))?;
+        budget.frames += 1;
         ctx.frames.push(Frame {
             func: entry,
             pc: entry_vf.pc_at_ix(0).unwrap_or(0),
@@ -1392,7 +1345,8 @@ impl<H: Host> Vm<H> {
 
     fn execute_loop<P: TracePolicy, const YIELD: bool>(
         &mut self,
-        ctx: &mut ExecutionContext,
+        ctx: &mut Registers,
+        budget: &mut Budget,
         program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
@@ -1415,7 +1369,7 @@ impl<H: Host> Vm<H> {
                 }
                 control.remaining -= 1;
             }
-            if ctx.fuel == 0 {
+            if budget.fuel == 0 {
                 return Err(ctx.trap(
                     ctx.cur_func(),
                     ctx.cur_pc(),
@@ -1423,7 +1377,7 @@ impl<H: Host> Vm<H> {
                     Trap::FuelExceeded,
                 ));
             }
-            ctx.fuel -= 1;
+            budget.fuel -= 1;
 
             let frame_index = ctx
                 .frames
@@ -2085,7 +2039,7 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if ctx.frames.len() >= max_call_depth {
+                    if budget.frames >= max_call_depth {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
                     }
 
@@ -2111,9 +2065,17 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(ctx, program_ref, *callee, callee_vf, callee_base)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    self.check_arg_contracts(
+                        ctx,
+                        budget,
+                        program_ref,
+                        *callee,
+                        callee_vf,
+                        callee_base,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
+                    budget.frames += 1;
                     ctx.frames.push(Frame {
                         func: *callee,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
@@ -2149,6 +2111,7 @@ impl<H: Host> Vm<H> {
                         invocation::callback::return_to_host::<H, P>(
                             self,
                             ctx,
+                            budget,
                             program,
                             root_args,
                             control,
@@ -2166,7 +2129,7 @@ impl<H: Host> Vm<H> {
                         outputs.reserve(rets.len());
                         for &r in rets {
                             outputs.push(
-                                ctx.materialize_vreg(base, r, sources)
+                                ctx.materialize_vreg(budget, base, r, sources)
                                     .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                             );
                         }
@@ -2175,8 +2138,16 @@ impl<H: Host> Vm<H> {
                             values: &outputs[output_start..],
                             aggregates: self.memory.aggs(),
                         });
-                        self.check_result_contracts(ctx, program_ref, func_id, vf, base, rets)
-                            .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
+                        self.check_result_contracts(
+                            ctx,
+                            budget,
+                            program_ref,
+                            func_id,
+                            vf,
+                            base,
+                            rets,
+                        )
+                        .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
                         return Ok(Progress::Returned(ReturnSite {
                             location: TraceLocation { func: func_id, pc },
                             span: span_id,
@@ -2185,6 +2156,7 @@ impl<H: Host> Vm<H> {
 
                     self.check_result_contracts(
                         ctx,
+                        budget,
                         program_ref,
                         func_id,
                         vf,
@@ -2197,6 +2169,7 @@ impl<H: Host> Vm<H> {
                         .pop()
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
+                    budget.frames -= 1;
                     if YIELD {
                         control.leave();
                     }
@@ -2241,10 +2214,10 @@ impl<H: Host> Vm<H> {
                     args,
                     rets,
                 } => {
-                    if ctx.host_calls >= max_host_calls {
+                    if budget.host_calls >= max_host_calls {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::HostCallLimitExceeded));
                     }
-                    ctx.host_calls += 1;
+                    budget.host_calls += 1;
 
                     let hs = program_ref
                         .host_sig(*host_sig)
@@ -2323,7 +2296,7 @@ impl<H: Host> Vm<H> {
                         fallback_rets = vec![Value::Unit; ret_types.len()];
                         &mut fallback_rets
                     };
-                    let mut host_results = ctx.host_results();
+                    let mut host_results = budget.host_results();
                     let access_for_call = access
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
@@ -2340,8 +2313,8 @@ impl<H: Host> Vm<H> {
                     let work = host_results.work;
                     let created =
                         host_results.adopt(self.memory.aggs_mut(), ret_slots, host_result.is_ok());
-                    ctx.aggregate_work += work.aggregate;
-                    ctx.payload_work += work.payload;
+                    budget.aggregate_work += work.aggregate;
+                    budget.payload_work += work.payload;
                     if P::values_enabled(trace) {
                         let sources = ValueSources::new(program_ref, root_args, self.memory.aggs());
                         let observed_args: Vec<_> = args
@@ -2387,6 +2360,7 @@ impl<H: Host> Vm<H> {
                         .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     host_call::admit_return(
                         ctx,
+                        budget,
                         host_call::HostReturnSite {
                             location: TraceLocation { func: func_id, pc },
                             span: span_id,
@@ -2418,7 +2392,7 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if ctx.frames.len() >= max_call_depth {
+                    if budget.frames >= max_call_depth {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
                     }
 
@@ -2454,9 +2428,17 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(ctx, program_ref, callee_func, callee_vf, callee_base)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    self.check_arg_contracts(
+                        ctx,
+                        budget,
+                        program_ref,
+                        callee_func,
+                        callee_vf,
+                        callee_base,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
+                    budget.frames += 1;
                     ctx.frames.push(Frame {
                         func: callee_func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
@@ -2492,7 +2474,7 @@ impl<H: Host> Vm<H> {
                     args,
                     rets: dst_rets,
                 } => {
-                    if ctx.frames.len() >= max_call_depth {
+                    if budget.frames >= max_call_depth {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
                     }
 
@@ -2534,8 +2516,15 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(ctx, program_ref, callee.func, callee_vf, callee_base)
-                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    self.check_arg_contracts(
+                        ctx,
+                        budget,
+                        program_ref,
+                        callee.func,
+                        callee_vf,
+                        callee_base,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     // Even an unrefined environment must resolve before entering a closure body.
                     let environment_contract =
@@ -2544,7 +2533,8 @@ impl<H: Host> Vm<H> {
                         program_ref.contracts.get(environment_contract),
                         Some(Contract::Kind(_))
                     ) {
-                        ctx.contract_scratch
+                        budget
+                            .contract_scratch
                             .check_value(
                                 program_ref,
                                 self.memory.aggs(),
@@ -2569,6 +2559,7 @@ impl<H: Host> Vm<H> {
                             })?;
                     }
 
+                    budget.frames += 1;
                     ctx.frames.push(Frame {
                         func: callee.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
@@ -2622,7 +2613,8 @@ impl<H: Host> Vm<H> {
                             },
                         ));
                     }
-                    ctx.contract_scratch
+                    budget
+                        .contract_scratch
                         .check_value(
                             program_ref,
                             self.memory.aggs(),
@@ -2651,12 +2643,13 @@ impl<H: Host> Vm<H> {
 
                 ExecInstr::TupleNew { dst, values } => {
                     let values = vf.vregs(*values);
-                    ctx.charge_aggregate(values.len())
+                    budget
+                        .charge_aggregate(values.len())
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            ctx.materialize_vreg(base, r, sources)
+                            ctx.materialize_vreg(budget, base, r, sources)
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -2706,12 +2699,13 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::ArityMismatch));
                     }
 
-                    ctx.charge_aggregate(values.len())
+                    budget
+                        .charge_aggregate(values.len())
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            ctx.materialize_vreg(base, r, sources)
+                            ctx.materialize_vreg(budget, base, r, sources)
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -2766,12 +2760,13 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::ArityMismatch));
                     }
 
-                    ctx.charge_aggregate(values.len())
+                    budget
+                        .charge_aggregate(values.len())
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let mut vals = Vec::with_capacity(values.len());
                     for &r in values {
                         vals.push(
-                            ctx.materialize_vreg(base, r, sources)
+                            ctx.materialize_vreg(budget, base, r, sources)
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
@@ -3011,7 +3006,8 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         if a.len() == b.len() { a.len() } else { 0 }
                     };
-                    ctx.charge_payload_bytes(work, 1)
+                    budget
+                        .charge_payload_bytes(work, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let a = ctx
                         .read_bytes(a, base, sources)
@@ -3032,7 +3028,8 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         if a.len() == b.len() { a.len() } else { 0 }
                     };
-                    ctx.charge_payload_bytes(work, 1)
+                    budget
+                        .charge_payload_bytes(work, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let a = ctx
                         .read_str(a, base, sources)
@@ -3058,7 +3055,8 @@ impl<H: Host> Vm<H> {
                                 ctx.trap(func_id, pc, span_id, Trap::PayloadSizeOverflow)
                             })?
                     };
-                    ctx.charge_payload_bytes(len, 1)
+                    budget
+                        .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let a = ctx
@@ -3091,7 +3089,8 @@ impl<H: Host> Vm<H> {
                                 ctx.trap(func_id, pc, span_id, Trap::PayloadSizeOverflow)
                             })?
                     };
-                    ctx.charge_payload_bytes(len, 1)
+                    budget
+                        .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let a = ctx
@@ -3145,7 +3144,8 @@ impl<H: Host> Vm<H> {
                         .get(start..end)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::IndexOutOfBounds))?
                         .len();
-                    ctx.charge_payload_bytes(len, 1)
+                    budget
+                        .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = ctx
                         .read_bytes(bytes, base, sources)
@@ -3169,7 +3169,8 @@ impl<H: Host> Vm<H> {
                             return Err(ctx.trap(func_id, pc, span_id, Trap::StrNotCharBoundary));
                         }
                     }
-                    ctx.charge_payload_bytes(end - start, 1)
+                    budget
+                        .charge_payload_bytes(end - start, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = String::from(
                         &ctx.read_str(s, base, sources)
@@ -3185,7 +3186,8 @@ impl<H: Host> Vm<H> {
                         .read_str(s, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
                         .len();
-                    ctx.charge_payload_bytes(len, 1)
+                    budget
+                        .charge_payload_bytes(len, 1)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let s = ctx
@@ -3202,7 +3204,8 @@ impl<H: Host> Vm<H> {
                         .read_bytes(bytes, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
                         .len();
-                    ctx.charge_payload_bytes(len, 2)
+                    budget
+                        .charge_payload_bytes(len, 2)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     let out = {
                         let bytes = ctx
@@ -3240,7 +3243,8 @@ impl<H: Host> Vm<H> {
 
     fn commit_return<P: TracePolicy>(
         &mut self,
-        ctx: &mut ExecutionContext,
+        ctx: &mut Registers,
+        budget: &mut Budget,
         program: &Program,
         checkpoint: Checkpoint,
         outputs: &mut [Value],
@@ -3248,7 +3252,7 @@ impl<H: Host> Vm<H> {
         site: ReturnSite,
     ) -> Result<(), TrapInfo> {
         // Proof keys use precommit handles and must not survive compaction.
-        ctx.contract_scratch.clear_proofs();
+        budget.contract_scratch.clear_proofs();
         self.memory.commit(checkpoint, outputs).map_err(|error| {
             ctx.trap(
                 site.location.func,
@@ -3266,10 +3270,11 @@ impl<H: Host> Vm<H> {
             site.span,
         );
         P::instr_end(trace, program, None);
+        budget.frames -= 1;
         Ok(())
     }
 
-    fn contract_value(ctx: &ExecutionContext, base: RegBase, register: VReg) -> Value {
+    fn contract_value(ctx: &Registers, base: RegBase, register: VReg) -> Value {
         match register {
             VReg::Agg(reg) => Value::Agg(ctx.read_agg_handle(base, reg)),
             VReg::Func(reg) => Value::Func(ctx.read_func(base, reg)),
@@ -3280,7 +3285,8 @@ impl<H: Host> Vm<H> {
 
     fn check_arg_contracts(
         &self,
-        ctx: &mut ExecutionContext,
+        ctx: &mut Registers,
+        budget: &mut Budget,
         program: &Program,
         callee: FuncId,
         vf: &ExecFunc,
@@ -3289,7 +3295,8 @@ impl<H: Host> Vm<H> {
         for check in &vf.contract_checks[..vf.arg_check_count as usize] {
             let value =
                 Self::contract_value(ctx, base, vf.reg_layout.arg_regs[check.index as usize]);
-            ctx.contract_scratch
+            budget
+                .contract_scratch
                 .check_value(
                     program,
                     self.memory.aggs(),
@@ -3313,7 +3320,8 @@ impl<H: Host> Vm<H> {
 
     fn check_result_contracts(
         &self,
-        ctx: &mut ExecutionContext,
+        ctx: &mut Registers,
+        budget: &mut Budget,
         program: &Program,
         function: FuncId,
         vf: &ExecFunc,
@@ -3322,7 +3330,8 @@ impl<H: Host> Vm<H> {
     ) -> Result<(), Trap> {
         for check in &vf.contract_checks[vf.arg_check_count as usize..] {
             let value = Self::contract_value(ctx, base, rets[check.index as usize]);
-            ctx.contract_scratch
+            budget
+                .contract_scratch
                 .check_value(
                     program,
                     self.memory.aggs(),
@@ -3383,7 +3392,7 @@ impl<H: Host> Vm<H> {
     }
 }
 
-impl ExecutionContext {
+impl Registers {
     fn alloc_frame(&mut self, vf: &ExecFunc) -> RegBase {
         let counts = vf.reg_layout.counts;
         let base = RegBase {
@@ -3542,6 +3551,7 @@ impl ExecutionContext {
 
     fn materialize_vreg(
         &mut self,
+        budget: &mut Budget,
         base: RegBase,
         v: VReg,
         sources: ValueSources<'_>,
@@ -3560,7 +3570,7 @@ impl ExecutionContext {
                     .bytes(handle, sources)
                     .ok_or(Trap::InvalidPc)?
                     .len();
-                self.charge_payload_bytes(len, 1)?;
+                budget.charge_payload_bytes(len, 1)?;
                 Value::Bytes(
                     self.arena
                         .bytes(handle, sources)
@@ -3575,7 +3585,7 @@ impl ExecutionContext {
                     .str(handle, sources)
                     .ok_or(Trap::InvalidPc)?
                     .len();
-                self.charge_payload_bytes(len, 1)?;
+                budget.charge_payload_bytes(len, 1)?;
                 Value::Str(String::from(
                     self.arena.str(handle, sources).ok_or(Trap::InvalidPc)?,
                 ))
@@ -4091,20 +4101,23 @@ mod tests {
     #[test]
     fn clearing_context_releases_payloads_and_preserves_register_capacity() {
         let mut ctx = ExecutionContext::new();
-        let bytes = ctx.arena.alloc_bytes(vec![7; 8192]);
-        let text = ctx.arena.alloc_str(String::from("computed"));
-        ctx.i64s.extend([1, 2, 3]);
-        let capacity = ctx.i64s.capacity();
+        let bytes = ctx.registers.arena.alloc_bytes(vec![7; 8192]);
+        let text = ctx.registers.arena.alloc_str(String::from("computed"));
+        ctx.registers.i64s.extend([1, 2, 3]);
+        let capacity = ctx.registers.i64s.capacity();
         let program = ProgramBuilder::new().build();
         let heap = AggHeap::new();
         let sources = ValueSources::new(&program, &[], &heap);
-        assert_eq!(ctx.arena.bytes(bytes, sources).unwrap().len(), 8192);
-        assert_eq!(ctx.arena.str(text, sources), Some("computed"));
+        assert_eq!(
+            ctx.registers.arena.bytes(bytes, sources).unwrap().len(),
+            8192
+        );
+        assert_eq!(ctx.registers.arena.str(text, sources), Some("computed"));
         ctx.clear();
-        assert_eq!(ctx.arena.bytes(bytes, sources), None);
-        assert_eq!(ctx.arena.str(text, sources), None);
-        assert!(ctx.i64s.is_empty());
-        assert_eq!(ctx.i64s.capacity(), capacity);
+        assert_eq!(ctx.registers.arena.bytes(bytes, sources), None);
+        assert_eq!(ctx.registers.arena.str(text, sources), None);
+        assert!(ctx.registers.i64s.is_empty());
+        assert_eq!(ctx.registers.i64s.capacity(), capacity);
     }
     use crate::asm::{Asm, FunctionSig, ProgramBuilder};
     use crate::bytecode::Instr;

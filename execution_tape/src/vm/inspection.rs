@@ -65,6 +65,10 @@ pub(super) struct ExecutionControl {
     last: u64,
 }
 impl ExecutionControl {
+    pub(super) fn owner(&self) -> &Arc<()> {
+        self.owner.as_ref().expect("resumable control identity")
+    }
+
     pub(super) fn start(yield_host_calls: bool) -> Self {
         Self {
             remaining: 0,
@@ -79,7 +83,7 @@ impl ExecutionControl {
             last: 0,
         }
     }
-    pub(super) fn paused_location(&self, ctx: &ExecutionContext, index: usize) -> TraceLocation {
+    pub(super) fn paused_location(&self, ctx: &Registers, index: usize) -> TraceLocation {
         if index + 1 < ctx.frames.len() {
             self.frames[index + 1]
                 .caller
@@ -211,7 +215,7 @@ struct FunctionInspection<'a> {
 /// still contribute object roots. Source connections use each frame's exact `location`.
 pub struct InvocationInspection<'a> {
     program: &'a VerifiedProgram,
-    ctx: &'a ExecutionContext,
+    ctx: &'a Registers,
     args: &'a [Value],
     outputs: &'a [Value],
     aggregates: &'a AggHeap,
