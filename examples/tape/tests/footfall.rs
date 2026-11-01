@@ -59,6 +59,136 @@ fn count(snapshot: &Snapshot, wanted: &str) -> usize {
         .count()
 }
 
+fn composed_capture(runtime: &Runtime, parent_context: &RegisteredContext) {
+    use execution_tape::{
+        asm::{FunctionSig, ProgramBuilder},
+        host::HostSig,
+        program::ValueType,
+        value::FuncId,
+    };
+
+    let compile = |name: &str| {
+        let mut builder = ProgramBuilder::new();
+        builder.set_program_name(name);
+        let wait = builder.host_sig_for(
+            "wait",
+            HostSig {
+                args: vec![],
+                rets: vec![ValueType::I64],
+            },
+        );
+        let entry = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(entry).unwrap();
+        let [answer] = builder.emit_call(&mut body, wait, &[]).unwrap();
+        body.ret(0, &[answer]);
+        builder.define_function(entry, body).unwrap();
+        builder.build_verified().unwrap()
+    };
+    let parent = compile("waiting parent");
+    let child = compile("independent child");
+    let child_context = RegisteredContext::new(&footfall::context!(PROGRAM = 71_u64));
+    let mut sink = FootfallSink::new(parent_context.handle())
+        .with_program_context(&child, child_context.handle());
+    let mut vm = Vm::new(
+        DemoHost {
+            context: parent_context.handle(),
+            behavior: Behavior::Success,
+        },
+        Limits::default(),
+    );
+    let instance = vm.instantiate(&child).unwrap();
+    for nonlocal in [false, true] {
+        let start = runtime.snapshot().next_cursor();
+        let mut run = vm
+            .start(
+                &parent,
+                FuncId(0),
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(sink.mask(), &mut sink),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        let home = run.inspect().frames().next().unwrap().activation;
+        run.pending_host_call()
+            .unwrap()
+            .call_instance(
+                &instance,
+                FuncId(0),
+                vec![],
+                InvocationOptions::default().yield_host_calls(),
+            )
+            .unwrap();
+        run.resume(100).unwrap();
+        if nonlocal {
+            run.pending_host_call()
+                .unwrap()
+                .return_from(&home, vec![Value::I64(42)])
+                .unwrap();
+        } else {
+            run.pending_host_call()
+                .unwrap()
+                .complete(&mut [Value::I64(42)], Ok(0))
+                .unwrap();
+            run.resume(100).unwrap();
+            let mut request = run.pending_host_call().unwrap();
+            let mut values = request.take_callback_results().unwrap();
+            request.complete(&mut values, Ok(0)).unwrap();
+        }
+        assert_eq!(
+            run.resume(100).unwrap(),
+            RunStatus::Complete,
+            "both actual return paths terminate the root"
+        );
+        drop(run);
+        let capture = runtime.snapshot_since(start);
+        balanced(&capture);
+        assert_eq!(
+            count(&capture, "execution_tape.run"),
+            2,
+            "parent and child retain separate nested runs"
+        );
+        assert_eq!(
+            count(&capture, "execution_tape.enter_instance"),
+            1,
+            "the actual entry is recorded once"
+        );
+        assert_eq!(
+            count(&capture, "execution_tape.return_across"),
+            usize::from(nonlocal),
+            "non-local transfers retain their own semantic event"
+        );
+        assert_eq!(
+            count(&capture, "execution_tape.return_instance"),
+            usize::from(!nonlocal),
+            "abandonment never fabricates a normal child return"
+        );
+        let contexts: Vec<_> = capture
+            .events()
+            .iter()
+            .filter_map(|event| match event.observation() {
+                Observation::ScopeBegin {
+                    name: "execution_tape.run",
+                    context_id,
+                    ..
+                } => Some(*context_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            contexts,
+            [parent_context.handle().id(), child_context.handle().id()],
+            "overlapping local IDs keep exact application-owned source contexts"
+        );
+    }
+}
+
 // One test owns this binary's process-wide backend and its level transitions.
 #[test]
 fn captures_control_flow_host_work_failures_masks_and_loss() {
@@ -338,6 +468,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     .unwrap();
     balanced(&runtime.snapshot_since(start));
 
+    composed_capture(runtime, &context);
+
     runtime.set_level(InstrumentationLevel::Off);
     assert_eq!(sink.mask(), TraceMask::NONE);
     runtime.set_level(InstrumentationLevel::Counters);
@@ -345,7 +477,7 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     runtime.set_level(InstrumentationLevel::Scoped);
     assert_eq!(
         sink.mask(),
-        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST
+        TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::CONTROL
     );
     runtime.set_level(InstrumentationLevel::Off);
     let start = runtime.snapshot().next_cursor();

@@ -390,6 +390,11 @@ fn a_returned_child_home_cannot_retarget_the_next_child_with_the_same_local_ordi
         expired.ordinal(),
         "display ordinals alone are deliberately insufficient"
     );
+    assert_ne!(
+        current.segment_ordinal(),
+        expired.segment_ordinal(),
+        "segment display identities are never reused within one execution"
+    );
     let work = run.work();
     let error = run
         .pending_host_call()

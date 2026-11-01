@@ -120,6 +120,7 @@ pub struct Invocation<'a, H: Host> {
     pub(super) parents: Vec<continuation::Continuation<'a>>,
     checkpoint: Checkpoint,
     budget: Budget,
+    next_segment: u64,
 }
 
 /// Temporary authority to operate one control stack in its execution transaction.
@@ -130,6 +131,7 @@ pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) parents: Option<&'request mut Vec<continuation::Continuation<'state>>>,
     checkpoint: Checkpoint,
     pub(super) budget: &'request mut Budget,
+    pub(super) next_segment: Option<&'request mut u64>,
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
@@ -141,6 +143,7 @@ impl<'a, H: Host> Invocation<'a, H> {
             self.checkpoint,
         );
         running.parents = Some(&mut self.parents);
+        running.next_segment = Some(&mut self.next_segment);
         running
     }
 }
@@ -157,6 +160,7 @@ impl<'request, 'state, H: Host> Running<'request, 'state, H> {
             vm,
             continuation,
             parents: None,
+            next_segment: None,
             budget,
             checkpoint,
         }
@@ -247,6 +251,7 @@ impl<'a, H: Host> Invocation<'a, H> {
             checkpoint,
             continuation: continuation::Continuation::new(program, entry, args, options),
             parents: Vec::new(),
+            next_segment: 1,
         };
         if let Err(error) =
             invocation

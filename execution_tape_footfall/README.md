@@ -26,6 +26,9 @@ only the child run. Use `with_program_context(&definition, context.handle())` fo
 compiled definition, with separate exported program/source pairs under those registered contexts.
 Cloned definition handles share the mapping; unmatched code uses the sink's default context.
 The sink retains mapped code, while the application owns context registration and source artifacts.
+Its recommended mask includes `TraceMask::CONTROL` for entry, return and cross-code non-local
+transfer messages, with execution-local segment and activation endpoints. Those events request
+no guest value capture. Resolve local segment ordinals inside their enclosing root run.
 
 Context labels must identify the program and revision when combining programs. Function,
 import and PC identifiers are program-local. Keep the corresponding encoded program with

@@ -620,6 +620,7 @@ impl<'a> TraceCtx<'a> {
             || self.enabled(TraceMask::HOST)
             || self.enabled(TraceMask::VALUES)
             || self.enabled(TraceMask::REGISTERS)
+            || self.enabled(TraceMask::CONTROL)
     }
 
     #[inline]
@@ -661,7 +662,7 @@ impl<'a> TraceCtx<'a> {
         program: &Program,
         event: impl FnOnce() -> crate::trace::ControlEvent<'event>,
     ) {
-        if self.enabled(TraceMask::VALUES)
+        if (self.enabled(TraceMask::CONTROL) || self.enabled(TraceMask::VALUES))
             && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             sink.control(program, event());

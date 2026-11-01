@@ -25,7 +25,7 @@ use crate::vm::{DataWork, Limits, TrapInfo};
 
 /// A real transfer between code-qualified segments of one execution.
 ///
-/// Enabled by [`TraceMask::VALUES`]. Activation identities are opaque live capabilities;
+/// Enabled by [`TraceMask::CONTROL`] or [`TraceMask::VALUES`]. Activation identities are opaque live capabilities;
 /// numeric function and instruction locations are interpreted by the accompanying code owners.
 #[derive(Clone, Copy, Debug)]
 pub enum ControlEvent<'a> {
@@ -37,6 +37,8 @@ pub enum ControlEvent<'a> {
         parent: &'a ActivationId,
         /// Identity allocated for the requested child root, including a rejected entry.
         child: &'a ActivationId,
+        /// Source store namespace, interpreting the parent's local value identities.
+        source_instance: &'a Instance,
         /// Child's code and store namespace.
         instance: &'a Instance,
         /// Program-local entry in the child definition.
@@ -143,6 +145,11 @@ impl TraceMask {
     /// executed function for this run; ordinary prepared artifacts do not retain them.
     /// Use [`TraceSink::wants_registers`] to select locations before this work is performed.
     pub const REGISTERS: Self = Self(1 << 5);
+
+    /// Observe execution-owned cross-instance control through [`TraceSink::control`], without
+    /// requesting entry, host or return values. [`Self::VALUES`] also enables these events so
+    /// value recorders cannot silently omit a control transfer.
+    pub const CONTROL: Self = Self(1 << 6);
 
     /// Returns `true` if this mask includes all bits in `other`.
     #[must_use]
@@ -528,7 +535,8 @@ pub trait TraceSink {
     fn values(&mut self, _program: &Program, _event: ValueEvent<'_>) {}
 
     /// Observes execution-owned cross-instance control, separately from a host outcome.
-    /// Enabled by [`TraceMask::VALUES`]. These commands never imply native host completion.
+    /// Enabled by [`TraceMask::CONTROL`] or [`TraceMask::VALUES`]. These commands never imply
+    /// native host completion.
     fn control(&mut self, _program: &Program, _event: ControlEvent<'_>) {}
 
     /// Called before each attempted instruction, before any of its effects.

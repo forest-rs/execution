@@ -19,8 +19,16 @@ pub struct ActivationId {
     owner: Arc<()>,
     execution: Arc<()>,
     ordinal: u64,
+    segment: u64,
 }
 impl ActivationId {
+    /// Display identity of the code segment within this execution. Segment ordinals are never
+    /// reused during that execution; the opaque execution identity remains required across runs.
+    #[must_use]
+    pub const fn segment_ordinal(&self) -> u64 {
+        self.segment
+    }
+
     /// Display ordinal local to one code segment. Compare opaque identities across segments;
     /// equal ordinals alone never identify the same activation.
     #[must_use]
@@ -45,6 +53,7 @@ impl fmt::Debug for ActivationId {
         f.debug_struct("ActivationId")
             .field("control", &Arc::as_ptr(&self.owner))
             .field("execution", &Arc::as_ptr(&self.execution))
+            .field("segment", &self.segment)
             .field("ordinal", &self.ordinal)
             .finish()
     }
@@ -67,6 +76,7 @@ pub(super) struct ExecutionControl {
     execution: Option<Arc<()>>,
     frames: Vec<Activation>,
     last: u64,
+    pub(super) segment: u64,
 }
 impl ExecutionControl {
     pub(super) fn owner(&self) -> &Arc<()> {
@@ -87,6 +97,7 @@ impl ExecutionControl {
                 caller: None,
             }],
             last: 0,
+            segment: 0,
         }
     }
     pub(super) fn activation(&self, index: usize) -> ActivationId {
@@ -94,6 +105,7 @@ impl ExecutionControl {
             owner: Arc::clone(self.owner()),
             execution: Arc::clone(self.execution.as_ref().expect("execution identity")),
             ordinal: self.frames[index].ordinal,
+            segment: self.segment,
         }
     }
 
@@ -102,6 +114,7 @@ impl ExecutionControl {
             owner: Arc::clone(self.owner()),
             execution: Arc::clone(self.execution.as_ref().expect("execution identity")),
             ordinal: 0,
+            segment: self.segment,
         }
     }
 
@@ -367,6 +380,7 @@ impl<'a> InvocationInspection<'a> {
                 owner: Arc::clone(self.control.owner.as_ref().expect("invocation identity")),
                 execution: Arc::clone(self.control.execution.as_ref().expect("execution identity")),
                 ordinal: activation.ordinal,
+                segment: self.control.segment,
             },
             location,
             caller: activation

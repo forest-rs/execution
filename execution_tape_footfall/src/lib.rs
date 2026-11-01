@@ -35,7 +35,9 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use execution_tape::program::Program;
-use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
+use execution_tape::trace::{
+    ControlEvent, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink,
+};
 use execution_tape::value::FuncId;
 use execution_tape::verifier::VerifiedProgram;
 use footfall::{Args, ContextHandle, EventDesc, ScopeDesc, ScopeGuard};
@@ -50,6 +52,9 @@ static SCOPE_TRAP: EventDesc = EventDesc::new("execution_tape.scope_trap");
 static RUN_TRAP: EventDesc = EventDesc::new("execution_tape.run_trap");
 static SCOPE_END: EventDesc = EventDesc::new("execution_tape.scope_end");
 static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
+static ENTER_INSTANCE: EventDesc = EventDesc::new("execution_tape.enter_instance");
+static RETURN_INSTANCE: EventDesc = EventDesc::new("execution_tape.return_instance");
+static RETURN_ACROSS: EventDesc = EventDesc::new("execution_tape.return_across");
 
 /// Translates VM events into Footfall observations under an application-owned context.
 ///
@@ -181,10 +186,24 @@ impl Drop for FootfallSink {
 impl TraceSink for FootfallSink {
     fn mask(&self) -> TraceMask {
         if footfall::max_level().captures_scopes() {
-            TraceMask::RUN | TraceMask::CALL | TraceMask::HOST
+            TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::CONTROL
         } else {
             TraceMask::NONE
         }
+    }
+
+    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+        let (kind, source, target) = match event {
+            ControlEvent::EnterInstance { parent, child, .. } => (&ENTER_INSTANCE, parent, child),
+            ControlEvent::ReturnInstance { child, parent, .. } => (&RETURN_INSTANCE, child, parent),
+            ControlEvent::ReturnAcross { source, target, .. } => (&RETURN_ACROSS, source, target),
+        };
+        let args = Args::none()
+            .with("from_segment", source.segment_ordinal())
+            .with("from_activation", source.ordinal())
+            .with("to_segment", target.segment_ordinal())
+            .with("to_activation", target.ordinal());
+        footfall::message_with(kind, self.context_for(program), "transfer", &args);
     }
 
     fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {

@@ -105,7 +105,8 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             .map(|(i, f)| {
                 ListItem::new(Line::styled(
                     format!(
-                        "#{} {} · {}",
+                        "#{}:{} {} · {}",
+                        f.activation.segment_ordinal(),
                         f.activation.ordinal(),
                         describe::function(f.program.program(), f.location.func),
                         if f.waiting_for_return {

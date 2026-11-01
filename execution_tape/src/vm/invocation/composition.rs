@@ -123,6 +123,14 @@ impl<'state, H: Host> Running<'_, 'state, H> {
             child.access = Observer::share(&mut self.continuation.access);
         }
         child.control.inherit_execution(&self.continuation.control);
+        let next = self
+            .next_segment
+            .as_deref_mut()
+            .expect("execution segment allocator");
+        child.control.segment = *next;
+        *next = next
+            .checked_add(1)
+            .expect("each new segment requires guest fuel and a host instruction");
         let parent_id = self.continuation.control.activation(pending.depth - 1);
         child.parent = Some((parent_id.clone(), location));
         let child_id = child.control.root_activation();
@@ -139,6 +147,12 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                         location,
                         parent: &parent_id,
                         child: &child_id,
+                        source_instance: self
+                            .continuation
+                            .ctx
+                            .instance
+                            .as_ref()
+                            .expect("source instance"),
                         instance,
                         entry,
                         args: &child.args,

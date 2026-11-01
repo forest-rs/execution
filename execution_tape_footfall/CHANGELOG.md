@@ -18,6 +18,8 @@ This release has an [MSRV][] of 1.88.
 - Preserve waiting parent scopes across nested code-instance execution. Map exact code
   definitions to separately registered source contexts with `with_program_context`, so equal
   function IDs in independent programs remain attributable to their original source artifacts.
+  Semantic entry, return and non-local transfer messages retain execution-local segment and
+  activation endpoints through `TraceMask::CONTROL`, without enabling guest value capture.
 
 - Report cancelled resumable invocations distinctly and close logical scopes across quanta.
   Elapsed scope time includes suspension; already performed host effects remain. ([#205][] by [@waywardmonkeys][])
