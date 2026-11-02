@@ -118,11 +118,9 @@ fn composed_capture(runtime: &Runtime, parent_context: &RegisteredContext) {
         let home = run.inspect().frames().next().unwrap().activation;
         run.pending_host_call()
             .unwrap()
-            .call_instance(
-                &instance,
-                FuncId(0),
+            .call_guest(
+                instance.function(FuncId(0)).expect("verified guest target"),
                 vec![],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();

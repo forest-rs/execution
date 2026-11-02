@@ -265,7 +265,7 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
     let callable = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            func: source_instance.function(body).unwrap(),
             env,
         }),
     )
@@ -334,7 +334,7 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
     let bad = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, FuncId(0)).unwrap(),
+            func: source_instance.function(FuncId(0)).unwrap(),
             env,
         }),
     )
@@ -369,7 +369,7 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
     let callable = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            func: source_instance.function(body).unwrap(),
             env,
         }),
     )
@@ -473,7 +473,7 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     let callable = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            func: source_instance.function(body).unwrap(),
             env,
         }),
     )
@@ -536,7 +536,7 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     let outer = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, outer).unwrap(),
+            func: source_instance.function(outer).unwrap(),
             env,
         }),
     )
@@ -606,7 +606,7 @@ fn snapshot_adoption_rejects_ambiguous_roots_and_non_environment_bodies() {
     let source_instance = Vm::new(NoHost, Limits::default())
         .instantiate(&program)
         .unwrap();
-    let factory_ref = execution_tape::value::FunctionRef::new(&source_instance, factory).unwrap();
+    let factory_ref = source_instance.function(factory).unwrap();
     let heap = AggHeap::new();
     let snapshot = heap
         .snapshot(&[
@@ -703,7 +703,7 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
     let callable = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            func: source_instance.function(body).unwrap(),
             env,
         }),
     )

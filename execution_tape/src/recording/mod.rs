@@ -26,8 +26,8 @@
 //! inputs, whereas normal callback returns are computed again by the guest. Foreign/expired target
 //! denials spend no guest work and are not recorded as admitted commands.
 //!
-//! Independently compiled calls through `PendingHostCall::call_instance` belong to the same
-//! execution. Install one recorder at the root; children inherit it unless explicitly replaced.
+//! Independently compiled calls through `PendingHostCall::call_guest` belong to the same
+//! execution. Install one recorder at the root; all child calls inherit it.
 //! [`Recording::segments`] exposes exact code definitions and actual parents. Each segment owns
 //! its local host/callback/instruction evidence; [`Recording::transfers`] links them with actual
 //! admissions, denied entries, checked child returns and cross-code typed exits. Transfer values

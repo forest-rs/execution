@@ -220,11 +220,12 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                             .name()
                             .unwrap_or("method")
                     );
-                    request.call_instance(
-                        &self.method.instance,
-                        self.method.function,
+                    request.call_guest(
+                        self.method
+                            .instance
+                            .function(self.method.function)
+                            .expect("verified guest target"),
                         args,
-                        InvocationOptions::default().yield_host_calls(),
                     )?;
                 }
             }
@@ -255,11 +256,13 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                         );
                     }
                     println!("Dynamic handler receives the shared condition tuple.");
-                    request.call_instance(
-                        &handler.entry.instance,
-                        handler.entry.function,
+                    request.call_guest(
+                        handler
+                            .entry
+                            .instance
+                            .function(handler.entry.function)
+                            .expect("verified guest target"),
                         args,
-                        InvocationOptions::default().yield_host_calls(),
                     )?;
                 }
             }
@@ -271,11 +274,12 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                     request.return_from(&self.home, vec![Value::I64(42)])?;
                 } else {
                     println!("Exit policy runs protected guest cleanup before non-local return.");
-                    request.call_instance(
-                        &self.cleanup.instance,
-                        self.cleanup.function,
+                    request.call_guest(
+                        self.cleanup
+                            .instance
+                            .function(self.cleanup.function)
+                            .expect("verified guest target"),
                         vec![],
-                        InvocationOptions::default().yield_host_calls(),
                     )?;
                 }
             }
@@ -293,11 +297,13 @@ impl<'code, 'vm> Runtime<'code, 'vm> {
                         })
                         .ok_or("restart home has expired")?;
                     println!("Invoking the nearest live use_divisor restart.");
-                    request.call_instance(
-                        &restart.entry.instance,
-                        restart.entry.function,
+                    request.call_guest(
+                        restart
+                            .entry
+                            .instance
+                            .function(restart.entry.function)
+                            .expect("verified guest target"),
                         args,
-                        InvocationOptions::default().yield_host_calls(),
                     )?;
                 }
             }

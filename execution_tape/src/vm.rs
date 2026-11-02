@@ -419,7 +419,7 @@ impl fmt::Display for Trap {
             } => write!(
                 f,
                 "function #{} does not match indirect signature #{}",
-                function.function().0, signature.0
+                function.id().0, signature.0
             ),
             Self::AggError(e) => write!(f, "aggregate error: {e}"),
             Self::ContractMismatch {
@@ -2532,7 +2532,7 @@ impl<H: Host> Vm<H> {
                             control,
                         );
                     }
-                    let callee_func = callee_ref.function();
+                    let callee_func = callee_ref.id();
                     let callee_fn = program_ref
                         .functions
                         .get(callee_func.0 as usize)
@@ -2642,10 +2642,10 @@ impl<H: Host> Vm<H> {
                     }
                     let callee_fn = program_ref
                         .functions
-                        .get(callee.func.function().0 as usize)
+                        .get(callee.func.id().0 as usize)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let callee_vf = program
-                        .verified(callee.func.function())
+                        .verified(callee.func.id())
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
                     validate_indirect_call_signature(
@@ -2681,7 +2681,7 @@ impl<H: Host> Vm<H> {
                         ctx,
                         budget,
                         program_ref,
-                        callee.func.function(),
+                        callee.func.id(),
                         callee_vf,
                         callee_base,
                     )
@@ -2709,9 +2709,9 @@ impl<H: Host> Vm<H> {
                                     pc,
                                     span_id,
                                     self.contract_trap(
-                                        callee.func.function(),
+                                        callee.func.id(),
                                         ContractPosition::Argument {
-                                            callee: callee.func.function(),
+                                            callee: callee.func.id(),
                                             index: 0,
                                         },
                                         error,
@@ -2723,7 +2723,7 @@ impl<H: Host> Vm<H> {
                     budget.frames += 1;
                     ctx.frames.push(Frame {
                         activation: inspection::Activation::default(),
-                        func: callee.func.function(),
+                        func: callee.func.id(),
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
@@ -2738,7 +2738,7 @@ impl<H: Host> Vm<H> {
                         trace,
                         program_ref,
                         ctx.frames.len(),
-                        callee.func.function(),
+                        callee.func.id(),
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation { func: func_id, pc }),
@@ -2779,7 +2779,7 @@ impl<H: Host> Vm<H> {
                             closure.func.instance(),
                             budget,
                             &self.limits,
-                            closure.func.function(),
+                            closure.func.id(),
                             true,
                         )
                         .map_err(|trap| {
@@ -2794,7 +2794,7 @@ impl<H: Host> Vm<H> {
                     let program_ref = target_program.program();
                     let body = program_ref
                         .functions
-                        .get(closure.func.function().0 as usize)
+                        .get(closure.func.id().0 as usize)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let env_contract = *program_ref
                         .verified_contracts(body.arg_types)
@@ -2823,9 +2823,9 @@ impl<H: Host> Vm<H> {
                         .map_err(|error| {
                             ctx.trap(func_id, pc, span_id, {
                                 let trap = self.contract_trap(
-                                    closure.func.function(),
+                                    closure.func.id(),
                                     ContractPosition::Argument {
-                                        callee: closure.func.function(),
+                                        callee: closure.func.id(),
                                         index: 0,
                                     },
                                     error,
@@ -4112,7 +4112,7 @@ fn validate_indirect_call_signature(
     callee_fn: &Function,
     callee_kind: IndirectCalleeKind,
 ) -> Result<(), Trap> {
-    let callee_func = callee.function();
+    let callee_func = callee.id();
     let expected = verified
         .call_sig_fingerprint(call_sig)
         .ok_or(Trap::InvalidPc)?;
@@ -4949,7 +4949,7 @@ mod tests {
                 vm.aggregates().tuple_get(*root, 2),
                 Ok(Value::Agg(closure.env))
             );
-            assert_eq!(closure.func.function(), target);
+            assert_eq!(closure.func.id(), target);
             assert_eq!(
                 vm.aggregates().tuple_get(closure.env, 0),
                 Ok(Value::Str("retained text".into()))
@@ -6121,7 +6121,7 @@ mod tests {
             other => panic!("expected single closure return, got {other:?}"),
         };
 
-        assert_eq!(closure.func.function(), FuncId(0));
+        assert_eq!(closure.func.id(), FuncId(0));
         assert_eq!(closure.env, env);
         assert_eq!(vm.aggregates().tuple_len(closure.env), Ok(2));
         assert_eq!(

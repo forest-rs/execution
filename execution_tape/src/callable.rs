@@ -37,9 +37,9 @@ pub enum CallableError {
         /// Number of successful result values.
         count: usize,
     },
-    /// The value has no retained prepared-program owner. Obtain an owned result from a
-    /// callable invocation or tape graph node, or explicitly retain its original program.
-    MissingCodeOwner,
+    /// A closure handle has no owned storage for its captured environment. Obtain an owned
+    /// result from a tape graph node or adopt a retained snapshot before exporting it.
+    MissingCaptureStorage,
     /// The selected value is neither a function nor a closure.
     NotCallable {
         /// Observed storage kind.
@@ -55,8 +55,6 @@ pub enum CallableError {
         /// Program-local target.
         function: FuncId,
     },
-    /// The VM cannot represent another live code namespace.
-    InstanceCapacityExceeded,
     /// A closure body must accept an aggregate environment as its first argument.
     EnvironmentArgument {
         /// Selected body.
@@ -74,8 +72,7 @@ impl fmt::Display for CallableError {
         match self {
             Self::NoSuccessfulResult => f.write_str("callable retention requires a successful invocation result"),
             Self::OutputIndex { index, count } => write!(f, "cannot retain callable output {index}: invocation returned {count} values"),
-            Self::MissingCodeOwner => f.write_str("callable value has no retained code owner; retain its original prepared program before exporting it"),
-            Self::InstanceCapacityExceeded => f.write_str("VM instance capacity exhausted while resolving function"),
+            Self::MissingCaptureStorage => f.write_str("closure has no owned capture storage; adopt its retained snapshot before exporting it"),
             Self::NotCallable { actual } => {
                 write!(f, "expected a function or closure, got {actual:?}")
             }
@@ -242,7 +239,7 @@ impl Callable {
         match value {
             ValueRef::Func(function) => Self::function(
                 Arc::new(function.instance().program().clone()),
-                function.function(),
+                function.id(),
             ),
             ValueRef::Closure(closure) => Self::from_snapshot(
                 heap.snapshot(&[Value::Closure(closure.clone())])
@@ -269,7 +266,7 @@ impl Callable {
             Value::Func(function) => {
                 return Self::function(
                     Arc::new(function.instance().program().clone()),
-                    function.function(),
+                    function.id(),
                 );
             }
             Value::Closure(closure) => closure.clone(),
@@ -280,16 +277,15 @@ impl Callable {
             }
         };
         let program = Arc::new(closure.func.instance().program().clone());
-        let body =
-            program
-                .function(closure.func.function())
-                .ok_or(CallableError::MissingFunction {
-                    function: closure.func.function(),
-                })?;
+        let body = program
+            .function(closure.func.id())
+            .ok_or(CallableError::MissingFunction {
+                function: closure.func.id(),
+            })?;
         let actual = body.arg_types().get(0).copied();
         if actual != Some(ValueType::Agg) {
             return Err(CallableError::EnvironmentArgument {
-                function: closure.func.function(),
+                function: closure.func.id(),
                 actual,
             });
         }
@@ -317,7 +313,7 @@ impl Callable {
             program,
             target: Target::Closure(Arc::new(Capture {
                 snapshot,
-                function: closure.func.function(),
+                function: closure.func.id(),
                 environment: closure.env,
                 aggregate_work,
                 payload_work,

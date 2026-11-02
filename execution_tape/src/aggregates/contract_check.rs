@@ -43,7 +43,7 @@ impl Input {
                 owner,
                 1,
                 core::ptr::from_ref(func.instance().program().program()) as usize,
-                func.function().0,
+                func.id().0,
                 0,
                 contract,
             ),
@@ -51,7 +51,7 @@ impl Input {
                 owner,
                 2,
                 core::ptr::from_ref(func.instance().program().program()) as usize,
-                func.function().0,
+                func.id().0,
                 env.0,
                 contract,
             ),
@@ -332,7 +332,7 @@ impl ContractScratch {
                     }
                     let actual = actual_program
                         .functions
-                        .get(function.function().0 as usize)
+                        .get(function.id().0 as usize)
                         .ok_or_else(|| {
                             self.failure(
                                 frame.contract,

@@ -854,11 +854,13 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
                             instance,
                             entry,
                             args,
-                        } => match request.call_instance(
-                            &instance,
-                            entry,
+                        } => match request.call_guest(
+                            instance.function(entry).map_err(|_| {
+                                context
+                                    .borrow()
+                                    .mismatch(context.borrow().current(), Divergence::Outcome)
+                            })?,
                             args,
-                            InvocationOptions::default().yield_host_calls(),
                         ) {
                             Ok(()) => {}
                             Err(crate::vm::ControlError::Trapped(error)) => break Err(error),

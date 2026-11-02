@@ -139,6 +139,17 @@ pub enum Value {
     Closure(Closure),
 }
 
+impl From<FunctionRef> for Value {
+    fn from(function: FunctionRef) -> Self {
+        Self::Func(function)
+    }
+}
+impl From<Closure> for Value {
+    fn from(closure: Closure) -> Self {
+        Self::Closure(closure)
+    }
+}
+
 /// Aggregate type descriptor for host signatures and reflection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AggType {

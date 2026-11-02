@@ -46,6 +46,10 @@ impl Callbacks {
 impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Starts a guest function or closure in its exact instance while retaining this host request.
     ///
+    /// Accepts a qualified function, closure, or dynamic `Value`. For an explicit instance,
+    /// pass `instance.function(entry)?` directly. All calls keep this execution's yielding policy,
+    /// observer and resource-access sink; those are selected once at root entry.
+    ///
     /// Consumes the view, not the host operation. Drive the same invocation with `resume`:
     /// the callback may yield further host requests, whose guards support the same operation.
     /// When the callback returns, `resume` reports `AwaitingHost` for this original request.
@@ -67,7 +71,15 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ///
     /// Callback entry/return and actual guest ancestry are observable. The boundary recorder
     /// retains the command and its actual return; checked replay reexecutes the guest callback.
-    pub fn call_guest(mut self, callee: Value, mut args: Vec<Value>) -> Result<(), ControlError> {
+    pub fn call_guest(
+        self,
+        callee: impl Into<Value>,
+        args: Vec<Value>,
+    ) -> Result<(), ControlError> {
+        self.call_value(callee.into(), args)
+    }
+
+    fn call_value(mut self, callee: Value, mut args: Vec<Value>) -> Result<(), ControlError> {
         let target = match &callee {
             Value::Func(function) => Some((function.clone(), None)),
             Value::Closure(closure) => Some((closure.func.clone(), Some(closure.env))),
@@ -82,15 +94,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
                     args.insert(0, Value::Agg(environment));
                 }
                 self.delivering = true;
-                let options = InvocationOptions {
-                    yield_host_calls: self.running.continuation.control.yield_host_calls,
-                    ..InvocationOptions::default()
-                };
                 let result = self.running.enter_instance(
                     target.instance(),
-                    target.function(),
+                    target.id(),
                     args,
-                    options,
                     crate::trace::EntryOrigin::HostRequest,
                 );
                 self.delivering = false;
@@ -106,7 +113,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Borrows the latest successful callback results without consuming them.
     ///
     /// An empty successful callback yields `Some(&[])`; `None` means no results are available.
-    /// Handles use this request's original heap/code. Inspection spends no guest work.
+    /// Aggregate handles use this VM heap; callable targets retain their own code.
+    /// Inspection spends no guest work.
     #[must_use]
     pub fn callback_results(&self) -> Option<&[Value]> {
         self.running
@@ -121,7 +129,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Takes the latest successful callback results belonging to this pending host operation.
     ///
     /// `None` means no callback has returned or the slots were already taken. The host operation
-    /// is still pending; result handles retain this invocation's original heap/code domains.
+    /// is still pending; aggregate handles use the execution heap and callable targets retain
+    /// their own code.
     /// Taking values does not retain them independently. Completing the host operation discards
     /// untaken slots. Use the request context's `retain` for an independent aggregate snapshot.
     pub fn take_callback_results(&mut self) -> Option<Vec<Value>> {
@@ -201,8 +210,8 @@ impl<H: Host> Running<'_, '_, H> {
             return Err(Trap::CallDepthExceeded);
         }
         let (function, environment) = match callee {
-            Value::Func(function) => (function.function(), None),
-            Value::Closure(closure) => (closure.func.function(), Some(closure.env)),
+            Value::Func(function) => (function.id(), None),
+            Value::Closure(closure) => (closure.func.id(), Some(closure.env)),
             value => {
                 return Err(Trap::TypeMismatch {
                     expected: ValueType::Func,

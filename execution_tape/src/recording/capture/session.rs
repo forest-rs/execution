@@ -11,8 +11,7 @@ use alloc::{boxed::Box, collections::BTreeMap, vec};
 
 /// Owns the boundary evidence of one execution, including independently compiled children.
 ///
-/// Install the recommended [`Self::mask`] on the root. Children inherit the observer unless
-/// explicitly replaced. Capture limits apply to the entire execution, and a missing child
+/// Install the recommended [`Self::mask`] on the root. All child calls inherit that observer. Capture limits apply to the entire execution, and a missing child
 /// observer makes the evidence incomplete. Captured values and code survive the VM and host.
 pub struct Recorder {
     root: Option<SegmentRecorder>,

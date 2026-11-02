@@ -3,7 +3,6 @@
 
 //! Reentry keeps the signaling stack, value domain and hard budgets in one invocation.
 
-use execution_tape::value::FunctionRef;
 use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
     contract::Contract,
@@ -178,7 +177,7 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+            Value::Func(request.instance().function(f.handler).unwrap()),
             vec![Value::I64(40)],
         );
         request.call_guest(callee, arguments)
@@ -207,7 +206,7 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.plus_one).unwrap()),
+            Value::Func(request.instance().function(f.plus_one).unwrap()),
             vec![Value::I64(40)],
         );
         request.call_guest(callee, arguments)
@@ -252,7 +251,7 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.tuple).unwrap()),
+            Value::Func(request.instance().function(f.tuple).unwrap()),
             vec![Value::Agg(staged)],
         );
         request.call_guest(callee, arguments)
@@ -318,7 +317,7 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
             Value::Closure(Closure {
-                func: FunctionRef::new(request.instance(), f.closure).unwrap(),
+                func: request.instance().function(f.closure).unwrap(),
                 env: environment,
             }),
             vec![Value::I64(2)],
@@ -335,7 +334,7 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.plus_one).unwrap()),
+            Value::Func(request.instance().function(f.plus_one).unwrap()),
             vec![Value::I64(8)],
         );
         request.call_guest(callee, arguments)
@@ -362,7 +361,7 @@ fn moved_callback_text_is_distinct_from_root_argument_sources_and_charged() {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.text).unwrap()),
+            Value::Func(request.instance().function(f.text).unwrap()),
             vec![Value::Str(value)],
         );
         request.call_guest(callee, arguments)
@@ -422,7 +421,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
             {
                 let request = request;
                 let (callee, arguments) = (
-                    Value::Func(FunctionRef::new(request.instance(), f.text).unwrap()),
+                    Value::Func(request.instance().function(f.text).unwrap()),
                     vec![Value::Str("x".into())],
                 );
                 request.call_guest(callee, arguments)
@@ -431,7 +430,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
             {
                 let request = request;
                 let (callee, arguments) = (
-                    Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+                    Value::Func(request.instance().function(f.handler).unwrap()),
                     vec![Value::I64(1)],
                 );
                 request.call_guest(callee, arguments)
@@ -474,20 +473,17 @@ fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_wor
         let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
         run.resume(u64::MAX).unwrap();
         let instance = run.instance().unwrap();
-        assert!(FunctionRef::new(instance, FuncId(u32::MAX)).is_err());
+        assert!(instance.function(FuncId(u32::MAX)).is_err());
         let (target, args) = match mode {
             1 => (Value::I64(4), vec![]),
-            2 => (
-                Value::Func(FunctionRef::new(instance, f.plus_one).unwrap()),
-                vec![],
-            ),
+            2 => (Value::Func(instance.function(f.plus_one).unwrap()), vec![]),
             3 => (
-                Value::Func(FunctionRef::new(instance, f.plus_one).unwrap()),
+                Value::Func(instance.function(f.plus_one).unwrap()),
                 vec![Value::Bool(true)],
             ),
             _ => (
                 Value::Closure(Closure {
-                    func: FunctionRef::new(instance, f.closure).unwrap(),
+                    func: instance.function(f.closure).unwrap(),
                     env,
                 }),
                 vec![Value::I64(2)],
@@ -605,7 +601,7 @@ fn cancellation_and_traps_close_nested_guest_host_and_instruction_scopes() {
         {
             let request = run.pending_host_call().unwrap();
             let (callee, arguments) = (
-                Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+                Value::Func(request.instance().function(f.handler).unwrap()),
                 vec![Value::I64(1)],
             );
             request.call_guest(callee, arguments)
@@ -651,7 +647,7 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.plus_one).unwrap()),
+            Value::Func(request.instance().function(f.plus_one).unwrap()),
             vec![Value::I64(1)],
         );
         request.call_guest(callee, arguments)
@@ -717,7 +713,7 @@ fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_va
                 {
                     let request = run.pending_host_call().unwrap();
                     let (callee, arguments) = (
-                        Value::Func(FunctionRef::new(request.instance(), target).unwrap()),
+                        Value::Func(request.instance().function(target).unwrap()),
                         vec![Value::I64(1)],
                     );
                     request.call_guest(callee, arguments)
@@ -761,7 +757,7 @@ fn callback_result_signature_is_independent_of_the_pending_host_signature() {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.multi).unwrap()),
+            Value::Func(request.instance().function(f.multi).unwrap()),
             vec![Value::I64(40)],
         );
         request.call_guest(callee, arguments)
@@ -818,7 +814,7 @@ fn callback_results_must_satisfy_their_own_rich_contract_before_returning_to_hos
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), callback).unwrap()),
+            Value::Func(request.instance().function(callback).unwrap()),
             vec![],
         );
         request.call_guest(callee, arguments)
@@ -866,7 +862,7 @@ fn promoted_staging_and_callback_allocations_share_one_aggregate_budget() {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.tuple).unwrap()),
+            Value::Func(request.instance().function(f.tuple).unwrap()),
             vec![Value::Agg(staged)],
         );
         request.call_guest(callee, arguments)
@@ -904,7 +900,7 @@ fn pending_callback_object_results_remain_visible_to_the_embedding_collector() {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.object).unwrap()),
+            Value::Func(request.instance().function(f.object).unwrap()),
             vec![Value::Obj(object)],
         );
         request.call_guest(callee, arguments)
@@ -990,7 +986,7 @@ fn original_host_state_arguments_and_access_sink_are_shared_across_callback_disp
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+            Value::Func(request.instance().function(f.handler).unwrap()),
             vec![Value::I64(2)],
         );
         request.call_guest(callee, arguments)

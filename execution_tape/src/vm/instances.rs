@@ -84,12 +84,11 @@ impl Instances {
         }) {
             return Ok(Instance(target));
         }
-        let target = if source.0.is_default {
-            self.default_for(source.program())?
-        } else {
-            self.insert(source.program(), false)
-                .map_err(|_| Trap::InstanceLimitExceeded)?
-        };
+        // Defaults are local to their original store. Two source stores using the same
+        // definition still have distinct namespace identities and must not merge on import.
+        let target = self
+            .insert(source.program(), false)
+            .map_err(|_| Trap::InstanceLimitExceeded)?;
         self.imported
             .push((Arc::downgrade(&source.0), Arc::downgrade(&target.0)));
         Ok(target)
@@ -113,27 +112,27 @@ impl<H: Host> Vm<H> {
             .map_err(|_| InstanceError::CapacityExceeded)?;
         Ok(crate::value::FunctionRef::from_verified(
             instance,
-            source.function(),
+            source.id(),
         ))
     }
 
     /// Resolves a function in this VM's default namespace for the exact prepared definition.
     ///
     /// The result can be supplied as a runtime function value. It retains code and namespace
-    /// identity without executing instructions or retaining the VM. Use [`crate::value::FunctionRef::new`]
+    /// identity without executing instructions or retaining the VM. Use [`crate::instance::Instance::function`]
     /// with an explicit [`Instance`] when separate host namespaces are required for one definition.
     pub fn function(
         &mut self,
         program: &VerifiedProgram,
         function: FuncId,
-    ) -> Result<crate::value::FunctionRef, crate::callable::CallableError> {
+    ) -> Result<crate::value::FunctionRef, InstanceError> {
         if program.function(function).is_none() {
-            return Err(crate::callable::CallableError::MissingFunction { function });
+            return Err(InstanceError::MissingFunction { function });
         }
         let instance = self
             .instances
             .default_for(program)
-            .map_err(|_| crate::callable::CallableError::InstanceCapacityExceeded)?;
+            .map_err(|_| InstanceError::CapacityExceeded)?;
         Ok(crate::value::FunctionRef::from_verified(instance, function))
     }
 
@@ -156,7 +155,7 @@ impl<H: Host> Vm<H> {
                 _ => return Ok(()),
             };
             let instance = self.instances.import(function.instance())?;
-            *function = crate::value::FunctionRef::from_verified(instance, function.function());
+            *function = crate::value::FunctionRef::from_verified(instance, function.id());
             Ok::<(), Trap>(())
         };
         let result = self

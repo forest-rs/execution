@@ -239,16 +239,17 @@ impl TapeValue {
     /// embedding's retention policy; they do not retain external objects.
     ///
     /// Plain values return [`CallableError::NotCallable`]. A raw closure without owned aggregate
-    /// storage returns [`CallableError::MissingCodeOwner`]; obtain it from a tape node or adopt
+    /// storage returns [`CallableError::MissingCaptureStorage`]; obtain it from a tape node or adopt
     /// its retained storage with [`Self::from_snapshot`]. Functions already retain their code.
     pub fn retain_callable(&self) -> Result<Callable, CallableError> {
         match self.value() {
             Value::Func(function) => Callable::function(
                 Arc::new(function.instance().program().clone()),
-                function.function(),
+                function.id(),
             ),
             Value::Closure(closure) => Callable::retain(
-                self.aggregates().ok_or(CallableError::MissingCodeOwner)?,
+                self.aggregates()
+                    .ok_or(CallableError::MissingCaptureStorage)?,
                 execution_tape::host::ValueRef::Closure(closure),
             ),
             other => Err(CallableError::NotCallable {

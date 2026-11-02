@@ -7,7 +7,11 @@
 //! one VM store. Hosts can use the instance as a key for state or import routing; the VM still
 //! owns mutable host state and values. Instance identity does not make raw value handles portable.
 
-use crate::{verifier::VerifiedProgram, vm::TrapInfo};
+use crate::{
+    value::{FuncId, FunctionRef},
+    verifier::VerifiedProgram,
+    vm::TrapInfo,
+};
 use alloc::sync::Arc;
 use core::{
     fmt,
@@ -52,6 +56,17 @@ impl Instance {
     }
 }
 
+impl Instance {
+    /// Resolves a local function ID in an explicitly retained instance.
+    /// An absent target is rejected before it can become an executable value.
+    pub fn function(&self, function: FuncId) -> Result<FunctionRef, InstanceError> {
+        if self.program().function(function).is_none() {
+            return Err(InstanceError::MissingFunction { function });
+        }
+        Ok(FunctionRef::from_verified(self.clone(), function))
+    }
+}
+
 impl PartialEq for Instance {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -75,6 +90,11 @@ impl fmt::Debug for Instance {
 /// Why an instance could not be created or entered.
 #[derive(Clone, Debug)]
 pub enum InstanceError {
+    /// The selected function is absent from this instance's exact definition.
+    MissingFunction {
+        /// Program-local target requested by the embedding.
+        function: FuncId,
+    },
     /// The instance belongs to another VM. Entry spends no guest work or host effects.
     ForeignStore,
     /// The VM cannot represent another live instance.
@@ -85,6 +105,9 @@ pub enum InstanceError {
 impl fmt::Display for InstanceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingFunction { function } => {
+                write!(f, "function #{} is absent from this instance", function.0)
+            }
             Self::ForeignStore => f.write_str("instance belongs to another VM store"),
             Self::CapacityExceeded => f.write_str("VM instance capacity exhausted"),
             Self::Trapped(error) => error.fmt(f),

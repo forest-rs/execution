@@ -228,7 +228,7 @@ impl State {
             .ok_or_else(|| self.mismatch(Divergence::Outcome))?;
         Ok(crate::value::FunctionRef::from_verified(
             instance.clone(),
-            source.function(),
+            source.id(),
         ))
     }
 
@@ -1428,9 +1428,7 @@ fn same_trap(
     let function = |source: &crate::value::FunctionRef| {
         instances
             .and_then(|instances| instances.get(&(Arc::as_ptr(&source.instance().0) as usize)))
-            .map(|instance| {
-                crate::value::FunctionRef::from_verified(instance.clone(), source.function())
-            })
+            .map(|instance| crate::value::FunctionRef::from_verified(instance.clone(), source.id()))
     };
     let violation = |expected: &crate::contract::ContractViolation,
                      actual: &crate::contract::ContractViolation| {
@@ -1719,7 +1717,7 @@ mod tests {
         {
             let request = run.pending_host_call().unwrap();
             let (callee, arguments) = (
-                Value::Func(crate::value::FunctionRef::new(request.instance(), handler).unwrap()),
+                Value::Func(request.instance().function(handler).unwrap()),
                 args.to_vec(),
             );
             request.call_guest(callee, arguments)

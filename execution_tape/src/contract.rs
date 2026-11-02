@@ -540,7 +540,7 @@ impl fmt::Display for ContractMismatch {
                 Some(target) => write!(
                     f,
                     "function #{} in {:?} has incompatible callable contracts",
-                    target.function().0,
+                    target.id().0,
                     target.instance().program().program().name()
                 ),
                 None => f.write_str("incompatible callable contracts"),

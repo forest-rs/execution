@@ -3,7 +3,6 @@
 
 //! Reconstruct control decisions; recompute guest callback results and preserve nested evidence.
 
-use execution_tape::value::FunctionRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -168,7 +167,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
     {
         let request = outer;
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), f.nested).unwrap()),
+            Value::Func(request.instance().function(f.nested).unwrap()),
             vec![Value::Agg(staged)],
         );
         request.call_guest(callee, arguments)
@@ -186,7 +185,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         let request = inner;
         let (callee, arguments) = (
             Value::Closure(Closure {
-                func: FunctionRef::new(request.instance(), f.closure).unwrap(),
+                func: request.instance().function(f.closure).unwrap(),
                 env: staged,
             }),
             vec![value],
@@ -412,7 +411,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
             {
                 let request = run.pending_host_call().unwrap();
                 let (callee, arguments) = (
-                    Value::Func(FunctionRef::new(request.instance(), f.nested).unwrap()),
+                    Value::Func(request.instance().function(f.nested).unwrap()),
                     vec![Value::Bool(false)],
                 );
                 request.call_guest(callee, arguments)
@@ -422,7 +421,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
             {
                 let request = run.pending_host_call().unwrap();
                 let (callee, arguments) = (
-                    Value::Func(FunctionRef::new(request.instance(), f.nested).unwrap()),
+                    Value::Func(request.instance().function(f.nested).unwrap()),
                     vec![Value::Agg(input)],
                 );
                 request.call_guest(callee, arguments)
@@ -432,7 +431,7 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
             {
                 let request = run.pending_host_call().unwrap();
                 let (callee, arguments) = (
-                    Value::Func(FunctionRef::new(request.instance(), f.nested).unwrap()),
+                    Value::Func(request.instance().function(f.nested).unwrap()),
                     vec![Value::Agg(input)],
                 );
                 request.call_guest(callee, arguments)
@@ -504,7 +503,7 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
         {
             let request = run.pending_host_call().unwrap();
             let (callee, arguments) = (
-                Value::Func(FunctionRef::new(request.instance(), f.nested).unwrap()),
+                Value::Func(request.instance().function(f.nested).unwrap()),
                 vec![Value::Agg(input)],
             );
             request.call_guest(callee, arguments)

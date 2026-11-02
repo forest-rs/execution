@@ -7,7 +7,6 @@ use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, Value
 use execution_tape::program::ValueType;
 use execution_tape::recording::{RecordLimits, RecordedValue, Recorder};
 use execution_tape::trace::TraceSink;
-use execution_tape::value::FunctionRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -907,7 +906,7 @@ fn callback_recording(exit: bool) -> Recording {
     {
         let request = run.pending_host_call().unwrap();
         let (callee, arguments) = (
-            Value::Func(FunctionRef::new(request.instance(), handler).unwrap()),
+            Value::Func(request.instance().function(handler).unwrap()),
             args.to_vec(),
         );
         request.call_guest(callee, arguments)
@@ -939,7 +938,7 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     else {
         panic!("guest callback target");
     };
-    let handler = handler.function();
+    let handler = handler.id();
     let mut view = View::new(&record);
     assert_eq!(view.selected, 1);
     assert_eq!(view.location().unwrap().func, root);

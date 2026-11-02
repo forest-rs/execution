@@ -111,7 +111,7 @@ impl<'a> InvocationOptions<'a> {
 /// Completed invocations cannot execute again. Their result remains available through
 /// [`Self::result`] until dropped, and owned outputs can be taken with [`Self::take_outputs`].
 ///
-/// [`PendingHostCall::call_instance`] can enter other verified code in the same store. Suspended
+/// [`PendingHostCall::call_guest`] can enter other verified code in the same store. Suspended
 /// callers share its budgets and are visible in [`Self::inspect`]. Only the root publishes
 /// results or reclaims new aggregate storage. A fatal trap or hard cancellation terminates
 /// every retained segment; host effects remain outside the transaction.

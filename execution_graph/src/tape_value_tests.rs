@@ -123,7 +123,7 @@ fn exported_function_uses_original_program_and_raw_values_explain_missing_owners
         }))
         .retain_callable()
         .unwrap_err(),
-        CallableError::MissingCodeOwner,
+        CallableError::MissingCaptureStorage,
     );
 }
 

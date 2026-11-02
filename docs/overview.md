@@ -290,7 +290,7 @@ checked replay reproduces rejected arities, kinds and budgets without calling a 
 This boundary does not create cross-program guest frames, a language method dictionary or
 recoverable guest exceptions.
 
-An admitted host request can explicitly reenter a same-program guest function or closure with
+An admitted host request can explicitly reenter a guest function or closure in its exact instance with
 `call_guest`. It retains the host instruction, original frames, heap, activation identities and
 all hard budgets. The same invocation driver handles nested host waits and further callbacks.
 When a callback returns, `AwaitingHost` identifies the original request again; its callback
@@ -317,7 +317,7 @@ the guest body again and verifies its actual result.
 ## Composing independently compiled code
 
 `Vm::instantiate` gives a shared verified definition a namespace within one VM store.
-`PendingHostCall::call_instance` enters that instance while keeping the admitting host request
+`PendingHostCall::call_guest` enters that instance while keeping the admitting host request
 and its guest callers suspended. Every segment retains its exact code, registers and parent
 activation. A checked child return restores the original request and its callback result slots;
 the embedding still chooses how to complete that operation. Only the execution root commits
@@ -469,7 +469,7 @@ external effects are replayed.
 
 ### Recorded embedding control
 
-A yielded host request can enter a same-program guest function or closure while its original
+A yielded host request can enter a guest function or closure in its exact instance while its original
 host instruction remains pending. The boundary recorder retains that embedding command,
 all promoted staging, and the actual callback return separately from the eventual host outcome.
 Their sequence numbers describe observation order; a callback return does not publish the root

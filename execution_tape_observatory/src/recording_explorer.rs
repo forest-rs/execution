@@ -217,7 +217,10 @@ mod tests {
             run.resume(100).unwrap();
             run.pending_host_call()
                 .unwrap()
-                .call_instance(&instance, method, vec![], InvocationOptions::default())
+                .call_guest(
+                    instance.function(method).expect("verified guest target"),
+                    vec![],
+                )
                 .unwrap();
             run.resume(100).unwrap();
             let mut request = run.pending_host_call().unwrap();

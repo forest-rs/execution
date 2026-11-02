@@ -81,11 +81,9 @@ fn caller_and_child_with_equal_local_ids_keep_their_own_code_sources_and_breakpo
     run.resume(100).unwrap();
     run.pending_host_call()
         .unwrap()
-        .call_instance(
-            &instance,
-            FuncId(0),
+        .call_guest(
+            instance.function(FuncId(0)).expect("verified guest target"),
             vec![],
-            InvocationOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();

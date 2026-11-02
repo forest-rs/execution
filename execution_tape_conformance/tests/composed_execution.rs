@@ -7,7 +7,6 @@ use execution_tape::recording::{
     CaptureFault, CaptureResource, InstructionCapture, InstructionStatus, Outcome, RecordLimits,
     RecordedValue, Recorder, Recording, TransferAction,
 };
-use execution_tape::value::FunctionRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -48,11 +47,9 @@ fn recorded_composition(nonlocal: bool, limits: RecordLimits) -> Recording {
         let request = run.pending_host_call().unwrap();
         let argument = request.arguments().next().unwrap().to_value();
         request
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![argument.clone()],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -201,16 +198,13 @@ fn capture_limits_do_not_reset_for_a_new_segment() {
 }
 
 #[test]
-fn an_explicit_child_observer_cannot_silently_create_a_complete_parent_recording() {
-    struct Ignore;
-    impl TraceSink for Ignore {}
+fn qualified_guest_calls_inherit_the_execution_observer() {
     let (parent, entry) = parent();
     let parent = Arc::new(parent);
     let (child, method) = child();
     let mut vm = Vm::new(NoHost, Limits::default());
     let instance = vm.instantiate(&child).unwrap();
     let mut recorder = Recorder::new(parent.clone(), RecordLimits::default());
-    let mut ignored = Ignore;
     {
         let mask = recorder.mask();
         let mut run = vm
@@ -227,11 +221,9 @@ fn an_explicit_child_observer_cannot_silently_create_a_complete_parent_recording
         let request = run.pending_host_call().unwrap();
         let argument = request.arguments().next().unwrap().to_value();
         request
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![argument],
-                InvocationOptions::default().trace(TraceMask::RUN, &mut ignored),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -241,12 +233,14 @@ fn an_explicit_child_observer_cannot_silently_create_a_complete_parent_recording
         run.resume(100).unwrap();
     }
     let record = recorder.finish();
-    assert_eq!(record.status(), Err(&CaptureFault::MissingCompletion));
+    assert_eq!(record.status(), Ok(()));
+    let child = record.segments().nth(1).unwrap();
+    assert!(!child.denied_before_entry);
     assert!(
-        !record.segments().nth(1).unwrap().denied_before_entry,
-        "absent child evidence does not prove denial"
+        child.recording.is_some(),
+        "the child keeps the same execution observer"
     );
-    assert!(record.replay().is_err());
+    assert!(record.replay().is_ok());
 }
 
 #[test]
@@ -279,7 +273,7 @@ fn a_denied_entry_is_complete_trap_evidence_without_a_fabricated_child_run() {
         let request = run.pending_host_call().unwrap();
         let argument = request.arguments().next().unwrap().to_value();
         assert!(
-            matches!(request.call_instance(&instance, method, vec![argument], InvocationOptions::default()), Err(ControlError::Trapped(error)) if matches!(error.trap, Trap::FuelExceeded))
+            matches!(request.call_guest(instance.function(method).expect("verified guest target"), vec![argument]), Err(ControlError::Trapped(error)) if matches!(error.trap, Trap::FuelExceeded))
         );
     }
     let record = recorder.finish();
@@ -466,11 +460,9 @@ fn inspection_and_nonlocal_return_follow_the_actual_cross_instance_parent() {
     let request = run.pending_host_call().unwrap();
     let original = request.arguments().next().unwrap().to_value();
     request
-        .call_instance(
-            &instance,
-            method,
+        .call_guest(
+            instance.function(method).expect("verified guest target"),
             vec![original.clone()],
-            InvocationOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();
@@ -541,11 +533,9 @@ fn inherited_observers_see_real_cross_code_enter_and_exit_without_fabricated_hos
         let request = run.pending_host_call().unwrap();
         let argument = request.arguments().next().unwrap().to_value();
         request
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![argument.clone()],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -608,11 +598,9 @@ fn nested_foreign_store_functions_are_rejected_before_entering_a_child() {
         .tuple_new(vec![Value::Func(entry_value)])
         .unwrap();
     let error = request
-        .call_instance(
-            &instance,
-            method,
+        .call_guest(
+            instance.function(method).expect("verified guest target"),
             vec![Value::Agg(tuple)],
-            InvocationOptions::default(),
         )
         .unwrap_err();
     assert!(
@@ -646,22 +634,18 @@ fn a_returned_child_home_cannot_retarget_the_next_child_with_the_same_local_ordi
     let request = run.pending_host_call().unwrap();
     let argument = request.arguments().next().unwrap().to_value();
     request
-        .call_instance(
-            &first,
-            method,
+        .call_guest(
+            first.function(method).expect("verified guest target"),
             vec![argument.clone()],
-            InvocationOptions::default(),
         )
         .unwrap();
     let expired = run.inspect().frames().next().unwrap().activation;
     run.resume(100).unwrap();
     run.pending_host_call()
         .unwrap()
-        .call_instance(
-            &second,
-            next,
+        .call_guest(
+            second.function(next).expect("verified guest target"),
             vec![argument.clone()],
-            InvocationOptions::default().yield_host_calls(),
         )
         .unwrap();
     run.resume(100).unwrap();
@@ -724,11 +708,9 @@ fn independently_compiled_child_returns_the_same_aggregate_without_import_or_com
     let request = run.pending_host_call().unwrap();
     let original = request.arguments().next().unwrap().to_value();
     request
-        .call_instance(
-            &instance,
-            method,
+        .call_guest(
+            instance.function(method).expect("verified guest target"),
             vec![original.clone()],
-            InvocationOptions::default().yield_host_calls(),
         )
         .unwrap();
     assert_eq!(
@@ -799,11 +781,9 @@ fn suspended_parents_count_against_child_depth_and_failure_rolls_back_every_segm
         let request = run.pending_host_call().unwrap();
         let argument = request.arguments().next().unwrap().to_value();
         let error = request
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![argument],
-                InvocationOptions::default(),
             )
             .unwrap_err();
         assert!(
@@ -845,11 +825,9 @@ fn dropping_an_active_child_cancels_the_whole_execution() {
         let request = run.pending_host_call().unwrap();
         let argument = request.arguments().next().unwrap().to_value();
         request
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![argument],
-                InvocationOptions::default(),
             )
             .unwrap();
         assert_eq!(
@@ -943,11 +921,9 @@ fn rejected_nonlocal_results_retain_both_the_initiating_code_and_contract_owner(
         run.resume(100).unwrap();
         run.pending_host_call()
             .unwrap()
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -1038,7 +1014,7 @@ fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
         {
             let request = run.pending_host_call().unwrap();
             let (callee, arguments) = (
-                Value::Func(FunctionRef::new(request.instance(), callback).unwrap()),
+                Value::Func(request.instance().function(callback).unwrap()),
                 vec![tuple.clone()],
             );
             request.call_guest(callee, arguments)
@@ -1053,11 +1029,9 @@ fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
         );
         run.pending_host_call()
             .unwrap()
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![tuple.clone()],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();

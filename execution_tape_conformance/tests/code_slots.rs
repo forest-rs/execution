@@ -308,7 +308,7 @@ fn exposed_signature_compatibility_hides_each_closures_concrete_environment_layo
     let old = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, functions[0]).unwrap(),
+            func: source_instance.function(functions[0]).unwrap(),
             env: first,
         }),
     )
@@ -316,7 +316,7 @@ fn exposed_signature_compatibility_hides_each_closures_concrete_environment_layo
     let new = Callable::retain(
         &heap,
         ValueRef::Closure(&Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, functions[1]).unwrap(),
+            func: source_instance.function(functions[1]).unwrap(),
             env: second,
         }),
     )

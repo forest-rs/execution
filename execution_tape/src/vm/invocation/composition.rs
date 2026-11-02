@@ -8,44 +8,6 @@ use crate::trace::{ControlEvent, EntryOrigin};
 use crate::value::AggType;
 use alloc::collections::BTreeSet;
 
-impl<'request, 'state, H: Host> PendingHostCall<'request, 'state, H> {
-    /// Enters independently compiled code while this host request remains suspended.
-    ///
-    /// The instance must belong to this execution's VM. Arguments move into a new code-qualified
-    /// control segment; aggregate handles continue to refer to the same store, without snapshot
-    /// or import. The child shares all hard limits and the root transaction with its callers.
-    /// Drive it using the same invocation's `resume`. A successful child returns to this request
-    /// with `callback_results`, without completing the host instruction or compacting the heap.
-    ///
-    /// Functions and closures retain their own exact instances in this store. Nominal aggregate identities
-    /// require the same verified definition. Host objects belong to the shared host store.
-    /// Structural tuples are checked recursively before
-    /// transfer, including their shared members. Provenance checks use the contract-work budget.
-    /// Invalid arguments or exhausted limits terminate the entire execution. A foreign store is
-    /// denied before observations or work, leaving this request usable.
-    ///
-    /// Child observers inherit from their parent unless `options` supplies replacements.
-    /// The VM owns the parent relationship; an embedding
-    /// need not keep a second VM, snapshot guest values, or reconstruct the return order.
-    pub fn call_instance(
-        mut self,
-        instance: &Instance,
-        entry: FuncId,
-        args: Vec<Value>,
-        options: InvocationOptions<'state>,
-    ) -> Result<(), ControlError> {
-        if !self.running.vm.owns_instance(instance) {
-            return Err(ControlError::ForeignStore);
-        }
-        self.delivering = true;
-        let result =
-            self.running
-                .enter_instance(instance, entry, args, options, EntryOrigin::HostRequest);
-        self.delivering = false;
-        result.map_err(ControlError::Trapped)
-    }
-}
-
 impl<'state, H: Host> Running<'_, 'state, H> {
     pub(super) fn has_parents(&self) -> bool {
         self.parents
@@ -98,7 +60,6 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         instance: &Instance,
         entry: FuncId,
         args: Vec<Value>,
-        options: InvocationOptions<'state>,
         origin: EntryOrigin,
     ) -> Result<(), TrapInfo> {
         let (location, depth) = if let Some(pending) = self.continuation.control.pending_guest {
@@ -121,15 +82,14 @@ impl<'state, H: Host> Running<'_, 'state, H> {
             CodeOwner::Instance(instance.clone()),
             entry,
             Cow::Owned(args),
-            options,
+            InvocationOptions {
+                yield_host_calls: self.continuation.control.yield_host_calls,
+                ..InvocationOptions::default()
+            },
         );
-        if child.trace.sink.is_none() {
-            child.trace.sink = Observer::share(&mut self.continuation.trace.sink);
-            child.trace.mask = self.continuation.trace.mask;
-        }
-        if child.access.is_none() {
-            child.access = Observer::share(&mut self.continuation.access);
-        }
+        child.trace.sink = Observer::share(&mut self.continuation.trace.sink);
+        child.trace.mask = self.continuation.trace.mask;
+        child.access = Observer::share(&mut self.continuation.access);
         child.control.inherit_execution(&self.continuation.control);
         let next = self
             .next_segment

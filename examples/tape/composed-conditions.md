@@ -84,15 +84,15 @@ definition. `r` replays the whole owning execution even while a child segment is
 ## The core boundary
 
 `Vm::instantiate` gives code a store namespace. At a pending request,
-`call_instance` enters that instance with moved arguments and retains the real parent in the
+`call_guest(instance.function(method)?, args)` enters that instance with moved arguments and retains the real parent in the
 invocation. A successful child restores the original pending request and its callback results;
 the runtime decides how to complete that host operation. `return_from` also accepts a live
 activation in an independently compiled suspended parent.
 
 All segments share instruction fuel, live call depth, host admission, contract work and aggregate
 and payload work. Transfer-provenance checks are iterative and use the contract-work budget.
-Structural values and host objects can cross code boundaries in this store. Raw callable IDs
-remain local to their instance, and nominal aggregate schemas require their original definition.
+Structural values and host objects can cross code boundaries in this store. Callable values
+retain their exact instances, and nominal aggregate schemas require their original definition.
 Nested identities are checked before transfer; an equal numeric ID cannot change meaning.
 
 Fatal traps and dropping the invocation terminate every segment and discard its new aggregates.

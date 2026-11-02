@@ -17,7 +17,7 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
-- Keep independently compiled guest calls in one execution through `PendingHostCall::call_instance`.
+- Keep independently compiled guest calls in one execution through `PendingHostCall::call_guest`.
   Suspended parents share the store and all resource budgets; only the root commits or rolls back
   aggregate storage. `return_from` can target a live activation across those code boundaries.
   Inspection exposes the real parent chain and each frame's exact code and instance. Control
@@ -144,12 +144,21 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Use one native-to-guest entry point for qualified functions and closures. Resolve an explicit
+  target with `instance.function(entry)?` and pass it directly to `request.call_guest(target, args)`.
+  Calls inherit the root execution's yielding policy, observer and access sink. Migration:
+  replace the provisional `call_instance(instance, entry, args, options)` with this path and move
+  observer/yield/access selection to root `InvocationOptions`. Resolve explicit targets on
+  `Instance` rather than constructing a `FunctionRef`; its local target accessor is `id()`.
+  `CallableError::MissingCaptureStorage` describes an unowned closure environment. Runtime target
+  lookup reports `InstanceError::MissingFunction`; callable export errors stay separate.
+
 - Qualify runtime function and closure targets with their exact code instance. Ordinary indirect
   calls follow that owner across definitions in one VM, under one resource budget and transaction.
   Owned closure imports bind captured callable namespaces to the destination host store. Loading
   replacement code through a paused invocation does not patch existing values or activations.
   Migration: `Value::Func` and `Closure::func` now hold `FunctionRef`; resolve default targets with
-  `Vm::function` or explicit targets with `FunctionRef::new`. `Closure` is `Clone` rather than
+  `Vm::function` or explicit targets with `Instance::function`. `Closure` is `Clone` rather than
   `Copy`, and `ValueRef::{Func,Closure}` borrow their target. `Callable::{retain,from_snapshot}`
   obtain code ownership from the value and no longer take a program argument.
 

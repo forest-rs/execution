@@ -74,11 +74,9 @@ fn capture(nonlocal: bool) -> Recording {
         run.resume(100).unwrap();
         run.pending_host_call()
             .unwrap()
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![Value::Agg(aggregate)],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();
@@ -222,11 +220,9 @@ fn replay_restores_initial_nodes_observed_only_inside_a_child() {
         run.resume(100).unwrap();
         run.pending_host_call()
             .unwrap()
-            .call_instance(
-                &instance,
-                method,
+            .call_guest(
+                instance.function(method).expect("verified guest target"),
                 vec![],
-                InvocationOptions::default().yield_host_calls(),
             )
             .unwrap();
         run.resume(100).unwrap();

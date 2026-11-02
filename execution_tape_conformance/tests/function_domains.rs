@@ -10,7 +10,7 @@ use execution_tape::{
     program::ValueType,
     recording::{InstructionCapture, RecordLimits, Recorder, ReplayOutcome, TransferAction},
     trace::{EntryOrigin, TraceSink},
-    value::{Closure, FuncId, FunctionRef, Value},
+    value::{Closure, FuncId, Value},
     verifier::VerifiedProgram,
     vm::{InvocationOptions, Limits, RunStatus, Vm},
 };
@@ -104,7 +104,7 @@ fn ordinary_indirect_calls_follow_qualified_functions_and_closures_through_aggre
         let (callee, function) = callee(closure);
         let mut vm = Vm::new(NoHost, Limits::default());
         let instance = vm.instantiate(&callee).unwrap();
-        let function = FunctionRef::new(&instance, function).unwrap();
+        let function = instance.function(function).unwrap();
         let env = vm.aggregates_mut().tuple_new(vec![Value::I64(40)]).unwrap();
         let argument = if closure {
             Value::Closure(Closure {
@@ -246,7 +246,7 @@ fn replacement_can_be_compiled_and_instantiated_while_an_old_method_is_suspended
     let (old_code, old_entry) = replacement_method(40, true);
     let mut vm = Vm::new(NoHost, Limits::default());
     let old_instance = vm.instantiate(&old_code).unwrap();
-    let argument = Value::Func(FunctionRef::new(&old_instance, old_entry).unwrap());
+    let argument = Value::Func(old_instance.function(old_entry).unwrap());
     drop(old_instance);
     drop(old_code);
     let mut recorder = Recorder::new(caller.clone(), RecordLimits::default());
@@ -277,7 +277,7 @@ fn replacement_can_be_compiled_and_instantiated_while_an_old_method_is_suspended
                         assert_eq!(run.program().program().name(), Some("old method"));
                         let (code, entry) = replacement_method(100, false);
                         let instance = run.instantiate(&code).unwrap();
-                        replacement = Some(FunctionRef::new(&instance, entry).unwrap());
+                        replacement = Some(instance.function(entry).unwrap());
                         assert_eq!(
                             run.program().program().name(),
                             Some("old method"),
@@ -499,4 +499,24 @@ fn automatic_entries_share_capture_limits_without_turning_them_into_driver_comma
             );
         }
     }
+}
+
+#[test]
+fn importing_defaults_from_distinct_stores_preserves_distinct_namespaces() {
+    let (program, entry) = callee(false);
+    let first = Vm::new(NoHost, Limits::default())
+        .function(&program, entry)
+        .unwrap();
+    let second = Vm::new(NoHost, Limits::default())
+        .function(&program, entry)
+        .unwrap();
+    assert_ne!(first, second);
+    let mut destination = Vm::new(NoHost, Limits::default());
+    let a = destination.bind_function(&first).unwrap();
+    let b = destination.bind_function(&second).unwrap();
+    assert_ne!(a, b, "code equality does not merge namespace authority");
+    assert_eq!(destination.bind_function(&first).unwrap(), a);
+    assert_eq!(destination.bind_function(&second).unwrap(), b);
+    assert!(destination.owns_instance(a.instance()));
+    assert!(destination.owns_instance(b.instance()));
 }

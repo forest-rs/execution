@@ -317,7 +317,7 @@
 //! ### Function values and code replacement
 //!
 //! A runtime `Value::Func` contains a `value::FunctionRef`, retaining an exact instance and
-//! local function ID. Resolve default entries with `Vm::function`; use `FunctionRef::new`
+//! local function ID. Resolve default entries with `Vm::function`; use `Instance::function`
 //! for an explicit instance. Closures carry the same qualified target and a store-local
 //! environment handle. Ordinary indirect calls follow that target, even when the current
 //! program defines another function at the same local ID. They share the execution's budgets,

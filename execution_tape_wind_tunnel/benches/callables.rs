@@ -222,7 +222,7 @@ fn retained_callables(c: &mut Criterion) {
             .instantiate(&program)
             .unwrap();
         let value = Closure {
-            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            func: source_instance.function(body).unwrap(),
             env,
         };
         group.bench_function(BenchmarkId::new("retain_capture", fields), |b| {

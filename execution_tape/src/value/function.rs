@@ -4,7 +4,7 @@
 //! Executable value identity is independent of the program currently interpreting it.
 
 use super::FuncId;
-use crate::{callable::CallableError, instance::Instance};
+use crate::instance::Instance;
 use core::fmt;
 
 /// A function in one exact code instance.
@@ -20,15 +20,6 @@ pub struct FunctionRef {
 }
 
 impl FunctionRef {
-    /// Resolves a local function ID in an explicitly retained instance.
-    /// An absent target is rejected before it can become an executable value.
-    pub fn new(instance: &Instance, function: FuncId) -> Result<Self, CallableError> {
-        if instance.program().function(function).is_none() {
-            return Err(CallableError::MissingFunction { function });
-        }
-        Ok(Self::from_verified(instance.clone(), function))
-    }
-
     pub(crate) fn from_verified(instance: Instance, function: FuncId) -> Self {
         Self { instance, function }
     }
@@ -41,7 +32,7 @@ impl FunctionRef {
 
     /// Local target in [`Self::instance`]'s definition.
     #[must_use]
-    pub fn function(&self) -> FuncId {
+    pub fn id(&self) -> FuncId {
         self.function
     }
 }

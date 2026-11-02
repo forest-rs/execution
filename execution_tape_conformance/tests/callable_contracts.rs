@@ -8,7 +8,7 @@ use execution_tape::contract::{Contract, ContractId, ContractPath, ContractPosit
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
-use execution_tape::value::{Closure, FuncId, FunctionRef, Value};
+use execution_tape::value::{Closure, FuncId, Value};
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig, VerifyError};
 use execution_tape::vm::{Limits, Trap, Vm};
 
@@ -541,7 +541,7 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
             rets: &mut [Value],
             context: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
-            rets[0] = Value::Func(FunctionRef::new(context.instance(), self.0).unwrap());
+            rets[0] = Value::Func(context.instance().function(self.0).unwrap());
             Ok(0)
         }
     }

@@ -464,10 +464,11 @@ impl Runtime {
         let Value::Closure(closure) = value else {
             return Err(Error::Abi("expected a guest closure"));
         };
-        let function = self
-            .run
+        let function = closure
+            .func
+            .instance()
             .program()
-            .function(closure.func.function())
+            .function(closure.func.id())
             .ok_or(Error::Abi("unknown closure body"))?;
         let expected = std::iter::once(ValueType::Agg).chain(args.iter().copied());
         if !function.arg_types().iter().copied().eq(expected)
