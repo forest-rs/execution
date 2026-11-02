@@ -532,6 +532,7 @@ impl<'a> Arena<'a> {
                 Ok(())
             } else {
                 Err(ContractViolation {
+                    contract_program: None,
                     contract: expected,
                     path: Vec::new(),
                     mismatch: ContractMismatch::Kind {
@@ -566,6 +567,7 @@ impl<'a> Arena<'a> {
                 };
                 if let Some(mismatch) = failure {
                     return Err(ContractViolation {
+                        contract_program: None,
                         contract: frame.expected,
                         path: path.clone(),
                         mismatch,
@@ -581,6 +583,7 @@ impl<'a> Arena<'a> {
                         let expected_fact = self.import(frame.expected);
                         if expected_fact != frame.actual {
                             return Err(ContractViolation {
+                                contract_program: None,
                                 contract: frame.expected,
                                 path: path.clone(),
                                 mismatch: ContractMismatch::Callable { function: None },
@@ -615,6 +618,7 @@ impl<'a> Arena<'a> {
                 {
                     if actual.descriptor != Descriptor::Aggregate(expected_descriptor) {
                         return Err(ContractViolation {
+                            contract_program: None,
                             contract: frame.expected,
                             path: path.clone(),
                             mismatch: ContractMismatch::Aggregate {

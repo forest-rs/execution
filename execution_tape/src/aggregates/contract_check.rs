@@ -6,8 +6,9 @@
 use super::*;
 use crate::contract::{Contract, ContractId, ContractMismatch, ContractPath, ContractViolation};
 use crate::program::ValueType;
-use crate::value::FuncId;
-use alloc::collections::BTreeSet;
+use crate::value::FunctionRef;
+use crate::verifier::VerifiedProgram;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub(crate) enum CheckError {
@@ -15,29 +16,48 @@ pub(crate) enum CheckError {
     Limit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Input {
     Aggregate(AggHandle),
-    Function(FuncId),
-    Closure(FuncId, AggHandle),
+    Function(FunctionRef),
+    Closure(FunctionRef, AggHandle),
 }
 impl Input {
     fn new(value: &Value) -> Option<Self> {
         match value {
             Value::Agg(handle) => Some(Self::Aggregate(*handle)),
-            Value::Func(function) => Some(Self::Function(*function)),
-            Value::Closure(closure) => Some(Self::Closure(closure.func, closure.env)),
+            Value::Func(function) => Some(Self::Function(function.clone())),
+            Value::Closure(closure) => Some(Self::Closure(closure.func.clone(), closure.env)),
             _ => None,
         }
     }
-    fn key(self, contract: ContractId) -> (u8, u32, u32, ContractId) {
+    fn key(
+        &self,
+        program: &Program,
+        contract: ContractId,
+    ) -> (usize, u8, usize, u32, u32, ContractId) {
+        let owner = core::ptr::from_ref(program) as usize;
         match self {
-            Self::Aggregate(handle) => (0, handle.0, 0, contract),
-            Self::Function(func) => (1, func.0, 0, contract),
-            Self::Closure(func, env) => (2, func.0, env.0, contract),
+            Self::Aggregate(handle) => (owner, 0, 0, handle.0, 0, contract),
+            Self::Function(func) => (
+                owner,
+                1,
+                core::ptr::from_ref(func.instance().program().program()) as usize,
+                func.function().0,
+                0,
+                contract,
+            ),
+            Self::Closure(func, env) => (
+                owner,
+                2,
+                core::ptr::from_ref(func.instance().program().program()) as usize,
+                func.function().0,
+                env.0,
+                contract,
+            ),
         }
     }
-    fn kind(self) -> ValueType {
+    fn kind(&self) -> ValueType {
         match self {
             Self::Aggregate(_) => ValueType::Agg,
             Self::Function(_) => ValueType::Func,
@@ -47,6 +67,7 @@ impl Input {
 }
 #[derive(Clone, Debug)]
 struct Frame {
+    program: Option<VerifiedProgram>,
     value: Input,
     contract: ContractId,
     next: usize,
@@ -56,10 +77,108 @@ struct Frame {
 #[derive(Debug, Default)]
 pub(crate) struct ContractScratch {
     frames: Vec<Frame>,
-    proven: BTreeSet<(u8, u32, u32, ContractId)>,
+    proven: BTreeSet<(usize, u8, usize, u32, u32, ContractId)>,
+    // Proof keys use definition addresses. Keep foreign definitions alive until the proof
+    // cache is cleared, including when a host replaces the last live reference mid-run.
+    definitions: BTreeMap<usize, VerifiedProgram>,
     work: u64,
 }
 impl ContractScratch {
+    pub(crate) fn retain_definition(&mut self, program: &VerifiedProgram) {
+        self.definitions
+            .entry(core::ptr::from_ref(program.program()) as usize)
+            .or_insert_with(|| program.clone());
+    }
+    pub(crate) fn same_signature(
+        &mut self,
+        expected: &Program,
+        args: &[ContractId],
+        rets: &[ContractId],
+        actual: &Program,
+        actual_args: &[ContractId],
+        actual_rets: &[ContractId],
+        limit: u64,
+    ) -> Result<bool, CheckError> {
+        if args.len() != actual_args.len() || rets.len() != actual_rets.len() {
+            return Ok(false);
+        }
+        let mut pending: Vec<_> = args
+            .iter()
+            .chain(rets)
+            .copied()
+            .zip(actual_args.iter().chain(actual_rets).copied())
+            .map(|(a, b)| (Some(a), Some(b)))
+            .collect();
+        let mut seen = BTreeSet::new();
+        let same_definition = core::ptr::eq(expected, actual);
+        while let Some((a, b)) = pending.pop() {
+            self.charge(limit)?;
+            let (Some(a), Some(b)) = (a, b) else {
+                if a != b {
+                    return Ok(false);
+                }
+                continue;
+            };
+            if (same_definition && a == b) || !seen.insert((a, b)) {
+                continue;
+            }
+            match (
+                expected.contracts.get(a).expect("verified contract"),
+                actual.contracts.get(b).expect("verified contract"),
+            ) {
+                (Contract::Kind(a), Contract::Kind(b)) if a == b => {}
+                (Contract::Tuple(a), Contract::Tuple(b)) if a.len() == b.len() => {
+                    pending.extend(a.iter().copied().zip(b.iter().copied()));
+                }
+                (
+                    Contract::Function { args: a, rets: ar },
+                    Contract::Function { args: b, rets: br },
+                )
+                | (
+                    Contract::Closure { args: a, rets: ar },
+                    Contract::Closure { args: b, rets: br },
+                ) if a.len() == b.len() && ar.len() == br.len() => {
+                    pending.extend(
+                        a.iter()
+                            .chain(ar)
+                            .copied()
+                            .zip(b.iter().chain(br).copied())
+                            .map(|(a, b)| (Some(a), Some(b))),
+                    );
+                }
+                (
+                    Contract::Struct {
+                        type_id: a,
+                        fields: af,
+                    },
+                    Contract::Struct {
+                        type_id: b,
+                        fields: bf,
+                    },
+                ) if same_definition && a == b && af.len() == bf.len() => {
+                    pending.extend(
+                        af.iter()
+                            .copied()
+                            .zip(bf.iter().copied())
+                            .map(|(a, b)| (Some(a), Some(b))),
+                    );
+                }
+                (
+                    Contract::Array {
+                        elem_type_id: a,
+                        element: ae,
+                    },
+                    Contract::Array {
+                        elem_type_id: b,
+                        element: be,
+                    },
+                ) if same_definition && a == b => pending.push((Some(ae), Some(be))),
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
     pub(crate) fn work_used(&self) -> u64 {
         self.work
     }
@@ -71,6 +190,7 @@ impl ContractScratch {
     pub(crate) fn clear_proofs(&mut self) {
         self.frames.clear();
         self.proven.clear();
+        self.definitions.clear();
     }
     pub(crate) fn charge(&mut self, limit: u64) -> Result<(), CheckError> {
         if self.work >= limit {
@@ -88,6 +208,7 @@ impl ContractScratch {
         let mut path: Vec<_> = self.frames.iter().filter_map(|frame| frame.path).collect();
         path.extend(child);
         CheckError::Mismatch(ContractViolation {
+            contract_program: self.frames.last().and_then(|frame| frame.program.clone()),
             contract,
             path,
             mismatch,
@@ -150,6 +271,7 @@ impl ContractScratch {
             };
         };
         self.frames.push(Frame {
+            program: None,
             value: input,
             contract,
             next: 0,
@@ -157,13 +279,20 @@ impl ContractScratch {
             path: None,
         });
         while let Some(frame) = self.frames.last().cloned() {
+            let program = frame
+                .program
+                .as_ref()
+                .map_or(program, |owner| owner.program());
             let contract = program
                 .contracts
                 .get(frame.contract)
                 .expect("verified contract");
             if !frame.entered {
                 self.charge(limit)?;
-                if self.proven.contains(&frame.value.key(frame.contract)) {
+                if self
+                    .proven
+                    .contains(&frame.value.key(program, frame.contract))
+                {
                     self.frames.pop();
                     continue;
                 }
@@ -191,38 +320,46 @@ impl ContractScratch {
                 }
                 Contract::Kind(_) => {}
                 Contract::Function { args, rets } | Contract::Closure { args, rets } => {
-                    let (function, environment) = match frame.value {
+                    let (function, environment) = match &frame.value {
                         Input::Function(function) => (function, None),
-                        Input::Closure(function, env) => (function, Some(env)),
+                        Input::Closure(function, env) => (function, Some(*env)),
                         _ => unreachable!("checked kind"),
                     };
-                    let actual = program.functions.get(function.0 as usize).ok_or_else(|| {
-                        self.failure(
-                            frame.contract,
-                            None,
-                            ContractMismatch::Callable {
-                                function: Some(function),
-                            },
-                        )
-                    })?;
-                    let actual_args = program.verified_contracts(actual.arg_types);
-                    let actual_rets = program.verified_contracts(actual.ret_types);
+                    let owner = function.instance().program();
+                    let actual_program = owner.program();
+                    if !core::ptr::eq(actual_program, program) {
+                        self.retain_definition(owner);
+                    }
+                    let actual = actual_program
+                        .functions
+                        .get(function.function().0 as usize)
+                        .ok_or_else(|| {
+                            self.failure(
+                                frame.contract,
+                                None,
+                                ContractMismatch::Callable {
+                                    function: Some(function.clone()),
+                                },
+                            )
+                        })?;
+                    let actual_args = actual_program.verified_contracts(actual.arg_types);
+                    let actual_rets = actual_program.verified_contracts(actual.ret_types);
                     let (env_contract, actual_args) = if environment.is_some() {
                         let Some((&env, rest)) = actual_args.split_first() else {
                             return Err(self.failure(
                                 frame.contract,
                                 None,
                                 ContractMismatch::Callable {
-                                    function: Some(function),
+                                    function: Some(function.clone()),
                                 },
                             ));
                         };
-                        if program.contracts.kind(env) != Some(ValueType::Agg) {
+                        if actual_program.contracts.kind(env) != Some(ValueType::Agg) {
                             return Err(self.failure(
                                 frame.contract,
                                 None,
                                 ContractMismatch::Callable {
-                                    function: Some(function),
+                                    function: Some(function.clone()),
                                 },
                             ));
                         }
@@ -230,27 +367,22 @@ impl ContractScratch {
                     } else {
                         (None, actual_args)
                     };
-                    let mut matches =
-                        actual_args.len() == args.len() && actual_rets.len() == rets.len();
-                    if !frame.entered && matches {
-                        for (&actual, &expected) in actual_args
-                            .iter()
-                            .chain(actual_rets)
-                            .zip(args.iter().chain(rets))
-                        {
-                            self.charge(limit)?;
-                            if actual != expected {
-                                matches = false;
-                                break;
-                            }
-                        }
-                    }
+                    let matches = frame.entered
+                        || self.same_signature(
+                            program,
+                            args,
+                            rets,
+                            actual_program,
+                            actual_args,
+                            actual_rets,
+                            limit,
+                        )?;
                     if !matches {
                         return Err(self.failure(
                             frame.contract,
                             None,
                             ContractMismatch::Callable {
-                                function: Some(function),
+                                function: Some(function.clone()),
                             },
                         ));
                     }
@@ -263,6 +395,7 @@ impl ContractScratch {
                             Input::Aggregate(env),
                             env_contract.unwrap(),
                             ContractPath::Environment,
+                            Some(owner.clone()),
                         ));
                     }
                 }
@@ -324,7 +457,12 @@ impl ContractScratch {
                         };
                         if let Some(expected) = expected {
                             if let Some(input) = Input::new(&values[index]) {
-                                child = Some((input, expected, ContractPath::Member(index)));
+                                child = Some((
+                                    input,
+                                    expected,
+                                    ContractPath::Member(index),
+                                    frame.program.clone(),
+                                ));
                             } else {
                                 self.charge(limit)?;
                                 let kind =
@@ -347,8 +485,9 @@ impl ContractScratch {
                     }
                 }
             }
-            if let Some((value, contract, path)) = child {
+            if let Some((value, contract, path, program)) = child {
                 self.frames.push(Frame {
+                    program,
                     value,
                     contract,
                     next: 0,
@@ -356,7 +495,7 @@ impl ContractScratch {
                     path: Some(path),
                 });
             } else {
-                self.proven.insert(frame.value.key(frame.contract));
+                self.proven.insert(frame.value.key(program, frame.contract));
                 self.frames.pop();
             }
         }
@@ -368,7 +507,7 @@ impl ContractScratch {
 mod tests {
     use super::*;
     use crate::asm::ProgramBuilder;
-    use crate::value::Closure;
+    use crate::value::{Closure, FuncId};
     use alloc::vec;
 
     #[test]
@@ -380,7 +519,11 @@ mod tests {
         let closure = builder
             .contract(Contract::Kind(ValueType::Closure))
             .unwrap();
-        let program = builder.build_checked().unwrap();
+        let program = builder.build_verified().unwrap();
+        let function_ref = FunctionRef::from_verified(
+            crate::instance::Instance::new(program.clone(), alloc::sync::Arc::new(()), 0, true),
+            FuncId(u32::MAX),
+        );
         let mut heap = AggHeap::new();
         let handle = heap.tuple_new(vec![]).unwrap();
         let mut scratch = ContractScratch::default();
@@ -388,27 +531,27 @@ mod tests {
         for (contract, value) in [
             (integer, Value::I64(42)),
             (aggregate, Value::Agg(handle)),
-            (function, Value::Func(FuncId(u32::MAX))),
+            (function, Value::Func(function_ref.clone())),
             (
                 closure,
                 Value::Closure(Closure {
-                    func: FuncId(u32::MAX),
+                    func: function_ref.clone(),
                     env: AggHandle(u32::MAX),
                 }),
             ),
         ] {
             scratch.reset();
             assert!(matches!(
-                scratch.check_value(&program, &heap, &value, contract, 0),
+                scratch.check_value(program.program(), &heap, &value, contract, 0),
                 Err(CheckError::Limit)
             ));
             assert_eq!(scratch.work, 0);
             scratch
-                .check_value(&program, &heap, &value, contract, 1)
+                .check_value(program.program(), &heap, &value, contract, 1)
                 .unwrap();
             assert_eq!(scratch.work, 1);
             assert!(matches!(
-                scratch.check_value(&program, &heap, &value, contract, 1),
+                scratch.check_value(program.program(), &heap, &value, contract, 1),
                 Err(CheckError::Limit)
             ));
             assert_eq!(
@@ -424,17 +567,17 @@ mod tests {
         scratch.reset();
         let invalid = Value::Agg(AggHandle(u32::MAX));
         assert!(matches!(
-            scratch.check_value(&program, &heap, &invalid, aggregate, 0),
+            scratch.check_value(program.program(), &heap, &invalid, aggregate, 0),
             Err(CheckError::Limit)
         ));
         assert!(
-            matches!(scratch.check_value(&program,&heap,&invalid,aggregate,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Heap(AggError::BadHandle),path,..})) if path.is_empty())
+            matches!(scratch.check_value(program.program(),&heap,&invalid,aggregate,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Heap(AggError::BadHandle),path,..})) if path.is_empty())
         );
         assert_eq!(scratch.work, 1);
         // Type disagreement precedes handle resolution, after exactly one charged visit.
         scratch.reset();
         assert!(
-            matches!(scratch.check_value(&program,&heap,&invalid,integer,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Kind{expected:ValueType::I64,actual:ValueType::Agg},path,..})) if path.is_empty())
+            matches!(scratch.check_value(program.program(),&heap,&invalid,integer,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Kind{expected:ValueType::I64,actual:ValueType::Agg},path,..})) if path.is_empty())
         );
         assert_eq!(scratch.work, 1);
         assert_eq!(scratch.frames.capacity(), 0);
@@ -442,11 +585,11 @@ mod tests {
         scratch.reset();
         for _ in 0..2 {
             scratch
-                .check_value(&program, &heap, &Value::Agg(handle), aggregate, 2)
+                .check_value(program.program(), &heap, &Value::Agg(handle), aggregate, 2)
                 .unwrap();
         }
         assert!(matches!(
-            scratch.check_value(&program, &heap, &Value::Agg(handle), aggregate, 2),
+            scratch.check_value(program.program(), &heap, &Value::Agg(handle), aggregate, 2),
             Err(CheckError::Limit)
         ));
         assert_eq!(scratch.work, 2);

@@ -338,6 +338,7 @@ impl Session {
         }
         match event {
             ControlEvent::EnterInstance {
+                origin,
                 location,
                 parent,
                 child,
@@ -392,6 +393,7 @@ impl Session {
                     sequence: self.slots[index].capture.as_ref().expect("source").sequence,
                     location,
                     action: execution::Action::Enter {
+                        origin,
                         parent: activation(parent),
                         child: activation(child),
                         args,

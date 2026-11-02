@@ -192,6 +192,7 @@ impl<'a> Context<'a> {
         let result = match (&transfer.action, event) {
             (
                 TransferAction::Enter {
+                    origin,
                     parent,
                     child,
                     args,
@@ -199,6 +200,7 @@ impl<'a> Context<'a> {
                     constructed,
                 },
                 ControlEvent::EnterInstance {
+                    origin: actual_origin,
                     parent: actual_parent,
                     child: actual_child,
                     source_instance,
@@ -216,7 +218,8 @@ impl<'a> Context<'a> {
                     .index(child.segment)
                     .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
                 let meta = &self.data.segments[target];
-                if endpoint(actual_parent) != *parent
+                if *origin != actual_origin
+                    || endpoint(actual_parent) != *parent
                     || endpoint(actual_child) != *child
                     || meta.parent != Some(*parent)
                     || meta.entry != Some(entry)
@@ -256,7 +259,7 @@ impl<'a> Context<'a> {
                     || endpoint(actual_child) != *child
                     || self.pending != Some(target)
                     || !self.data.segments[target].denied
-                    || !matches!(&record.end, Some(End::Trapped(expected)) if same_trap(expected, error))
+                    || !matches!(&record.end, Some(End::Trapped(expected)) if state.same_trap(expected, error))
                 {
                     return Err(self.qualify(index, state.mismatch(Divergence::Outcome)));
                 }
@@ -429,7 +432,7 @@ impl<'a> Context<'a> {
         let matches = match (&record.end, outcome) {
             (Some(End::Returned), TraceOutcome::Ok) => state.candidate,
             (Some(End::Trapped(expected)), TraceOutcome::Trap(actual)) => {
-                same_trap(expected, actual)
+                state.same_trap(expected, actual)
             }
             (Some(End::Transferred { target, .. }), TraceOutcome::Unwound { target: actual }) => {
                 self.target == Some(*target) && target.activation == actual
@@ -718,10 +721,16 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
     let entry = root.entry.as_ref().expect("complete root entry");
     let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
     let identities = Rc::new(RefCell::new(Identities::default()));
+    let namespace_map = prepare_instances(
+        &mut vm,
+        (0..data.segments.len()).filter_map(|index| data.evidence(root, index)),
+        &data.instances,
+    )?;
     let mut states = Vec::with_capacity(data.segments.len());
     for index in 0..data.segments.len() {
         states.push(data.evidence(root, index).map(|record| {
             Rc::new(RefCell::new(State {
+                instances: Some(Rc::clone(&namespace_map)),
                 global: Some(Rc::clone(&identities)),
                 origins: record.arena.nodes.iter().map(|node| node.origin).collect(),
                 ..State::default()
@@ -730,13 +739,7 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
     }
     let mut instances = Vec::with_capacity(data.instances.len());
     for source in &data.instances {
-        instances.push(vm.instantiate(source.program()).map_err(|_| {
-            states[0]
-                .as_ref()
-                .expect("root state")
-                .borrow()
-                .mismatch(Divergence::Outcome)
-        })?);
+        instances.push(namespace_map[&(Arc::as_ptr(&source.0) as usize)].clone());
     }
     // Restore the union of originally pre-existing nodes, including values first observed by
     // a child host. A child-entry snapshot also contains parent-created nodes; those must be
@@ -757,7 +760,9 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
             }
         }
     }
-    for (_, (index, id)) in initial {
+    for (index, id) in initial_order(initial, |index| {
+        data.evidence(root, index).expect("initial node source")
+    })? {
         let record = data.evidence(root, index).expect("initial node source");
         let node = record
             .aggregate(id)
@@ -879,8 +884,15 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
                             }
                         }
                         Next::Ordinary(Delivery::CallGuest { callee, args }) => {
-                            if let Err(error) = request.call_guest(callee, args) {
-                                break Err(error);
+                            match request.call_guest(callee, args) {
+                                Ok(()) => {}
+                                Err(crate::vm::ControlError::Trapped(error)) => break Err(error),
+                                Err(_) => {
+                                    return Err(context.borrow().mismatch(
+                                        context.borrow().current(),
+                                        Divergence::Outcome,
+                                    ));
+                                }
                             }
                         }
                         Next::Ordinary(Delivery::Host(outcome)) => {
@@ -921,7 +933,13 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
                 .snapshot(&values)
                 .map_err(ReplayError::Aggregate)?,
         )),
-        (Some(End::Trapped(expected)), Err(actual)) if same_trap(expected, &actual) => {
+        (Some(End::Trapped(expected)), Err(actual))
+            if context.states[0]
+                .as_ref()
+                .expect("root state")
+                .borrow()
+                .same_trap(expected, &actual) =>
+        {
             Ok(ReplayOutcome::Trapped(actual))
         }
         _ => Err(context.mismatch(0, Divergence::Outcome)),

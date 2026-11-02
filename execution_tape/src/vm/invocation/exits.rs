@@ -64,18 +64,22 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         target: &ActivationId,
         values: Vec<Value>,
     ) -> Result<(), ControlError> {
-        let local = self.running.continuation.control.target_index(target);
+        let local = self
+            .running
+            .continuation
+            .control
+            .target_index(&self.running.continuation.ctx, target);
         let ancestor = self.running.parents.as_ref().and_then(|parents| {
             parents
                 .iter()
                 .enumerate()
                 .rev()
-                .find_map(
-                    |(segment, parent)| match parent.control.target_index(target) {
+                .find_map(|(segment, parent)| {
+                    match parent.control.target_index(&parent.ctx, target) {
                         Err(ControlError::ForeignInvocation) => None,
                         result => Some((segment, result)),
-                    },
-                )
+                    }
+                })
         });
         let destination = match local {
             Ok(index) => (None, index),
@@ -200,7 +204,10 @@ impl<H: Host> Running<'_, '_, H> {
             let created = staged
                 .promote(self.vm.memory.aggs_mut())
                 .map_err(Trap::AggError)?;
-            let source = self.continuation.control.activation(pending.depth - 1);
+            let source = self
+                .continuation
+                .control
+                .activation(&self.continuation.ctx, pending.depth - 1);
             let destination = &self.parents.as_ref().expect("parent chain")[segment];
             self.continuation
                 .trace
@@ -297,7 +304,6 @@ impl<H: Host> Running<'_, '_, H> {
         finish_control_trace(self.continuation, outcome);
         self.budget.frames -= self.continuation.ctx.frames.len();
         self.continuation.ctx.clear();
-        self.continuation.control.truncate(0);
     }
 
     fn apply_exit(
@@ -364,7 +370,6 @@ impl<H: Host> Running<'_, '_, H> {
         self.budget.frames -= self.continuation.ctx.frames.len() - index;
         self.continuation.ctx.frames.truncate(index);
         self.continuation.ctx.truncate_to(target_base);
-        self.continuation.control.truncate(index);
         self.continuation.control.pending_host = restored;
         if let Some(callbacks) = &mut self.continuation.control.callbacks {
             callbacks.discard_exited(index);

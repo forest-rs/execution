@@ -4,7 +4,7 @@
 //! Execution-owned control composition. Segments share storage and a single transaction.
 
 use super::*;
-use crate::trace::ControlEvent;
+use crate::trace::{ControlEvent, EntryOrigin};
 use crate::value::AggType;
 use alloc::collections::BTreeSet;
 
@@ -17,7 +17,7 @@ impl<'request, 'state, H: Host> PendingHostCall<'request, 'state, H> {
     /// Drive it using the same invocation's `resume`. A successful child returns to this request
     /// with `callback_results`, without completing the host instruction or compacting the heap.
     ///
-    /// Raw functions and closures remain instance-local. Nominal aggregate identities
+    /// Functions and closures retain their own exact instances in this store. Nominal aggregate identities
     /// require the same verified definition. Host objects belong to the shared host store.
     /// Structural tuples are checked recursively before
     /// transfer, including their shared members. Provenance checks use the contract-work budget.
@@ -38,7 +38,9 @@ impl<'request, 'state, H: Host> PendingHostCall<'request, 'state, H> {
             return Err(ControlError::ForeignStore);
         }
         self.delivering = true;
-        let result = self.running.enter_instance(instance, entry, args, options);
+        let result =
+            self.running
+                .enter_instance(instance, entry, args, options, EntryOrigin::HostRequest);
         self.delivering = false;
         result.map_err(ControlError::Trapped)
     }
@@ -91,24 +93,30 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         )
     }
 
-    fn enter_instance(
+    pub(super) fn enter_instance(
         &mut self,
         instance: &Instance,
         entry: FuncId,
         args: Vec<Value>,
         options: InvocationOptions<'state>,
+        origin: EntryOrigin,
     ) -> Result<(), TrapInfo> {
-        let pending = self
-            .continuation
-            .control
-            .pending_host
-            .expect("pending host guard");
-        let location = pending.location;
+        let (location, depth) = if let Some(pending) = self.continuation.control.pending_guest {
+            (pending.location, pending.depth)
+        } else {
+            let pending = self
+                .continuation
+                .control
+                .pending_host
+                .expect("pending call");
+            (pending.location, pending.depth)
+        };
         let span = self.continuation.ctx.span_at(
             self.continuation.program.program(),
             location.func,
             location.pc,
         );
+        self.continuation.control.enable_identity();
         let mut child = continuation::Continuation::new(
             CodeOwner::Instance(instance.clone()),
             entry,
@@ -130,8 +138,11 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         child.control.segment = *next;
         *next = next
             .checked_add(1)
-            .expect("each new segment requires guest fuel and a host instruction");
-        let parent_id = self.continuation.control.activation(pending.depth - 1);
+            .expect("each new segment consumes execution fuel");
+        let parent_id = self
+            .continuation
+            .control
+            .activation(&self.continuation.ctx, depth - 1);
         child.parent = Some((parent_id.clone(), location));
         let child_id = child.control.root_activation();
         let result = (|| {
@@ -144,6 +155,7 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 .trace
                 .control(self.continuation.program.program(), || {
                     ControlEvent::EnterInstance {
+                        origin,
                         location,
                         parent: &parent_id,
                         child: &child_id,
@@ -161,10 +173,21 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                         aggregates: self.vm.memory.aggs(),
                     }
                 });
-            if self.budget.fuel == 0 {
-                return Err(Trap::FuelExceeded);
+            if origin == EntryOrigin::HostRequest {
+                if self.budget.fuel == 0 {
+                    return Err(Trap::FuelExceeded);
+                }
+                self.budget.fuel -= 1;
+                let payload = child.args.iter().try_fold(0_usize, |total, value| {
+                    let bytes = match value {
+                        Value::Bytes(bytes) => bytes.len(),
+                        Value::Str(text) => text.len(),
+                        _ => 0,
+                    };
+                    total.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
+                })?;
+                self.budget.data.charge_payload_bytes(payload, 1)?;
             }
-            self.budget.fuel -= 1;
             check_transfer(
                 self.vm.memory.aggs(),
                 &child.args,
@@ -253,8 +276,65 @@ impl<H: Host> Invocation<'_, H> {
             .continuation
             .returned_at
             .expect("actual child return site");
+        if let Some(pending) = parent.control.pending_guest {
+            let parent_id = parent.control.activation(&parent.ctx, pending.depth - 1);
+            let values = core::mem::take(&mut self.continuation.outputs);
+            self.continuation = parent;
+            let parent = &mut self.continuation;
+            parent
+                .control
+                .pending_guest
+                .as_mut()
+                .expect("waiting guest call")
+                .abandoned = true;
+            parent
+                .trace
+                .control(parent.program.program(), || ControlEvent::ReturnInstance {
+                    location,
+                    child: &child_id,
+                    parent: &parent_id,
+                    instance: &instance,
+                    values: &values,
+                    aggregates: self.vm.memory.aggs(),
+                });
+            let frame = &parent.ctx.frames[pending.depth - 1];
+            let base = frame.base;
+            let function = parent
+                .program
+                .verified(frame.func)
+                .expect("retained caller definition");
+            let destinations = function.vregs(pending.rets);
+            if destinations.len() != values.len() {
+                return Err(parent.ctx.trap(
+                    pending.location.func,
+                    pending.location.pc,
+                    None,
+                    Trap::ArityMismatch,
+                ));
+            }
+            for (&destination, value) in destinations.iter().zip(values) {
+                parent
+                    .ctx
+                    .write_owned_value(base, destination, value)
+                    .map_err(|trap| {
+                        parent
+                            .ctx
+                            .trap(pending.location.func, pending.location.pc, None, trap)
+                    })?;
+            }
+            let next = pending.instruction + 1;
+            let pc = function
+                .pc_at_ix(next)
+                .expect("verified guest call has a successor");
+            let frame = &mut parent.ctx.frames[pending.depth - 1];
+            frame.pc = pc;
+            frame.instr_ix = next;
+            parent.control.pending_guest = None;
+            self.budget.select(&parent.control);
+            return Ok(RunStatus::Suspended);
+        }
         let pending = parent.control.pending_host.expect("suspended parent host");
-        let parent_id = parent.control.activation(pending.depth - 1);
+        let parent_id = parent.control.activation(&parent.ctx, pending.depth - 1);
         parent.control.callbacks.get_or_insert_default().returned =
             Some(core::mem::take(&mut self.continuation.outputs));
         // Install the parent before observers run. A panicking observer cannot lose the live
@@ -295,7 +375,7 @@ impl<H: Host> Invocation<'_, H> {
     }
 }
 
-pub(super) fn check_transfer(
+pub(in crate::vm) fn check_transfer(
     heap: &AggHeap,
     values: &[Value],
     source: &Instance,
@@ -305,9 +385,6 @@ pub(super) fn check_transfer(
     function: FuncId,
     arguments: bool,
 ) -> Result<(), Trap> {
-    if source == target {
-        return Ok(());
-    }
     let same_definition = source.program().shares_definition_with(target.program());
     let mut seen = BTreeSet::new();
     for (index, value) in values.iter().enumerate() {
@@ -335,10 +412,20 @@ pub(super) fn check_transfer(
                     limit: limits.max_contract_work,
                 })?;
             match value {
-                Value::Func(_) | Value::Closure(_) => {
-                    return Err(Trap::CrossInstanceValue {
-                        kind: value.value_type(),
-                    });
+                Value::Func(function) => {
+                    if !Arc::ptr_eq(&function.instance().0.store, &target.0.store) {
+                        return Err(Trap::ForeignStoreValue {
+                            kind: ValueType::Func,
+                        });
+                    }
+                }
+                Value::Closure(closure) => {
+                    if !Arc::ptr_eq(&closure.func.instance().0.store, &target.0.store) {
+                        return Err(Trap::ForeignStoreValue {
+                            kind: ValueType::Closure,
+                        });
+                    }
+                    work.push(heap.fields(closure.env).map_err(Trap::AggError)?.iter());
                 }
                 Value::Agg(handle) if seen.insert(handle.0) => {
                     let kind = heap.agg_type(*handle).map_err(Trap::AggError)?;

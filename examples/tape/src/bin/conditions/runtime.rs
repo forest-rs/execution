@@ -467,7 +467,7 @@ impl Runtime {
         let function = self
             .run
             .program()
-            .function(closure.func)
+            .function(closure.func.function())
             .ok_or(Error::Abi("unknown closure body"))?;
         let expected = std::iter::once(ValueType::Agg).chain(args.iter().copied());
         if !function.arg_types().iter().copied().eq(expected)

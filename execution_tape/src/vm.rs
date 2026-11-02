@@ -182,7 +182,11 @@ impl Trap {
                 function,
                 position,
                 error,
-            } => (function, position, ContractBoundaryFailure::Mismatch(error)),
+            } => (
+                function,
+                position,
+                ContractBoundaryFailure::Mismatch(*error),
+            ),
             Self::ContractWorkExceeded {
                 function,
                 position,
@@ -253,6 +257,13 @@ pub enum Trap {
         /// Storage kind containing a code-local identity.
         kind: ValueType,
     },
+    /// An executable value belongs to another VM store.
+    ForeignStoreValue {
+        /// Executable value kind whose originating store is required.
+        kind: ValueType,
+    },
+    /// An observer unwound during an admitted guest control transfer.
+    GuestCallAbandoned,
     /// The initiating instruction checked a contract owned by another code definition.
     ContractBoundary(Box<ContractBoundaryError>),
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
@@ -295,7 +306,7 @@ pub enum Trap {
         /// Expected program-local indirect signature.
         signature: crate::program::CallSigId,
         /// Selected guest function.
-        function: FuncId,
+        function: crate::value::FunctionRef,
     },
     /// Aggregate heap error.
     AggError(AggError),
@@ -306,7 +317,7 @@ pub enum Trap {
         /// Argument or result position.
         position: ContractPosition,
         /// Nested expected/observed disagreement.
-        error: ContractViolation,
+        error: Box<ContractViolation>,
     },
     /// The run exhausted its aggregate contract validation work budget.
     ContractWorkExceeded {
@@ -373,6 +384,8 @@ impl fmt::Display for Trap {
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
             Self::InstanceLimitExceeded => write!(f, "VM instance capacity exhausted"),
             Self::CrossInstanceValue { kind } => write!(f, "cannot transfer code-local {kind:?} to another instance"),
+            Self::ForeignStoreValue { kind } => write!(f, "cannot execute {kind:?} from another VM store"),
+            Self::GuestCallAbandoned => f.write_str("guest control transfer was abandoned"),
             Self::ContractBoundary(error) => fmt::Display::fmt(error, f),
             Self::AggregateWorkExceeded {
                 limit,
@@ -406,7 +419,7 @@ impl fmt::Display for Trap {
             } => write!(
                 f,
                 "function #{} does not match indirect signature #{}",
-                function.0, signature.0
+                function.function().0, signature.0
             ),
             Self::AggError(e) => write!(f, "aggregate error: {e}"),
             Self::ContractMismatch {
@@ -531,6 +544,7 @@ struct RegBase {
 
 #[derive(Clone, Debug)]
 struct Frame {
+    activation: inspection::Activation,
     /// Current function id.
     func: FuncId,
     /// Current program counter (byte offset).
@@ -594,9 +608,9 @@ struct Registers {
     /// Aggregate registers (handles into the aggregate heap).
     aggs: Vec<AggHandle>,
     /// Function registers.
-    funcs: Vec<FuncId>,
+    funcs: Vec<Option<crate::value::FunctionRef>>,
     /// Closure registers.
-    closures: Vec<Closure>,
+    closures: Vec<Option<Closure>>,
 
     /// Call stack.
     frames: Vec<Frame>,
@@ -652,6 +666,19 @@ enum Progress {
     Suspended,
     AwaitingHost,
     Returned(ReturnSite),
+    GuestCall {
+        target: crate::value::FunctionRef,
+        args: Vec<Value>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingGuest {
+    location: TraceLocation,
+    instruction: usize,
+    depth: usize,
+    rets: VRegSlice,
+    abandoned: bool,
 }
 
 /// A simple register VM.
@@ -684,11 +711,6 @@ struct TraceCtx<'a> {
 }
 
 impl<'a> TraceCtx<'a> {
-    #[inline]
-    fn new(mask: TraceMask, sink: Option<&'a mut dyn TraceSink>) -> Self {
-        Self::with_observer(mask, sink.map(BorrowedOrOwned::Borrowed))
-    }
-
     fn with_observer(
         mask: TraceMask,
         sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
@@ -1314,97 +1336,39 @@ impl<H: Host> Vm<H> {
         args: &[Value],
         outputs: &mut Vec<Value>,
         trace_mask: TraceMask,
-        trace: Option<&mut dyn TraceSink>,
-        access: Option<&mut dyn AccessSink>,
+        mut trace: Option<&mut dyn TraceSink>,
+        mut access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        let ExecutionContext {
-            registers: ctx,
-            budget,
-        } = scratch;
-        budget.reset(&self.limits);
-        let original_len = outputs.len();
-        let checkpoint = self.memory.checkpoint();
-        let program_ref = program.program();
-        let mut trace = TraceCtx::new(trace_mask, trace);
-        trace.run_start(program_ref, entry, args.len());
-
-        // Keep two interpreter-loop instantiations: one no-trace fast path and one trace-capable
-        // path with per-mask checks, instead of specializing every trace-mask combination.
-        let trace_active = trace.active();
-
-        let result = if trace_active {
-            trace.values(program_ref, || ValueEvent::Entry {
-                entry,
-                args,
-                aggregates: self.memory.aggs(),
-                limits: &self.limits,
-                work: DataWork::default(),
-            });
-            self.run_body::<WithTracePolicy>(
-                ctx, budget, program, entry, args, outputs, checkpoint, &mut trace, access,
-            )
-        } else {
-            self.run_body::<NoTracePolicy>(
-                ctx, budget, program, entry, args, outputs, checkpoint, &mut trace, access,
-            )
+        let options = InvocationOptions {
+            mask: Some(trace_mask),
+            trace: trace
+                .as_mut()
+                .map(|sink| BorrowedOrOwned::Borrowed(sink as &mut dyn TraceSink)),
+            access: access
+                .as_mut()
+                .map(|sink| BorrowedOrOwned::Borrowed(sink as &mut dyn AccessSink)),
+            ..InvocationOptions::default()
         };
-
-        let outcome = match &result {
-            Ok(_) => TraceOutcome::Ok,
-            Err(e) => TraceOutcome::Trap(e),
-        };
-        if result.is_err() {
-            budget.frames -= ctx.frames.len();
-            budget.contract_scratch.clear_proofs();
-            self.memory.rollback(checkpoint);
-            outputs.truncate(original_len);
-        }
-        trace.finish(program_ref, outcome);
-        trace.run_end(program_ref, outcome);
-
+        let storage = core::mem::take(scratch);
+        let prior_outputs = core::mem::take(outputs);
+        let mut run =
+            Invocation::from_scratch(self, program, entry, args, options, storage, prior_outputs);
+        let result = run.initialize_scratch().and_then(|()| {
+            loop {
+                match run.resume_mode::<false>(u64::MAX) {
+                    Ok(RunStatus::Complete) => break Ok(()),
+                    Ok(RunStatus::Suspended) => {}
+                    Ok(RunStatus::AwaitingHost) => {
+                        unreachable!("synchronous execution dispatches its host")
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
+        });
+        let (storage, final_outputs) = run.recover_scratch();
+        *scratch = storage;
+        *outputs = final_outputs;
         result
-    }
-
-    #[inline]
-    fn run_body<P: TracePolicy>(
-        &mut self,
-        ctx: &mut Registers,
-        budget: &mut Budget,
-        program: &VerifiedProgram,
-        entry: FuncId,
-        args: &[Value],
-        outputs: &mut Vec<Value>,
-        checkpoint: Checkpoint,
-        trace: &mut TraceCtx<'_>,
-        access: Option<&mut dyn AccessSink>,
-    ) -> Result<(), TrapInfo> {
-        self.initialize_run::<P>(ctx, budget, program, entry, args, trace, None)?;
-        let mut register_state = P::RegisterState::default();
-        let first_output = outputs.len();
-        let progress = self.execute_loop::<P, false>(
-            ctx,
-            budget,
-            program,
-            entry,
-            args,
-            outputs,
-            trace,
-            access,
-            &mut register_state,
-            &mut ExecutionControl::default(),
-        )?;
-        let Progress::Returned(site) = progress else {
-            unreachable!("synchronous execution cannot suspend");
-        };
-        self.commit_return::<P>(
-            ctx,
-            budget,
-            program.program(),
-            checkpoint,
-            &mut outputs[first_output..],
-            trace,
-            site,
-        )
     }
 
     #[inline]
@@ -1448,6 +1412,7 @@ impl<H: Host> Vm<H> {
             .map_err(|t| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), t))?;
         budget.frames += 1;
         ctx.frames.push(Frame {
+            activation: inspection::Activation::default(),
             func: entry,
             pc: entry_vf.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
@@ -1664,7 +1629,21 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 ExecInstr::ConstFunc { dst, func_id } => {
-                    ctx.write_func(base, *dst, *func_id);
+                    let instance = if let Some(instance) = &ctx.instance {
+                        instance.clone()
+                    } else {
+                        let instance = self
+                            .instances
+                            .default_for(program)
+                            .map_err(|trap| ctx.trap(ctx.cur_func(), pc, span_id, trap))?;
+                        ctx.instance = Some(instance.clone());
+                        instance
+                    };
+                    ctx.write_func(
+                        base,
+                        *dst,
+                        crate::value::FunctionRef::from_verified(instance, *func_id),
+                    );
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
@@ -2203,6 +2182,7 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
+                        activation: inspection::Activation::default(),
                         func: *callee,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
@@ -2213,9 +2193,7 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if YIELD {
-                        control.enter(TraceLocation { func: func_id, pc });
-                    }
+                    control.enter(ctx, TraceLocation { func: func_id, pc });
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -2296,9 +2274,7 @@ impl<H: Host> Vm<H> {
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
                     budget.frames -= 1;
-                    if YIELD {
-                        control.leave();
-                    }
+
                     let Some(ret) = finished.return_to else {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
                     };
@@ -2529,7 +2505,34 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
                     }
 
-                    let callee_func = ctx.read_func(base, *callee);
+                    let callee_ref = ctx.read_func(base, *callee);
+                    if ctx.instance.is_none() {
+                        ctx.instance = Some(
+                            self.instances
+                                .default_for(program)
+                                .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?,
+                        );
+                    }
+                    if ctx.instance.as_ref() != Some(callee_ref.instance()) {
+                        return self.prepare_guest_transfer::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            root_args,
+                            invocation::guest_call::GuestTransfer {
+                                location: TraceLocation { func: func_id, pc },
+                                instruction: instr_ix,
+                                target: callee_ref,
+                                environment: None,
+                                signature: *call_sig,
+                                args: *args,
+                                rets: *dst_rets,
+                            },
+                            trace,
+                            control,
+                        );
+                    }
+                    let callee_func = callee_ref.function();
                     let callee_fn = program_ref
                         .functions
                         .get(callee_func.0 as usize)
@@ -2541,7 +2544,7 @@ impl<H: Host> Vm<H> {
                     validate_indirect_call_signature(
                         program,
                         *call_sig,
-                        callee_func,
+                        &callee_ref,
                         callee_fn,
                         IndirectCalleeKind::Func,
                     )
@@ -2573,6 +2576,7 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
+                        activation: inspection::Activation::default(),
                         func: callee_func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
@@ -2583,9 +2587,7 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if YIELD {
-                        control.enter(TraceLocation { func: func_id, pc });
-                    }
+                    control.enter(ctx, TraceLocation { func: func_id, pc });
                     P::call_scope_enter(
                         trace,
                         program_ref,
@@ -2612,18 +2614,44 @@ impl<H: Host> Vm<H> {
                     }
 
                     let callee = ctx.read_closure(base, *callee);
+                    if ctx.instance.is_none() {
+                        ctx.instance = Some(
+                            self.instances
+                                .default_for(program)
+                                .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?,
+                        );
+                    }
+                    if ctx.instance.as_ref() != Some(callee.func.instance()) {
+                        return self.prepare_guest_transfer::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            root_args,
+                            invocation::guest_call::GuestTransfer {
+                                location: TraceLocation { func: func_id, pc },
+                                instruction: instr_ix,
+                                target: callee.func,
+                                environment: Some(callee.env),
+                                signature: *call_sig,
+                                args: *args,
+                                rets: *dst_rets,
+                            },
+                            trace,
+                            control,
+                        );
+                    }
                     let callee_fn = program_ref
                         .functions
-                        .get(callee.func.0 as usize)
+                        .get(callee.func.function().0 as usize)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let callee_vf = program
-                        .verified(callee.func)
+                        .verified(callee.func.function())
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
 
                     validate_indirect_call_signature(
                         program,
                         *call_sig,
-                        callee.func,
+                        &callee.func,
                         callee_fn,
                         IndirectCalleeKind::Closure,
                     )
@@ -2653,7 +2681,7 @@ impl<H: Host> Vm<H> {
                         ctx,
                         budget,
                         program_ref,
-                        callee.func,
+                        callee.func.function(),
                         callee_vf,
                         callee_base,
                     )
@@ -2681,9 +2709,9 @@ impl<H: Host> Vm<H> {
                                     pc,
                                     span_id,
                                     self.contract_trap(
-                                        callee.func,
+                                        callee.func.function(),
                                         ContractPosition::Argument {
-                                            callee: callee.func,
+                                            callee: callee.func.function(),
                                             index: 0,
                                         },
                                         error,
@@ -2694,7 +2722,8 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
-                        func: callee.func,
+                        activation: inspection::Activation::default(),
+                        func: callee.func.function(),
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
@@ -2704,14 +2733,12 @@ impl<H: Host> Vm<H> {
                         }),
                     });
 
-                    if YIELD {
-                        control.enter(TraceLocation { func: func_id, pc });
-                    }
+                    control.enter(ctx, TraceLocation { func: func_id, pc });
                     P::call_scope_enter(
                         trace,
                         program_ref,
                         ctx.frames.len(),
-                        callee.func,
+                        callee.func.function(),
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation { func: func_id, pc }),
@@ -2727,9 +2754,47 @@ impl<H: Host> Vm<H> {
                         func: ctx.read_func(base, *func),
                         env: ctx.read_agg_handle(base, *env),
                     };
+                    if !self.owns_instance(closure.func.instance()) {
+                        return Err(ctx.trap(
+                            func_id,
+                            pc,
+                            span_id,
+                            Trap::ForeignStoreValue {
+                                kind: ValueType::Func,
+                            },
+                        ));
+                    }
+                    let target_program = closure.func.instance().program();
+                    let foreign_definition = !target_program.shares_definition_with(program);
+                    if foreign_definition {
+                        budget.contract_scratch.retain_definition(target_program);
+                        let source = self
+                            .instances
+                            .default_for(program)
+                            .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                        invocation::composition::check_transfer(
+                            self.memory.aggs(),
+                            &[Value::Agg(closure.env)],
+                            &source,
+                            closure.func.instance(),
+                            budget,
+                            &self.limits,
+                            closure.func.function(),
+                            true,
+                        )
+                        .map_err(|trap| {
+                            ctx.trap(
+                                func_id,
+                                pc,
+                                span_id,
+                                trap.in_contract_definition(target_program),
+                            )
+                        })?;
+                    }
+                    let program_ref = target_program.program();
                     let body = program_ref
                         .functions
-                        .get(closure.func.0 as usize)
+                        .get(closure.func.function().0 as usize)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let env_contract = *program_ref
                         .verified_contracts(body.arg_types)
@@ -2756,19 +2821,21 @@ impl<H: Host> Vm<H> {
                             self.limits.max_contract_work,
                         )
                         .map_err(|error| {
-                            ctx.trap(
-                                func_id,
-                                pc,
-                                span_id,
-                                self.contract_trap(
-                                    closure.func,
+                            ctx.trap(func_id, pc, span_id, {
+                                let trap = self.contract_trap(
+                                    closure.func.function(),
                                     ContractPosition::Argument {
-                                        callee: closure.func,
+                                        callee: closure.func.function(),
                                         index: 0,
                                     },
                                     error,
-                                ),
-                            )
+                                );
+                                if foreign_definition {
+                                    trap.in_contract_definition(target_program)
+                                } else {
+                                    trap
+                                }
+                            })
                         })?;
                     ctx.write_closure(base, *dst, closure);
                     ctx.frames[frame_index].pc = next_pc;
@@ -3504,7 +3571,7 @@ impl<H: Host> Vm<H> {
             CheckError::Mismatch(error) => Trap::ContractMismatch {
                 function,
                 position,
-                error,
+                error: Box::new(error),
             },
             CheckError::Limit => Trap::ContractWorkExceeded {
                 function,
@@ -3569,14 +3636,8 @@ impl Registers {
             },
         );
         self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
-        self.funcs.resize(base.funcs + counts.funcs, FuncId(0));
-        self.closures.resize(
-            base.closures + counts.closures,
-            Closure {
-                func: FuncId(0),
-                env: AggHandle(0),
-            },
-        );
+        self.funcs.resize(base.funcs + counts.funcs, None);
+        self.closures.resize(base.closures + counts.closures, None);
 
         base
     }
@@ -3682,11 +3743,11 @@ impl Registers {
                 Ok(())
             }
             (VReg::Func(r), Value::Func(f)) => {
-                self.write_func(base, r, *f);
+                self.write_func(base, r, f.clone());
                 Ok(())
             }
             (VReg::Closure(r), Value::Closure(c)) => {
-                self.write_closure(base, r, *c);
+                self.write_closure(base, r, c.clone());
                 Ok(())
             }
             _ => Err(Trap::InvalidPc),
@@ -3901,22 +3962,28 @@ impl Registers {
 
     #[inline(always)]
     #[must_use]
-    fn read_func(&self, base: RegBase, r: FuncReg) -> FuncId {
+    fn read_func(&self, base: RegBase, r: FuncReg) -> crate::value::FunctionRef {
         self.funcs[base.funcs + r.0 as usize]
+            .as_ref()
+            .expect("initialized function register")
+            .clone()
     }
     #[inline(always)]
-    fn write_func(&mut self, base: RegBase, r: FuncReg, v: FuncId) {
-        self.funcs[base.funcs + r.0 as usize] = v;
+    fn write_func(&mut self, base: RegBase, r: FuncReg, v: crate::value::FunctionRef) {
+        self.funcs[base.funcs + r.0 as usize] = Some(v);
     }
 
     #[inline(always)]
     #[must_use]
     fn read_closure(&self, base: RegBase, r: ClosureReg) -> Closure {
         self.closures[base.closures + r.0 as usize]
+            .as_ref()
+            .expect("initialized closure register")
+            .clone()
     }
     #[inline(always)]
     fn write_closure(&mut self, base: RegBase, r: ClosureReg, v: Closure) {
-        self.closures[base.closures + r.0 as usize] = v;
+        self.closures[base.closures + r.0 as usize] = Some(v);
     }
 
     #[inline]
@@ -4041,10 +4108,11 @@ enum IndirectCalleeKind {
 fn validate_indirect_call_signature(
     verified: &VerifiedProgram,
     call_sig: crate::program::CallSigId,
-    callee_func: FuncId,
+    callee: &crate::value::FunctionRef,
     callee_fn: &Function,
     callee_kind: IndirectCalleeKind,
 ) -> Result<(), Trap> {
+    let callee_func = callee.function();
     let expected = verified
         .call_sig_fingerprint(call_sig)
         .ok_or(Trap::InvalidPc)?;
@@ -4070,7 +4138,7 @@ fn validate_indirect_call_signature(
     )?;
     Err(Trap::CallableSignatureMismatch {
         signature: call_sig,
-        function: callee_func,
+        function: callee.clone(),
     })
 }
 
@@ -4139,8 +4207,8 @@ fn read_value_ref_at<'a>(
     strs: &'a [StrHandle],
     objs: &'a [Obj],
     aggs: &'a [AggHandle],
-    funcs: &'a [FuncId],
-    closures: &'a [Closure],
+    funcs: &'a [Option<crate::value::FunctionRef>],
+    closures: &'a [Option<Closure>],
     base: RegBase,
     v: VReg,
 ) -> Result<ValueRef<'a>, Trap> {
@@ -4161,8 +4229,16 @@ fn read_value_ref_at<'a>(
         }
         VReg::Obj(r) => ValueRef::Obj(objs[base.objs + r.0 as usize]),
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
-        VReg::Func(r) => ValueRef::Func(funcs[base.funcs + r.0 as usize]),
-        VReg::Closure(r) => ValueRef::Closure(closures[base.closures + r.0 as usize]),
+        VReg::Func(r) => ValueRef::Func(
+            funcs[base.funcs + r.0 as usize]
+                .as_ref()
+                .expect("initialized function register"),
+        ),
+        VReg::Closure(r) => ValueRef::Closure(
+            closures[base.closures + r.0 as usize]
+                .as_ref()
+                .expect("initialized closure register"),
+        ),
     })
 }
 
@@ -4241,6 +4317,7 @@ fn f64_max_num(a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::FunctionRef;
 
     #[test]
     fn clearing_context_releases_payloads_and_preserves_register_capacity() {
@@ -4857,27 +4934,27 @@ mod tests {
         for run in 0..3 {
             let outputs = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
             assert_eq!(vm.aggregates().len_u32(), (run + 1) * 2);
-            let [Value::Agg(root), Value::Closure(closure)] = outputs[..] else {
+            let [Value::Agg(root), Value::Closure(closure)] = &outputs[..] else {
                 panic!("unexpected returned graph");
             };
             assert_eq!(
-                vm.aggregates().tuple_get(root, 0),
+                vm.aggregates().tuple_get(*root, 0),
                 Ok(Value::Agg(closure.env))
             );
             assert_eq!(
-                vm.aggregates().tuple_get(root, 1),
-                Ok(Value::Closure(closure))
+                vm.aggregates().tuple_get(*root, 1),
+                Ok(Value::Closure(closure.clone()))
             );
             assert_eq!(
-                vm.aggregates().tuple_get(root, 2),
+                vm.aggregates().tuple_get(*root, 2),
                 Ok(Value::Agg(closure.env))
             );
-            assert_eq!(closure.func, target);
+            assert_eq!(closure.func.function(), target);
             assert_eq!(
                 vm.aggregates().tuple_get(closure.env, 0),
                 Ok(Value::Str("retained text".into()))
             );
-            prior.push(root);
+            prior.push(*root);
             for &old_root in &prior {
                 assert_eq!(
                     vm.run(
@@ -4941,16 +5018,17 @@ mod tests {
                 )
                 .unwrap();
             let program = pb.build_verified().unwrap();
+            let mut vm = Vm::new(TestHost, Limits::default());
+            let instance = vm.instances.default_for(&program).unwrap();
             let invalid = AggHandle(99);
             let arg = if ty == ValueType::Agg {
                 Value::Agg(invalid)
             } else {
                 Value::Closure(Closure {
-                    func: entry,
+                    func: FunctionRef::from_verified(instance.clone(), entry),
                     env: invalid,
                 })
             };
-            let mut vm = Vm::new(TestHost, Limits::default());
             let mut outputs = vec![Value::I64(12)];
             let mut ctx = ExecutionContext::new();
             let mut ends = Ends::default();
@@ -4978,7 +5056,10 @@ mod tests {
             let valid = if ty == ValueType::Agg {
                 Value::Agg(env)
             } else {
-                Value::Closure(Closure { func: entry, env })
+                Value::Closure(Closure {
+                    func: FunctionRef::from_verified(instance.clone(), entry),
+                    env,
+                })
             };
             vm.run_with_ctx(
                 &mut ctx,
@@ -5922,24 +6003,25 @@ mod tests {
         )
         .unwrap();
         let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
 
         let closure = Closure {
-            func: FuncId(123),
+            func: FunctionRef::from_verified(instance.clone(), FuncId(123)),
             env: AggHandle(0),
         };
 
-        let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
                 FuncId(0),
-                &[Value::Closure(closure)],
+                &[Value::Closure(closure.clone())],
                 TraceMask::NONE,
                 None,
             )
             .unwrap();
-        assert_eq!(out, vec![Value::Closure(closure)]);
+        assert_eq!(out, vec![Value::Closure(closure.clone())]);
     }
 
     #[test]
@@ -5965,24 +6047,25 @@ mod tests {
         )
         .unwrap();
         let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
 
         let closure = Closure {
-            func: FuncId(42),
+            func: FunctionRef::from_verified(instance.clone(), FuncId(42)),
             env: AggHandle(0),
         };
 
-        let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
                 FuncId(0),
-                &[Value::Closure(closure)],
+                &[Value::Closure(closure.clone())],
                 TraceMask::NONE,
                 None,
             )
             .unwrap();
-        assert_eq!(out, vec![Value::Closure(closure)]);
+        assert_eq!(out, vec![Value::Closure(closure.clone())]);
     }
 
     #[test]
@@ -6034,11 +6117,11 @@ mod tests {
             .run(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
             .unwrap();
         let closure = match out.as_slice() {
-            [Value::Closure(c)] => *c,
+            [Value::Closure(c)] => c.clone(),
             other => panic!("expected single closure return, got {other:?}"),
         };
 
-        assert_eq!(closure.func, FuncId(0));
+        assert_eq!(closure.func.function(), FuncId(0));
         assert_eq!(closure.env, env);
         assert_eq!(vm.aggregates().tuple_len(closure.env), Ok(2));
         assert_eq!(
@@ -6318,13 +6401,17 @@ mod tests {
             0
         );
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
-
         let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
+
         let err = vm
             .run(
                 &p,
                 FuncId(0),
-                &[Value::Func(FuncId(1))],
+                &[Value::Func(FunctionRef::from_verified(
+                    instance.clone(),
+                    FuncId(1),
+                ))],
                 TraceMask::NONE,
                 None,
             )
@@ -6391,13 +6478,17 @@ mod tests {
             0
         );
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
-
         let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
+
         let err = vm
             .run(
                 &p,
                 FuncId(0),
-                &[Value::Func(FuncId(1))],
+                &[Value::Func(FunctionRef::from_verified(
+                    instance.clone(),
+                    FuncId(1),
+                ))],
                 TraceMask::NONE,
                 None,
             )
@@ -6444,14 +6535,15 @@ mod tests {
         );
         assert_eq!(add_call_sig(&mut p, &[], &[ValueType::I64]), 0);
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
-
         let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
+
         let err = vm
             .run(
                 &p,
                 FuncId(0),
                 &[Value::Closure(Closure {
-                    func: FuncId(99),
+                    func: FunctionRef::from_verified(instance.clone(), FuncId(99)),
                     env: AggHandle(0),
                 })],
                 TraceMask::NONE,
@@ -6543,24 +6635,25 @@ mod tests {
         )
         .unwrap();
         let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
 
         let closure = Closure {
-            func: FuncId(42),
+            func: FunctionRef::from_verified(instance.clone(), FuncId(42)),
             env: AggHandle(0),
         };
 
-        let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
                 FuncId(0),
-                &[Value::Closure(closure)],
+                &[Value::Closure(closure.clone())],
                 TraceMask::NONE,
                 None,
             )
             .unwrap();
-        assert_eq!(out, vec![Value::Closure(closure)]);
+        assert_eq!(out, vec![Value::Closure(closure.clone())]);
     }
 
     #[test]
@@ -6588,18 +6681,19 @@ mod tests {
         )
         .unwrap();
         let p = pb.build_verified().unwrap();
+        let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
 
         let closure_a = Closure {
-            func: FuncId(10),
+            func: FunctionRef::from_verified(instance.clone(), FuncId(10)),
             env: AggHandle(0),
         };
         let closure_b = Closure {
-            func: FuncId(20),
+            func: FunctionRef::from_verified(instance.clone(), FuncId(20)),
             env: AggHandle(1),
         };
 
         // cond=true → selects r2 (closure_a)
-        let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let out = vm
@@ -6608,14 +6702,14 @@ mod tests {
                 FuncId(0),
                 &[
                     Value::Bool(true),
-                    Value::Closure(closure_a),
-                    Value::Closure(closure_b),
+                    Value::Closure(closure_a.clone()),
+                    Value::Closure(closure_b.clone()),
                 ],
                 TraceMask::NONE,
                 None,
             )
             .unwrap();
-        assert_eq!(out, vec![Value::Closure(closure_a)]);
+        assert_eq!(out, vec![Value::Closure(closure_a.clone())]);
 
         // cond=false → selects r3 (closure_b)
         let mut vm = Vm::new(TestHost, Limits::default());
@@ -6627,14 +6721,14 @@ mod tests {
                 FuncId(0),
                 &[
                     Value::Bool(false),
-                    Value::Closure(closure_a),
-                    Value::Closure(closure_b),
+                    Value::Closure(closure_a.clone()),
+                    Value::Closure(closure_b.clone()),
                 ],
                 TraceMask::NONE,
                 None,
             )
             .unwrap();
-        assert_eq!(out, vec![Value::Closure(closure_b)]);
+        assert_eq!(out, vec![Value::Closure(closure_b.clone())]);
     }
 
     #[test]
@@ -6878,15 +6972,16 @@ mod tests {
         // call_sig: () -> I64 — mismatches callee's return type of U64
         assert_eq!(add_call_sig(&mut p, &[], &[ValueType::I64]), 0);
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
-
         let mut vm = Vm::new(TestHost, Limits::default());
+        let instance = vm.instances.default_for(&p).unwrap();
+
         let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let err = vm
             .run(
                 &p,
                 FuncId(0),
                 &[Value::Closure(Closure {
-                    func: FuncId(1),
+                    func: FunctionRef::from_verified(instance.clone(), FuncId(1)),
                     env,
                 })],
                 TraceMask::NONE,

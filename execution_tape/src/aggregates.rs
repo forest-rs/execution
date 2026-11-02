@@ -106,7 +106,7 @@ pub struct AggHeap {
 /// Owned values and their reachable aggregate graph, independent of the source heap.
 ///
 /// Snapshots retain exact byte/string contents and sharing between aggregate references.
-/// Host objects remain host-owned handles; function IDs still refer to their original program.
+/// Host objects remain host-owned handles; functions retain their exact originating instance.
 /// Import into a destination heap before passing snapshot aggregate handles to that VM.
 #[derive(Clone, Debug)]
 pub struct ValueSnapshot {
@@ -629,6 +629,19 @@ impl AggHeap {
         Ok(values)
     }
 
+    pub(crate) fn visit_values_mut_from<E>(
+        &mut self,
+        first: u32,
+        mut visit: impl FnMut(&mut Value) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for node in &mut self.nodes[first as usize..] {
+            for value in node.values_mut() {
+                visit(value)?;
+            }
+        }
+        Ok(())
+    }
+
     fn copy_roots_into(&self, target: &mut Self, roots: &mut [Value]) -> Result<(), AggError> {
         copy_roots_into(|handle| self.node(handle), target, roots)
     }
@@ -917,10 +930,19 @@ fn copy_roots_into<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::{Closure, FuncId};
+    use crate::value::{Closure, FuncId, FunctionRef};
 
     #[test]
     fn staging_promotion_keeps_handles_sharing_and_payload_allocations() {
+        let function_8 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(8),
+        );
         let mut base = AggHeap::new();
         let original = base.tuple_new(vec![Value::I64(1)]).unwrap();
         let bytes = vec![42; 4096];
@@ -934,7 +956,7 @@ mod tests {
             .tuple_new(vec![
                 Value::Agg(child),
                 Value::Closure(Closure {
-                    func: FuncId(8),
+                    func: function_8.clone(),
                     env: child,
                 }),
             ])
@@ -945,7 +967,7 @@ mod tests {
         assert_eq!(
             base.tuple_get(root, 1),
             Ok(Value::Closure(Closure {
-                func: FuncId(8),
+                func: function_8.clone(),
                 env: child
             }))
         );
@@ -976,6 +998,15 @@ mod tests {
 
     #[test]
     fn consuming_snapshot_moves_payloads_and_preserves_aliases() {
+        let function_7 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(7),
+        );
         let mut heap = AggHeap::new();
         let discarded = heap.tuple_new(vec![Value::I64(-1)]).unwrap();
         let payload = vec![42_u8; 4096];
@@ -993,7 +1024,7 @@ mod tests {
             .into_snapshot(vec![
                 Value::Agg(root),
                 Value::Closure(Closure {
-                    func: FuncId(7),
+                    func: function_7.clone(),
                     env: child,
                 }),
             ])
@@ -1018,7 +1049,7 @@ mod tests {
         assert_eq!(
             snapshot.values()[1],
             Value::Closure(Closure {
-                func: FuncId(7),
+                func: function_7.clone(),
                 env: first
             })
         );
@@ -1064,6 +1095,15 @@ mod tests {
 
     #[test]
     fn snapshots_preserve_sharing_identity_and_contents_across_heaps() {
+        let function_42 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(42),
+        );
         let mut source = AggHeap::new();
         let child = source
             .tuple_new(vec![Value::Bytes(vec![1, 2]), Value::Str("é".into())])
@@ -1078,7 +1118,7 @@ mod tests {
                 Value::Agg(child),
                 Value::Agg(equal_distinct),
                 Value::Closure(Closure {
-                    func: FuncId(42),
+                    func: function_42.clone(),
                     env: child,
                 }),
             ])
@@ -1105,7 +1145,7 @@ mod tests {
         assert_eq!(
             snapshot.aggregates().tuple_get(root, 3),
             Ok(Value::Closure(Closure {
-                func: FuncId(42),
+                func: function_42.clone(),
                 env: first
             }))
         );
@@ -1151,10 +1191,19 @@ mod tests {
 
     #[test]
     fn constructors_reject_dangling_children_and_closure_environments_atomically() {
+        let function_0 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(0),
+        );
         for value in [
             Value::Agg(AggHandle(0)),
             Value::Closure(Closure {
-                func: FuncId(0),
+                func: function_0.clone(),
                 env: AggHandle(0),
             }),
         ] {
@@ -1649,6 +1698,15 @@ mod tests {
 
     #[test]
     fn delta_merge_traces_and_remaps_root_closure_env() {
+        let function_5 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(5),
+        );
         let mut base = AggHeap::new();
         let _ = base.tuple_new(vec![Value::I64(7)]).unwrap(); // base node 0
 
@@ -1660,7 +1718,7 @@ mod tests {
             o.tuple_new(vec![Value::I64(42)]).expect("alloc")
         });
         let mut roots = vec![Value::Closure(Closure {
-            func: FuncId(5),
+            func: function_5.clone(),
             env,
         })];
 
@@ -1674,13 +1732,22 @@ mod tests {
         let Value::Closure(merged) = &roots[0] else {
             panic!("expected closure root");
         };
-        assert_eq!(merged.func, FuncId(5)); // function id preserved
+        assert_eq!(merged.func, function_5); // function id preserved
         assert_eq!(merged.env, AggHandle(1)); // staged env remapped into base domain
         assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(42)));
     }
 
     #[test]
     fn delta_merge_rewrites_closure_env_nested_in_staged_aggregate() {
+        let function_8 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(8),
+        );
         let mut base = AggHeap::new();
 
         // The unreachable filler at staged index 0 makes the env's remap non-trivial (encoded 1
@@ -1689,7 +1756,7 @@ mod tests {
             let _unreachable = o.tuple_new(vec![Value::I64(7)]).expect("alloc");
             let env = o.tuple_new(vec![Value::I64(3)]).expect("alloc");
             let closure = Value::Closure(Closure {
-                func: FuncId(8),
+                func: function_8.clone(),
                 env,
             });
             o.tuple_new(vec![closure]).expect("alloc")
@@ -1705,7 +1772,7 @@ mod tests {
         let Value::Closure(merged) = field else {
             panic!("expected closure field");
         };
-        assert_eq!(merged.func, FuncId(8));
+        assert_eq!(merged.func, function_8);
         assert!(merged.env.0 < base.len_u32()); // env rewritten into base domain
         assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(3)));
     }

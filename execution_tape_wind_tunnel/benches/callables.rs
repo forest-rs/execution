@@ -138,6 +138,7 @@ fn callables(c: &mut Criterion) {
                 } else {
                     Value::I64(42)
                 };
+                let target = vm.function(&p, target).unwrap();
                 let callee = if closure {
                     let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
                     Value::Closure(Closure { func: target, env })
@@ -217,17 +218,19 @@ fn retained_callables(c: &mut Criterion) {
         let env = heap
             .tuple_new(vec![Value::Str("sixteen bytes!!!".into()); fields])
             .unwrap();
-        let value = Closure { func: body, env };
+        let source_instance = Vm::new(NoHost, Limits::default())
+            .instantiate(&program)
+            .unwrap();
+        let value = Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            env,
+        };
         group.bench_function(BenchmarkId::new("retain_capture", fields), |b| {
             b.iter(|| {
-                black_box(
-                    Callable::retain(Arc::clone(&program), &heap, ValueRef::Closure(value))
-                        .unwrap(),
-                );
+                black_box(Callable::retain(&heap, ValueRef::Closure(&value)).unwrap());
             })
         });
-        let callable =
-            Callable::retain(Arc::clone(&program), &heap, ValueRef::Closure(value)).unwrap();
+        let callable = Callable::retain(&heap, ValueRef::Closure(&value)).unwrap();
         group.bench_function(BenchmarkId::new("clone", fields), |b| {
             b.iter(|| {
                 black_box(black_box(&callable).clone());

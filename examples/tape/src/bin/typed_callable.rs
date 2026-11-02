@@ -80,7 +80,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = std::env::args_os().nth(1) {
         std::fs::write(path, program.program().encode())?;
     }
-    let result = Vm::new(NoHost, Limits::default()).run(
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let target = vm.function(&program, target)?;
+    let result = vm.run(
         &program,
         entry,
         &[Value::Func(target)],

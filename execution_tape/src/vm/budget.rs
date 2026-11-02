@@ -47,7 +47,12 @@ impl Budget {
     }
 
     pub(super) fn select(&mut self, control: &ExecutionControl) {
-        let owner = control.owner();
+        let Some(owner) = control.proof_owner() else {
+            if self.proof_owner.take().is_some() {
+                self.contract_scratch.clear_proofs();
+            }
+            return;
+        };
         if !self
             .proof_owner
             .as_ref()

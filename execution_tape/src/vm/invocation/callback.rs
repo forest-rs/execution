@@ -44,7 +44,7 @@ impl Callbacks {
 }
 
 impl<H: Host> PendingHostCall<'_, '_, H> {
-    /// Starts a same-program guest function or closure while retaining this host request.
+    /// Starts a guest function or closure in its exact instance while retaining this host request.
     ///
     /// Consumes the view, not the host operation. Drive the same invocation with `resume`:
     /// the callback may yield further host requests, whose guards support the same operation.
@@ -52,8 +52,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Take its callback results, then complete the host operation explicitly. Repeated calls
     /// discard any untaken previous callback results.
     ///
-    /// The target and all raw argument handles belong to this invocation's code/heap domain;
-    /// this does not import a foreign callable. Closure arguments exclude the hidden environment.
+    /// The target must belong to this VM store; it may retain another verified definition. Raw
+    /// aggregate handles use this VM heap. Closure arguments exclude the hidden environment.
     /// Arguments move into the invocation. Their immediate byte/string lengths are charged as
     /// host ingress; result materialization uses the ordinary payload-work budget. Each callback
     /// consumes one hard-fuel unit and shares call-depth, host-call and contract limits with its
@@ -67,11 +67,40 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ///
     /// Callback entry/return and actual guest ancestry are observable. The boundary recorder
     /// retains the command and its actual return; checked replay reexecutes the guest callback.
-    pub fn call_guest(mut self, callee: Value, args: Vec<Value>) -> Result<(), TrapInfo> {
+    pub fn call_guest(mut self, callee: Value, mut args: Vec<Value>) -> Result<(), ControlError> {
+        let target = match &callee {
+            Value::Func(function) => Some((function.clone(), None)),
+            Value::Closure(closure) => Some((closure.func.clone(), Some(closure.env))),
+            _ => None,
+        };
+        if let Some((target, environment)) = target {
+            if !self.running.vm.owns_instance(target.instance()) {
+                return Err(ControlError::ForeignStore);
+            }
+            if self.running.continuation.ctx.instance.as_ref() != Some(target.instance()) {
+                if let Some(environment) = environment {
+                    args.insert(0, Value::Agg(environment));
+                }
+                self.delivering = true;
+                let options = InvocationOptions {
+                    yield_host_calls: self.running.continuation.control.yield_host_calls,
+                    ..InvocationOptions::default()
+                };
+                let result = self.running.enter_instance(
+                    target.instance(),
+                    target.function(),
+                    args,
+                    options,
+                    crate::trace::EntryOrigin::HostRequest,
+                );
+                self.delivering = false;
+                return result.map_err(ControlError::Trapped);
+            }
+        }
         self.delivering = true;
         let result = self.running.begin_callback(callee, args);
         self.delivering = false;
-        result
+        result.map_err(ControlError::Trapped)
     }
 
     /// Borrows the latest successful callback results without consuming them.
@@ -172,8 +201,8 @@ impl<H: Host> Running<'_, '_, H> {
             return Err(Trap::CallDepthExceeded);
         }
         let (function, environment) = match callee {
-            Value::Func(function) => (*function, None),
-            Value::Closure(closure) => (closure.func, Some(closure.env)),
+            Value::Func(function) => (function.function(), None),
+            Value::Closure(closure) => (closure.func.function(), Some(closure.env)),
             value => {
                 return Err(Trap::TypeMismatch {
                     expected: ValueType::Func,
@@ -249,6 +278,7 @@ impl<H: Host> Running<'_, '_, H> {
         }
         self.budget.frames += 1;
         self.continuation.ctx.frames.push(Frame {
+            activation: inspection::Activation::default(),
             func: function,
             pc: prepared.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
@@ -256,7 +286,9 @@ impl<H: Host> Running<'_, '_, H> {
             base,
             return_to: None,
         });
-        self.continuation.control.enter(pending.location);
+        self.continuation
+            .control
+            .enter(&mut self.continuation.ctx, pending.location);
         let callbacks = self
             .continuation
             .control
@@ -337,7 +369,6 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     ctx.frames.pop().expect("callback root frame");
     budget.frames -= 1;
     ctx.truncate_to(base);
-    control.leave();
     control.pending_host = Some(waiting.host);
     P::call_scope_exit(trace, program, depth, location.func, location.pc, span);
     // The guest returns to embedding code. Its parent host instruction is still pending;

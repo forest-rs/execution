@@ -324,6 +324,7 @@ fn diagnostic_formatting_bounds_large_contract_paths() {
         pc: 0,
         position: ContractPosition::Result { index: 0 },
         error: ContractViolation {
+            contract_program: None,
             contract: ContractId(0),
             path: vec![execution_tape::contract::ContractPath::Member(0); 20_000],
             mismatch: ContractMismatch::Kind {
@@ -543,6 +544,7 @@ fn contract_diagnostics_resolve_named_fields_and_bound_deep_paths() {
         pc: 0,
         position: ContractPosition::Argument { callee, index: 0 },
         error: ContractViolation {
+            contract_program: None,
             contract: ContractId(0),
             path,
             mismatch: ContractMismatch::Kind {

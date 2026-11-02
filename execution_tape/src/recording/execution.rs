@@ -93,6 +93,8 @@ pub struct RecordedTransfer<'a> {
 pub enum TransferAction<'a> {
     /// Request an independently compiled child without completing the parent host call.
     Enter {
+        /// Whether entry was commanded by the embedding or executed by an indirect guest call.
+        origin: crate::trace::EntryOrigin,
         /// Exact pending caller.
         parent: RecordedActivation,
         /// Requested child root, including rejected entries.
@@ -164,6 +166,7 @@ pub(super) struct Transfer {
 }
 pub(super) enum Action {
     Enter {
+        origin: crate::trace::EntryOrigin,
         parent: RecordedActivation,
         child: RecordedActivation,
         args: Range<usize>,
@@ -191,7 +194,16 @@ pub(super) enum Action {
 }
 impl Action {
     pub(super) fn is_command(&self) -> bool {
-        !matches!(self, Self::Returned { .. } | Self::Rejected { .. })
+        matches!(
+            self,
+            Self::Enter {
+                origin: crate::trace::EntryOrigin::HostRequest,
+                ..
+            } | Self::ReturnFrom { .. }
+        )
+    }
+    pub(super) fn is_admission(&self) -> bool {
+        matches!(self, Self::Enter { .. } | Self::ReturnFrom { .. })
     }
     pub(super) fn construction(&self) -> (DataWork, &[AggregateId]) {
         match self {
@@ -271,12 +283,14 @@ impl Recording {
                     .expect("observed source segment");
                 let action = match &transfer.action {
                     Action::Enter {
+                        origin,
                         parent,
                         child,
                         args,
                         work,
                         constructed,
                     } => TransferAction::Enter {
+                        origin: *origin,
                         parent: *parent,
                         child: *child,
                         args: evidence.arena.slice(args),

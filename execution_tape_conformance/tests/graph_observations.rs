@@ -394,11 +394,12 @@ fn ownership_rejection_precedes_observer_admission() {
             ..Observe::default()
         }),
     );
+    let input = execution_tape::value::AggHandle(u32::MAX);
     let node = graph
         .add_tape_node(program, entry, vec!["input".into()])
         .unwrap();
     graph
-        .set_input_value(node, "input", Value::Func(entry).into())
+        .set_input_value(node, "input", Value::Agg(input).into())
         .unwrap();
     assert!(matches!(
         graph.run_all(),

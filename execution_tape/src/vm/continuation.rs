@@ -15,6 +15,10 @@ use alloc::sync::Arc;
 pub(super) enum CodeOwner {
     Definition(VerifiedProgram),
     Original(Arc<VerifiedProgram>),
+    RetainedInstance {
+        program: Arc<VerifiedProgram>,
+        instance: Instance,
+    },
     Instance(Instance),
 }
 impl core::ops::Deref for CodeOwner {
@@ -23,6 +27,7 @@ impl core::ops::Deref for CodeOwner {
         match self {
             Self::Definition(program) => program,
             Self::Original(program) => program,
+            Self::RetainedInstance { program, .. } => program,
             Self::Instance(instance) => instance.program(),
         }
     }
@@ -31,7 +36,7 @@ impl core::ops::Deref for CodeOwner {
 impl CodeOwner {
     fn instance(&self) -> Option<&Instance> {
         match self {
-            Self::Instance(instance) => Some(instance),
+            Self::Instance(instance) | Self::RetainedInstance { instance, .. } => Some(instance),
             _ => None,
         }
     }
@@ -50,6 +55,7 @@ pub(super) struct Continuation<'a> {
     pub(super) host_results: Option<crate::host::HostResults>,
     pub(super) register_state: observations::RegisterState,
     pub(super) outputs: Vec<Value>,
+    pub(super) output_start: usize,
     pub(super) outcome: Option<Result<(), TrapInfo>>,
 }
 
@@ -60,6 +66,17 @@ impl<'a> Continuation<'a> {
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
     ) -> Self {
+        let control = ExecutionControl::start(options.yield_host_calls);
+        Self::with_control(program, entry, args, options, control)
+    }
+
+    pub(super) fn with_control(
+        program: CodeOwner,
+        entry: FuncId,
+        args: Cow<'a, [Value]>,
+        options: InvocationOptions<'a>,
+        control: ExecutionControl,
+    ) -> Self {
         Self {
             program,
             entry,
@@ -67,12 +84,13 @@ impl<'a> Continuation<'a> {
             returned_at: None,
             args,
             ctx: Registers::default(),
-            control: ExecutionControl::start(options.yield_host_calls),
+            control,
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access.map(Observer::Unique),
             host_results: None,
             register_state: observations::RegisterState::default(),
             outputs: Vec::new(),
+            output_start: 0,
             outcome: None,
         }
     }
@@ -125,7 +143,17 @@ impl<'a> Continuation<'a> {
 impl Continuation<'_> {
     /// The store is borrowed only for this scheduling quantum. It is not part of suspended
     /// control. The outer execution lease owns the transaction and selects its commit boundary.
+    #[cfg(test)]
     pub(super) fn advance<H: Host>(
+        &mut self,
+        vm: &mut Vm<H>,
+        budget: &mut Budget,
+        quantum: u64,
+    ) -> Result<Progress, TrapInfo> {
+        self.advance_mode::<H, true>(vm, budget, quantum)
+    }
+
+    pub(super) fn advance_mode<H: Host, const COOPERATIVE: bool>(
         &mut self,
         vm: &mut Vm<H>,
         budget: &mut Budget,
@@ -135,7 +163,7 @@ impl Continuation<'_> {
         self.control.remaining = quantum;
         let access = self.access.as_mut().map(|sink| sink as &mut dyn AccessSink);
         if self.trace.active() {
-            vm.execute_loop::<WithTracePolicy, true>(
+            vm.execute_loop::<WithTracePolicy, COOPERATIVE>(
                 &mut self.ctx,
                 budget,
                 &self.program,
@@ -148,7 +176,7 @@ impl Continuation<'_> {
                 &mut self.control,
             )
         } else {
-            vm.execute_loop::<NoTracePolicy, true>(
+            vm.execute_loop::<NoTracePolicy, COOPERATIVE>(
                 &mut self.ctx,
                 budget,
                 &self.program,

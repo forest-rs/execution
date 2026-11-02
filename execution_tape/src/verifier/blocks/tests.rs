@@ -265,7 +265,12 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
                 host_type: HostTypeId(42),
             }),
         ],
-        [Value::Func(FuncId(0)), Value::Func(FuncId(0))],
+        {
+            let function = Vm::new(NoHost, Limits::default())
+                .function(&p, FuncId(0))
+                .unwrap();
+            [Value::Func(function.clone()), Value::Func(function)]
+        },
     ];
     let values: Vec<_> = pairs.into_iter().flatten().collect();
     let out = run(&p, &values);

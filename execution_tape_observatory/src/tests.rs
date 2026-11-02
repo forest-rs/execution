@@ -7,6 +7,7 @@ use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, Value
 use execution_tape::program::ValueType;
 use execution_tape::recording::{RecordLimits, RecordedValue, Recorder};
 use execution_tape::trace::TraceSink;
+use execution_tape::value::FunctionRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -903,10 +904,15 @@ fn callback_recording(exit: bool) -> Recording {
         )
         .unwrap();
     assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(handler), args.to_vec())
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), handler).unwrap()),
+            args.to_vec(),
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     let mut returned = request.take_callback_results().unwrap();
@@ -933,7 +939,7 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     else {
         panic!("guest callback target");
     };
-    let handler = *handler;
+    let handler = handler.function();
     let mut view = View::new(&record);
     assert_eq!(view.selected, 1);
     assert_eq!(view.location().unwrap().func, root);

@@ -33,6 +33,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Carry code-qualified function and closure targets across tape graph edges. A receiving node
+  calls the original definition rather than interpreting the same local ID in its own program.
+  Owned imports bind retained callable namespaces to the executor's host store. Functions already
+  carry their code owner; closure environments still require owned snapshot storage. Exposed
+  nominal aggregate IDs retain the existing exact-program restriction. Migration: handle
+  `TapeError::Instance`; `TapeValueDomain::Portable` now includes self-qualified callables.
+
 - `Executor::execute` now returns `NodeOutcome<Self::Value, Self::Error>` so deferred tasks carry
   their exact edge-value and error types. Migration: update explicit return annotations in
   custom executors and helpers; inferred `Complete`/`Pending` expressions usually need no

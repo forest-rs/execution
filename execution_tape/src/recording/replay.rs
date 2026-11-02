@@ -191,6 +191,7 @@ pub enum ReplayOutcome {
 
 #[derive(Default)]
 struct State {
+    instances: Option<Rc<BTreeMap<usize, crate::instance::Instance>>>,
     instructions: usize,
     pending: Vec<usize>,
     commands: usize,
@@ -212,6 +213,25 @@ struct State {
 }
 
 impl State {
+    fn same_trap(&self, expected: &TrapInfo, actual: &TrapInfo) -> bool {
+        same_trap(expected, actual, self.instances.as_deref())
+    }
+    fn function(
+        &self,
+        source: &crate::value::FunctionRef,
+    ) -> Result<crate::value::FunctionRef, ReplayError> {
+        let key = Arc::as_ptr(&source.instance().0) as usize;
+        let instance = self
+            .instances
+            .as_ref()
+            .and_then(|instances| instances.get(&key))
+            .ok_or_else(|| self.mismatch(Divergence::Outcome))?;
+        Ok(crate::value::FunctionRef::from_verified(
+            instance.clone(),
+            source.function(),
+        ))
+    }
+
     fn mismatch(&self, reason: Divergence) -> ReplayError {
         ReplayError::Diverged {
             boundary: self.boundary,
@@ -264,10 +284,20 @@ impl State {
             (RecordedValue::Bytes(a), ValueRef::Bytes(b)) if a.as_ref() == b => None,
             (RecordedValue::Str(a), ValueRef::Str(b)) if a.as_ref() == b => None,
             (RecordedValue::Obj(a), ValueRef::Obj(b)) if *a == b => None,
-            (RecordedValue::Func(a), ValueRef::Func(b)) if *a == b => None,
+            (RecordedValue::Func(a), ValueRef::Func(b))
+                if self
+                    .function(a)
+                    .as_ref()
+                    .is_ok_and(|expected| expected == b) =>
+            {
+                None
+            }
             (RecordedValue::Agg(id), ValueRef::Agg(handle)) => Some((*id, handle)),
             (RecordedValue::Closure { func, env }, ValueRef::Closure(value))
-                if *func == value.func =>
+                if self
+                    .function(func)
+                    .as_ref()
+                    .is_ok_and(|expected| expected == &value.func) =>
             {
                 Some((*env, value.env))
             }
@@ -389,17 +419,18 @@ impl State {
                         .map(AggHandle)
                 })
                 .ok_or_else(|| self.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
+            let actual = match value {
+                RecordedValue::Agg(_) => Value::Agg(handle),
+                RecordedValue::Closure { func, .. } => Value::Closure(Closure {
+                    func: self.function(func)?,
+                    env: handle,
+                }),
+                _ => unreachable!(),
+            };
             self.matches(
                 record,
                 core::slice::from_ref(value),
-                [match value {
-                    RecordedValue::Agg(_) => ValueRef::Agg(handle),
-                    RecordedValue::Closure { func, .. } => ValueRef::Closure(Closure {
-                        func: *func,
-                        env: handle,
-                    }),
-                    _ => unreachable!(),
-                }],
+                [ValueRef::from_value(&actual)],
                 heap,
             )?;
         }
@@ -413,14 +444,50 @@ impl State {
             RecordedValue::Bytes(value) => Value::Bytes(value.to_vec()),
             RecordedValue::Str(value) => Value::Str(value.as_ref().into()),
             RecordedValue::Obj(value) => Value::Obj(*value),
-            RecordedValue::Func(value) => Value::Func(*value),
+            RecordedValue::Func(value) => Value::Func(self.function(value)?),
             RecordedValue::Agg(id) => Value::Agg(self.bindings[id]),
             RecordedValue::Closure { func, env } => Value::Closure(Closure {
-                func: *func,
+                func: self.function(func)?,
                 env: self.bindings[env],
             }),
         })
     }
+}
+
+fn prepare_instances<'a, H: Host>(
+    vm: &mut Vm<H>,
+    records: impl IntoIterator<Item = &'a Recording>,
+    roots: &[crate::instance::Instance],
+) -> Result<Rc<BTreeMap<usize, crate::instance::Instance>>, ReplayError> {
+    let mut instances = BTreeMap::new();
+    let mut add = |source: &crate::instance::Instance| -> Result<(), ReplayError> {
+        let key = Arc::as_ptr(&source.0) as usize;
+        if let alloc::collections::btree_map::Entry::Vacant(entry) = instances.entry(key) {
+            entry.insert(
+                vm.instantiate_recorded(source)
+                    .map_err(|_| ReplayError::Diverged {
+                        boundary: ReplayBoundary::InitialState,
+                        location: None,
+                        reason: Divergence::Outcome,
+                    })?,
+            );
+        }
+        Ok(())
+    };
+    for instance in roots {
+        add(instance)?;
+    }
+    for record in records {
+        for value in &record.arena.values {
+            match value {
+                RecordedValue::Func(function) | RecordedValue::Closure { func: function, .. } => {
+                    add(function.instance())?;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(Rc::new(instances))
 }
 
 enum Delivery {
@@ -1118,7 +1185,13 @@ impl Recording {
             state: Rc::clone(&state),
         };
         let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
-        for &id in &self.initial {
+        state.borrow_mut().instances = Some(prepare_instances(&mut vm, [self], &[])?);
+        let initial = self
+            .initial
+            .iter()
+            .map(|&id| (self.arena.nodes[id.0 as usize].origin, (0, id)))
+            .collect();
+        for (_, id) in initial_order(initial, |_| self)? {
             let node = self.aggregate(id).expect("complete initial node");
             let values = state
                 .borrow_mut()
@@ -1179,8 +1252,14 @@ impl Recording {
                         let outcome = recorded_host.invoke(&mut request)?;
                         let outcome = match outcome {
                             Delivery::CallGuest { callee, args } => {
-                                if let Err(error) = request.call_guest(callee, args) {
-                                    break Err(error);
+                                match request.call_guest(callee, args) {
+                                    Ok(()) => {}
+                                    Err(crate::vm::ControlError::Trapped(error)) => {
+                                        break Err(error);
+                                    }
+                                    Err(_) => {
+                                        return Err(state.borrow().mismatch(Divergence::Outcome));
+                                    }
                                 }
                                 continue;
                             }
@@ -1227,12 +1306,61 @@ impl Recording {
                     .snapshot(&values)
                     .map_err(ReplayError::Aggregate)?,
             )),
-            (End::Trapped(expected), Err(actual)) if same_trap(expected, &actual) => {
+            (End::Trapped(expected), Err(actual)) if state.same_trap(expected, &actual) => {
                 Ok(ReplayOutcome::Trapped(actual))
             }
             _ => Err(state.mismatch(Divergence::Outcome)),
         }
     }
+}
+
+// A snapshot may allocate a parent before its children. Source handles are identities, not
+// a topological order: restore dependencies first without recursion or merging equal nodes.
+fn initial_order<'a>(
+    nodes: BTreeMap<u32, (usize, AggregateId)>,
+    record: impl Fn(usize) -> &'a Recording,
+) -> Result<Vec<(usize, AggregateId)>, ReplayError> {
+    let mut complete = alloc::collections::BTreeSet::new();
+    let mut active = alloc::collections::BTreeSet::new();
+    let mut order = Vec::with_capacity(nodes.len());
+    for &root in nodes.keys() {
+        let mut pending = alloc::vec![(root, false)];
+        while let Some((origin, visited)) = pending.pop() {
+            if complete.contains(&origin) {
+                continue;
+            }
+            let &(index, id) = nodes
+                .get(&origin)
+                .ok_or(ReplayError::Aggregate(AggError::BadHandle))?;
+            if visited {
+                active.remove(&origin);
+                complete.insert(origin);
+                order.push((index, id));
+                continue;
+            }
+            if !active.insert(origin) {
+                return Err(ReplayError::Aggregate(AggError::UnresolvedStagedHandle));
+            }
+            pending.push((origin, true));
+            let record = record(index);
+            let node = record
+                .aggregate(id)
+                .ok_or(ReplayError::Aggregate(AggError::BadHandle))?;
+            for value in node.values {
+                let child = match value {
+                    RecordedValue::Agg(id) | RecordedValue::Closure { env: id, .. } => *id,
+                    _ => continue,
+                };
+                let child = record
+                    .arena
+                    .nodes
+                    .get(child.0 as usize)
+                    .ok_or(ReplayError::Aggregate(AggError::BadHandle))?;
+                pending.push((child.origin, false));
+            }
+        }
+    }
+    Ok(order)
 }
 
 fn check_finished(record: &Recording, state: &mut State) -> Result<(), ReplayError> {
@@ -1292,7 +1420,32 @@ fn same_host_error(a: &HostError, b: &HostError) -> bool {
     }
 }
 
-fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
+fn same_trap(
+    a: &TrapInfo,
+    b: &TrapInfo,
+    instances: Option<&BTreeMap<usize, crate::instance::Instance>>,
+) -> bool {
+    let function = |source: &crate::value::FunctionRef| {
+        instances
+            .and_then(|instances| instances.get(&(Arc::as_ptr(&source.instance().0) as usize)))
+            .map(|instance| {
+                crate::value::FunctionRef::from_verified(instance.clone(), source.function())
+            })
+    };
+    let violation = |expected: &crate::contract::ContractViolation,
+                     actual: &crate::contract::ContractViolation| {
+        let mut expected = expected.clone();
+        if let crate::contract::ContractMismatch::Callable {
+            function: Some(source),
+        } = &mut expected.mismatch
+        {
+            let Some(mapped) = function(source) else {
+                return false;
+            };
+            *source = mapped;
+        }
+        expected == *actual
+    };
     if a.func != b.func || a.pc != b.pc || a.span_id != b.span_id {
         return false;
     }
@@ -1301,10 +1454,18 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
             a.program.shares_definition_with(&b.program)
                 && a.function == b.function
                 && a.position == b.position
-                && a.error == b.error
+                && match (&a.error, &b.error) {
+                    (
+                        crate::vm::ContractBoundaryFailure::Mismatch(a),
+                        crate::vm::ContractBoundaryFailure::Mismatch(b),
+                    ) => violation(a, b),
+                    (a, b) => a == b,
+                }
         }
         (Trap::CrossInstanceValue { kind: a }, Trap::CrossInstanceValue { kind: b }) => a == b,
+        (Trap::ForeignStoreValue { kind: a }, Trap::ForeignStoreValue { kind: b }) => a == b,
         (Trap::FuelExceeded, Trap::FuelExceeded)
+        | (Trap::GuestCallAbandoned, Trap::GuestCallAbandoned)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
         | (Trap::InstanceLimitExceeded, Trap::InstanceLimitExceeded)
@@ -1369,7 +1530,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 signature: b,
                 function: bf,
             },
-        ) => a == b && af == bf,
+        ) => a == b && function(af).as_ref() == Some(bf),
         (
             Trap::ContractWorkExceeded {
                 function: af,
@@ -1394,7 +1555,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 position: right_arg,
                 error: be,
             },
-        ) => ac == bc && aa == right_arg && ae == be,
+        ) => ac == bc && aa == right_arg && violation(ae, be),
         (
             Trap::HostCallFailed {
                 symbol: as_,
@@ -1555,10 +1716,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(handler), args.to_vec())
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(crate::value::FunctionRef::new(request.instance(), handler).unwrap()),
+                args.to_vec(),
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
@@ -1654,7 +1820,14 @@ mod tests {
                     let Action::CallGuest { callee, .. } = record.commands[0].action else {
                         panic!("callback fixture");
                     };
-                    record.arena.values[callee] = RecordedValue::Func(FuncId(99));
+                    let RecordedValue::Func(function) = &record.arena.values[callee] else {
+                        panic!("function command");
+                    };
+                    record.arena.values[callee] =
+                        RecordedValue::Func(crate::value::FunctionRef::from_verified(
+                            function.instance().clone(),
+                            FuncId(99),
+                        ));
                 }
                 3 => {
                     let Action::CallGuest { ref args, .. } = record.commands[0].action else {

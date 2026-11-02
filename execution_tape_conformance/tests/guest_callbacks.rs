@@ -3,6 +3,7 @@
 
 //! Reentry keeps the signaling stack, value domain and hard budgets in one invocation.
 
+use execution_tape::value::FunctionRef;
 use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
     contract::Contract,
@@ -174,10 +175,15 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
         [f.signal, f.entry]
     );
     let original = run.pending_host_call().unwrap().location();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.handler), vec![Value::I64(40)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+            vec![Value::I64(40)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     assert!(
         run.pending_host_call().is_none(),
         "callback has not executed its host call yet"
@@ -198,10 +204,15 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
             .is_none(),
         "original host result is still unavailable"
     );
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.plus_one), vec![Value::I64(40)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.plus_one).unwrap()),
+            vec![Value::I64(40)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut inner = run.pending_host_call().unwrap();
     assert_eq!(inner.symbol(), "lookup");
@@ -238,10 +249,15 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
     assert_eq!(unused, AggHandle(1));
     drop(host);
     let work = run.data_work();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.tuple), vec![Value::Agg(staged)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.tuple).unwrap()),
+            vec![Value::Agg(staged)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut host = run.pending_host_call().unwrap();
     let returned = host.take_callback_results().unwrap();
@@ -298,26 +314,33 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
         .context()
         .tuple_new(vec![Value::I64(40)])
         .unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
             Value::Closure(Closure {
-                func: f.closure,
+                func: FunctionRef::new(request.instance(), f.closure).unwrap(),
                 env: environment,
             }),
             vec![Value::I64(2)],
-        )
-        .unwrap();
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
         Some(vec![Value::I64(42)])
     );
     // Another callback does not reset the host operation or its original argument.
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.plus_one), vec![Value::I64(8)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.plus_one).unwrap()),
+            vec![Value::I64(8)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     let mut host = run.pending_host_call().unwrap();
     assert_eq!(host.arguments().next(), Some(ValueRef::I64(0)));
@@ -336,10 +359,15 @@ fn moved_callback_text_is_distinct_from_root_argument_sources_and_charged() {
     run.resume(u64::MAX).unwrap();
     let value = String::from("callback-only text");
     let length = value.len() as u64;
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.text), vec![Value::Str(value)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.text).unwrap()),
+            vec![Value::Str(value)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
@@ -391,12 +419,27 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
         run.resume(u64::MAX).unwrap();
         let request = run.pending_host_call().unwrap();
         let result = if expected == "payload" {
-            request.call_guest(Value::Func(f.text), vec![Value::Str("x".into())])
+            {
+                let request = request;
+                let (callee, arguments) = (
+                    Value::Func(FunctionRef::new(request.instance(), f.text).unwrap()),
+                    vec![Value::Str("x".into())],
+                );
+                request.call_guest(callee, arguments)
+            }
         } else {
-            request.call_guest(Value::Func(f.handler), vec![Value::I64(1)])
+            {
+                let request = request;
+                let (callee, arguments) = (
+                    Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+                    vec![Value::I64(1)],
+                );
+                request.call_guest(callee, arguments)
+            }
         };
         let error = match result {
-            Err(error) => error,
+            Err(execution_tape::vm::ControlError::Trapped(error)) => error,
+            Err(other) => panic!("unexpected recoverable denial: {other:?}"),
             Ok(()) => run.resume(u64::MAX).unwrap_err(),
         };
         assert!(match expected {
@@ -422,7 +465,7 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
 fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_work() {
     let f = fixture();
     let args = [Value::I64(1)];
-    for mode in 0..5 {
+    for mode in 1..5 {
         let mut vm = Vm::new(NoHost, Limits::default());
         let env = vm
             .aggregates_mut()
@@ -430,14 +473,21 @@ fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_wor
             .unwrap();
         let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
         run.resume(u64::MAX).unwrap();
+        let instance = run.instance().unwrap();
+        assert!(FunctionRef::new(instance, FuncId(u32::MAX)).is_err());
         let (target, args) = match mode {
-            0 => (Value::Func(FuncId(u32::MAX)), vec![]),
             1 => (Value::I64(4), vec![]),
-            2 => (Value::Func(f.plus_one), vec![]),
-            3 => (Value::Func(f.plus_one), vec![Value::Bool(true)]),
+            2 => (
+                Value::Func(FunctionRef::new(instance, f.plus_one).unwrap()),
+                vec![],
+            ),
+            3 => (
+                Value::Func(FunctionRef::new(instance, f.plus_one).unwrap()),
+                vec![Value::Bool(true)],
+            ),
             _ => (
                 Value::Closure(Closure {
-                    func: f.closure,
+                    func: FunctionRef::new(instance, f.closure).unwrap(),
                     env,
                 }),
                 vec![Value::I64(2)],
@@ -448,8 +498,10 @@ fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_wor
             .unwrap()
             .call_guest(target, args)
             .unwrap_err();
+        let execution_tape::vm::ControlError::Trapped(error) = error else {
+            panic!("expected fatal admission");
+        };
         assert!(match mode {
-            0 => matches!(error.trap, Trap::InvalidPc),
             1 | 3 => matches!(error.trap, Trap::TypeMismatch { .. }),
             2 => matches!(error.trap, Trap::ArityMismatch),
             _ => matches!(error.trap, Trap::ContractMismatch { .. }),
@@ -550,10 +602,15 @@ fn cancellation_and_traps_close_nested_guest_host_and_instruction_scopes() {
             .context()
             .tuple_new(vec![Value::I64(1)])
             .unwrap();
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(f.handler), vec![Value::I64(1)])
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+                vec![Value::I64(1)],
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         run.resume(u64::MAX).unwrap();
         if trap {
             run.pending_host_call()
@@ -591,10 +648,15 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.plus_one), vec![Value::I64(1)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.plus_one).unwrap()),
+            vec![Value::I64(1)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     let mut host = run.pending_host_call().unwrap();
     let mut result = host.take_callback_results().unwrap();
@@ -652,10 +714,15 @@ fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_va
         run.resume(u64::MAX).unwrap();
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run.pending_host_call()
-                    .unwrap()
-                    .call_guest(Value::Func(target), vec![Value::I64(1)])
-                    .unwrap();
+                {
+                    let request = run.pending_host_call().unwrap();
+                    let (callee, arguments) = (
+                        Value::Func(FunctionRef::new(request.instance(), target).unwrap()),
+                        vec![Value::I64(1)],
+                    );
+                    request.call_guest(callee, arguments)
+                }
+                .unwrap();
             }))
             .is_err()
         );
@@ -691,10 +758,15 @@ fn callback_result_signature_is_independent_of_the_pending_host_signature() {
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.multi), vec![Value::I64(40)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.multi).unwrap()),
+            vec![Value::I64(40)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     let mut results = request.take_callback_results().unwrap();
@@ -743,10 +815,15 @@ fn callback_results_must_satisfy_their_own_rich_contract_before_returning_to_hos
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut run = vm.start(&program, entry, &[], options()).unwrap();
     run.resume(u64::MAX).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(callback), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), callback).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     let wrong = request
@@ -786,10 +863,15 @@ fn promoted_staging_and_callback_allocations_share_one_aggregate_budget() {
         .context()
         .tuple_new(vec![Value::I64(1)])
         .unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.tuple), vec![Value::Agg(staged)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.tuple).unwrap()),
+            vec![Value::Agg(staged)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     let mut request = run.pending_host_call().unwrap();
     let error = request
@@ -819,10 +901,15 @@ fn pending_callback_object_results_remain_visible_to_the_embedding_collector() {
     };
     let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
     run.resume(u64::MAX).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.object), vec![Value::Obj(object)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.object).unwrap()),
+            vec![Value::Obj(object)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     let activation = run.inspect().frames().next().unwrap().activation;
     run.resume(u64::MAX).unwrap();
     assert!(
@@ -900,10 +987,15 @@ fn original_host_state_arguments_and_access_sink_are_shared_across_callback_disp
         )
         .unwrap();
     run.resume(u64::MAX).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.handler), vec![Value::I64(2)])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.handler).unwrap()),
+            vec![Value::I64(2)],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(u64::MAX).unwrap();
     run.pending_host_call().unwrap().dispatch().unwrap();
     run.resume(u64::MAX).unwrap();

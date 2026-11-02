@@ -257,12 +257,17 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
     a.tuple_new(result, &[1]).ret(0, &[result]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::I64(7)]).unwrap();
     let callable = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     for limit in [3, 4] {
@@ -313,12 +318,13 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
 #[test]
 fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocations() {
     let (p, _) = maker();
+    let source_instance = Vm::new(NoHost, Limits::default()).instantiate(&p).unwrap();
     assert!(matches!(
         Callable::function(Arc::clone(&p), FuncId(u32::MAX)),
         Err(CallableError::MissingFunction { .. })
     ));
     assert!(matches!(
-        Callable::retain(Arc::clone(&p), &AggHeap::new(), ValueRef::I64(4)),
+        Callable::retain(&AggHeap::new(), ValueRef::I64(4)),
         Err(CallableError::NotCallable {
             actual: ValueType::I64
         })
@@ -326,10 +332,9 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::Bool(true)]).unwrap();
     let bad = Callable::retain(
-        p,
         &heap,
-        ValueRef::Closure(Closure {
-            func: FuncId(0),
+        ValueRef::Closure(&Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, FuncId(0)).unwrap(),
             env,
         }),
     )
@@ -356,12 +361,17 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
     a.ret(0, &[2]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::Str("xy".into())]).unwrap();
     let callable = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -447,6 +457,9 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
         .ret(0, &[answer]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let first = heap.tuple_new(vec![Value::I64(42)]).unwrap();
     let equal = heap.tuple_new(vec![Value::I64(42)]).unwrap();
@@ -458,9 +471,11 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
         ])
         .unwrap();
     let callable = Callable::retain(
-        program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -513,12 +528,17 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
         .ret(0, &[result]);
     b.define_function(outer, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::I64(40)]).unwrap();
     let outer = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: outer, env }),
+        ValueRef::Closure(&Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, outer).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -583,21 +603,30 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
 #[test]
 fn snapshot_adoption_rejects_ambiguous_roots_and_non_environment_bodies() {
     let (program, factory) = maker();
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
+    let factory_ref = execution_tape::value::FunctionRef::new(&source_instance, factory).unwrap();
     let heap = AggHeap::new();
     let snapshot = heap
-        .snapshot(&[Value::Func(factory), Value::Func(factory)])
+        .snapshot(&[
+            Value::Func(factory_ref.clone()),
+            Value::Func(factory_ref.clone()),
+        ])
         .unwrap();
     assert!(matches!(
-        Callable::from_snapshot(Arc::clone(&program), snapshot),
+        Callable::from_snapshot(snapshot),
         Err(CallableError::RootCount { actual: 2 })
     ));
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![]).unwrap();
     assert!(matches!(
         Callable::retain(
-            program,
             &heap,
-            ValueRef::Closure(Closure { func: factory, env })
+            ValueRef::Closure(&Closure {
+                func: factory_ref.clone(),
+                env
+            })
         ),
         Err(CallableError::EnvironmentArgument {
             actual: Some(ValueType::I64),
@@ -666,12 +695,17 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
     a.ret(0, &[2]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::Str("xy".into())]).unwrap();
     let callable = Callable::retain(
-        program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: execution_tape::value::FunctionRef::new(&source_instance, body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     let payload = String::from("abcde");

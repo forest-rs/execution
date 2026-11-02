@@ -11,6 +11,9 @@ use alloc::vec::Vec;
 
 use crate::program::{ElemTypeId, HostTypeId, TypeId};
 
+mod function;
+pub use function::FunctionRef;
+
 /// An opaque handle to a host-owned object.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObjHandle(pub u64);
@@ -38,10 +41,10 @@ pub struct FuncId(pub u32);
 pub struct AggHandle(pub u32);
 
 /// A closure value (function + captured environment).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Closure {
-    /// Function identifier for the closure body.
-    pub func: FuncId,
+    /// Exact instance and function for the closure body.
+    pub func: FunctionRef,
     /// Captured immutable environment.
     pub env: AggHandle,
 }
@@ -130,8 +133,8 @@ pub enum Value {
     Obj(Obj),
     /// Aggregate handle (tuple/struct/array).
     Agg(AggHandle),
-    /// Function reference.
-    Func(FuncId),
+    /// Function reference retaining its exact code instance.
+    Func(FunctionRef),
     /// Closure reference (function + captured environment).
     Closure(Closure),
 }

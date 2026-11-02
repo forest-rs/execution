@@ -3,6 +3,7 @@
 
 //! Typed home returns refer to an exact activation and share the invocation's hard budgets.
 
+use execution_tape::value::FunctionRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -181,16 +182,26 @@ fn exits_cross_nested_callbacks_or_deliver_to_an_exact_callback_root() {
         run.resume(100).unwrap();
         let home = run.inspect().frames().last().unwrap().activation;
         let original = run.pending_host_call().unwrap().location();
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(f.middle), vec![])
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(FunctionRef::new(request.instance(), f.middle).unwrap()),
+                vec![],
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         run.resume(100).unwrap();
         let callback_home = run.inspect().frames().nth(1).unwrap().activation;
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(f.leaf), vec![])
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(FunctionRef::new(request.instance(), f.leaf).unwrap()),
+                vec![],
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         run.resume(100).unwrap();
         let target = if root_target { &home } else { &callback_home };
         run.pending_host_call()
@@ -332,15 +343,25 @@ fn abandoned_attempts_and_scopes_are_unwound_not_successful_cancelled_or_trapped
     run.resume(100).unwrap();
     let source = run.pending_host_call().unwrap().location();
     let home = run.inspect().frames().last().unwrap().activation;
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.middle), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.middle).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(100).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.leaf), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.leaf).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(100).unwrap();
     let actual_source = run.pending_host_call().unwrap().location();
     run.pending_host_call()
@@ -389,10 +410,15 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                 root.clone()
             };
             if case >= 2 {
-                run.pending_host_call()
-                    .unwrap()
-                    .call_guest(Value::Func(f.middle), vec![])
-                    .unwrap();
+                {
+                    let request = run.pending_host_call().unwrap();
+                    let (callee, arguments) = (
+                        Value::Func(FunctionRef::new(request.instance(), f.middle).unwrap()),
+                        vec![],
+                    );
+                    request.call_guest(callee, arguments)
+                }
+                .unwrap();
                 run.resume(100).unwrap();
                 if case == 2 {
                     target = run.inspect().frames().nth(1).unwrap().activation;
@@ -401,10 +427,15 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                     target = run.inspect().frames().next().unwrap().activation;
                 }
                 if case == 3 {
-                    run.pending_host_call()
-                        .unwrap()
-                        .call_guest(Value::Func(f.leaf), vec![])
-                        .unwrap();
+                    {
+                        let request = run.pending_host_call().unwrap();
+                        let (callee, arguments) = (
+                            Value::Func(FunctionRef::new(request.instance(), f.leaf).unwrap()),
+                            vec![],
+                        );
+                        request.call_guest(callee, arguments)
+                    }
+                    .unwrap();
                     run.resume(100).unwrap();
                 }
             }
@@ -904,10 +935,15 @@ fn transfer_replay_does_not_require_retaining_call_stack_evidence() {
         .unwrap();
     run.resume(100).unwrap();
     let home = run.inspect().frames().last().unwrap().activation;
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.leaf), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(FunctionRef::new(request.instance(), f.leaf).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(100).unwrap();
     run.pending_host_call()
         .unwrap()

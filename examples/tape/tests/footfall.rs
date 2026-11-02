@@ -424,7 +424,7 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
         vm.host_mut().behavior = Behavior::Success;
     }
 
-    // Scope guards are thread-bound and close on sink drop, without fabricating success.
+    // A panicking host cancels the execution; scope guards close without fabricating success.
     struct PanicHost;
     impl Host for PanicHost {
         fn call(
@@ -454,7 +454,14 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     drop(interrupted_sink);
     let interrupted = runtime.snapshot_since(start);
     balanced(&interrupted);
-    assert_eq!(count(&interrupted, "execution_tape.run_end"), 0);
+    assert_eq!(count(&interrupted, "execution_tape.run_end"), 1);
+    for event in interrupted.events() {
+        if let Observation::Message { name, text, .. } = event.observation()
+            && *name == "execution_tape.run_end"
+        {
+            assert_eq!(text, "cancelled");
+        }
+    }
     assert_eq!(count(&interrupted, "execution_tape.run_trap"), 0);
     let start = runtime.snapshot().next_cursor();
     let mut replacement = FootfallSink::new(context.handle());

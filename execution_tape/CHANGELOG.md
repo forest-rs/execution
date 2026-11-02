@@ -21,8 +21,8 @@ This release has an [MSRV][] of 1.88.
   Suspended parents share the store and all resource budgets; only the root commits or rolls back
   aggregate storage. `return_from` can target a live activation across those code boundaries.
   Inspection exposes the real parent chain and each frame's exact code and instance. Control
-  transfers are observable separately from host completion. Raw callable IDs remain instance-local and nominal aggregates
-  require their original definition when crossing a boundary. Host objects share the VM's host.
+  transfers are observable separately from host completion. Callables retain their exact instances;
+  nominal aggregates require their original definition across boundaries. Host objects share the VM's host.
   Migration: handle `ControlError::ForeignStore`, `Trap::CrossInstanceValue`, and
   `Trap::ContractBoundary` in exhaustive matches. Cross-code contract errors retain the
   boundary's definition independently of the initiating trap location. `PausedFrame` has code, namespace
@@ -143,6 +143,26 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Qualify runtime function and closure targets with their exact code instance. Ordinary indirect
+  calls follow that owner across definitions in one VM, under one resource budget and transaction.
+  Owned closure imports bind captured callable namespaces to the destination host store. Loading
+  replacement code through a paused invocation does not patch existing values or activations.
+  Migration: `Value::Func` and `Closure::func` now hold `FunctionRef`; resolve default targets with
+  `Vm::function` or explicit targets with `FunctionRef::new`. `Closure` is `Clone` rather than
+  `Copy`, and `ValueRef::{Func,Closure}` borrow their target. `Callable::{retain,from_snapshot}`
+  obtain code ownership from the value and no longer take a program argument.
+
+- Unify synchronous and cooperative calls on the execution-owned control path, retaining reusable
+  scalar scratch storage. Native-requested child entries charge immediate string/byte ingress;
+  indirect guest calls charge actual argument materialization. `PendingHostCall::call_guest`
+  returns `ControlError`, allowing foreign-store denial before admission. Trace entry events carry
+  `EntryOrigin`, and recording's control quota also bounds automatic cross-code entries. Migration:
+  handle `Trap::{ForeignStoreValue,GuestCallAbandoned}` and the new origin field in exhaustive
+  matches. `Trap::CallableSignatureMismatch` and recorded callable values retain qualified targets.
+  `Trap::ContractMismatch::error` is boxed; `ContractViolation::contract_program` identifies a
+  foreign captured environment's expected contract table. Checked replay reconstructs these
+  namespaces and restores snapshot dependencies independently of their source handle order.
 
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include

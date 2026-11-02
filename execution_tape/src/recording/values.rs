@@ -4,7 +4,7 @@
 use crate::aggregates::AggHeap;
 use crate::host::ValueRef;
 use crate::recording::{CaptureFault, CaptureResource, RecordLimits};
-use crate::value::{AggHandle, AggType, Decimal, FuncId, Obj};
+use crate::value::{AggHandle, AggType, Decimal, FunctionRef, Obj};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -48,11 +48,11 @@ pub enum RecordedValue {
     /// Aggregate identity within this recording.
     Agg(AggregateId),
     /// Function in the recorded program.
-    Func(FuncId),
+    Func(FunctionRef),
     /// Function and captured environment.
     Closure {
         /// Closure body in the recorded program.
-        func: FuncId,
+        func: FunctionRef,
         /// Environment in this recording.
         env: AggregateId,
     },
@@ -214,10 +214,10 @@ impl Builder {
             ValueRef::F64(value) => RecordedValue::F64(value.to_bits()),
             ValueRef::Decimal(value) => RecordedValue::Decimal(*value),
             ValueRef::Obj(value) => RecordedValue::Obj(value),
-            ValueRef::Func(value) => RecordedValue::Func(value),
+            ValueRef::Func(value) => RecordedValue::Func(value.clone()),
             ValueRef::Agg(handle) => RecordedValue::Agg(self.handle(handle, heap)?),
             ValueRef::Closure(value) => RecordedValue::Closure {
-                func: value.func,
+                func: value.func.clone(),
                 env: self.handle(value.env, heap)?,
             },
             ValueRef::Str(value) => {

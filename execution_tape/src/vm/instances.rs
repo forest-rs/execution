@@ -18,6 +18,7 @@ pub(super) struct Instances {
     // Bound retained metadata to one default instance; other instances survive through their
     // actual users. Repeated ordinary calls need no new namespace allocation.
     last_default: Option<Instance>,
+    imported: Vec<(Weak<InstanceData>, Weak<InstanceData>)>,
 }
 
 impl Instances {
@@ -69,9 +70,117 @@ impl Instances {
             .as_ref()
             .is_some_and(|store| Arc::ptr_eq(store, &instance.0.store))
     }
+
+    fn import(&mut self, source: &Instance) -> Result<Instance, Trap> {
+        if self.owns(source) {
+            return Ok(source.clone());
+        }
+        self.imported
+            .retain(|(source, target)| source.strong_count() != 0 && target.strong_count() != 0);
+        if let Some(target) = self.imported.iter().find_map(|(original, target)| {
+            Weak::ptr_eq(original, &Arc::downgrade(&source.0))
+                .then(|| target.upgrade())
+                .flatten()
+        }) {
+            return Ok(Instance(target));
+        }
+        let target = if source.0.is_default {
+            self.default_for(source.program())?
+        } else {
+            self.insert(source.program(), false)
+                .map_err(|_| Trap::InstanceLimitExceeded)?
+        };
+        self.imported
+            .push((Arc::downgrade(&source.0), Arc::downgrade(&target.0)));
+        Ok(target)
+    }
 }
 
 impl<H: Host> Vm<H> {
+    /// Binds retained code to a namespace in this VM's host store.
+    ///
+    /// A same-store value keeps its exact identity. A foreign reference retains its definition
+    /// and receives a destination namespace; repeated bindings preserve that association while
+    /// both namespaces remain live. This transfers no native host state or aggregate handles.
+    /// Use an owned capture import for closures, whose environments also need relocation.
+    pub fn bind_function(
+        &mut self,
+        source: &crate::value::FunctionRef,
+    ) -> Result<crate::value::FunctionRef, InstanceError> {
+        let instance = self
+            .instances
+            .import(source.instance())
+            .map_err(|_| InstanceError::CapacityExceeded)?;
+        Ok(crate::value::FunctionRef::from_verified(
+            instance,
+            source.function(),
+        ))
+    }
+
+    /// Resolves a function in this VM's default namespace for the exact prepared definition.
+    ///
+    /// The result can be supplied as a runtime function value. It retains code and namespace
+    /// identity without executing instructions or retaining the VM. Use [`crate::value::FunctionRef::new`]
+    /// with an explicit [`Instance`] when separate host namespaces are required for one definition.
+    pub fn function(
+        &mut self,
+        program: &VerifiedProgram,
+        function: FuncId,
+    ) -> Result<crate::value::FunctionRef, crate::callable::CallableError> {
+        if program.function(function).is_none() {
+            return Err(crate::callable::CallableError::MissingFunction { function });
+        }
+        let instance = self
+            .instances
+            .default_for(program)
+            .map_err(|_| crate::callable::CallableError::InstanceCapacityExceeded)?;
+        Ok(crate::value::FunctionRef::from_verified(instance, function))
+    }
+
+    // Explicit owned-value import reconnects code namespaces to the destination host store.
+    // Heap-only copying preserves function identity and cannot grant that store authority.
+    pub(crate) fn import_capture(
+        &mut self,
+        snapshot: &crate::aggregates::ValueSnapshot,
+    ) -> Result<Vec<Value>, Trap> {
+        let first = self.memory.aggs().len_u32();
+        let mut values = self
+            .memory
+            .aggs_mut()
+            .import(snapshot)
+            .map_err(Trap::AggError)?;
+        let mut remap = |value: &mut Value| {
+            let function = match value {
+                Value::Func(function) => function,
+                Value::Closure(closure) => &mut closure.func,
+                _ => return Ok(()),
+            };
+            let instance = self.instances.import(function.instance())?;
+            *function = crate::value::FunctionRef::from_verified(instance, function.function());
+            Ok::<(), Trap>(())
+        };
+        let result = self
+            .memory
+            .aggs_mut()
+            .visit_values_mut_from(first, &mut remap)
+            .and_then(|()| values.iter_mut().try_for_each(remap));
+        if let Err(error) = result {
+            self.memory.aggs_mut().truncate(first);
+            return Err(error);
+        }
+        Ok(values)
+    }
+
+    /// Recreates an observed namespace in a fresh replay store, preserving default-entry aliasing.
+    pub(crate) fn instantiate_recorded(&mut self, source: &Instance) -> Result<Instance, Trap> {
+        if source.0.is_default {
+            self.instances.default_for(source.program())
+        } else {
+            self.instantiate(source.program())
+                .map_err(|_| Trap::InstanceLimitExceeded)
+        }
+    }
+
     /// Creates a distinct instance of shared verified code in this VM store.
     ///
     /// This retains code and namespace identity without executing guest instructions or host
@@ -126,6 +235,17 @@ impl Instance {
             work,
         )
         .map_err(InstanceError::Trapped)
+    }
+}
+
+impl<H: Host> Invocation<'_, H> {
+    /// Instantiates newly verified code in this execution's existing store.
+    ///
+    /// This may be done while guest frames are suspended. It retains a new code namespace
+    /// without changing live frames, values, pending operations or execution budgets. Future
+    /// dispatch can select the returned instance while active calls retain their old code.
+    pub fn instantiate(&mut self, program: &VerifiedProgram) -> Result<Instance, InstanceError> {
+        self.vm.instantiate(program)
     }
 }
 

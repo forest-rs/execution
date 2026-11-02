@@ -185,7 +185,8 @@ pub struct RecordLimits {
     pub aggregates: usize,
     /// Maximum host-call observations.
     pub host_calls: usize,
-    /// Maximum embedding control commands, including rejected guest callback requests.
+    /// Maximum embedding commands and cross-code entry admissions, including automatic
+    /// indirect guest calls and rejected callback requests.
     pub control_commands: usize,
     /// Maximum entered guest activations, including ones with no host observations.
     /// The effective limit is capped at `u32::MAX` for compact recording-local identities.
@@ -334,7 +335,7 @@ pub struct RecordStats {
     pub aggregates: usize,
     /// Retained host-call observations.
     pub host_calls: usize,
-    /// Retained embedding control commands.
+    /// Retained embedding commands and cross-code entry admissions.
     pub control_commands: usize,
     /// Retained entered guest activations, shared by boundary stacks.
     pub call_frames: usize,
@@ -601,7 +602,7 @@ impl Recording {
             stats.control_commands += execution
                 .transfers
                 .iter()
-                .filter(|transfer| transfer.action.is_command())
+                .filter(|transfer| transfer.action.is_admission())
                 .count();
         }
         stats

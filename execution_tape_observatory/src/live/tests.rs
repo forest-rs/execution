@@ -164,6 +164,7 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
     vm.aggregates_mut()
         .tuple_new(vec![Value::I64(999)])
         .unwrap();
+    let preview_function = vm.function(&p, FuncId(0)).unwrap();
     let args = [Value::Obj(object(42))];
     let invocation = vm
         .start(&p, entry, &args, InvocationOptions::default())
@@ -180,11 +181,14 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
                     ("value".into(), Value::I64(value)),
                     ("peer".into(), Value::Obj(object(43))),
                     ("local aggregate".into(), Value::Agg(AggHandle(0))),
-                    ("local function".into(), Value::Func(FuncId(0))),
+                    (
+                        "local function".into(),
+                        Value::Func(preview_function.clone()),
+                    ),
                     (
                         "local closure".into(),
                         Value::Closure(execution_tape::value::Closure {
-                            func: FuncId(0),
+                            func: preview_function.clone(),
                             env: AggHandle(0),
                         }),
                     ),

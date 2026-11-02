@@ -44,7 +44,6 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
         .ret(0, &[result]);
     builder.define_function(maker, a).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
-    let weak = Arc::downgrade(&program);
     let mut graph = ExecutionGraph::new(TapeExecutor::new(HostProbe::default(), Limits::default()));
     let node = graph
         .add_tape_node(program, maker, vec!["x".into()])
@@ -65,7 +64,6 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
         weak_bundle.upgrade().is_none(),
         "export does not retain unrelated publication roots"
     );
-    assert!(weak.upgrade().is_some(), "export owns its code");
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
     let mut call = callable
         .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
@@ -74,7 +72,6 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
     while call.resume(1).unwrap() == RunStatus::Suspended {}
     assert_eq!(call.take_outputs(), Some(vec![Value::I64(42)]));
     drop(call);
-    assert!(weak.upgrade().is_none());
     assert_eq!(vm.aggregates().len_u32(), 0);
     assert_eq!(vm.host().calls, 0);
 }
@@ -109,18 +106,25 @@ fn exported_function_uses_original_program_and_raw_values_explain_missing_owners
             actual: ValueType::I64
         }
     );
-    for value in [
-        Value::Func(entries.value),
-        Value::Closure(Closure {
-            func: entries.value,
-            env: AggHandle(0),
-        }),
-    ] {
-        assert_eq!(
-            TapeValue::from(value).retain_callable().unwrap_err(),
-            CallableError::MissingCodeOwner
-        );
-    }
+    drop(call);
+    let function = vm.function(callable.program(), entries.value).unwrap();
+    let retained = TapeValue::from(Value::Func(function.clone()))
+        .retain_callable()
+        .unwrap();
+    assert!(
+        retained
+            .program()
+            .shares_definition_with(callable.program())
+    );
+    assert_eq!(
+        TapeValue::from(Value::Closure(Closure {
+            func: function,
+            env: AggHandle(0)
+        }))
+        .retain_callable()
+        .unwrap_err(),
+        CallableError::MissingCodeOwner,
+    );
 }
 
 #[derive(Default)]
@@ -301,7 +305,7 @@ fn program(number: i64) -> (Arc<VerifiedProgram>, Entries) {
 }
 
 #[test]
-fn callable_program_domain_is_enforced_before_execution() {
+fn callable_identity_survives_graph_edges_into_other_programs() {
     let (a, entries) = program(11);
     let (b, other) = program(99);
     let mut graph = ExecutionGraph::new(TapeExecutor::new(HostProbe::default(), Limits::default()));
@@ -330,24 +334,33 @@ fn callable_program_domain_is_enforced_before_execution() {
             .value(),
         &Value::I64(11)
     );
-    assert!(matches!(
-        graph.run_node(foreign),
-        Err(crate::GraphError::Node {
-            source: TapeError::ProgramMismatch { input: 0 },
-            ..
-        })
-    ));
+    graph.run_node(foreign).unwrap();
+    assert_eq!(
+        graph
+            .node_outputs(foreign)
+            .unwrap()
+            .get("ret0")
+            .unwrap()
+            .value(),
+        &Value::I64(11)
+    );
+    let function = Vm::new(HostProbe::default(), Limits::default())
+        .function(&a, entries.value)
+        .unwrap();
     graph
-        .set_input_value(same, "f", Value::Func(entries.value).into())
+        .set_input_value(same, "f", Value::Func(function).into())
         .unwrap();
     graph.invalidate_input("f");
-    assert!(matches!(
-        graph.run_node(same),
-        Err(crate::GraphError::Node {
-            source: TapeError::UnownedInput { input: 0 },
-            ..
-        })
-    ));
+    graph.run_node(same).unwrap();
+    assert_eq!(
+        graph
+            .node_outputs(same)
+            .unwrap()
+            .get("ret0")
+            .unwrap()
+            .value(),
+        &Value::I64(11)
+    );
     assert_eq!(graph.executor().host().calls, 0);
 }
 
@@ -355,17 +368,9 @@ fn callable_program_domain_is_enforced_before_execution() {
 fn nested_scoped_ids_require_program_and_reject_foreign_owners() {
     let (a, _) = program(11);
     let (b, entries) = program(99);
-    for kind in 0..4 {
+    for kind in 2..4 {
         let mut heap = AggHeap::new();
         let leaf = match kind {
-            0 => Value::Func(FuncId(0)),
-            1 => {
-                let env = heap.tuple_new(vec![]).unwrap();
-                Value::Closure(Closure {
-                    func: FuncId(0),
-                    env,
-                })
-            }
             2 => Value::Agg(heap.struct_new(TypeId(0), vec![Value::I64(7)]).unwrap()),
             _ => Value::Agg(heap.array_new(ElemTypeId(0), vec![Value::I64(7)]).unwrap()),
         };
@@ -551,11 +556,11 @@ fn deep_shared_input_import_and_release_are_iterative() {
     let (snapshot, _) = heap.into_snapshot(vec![Value::Agg(root)]).unwrap();
     let values = TapeValue::from_snapshot(snapshot, None).unwrap();
     let mut importer = Importer::default();
-    let mut target = AggHeap::new();
+    let mut target = Vm::new(HostProbe::default(), Limits::default());
     let a = importer.import(&values[0], &mut target).unwrap();
     let b = importer.import(&values[0], &mut target).unwrap();
     assert_eq!(a, b);
-    assert_eq!(target.len_u32(), 10_001);
+    assert_eq!(target.aggregates().len_u32(), 10_001);
     assert_eq!(importer.origins.domains.len(), 1);
     let (program, entries) = program(11);
     let mut graph = ExecutionGraph::new(TapeExecutor::new(HostProbe::default(), Limits::default()));

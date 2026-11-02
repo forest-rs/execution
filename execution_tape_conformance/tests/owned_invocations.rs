@@ -110,12 +110,10 @@ fn retained_closure() -> Callable {
     let program = Arc::new(builder.build_verified().unwrap());
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::I64(40)]).unwrap();
-    Callable::retain(
-        program,
-        &heap,
-        ValueRef::Closure(Closure { func: body, env }),
-    )
-    .unwrap()
+    let body = Vm::new(Echo(Rc::new(Effects::default())), Limits::default())
+        .function(&program, body)
+        .unwrap();
+    Callable::retain(&heap, ValueRef::Closure(&Closure { func: body, env })).unwrap()
 }
 fn require_static<T: 'static>(_: &T) {}
 

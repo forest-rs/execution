@@ -23,6 +23,15 @@ use crate::value::{FuncId, Value};
 use crate::vm::ActivationId;
 use crate::vm::{DataWork, Limits, TrapInfo};
 
+/// What caused entry into another code instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryOrigin {
+    /// An embedding command issued while a host operation remains pending.
+    HostRequest,
+    /// An indirect guest call; the instruction itself performs the transfer.
+    GuestCall,
+}
+
 /// A real transfer between code-qualified segments of one execution.
 ///
 /// Enabled by [`TraceMask::CONTROL`] or [`TraceMask::VALUES`]. Activation identities are opaque live capabilities;
@@ -31,6 +40,8 @@ use crate::vm::{DataWork, Limits, TrapInfo};
 pub enum ControlEvent<'a> {
     /// An admitted command to enter another instance while the parent host call waits.
     EnterInstance {
+        /// Whether this is an embedding command or an automatically executed guest call.
+        origin: EntryOrigin,
         /// Parent's pending host instruction, in the callback's `program`.
         location: TraceLocation,
         /// Exact waiting parent activation.
@@ -658,6 +669,78 @@ pub trait TraceSink {
 
 // Shared ownership keeps observations available after an owned invocation is dropped.
 // Borrow only between execution calls: reentrant RefCell borrows intentionally panic.
+// Borrowed observers can be lent for a shorter execution without changing the
+// lifetime of the underlying trait object or allocating an owned adapter.
+impl<S: TraceSink + ?Sized> TraceSink for &mut S {
+    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
+        (**self).run_mask(program, mask);
+    }
+    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
+        (**self).wants_registers(location, phase)
+    }
+    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
+        (**self).registers(program, event);
+    }
+    fn mask(&self) -> TraceMask {
+        (**self).mask()
+    }
+    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+        (**self).run_start(program, entry, arg_count);
+    }
+    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+        (**self).values(program, event);
+    }
+    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+        (**self).control(program, event);
+    }
+    fn instr(
+        &mut self,
+        program: &Program,
+        func: FuncId,
+        pc: u32,
+        next_pc: u32,
+        span_id: Option<u64>,
+        opcode: u8,
+    ) {
+        (**self).instr(program, func, pc, next_pc, span_id, opcode);
+    }
+    fn instr_end(
+        &mut self,
+        program: &Program,
+        location: TraceLocation,
+        next: Option<TraceLocation>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        (**self).instr_end(program, location, next, outcome);
+    }
+    fn scope_enter(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        (**self).scope_enter(program, kind, depth, func, pc, span_id);
+    }
+    fn scope_exit(
+        &mut self,
+        program: &Program,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        (**self).scope_exit(program, kind, depth, func, pc, span_id, outcome);
+    }
+    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        (**self).run_end(program, outcome);
+    }
+}
+
 impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> {
     fn run_mask(&mut self, program: &Program, mask: TraceMask) {
         self.as_ref().borrow_mut().run_mask(program, mask);

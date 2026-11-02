@@ -55,6 +55,8 @@ pub enum CallableError {
         /// Program-local target.
         function: FuncId,
     },
+    /// The VM cannot represent another live code namespace.
+    InstanceCapacityExceeded,
     /// A closure body must accept an aggregate environment as its first argument.
     EnvironmentArgument {
         /// Selected body.
@@ -73,6 +75,7 @@ impl fmt::Display for CallableError {
             Self::NoSuccessfulResult => f.write_str("callable retention requires a successful invocation result"),
             Self::OutputIndex { index, count } => write!(f, "cannot retain callable output {index}: invocation returned {count} values"),
             Self::MissingCodeOwner => f.write_str("callable value has no retained code owner; retain its original prepared program before exporting it"),
+            Self::InstanceCapacityExceeded => f.write_str("VM instance capacity exhausted while resolving function"),
             Self::NotCallable { actual } => {
                 write!(f, "expected a function or closure, got {actual:?}")
             }
@@ -228,23 +231,21 @@ impl Callable {
         })
     }
 
-    /// Retains a raw function or closure using its declared original program and source heap.
+    /// Retains a function or closure using its own code identity and the source heap.
     ///
     /// This copies a closure's reachable immutable environment, preserving sharing and distinct
-    /// nodes within it. It never retains other heap nodes. The caller must supply the actual
-    /// original program: attaching a different program does not translate local function/type IDs.
+    /// nodes within it. It never retains other heap nodes. The value retains the exact code
+    /// instance that interprets its body and captured callable references.
     /// Retention is explicit preparation outside guest fuel/work limits; start-time copies are
     /// separately charged before import. Concrete environment contracts are checked on start.
-    pub fn retain(
-        program: Arc<VerifiedProgram>,
-        heap: &AggHeap,
-        value: ValueRef<'_>,
-    ) -> Result<Self, CallableError> {
+    pub fn retain(heap: &AggHeap, value: ValueRef<'_>) -> Result<Self, CallableError> {
         match value {
-            ValueRef::Func(function) => Self::function(program, function),
+            ValueRef::Func(function) => Self::function(
+                Arc::new(function.instance().program().clone()),
+                function.function(),
+            ),
             ValueRef::Closure(closure) => Self::from_snapshot(
-                program,
-                heap.snapshot(&[Value::Closure(closure)])
+                heap.snapshot(&[Value::Closure(closure.clone())])
                     .map_err(CallableError::Aggregate)?,
             ),
             other => Err(CallableError::NotCallable {
@@ -255,37 +256,40 @@ impl Callable {
 
     /// Adopts exactly one retained function/closure root, without recopying its environment.
     ///
-    /// Supply its actual prepared program. This declares the identity domain of all captured
-    /// function/nominal type IDs; it does not relocate them to another program. Invalid target
-    /// IDs and bodies without an environment argument are rejected. Value contracts are checked
+    /// The callable root retains its actual prepared program. Bodies without an environment
+    /// argument are rejected. Value contracts are checked
     /// when execution starts, with that invocation's normal contract-work budget.
-    pub fn from_snapshot(
-        program: Arc<VerifiedProgram>,
-        snapshot: ValueSnapshot,
-    ) -> Result<Self, CallableError> {
+    pub fn from_snapshot(snapshot: ValueSnapshot) -> Result<Self, CallableError> {
         let [value] = snapshot.values() else {
             return Err(CallableError::RootCount {
                 actual: snapshot.values().len(),
             });
         };
         let closure = match value {
-            Value::Func(function) => return Self::function(program, *function),
-            Value::Closure(closure) => *closure,
+            Value::Func(function) => {
+                return Self::function(
+                    Arc::new(function.instance().program().clone()),
+                    function.function(),
+                );
+            }
+            Value::Closure(closure) => closure.clone(),
             other => {
                 return Err(CallableError::NotCallable {
                     actual: other.value_type(),
                 });
             }
         };
-        let body = program
-            .function(closure.func)
-            .ok_or(CallableError::MissingFunction {
-                function: closure.func,
-            })?;
+        let program = Arc::new(closure.func.instance().program().clone());
+        let body =
+            program
+                .function(closure.func.function())
+                .ok_or(CallableError::MissingFunction {
+                    function: closure.func.function(),
+                })?;
         let actual = body.arg_types().get(0).copied();
         if actual != Some(ValueType::Agg) {
             return Err(CallableError::EnvironmentArgument {
-                function: closure.func,
+                function: closure.func.function(),
                 actual,
             });
         }
@@ -313,7 +317,7 @@ impl Callable {
             program,
             target: Target::Closure(Arc::new(Capture {
                 snapshot,
-                function: closure.func,
+                function: closure.func.function(),
                 environment: closure.env,
                 aggregate_work,
                 payload_work,

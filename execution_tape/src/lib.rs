@@ -293,7 +293,7 @@
 //! extern crate alloc;
 //! use alloc::{string::String, vec};
 //! use execution_tape::{host::{Host, HostError, ValueRef}, value::Value,
-//!     vm::{Invocation, TrapInfo}};
+//!     vm::{ControlError, Invocation, TrapInfo}};
 //! async fn answer<H: Host>(invocation: &mut Invocation<'_, H>,
 //!     service: impl AsyncFnOnce(&str) -> Result<String, HostError>) -> Result<(), TrapInfo> {
 //!     invocation.pending_host_call().expect("AwaitingHost")
@@ -314,19 +314,39 @@
 //! redispatched: resumption reports `HostCallAbandoned` and recording remains incomplete.
 //! Ordinary runs and `Host` implementations keep their existing signatures and behavior.
 //!
+//! ### Function values and code replacement
+//!
+//! A runtime `Value::Func` contains a `value::FunctionRef`, retaining an exact instance and
+//! local function ID. Resolve default entries with `Vm::function`; use `FunctionRef::new`
+//! for an explicit instance. Closures carry the same qualified target and a store-local
+//! environment handle. Ordinary indirect calls follow that target, even when the current
+//! program defines another function at the same local ID. They share the execution's budgets,
+//! store and transaction; synchronous and resumable entry use this same mechanism.
+//!
+//! Replacing a lookup leaves existing function values, closures and paused activations attached
+//! to their old code. `Invocation::instantiate` admits newly verified definitions while paused.
+//! Generic dispatch and publication policy remain with the language runtime.
+//!
+//! Live values use their original store. Explicit `Callable::retain(heap, value)` exports code
+//! and copies a closure's reachable captures. Starting that owned callable imports the graph
+//! and binds captured code references to destination namespaces; it does not copy native host
+//! state or retain external objects. `Vm::bind_function` explicitly binds a retained function
+//! without an environment. Copying a heap snapshot alone preserves its original function
+//! namespaces and does not grant another VM permission to invoke them.
+//!
 //! ### Guest callbacks from a pending host request
 //!
-//! `PendingHostCall::call_guest` enters a function or closure in this invocation's original
-//! program/heap while retaining the admitted host instruction and its callers. Drive the same
+//! `PendingHostCall::call_guest` enters a function or closure in its exact originating instance
+//! within this VM store, retaining the admitted host instruction and its callers. Drive the same
 //! invocation with `resume`: the callback can yield further host requests, which can reenter
 //! guest code in turn. Its return exposes the original pending request, with result slots
 //! available through `callback_results`/`take_callback_results`. The embedding still chooses and supplies the
 //! final host outcome. Callback and host result signatures are independent.
 //!
 //! ```no_run
-//! use execution_tape::{host::Host, value::Value, vm::{Invocation, TrapInfo}};
+//! use execution_tape::{host::Host, value::Value, vm::{ControlError, Invocation, TrapInfo}};
 //! fn start_handler<H: Host>(run: &mut Invocation<'_, H>, handler: Value,
-//!     args: Vec<Value>) -> Result<(), TrapInfo> {
+//!     args: Vec<Value>) -> Result<(), ControlError> {
 //!     run.pending_host_call().expect("AwaitingHost").call_guest(handler, args)
 //! }
 //! // Resume and handle nested host requests normally. Once this original request returns:

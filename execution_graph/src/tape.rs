@@ -54,6 +54,8 @@ pub enum TapeError {
     },
     /// Retaining or importing an aggregate graph failed.
     Aggregate(AggError),
+    /// A retained callable could not be bound to this executor's host store.
+    Instance(execution_tape::instance::InstanceError),
     /// A function id was not present in the verified program supplied for a node.
     BadEntryFunc {
         /// Invalid entry function id.
@@ -95,6 +97,7 @@ impl fmt::Display for TapeError {
                 "input {input} contains IDs belonging to a different prepared program; use its original program or explicitly translate the value"
             ),
             Self::Aggregate(error) => write!(f, "aggregate transfer failed: {error}"),
+            Self::Instance(error) => write!(f, "callable transfer failed: {error}"),
             Self::BadEntryFunc { func } => {
                 write!(
                     f,
@@ -126,6 +129,7 @@ impl core::error::Error for TapeError {
         match self {
             Self::Trap(trap) => Some(trap),
             Self::Aggregate(error) => Some(error),
+            Self::Instance(error) => Some(error),
             _ => None,
         }
     }
@@ -391,11 +395,11 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             input.validate_input(index, &node.program)?;
         }
         for input in inputs {
-            match self.importer.import(input, self.vm.aggregates_mut()) {
+            match self.importer.import(input, &mut self.vm) {
                 Ok(value) => self.args.push(value),
                 Err(error) => {
                     self.clear_workspace();
-                    return Err(TapeError::Aggregate(error));
+                    return Err(error);
                 }
             }
         }

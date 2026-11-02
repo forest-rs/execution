@@ -19,7 +19,7 @@ use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
 use crate::value::Decimal;
-use crate::value::FuncId;
+use crate::value::FunctionRef;
 use crate::value::Obj;
 use crate::value::Value;
 
@@ -228,6 +228,15 @@ pub trait AccessSink {
     fn read(&mut self, key: ResourceKeyRef<'_>);
     /// Records a write of `key` (an invalidation source).
     fn write(&mut self, key: ResourceKeyRef<'_>);
+}
+
+impl<S: AccessSink + ?Sized> AccessSink for &mut S {
+    fn read(&mut self, key: ResourceKeyRef<'_>) {
+        (**self).read(key);
+    }
+    fn write(&mut self, key: ResourceKeyRef<'_>) {
+        (**self).write(key);
+    }
 }
 
 // Shared collectors can be owned by an invocation and drained between graph task polls.
@@ -602,9 +611,9 @@ pub enum ValueRef<'a> {
     /// Aggregate handle (tuple/struct/array).
     Agg(AggHandle),
     /// Function reference.
-    Func(FuncId),
+    Func(&'a FunctionRef),
     /// Closure reference (function + captured environment).
-    Closure(Closure),
+    Closure(&'a Closure),
 }
 
 impl<'a> ValueRef<'a> {
@@ -622,8 +631,8 @@ impl<'a> ValueRef<'a> {
             Value::Str(v) => Self::Str(v.as_str()),
             Value::Obj(v) => Self::Obj(*v),
             Value::Agg(v) => Self::Agg(*v),
-            Value::Func(v) => Self::Func(*v),
-            Value::Closure(v) => Self::Closure(*v),
+            Value::Func(v) => Self::Func(v),
+            Value::Closure(v) => Self::Closure(v),
         }
     }
 
@@ -645,8 +654,8 @@ impl<'a> ValueRef<'a> {
             Self::Str(s) => Value::Str(s.into()),
             Self::Obj(o) => Value::Obj(o),
             Self::Agg(h) => Value::Agg(h),
-            Self::Func(f) => Value::Func(f),
-            Self::Closure(c) => Value::Closure(c),
+            Self::Func(f) => Value::Func(f.clone()),
+            Self::Closure(c) => Value::Closure(c.clone()),
         }
     }
 

@@ -7,6 +7,7 @@ use execution_tape::recording::{
     CaptureFault, CaptureResource, InstructionCapture, InstructionStatus, Outcome, RecordLimits,
     RecordedValue, Recorder, Recording, TransferAction,
 };
+use execution_tape::value::FunctionRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -584,11 +585,14 @@ fn inherited_observers_see_real_cross_code_enter_and_exit_without_fabricated_hos
 }
 
 #[test]
-fn nested_raw_function_ids_are_rejected_instead_of_reinterpreted_in_the_child() {
+fn nested_foreign_store_functions_are_rejected_before_entering_a_child() {
     let (parent, entry) = parent();
     let (child, method) = child();
     let mut vm = Vm::new(NoHost, Limits::default());
     let instance = vm.instantiate(&child).unwrap();
+    let entry_value = Vm::new(NoHost, Limits::default())
+        .function(&parent, entry)
+        .unwrap();
     let mut run = vm
         .start(
             &parent,
@@ -601,7 +605,7 @@ fn nested_raw_function_ids_are_rejected_instead_of_reinterpreted_in_the_child() 
     let mut request = run.pending_host_call().unwrap();
     let tuple = request
         .context()
-        .tuple_new(vec![Value::Func(entry)])
+        .tuple_new(vec![Value::Func(entry_value)])
         .unwrap();
     let error = request
         .call_instance(
@@ -612,7 +616,7 @@ fn nested_raw_function_ids_are_rejected_instead_of_reinterpreted_in_the_child() 
         )
         .unwrap_err();
     assert!(
-        matches!(error, ControlError::Trapped(error) if matches!(error.trap, Trap::CrossInstanceValue { kind: ValueType::Func })),
+        matches!(error, ControlError::Trapped(error) if matches!(error.trap, Trap::ForeignStoreValue { kind: ValueType::Func })),
         "provenance is checked recursively through aggregate members"
     );
     assert_eq!(
@@ -1031,10 +1035,15 @@ fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
             )
             .unwrap();
         run.resume(100).unwrap();
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(callback), vec![tuple.clone()])
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(FunctionRef::new(request.instance(), callback).unwrap()),
+                vec![tuple.clone()],
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         run.resume(100).unwrap();
         let home = run.inspect().frames().next().unwrap().activation;
         assert_ne!(

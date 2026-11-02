@@ -1473,6 +1473,7 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
 
     let p = pb.build_verified().unwrap();
     let mut vm = Vm::new(TestHost, Limits::default());
+    let callee = vm.function(&p, callee).unwrap();
     let err = vm
         .run(&p, caller, &[Value::Func(callee)], TraceMask::NONE, None)
         .unwrap_err();

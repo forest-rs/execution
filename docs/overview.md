@@ -213,10 +213,13 @@ and variance/subtyping are separate capabilities.
   `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
   only the caller-visible arguments (see the [specification](v1_spec.md)).
 
-Function references and nominal type IDs belong to their program; aggregate handles belong to
-one heap. Raw `Value`s do not encode those ownership domains. The graph's `TapeValue` adapter owns
-snapshots and rejects program-local values transferred to a different program. It does not provide
-cross-program guest calls.
+Runtime function references retain an exact code instance as well as a local ID. An ordinary
+indirect call follows that owner across independently compiled definitions in the same VM.
+Closures use qualified targets and store-local environment handles. Nominal aggregate schemas
+still require their defining program; aggregate handles require their heap. The graph adapter
+owns snapshots and binds retained callable namespaces to its host store before executing them.
+Function values crossing a graph edge retain their original code rather than being reinterpreted
+using the receiving node's local IDs.
 
 ## Effects
 Calls use a single reserved Unit register, r0. The verifier requires call/host-call `eff_in`
@@ -321,9 +324,12 @@ the embedding still chooses how to complete that operation. Only the execution r
 or rolls back the shared aggregate transaction. Child returns preserve live parent handles.
 
 Instruction fuel, live call depth, host admission, contract work and aggregate/payload work are
-shared across this tree. No child entry replenishes a budget. Structural tuples and host objects
-can cross instance boundaries without snapshot/import. Raw function and closure IDs remain
-instance-local; nominal schemas require their exact defining code. Iterative provenance checks
+shared across this tree. No child entry replenishes a budget. Native-requested guest entries
+charge immediate string/byte arguments as host ingress; indirect guest calls charge the actual
+materialization of their arguments without charging another host ingress. Structural tuples and host objects
+can cross instance boundaries without snapshot/import. Functions and closures retain exact code
+instances and ordinary indirect calls can enter those instances. Nominal schemas require their
+exact defining code. Iterative provenance checks
 also inspect nested members and spend contract work. A foreign-store instance is denied before
 admission, while an invalid admitted boundary terminates the whole execution.
 

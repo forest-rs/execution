@@ -464,6 +464,7 @@ fn shared_nodes_distinct_equal_nodes_and_interned_payloads_keep_their_meaning() 
 fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_replay() {
     let p = identity(ValueType::Closure);
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
+    let function = vm.function(&p, FuncId(0)).unwrap();
     let array = vm
         .aggregates_mut()
         .array_new(
@@ -477,7 +478,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
         )
         .unwrap();
     let inner = Closure {
-        func: FuncId(0),
+        func: function.clone(),
         env: array,
     };
     let env = vm
@@ -490,7 +491,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
                     host_type: HostTypeId(123),
                     handle: ObjHandle(987),
                 }),
-                Value::Func(FuncId(0)),
+                Value::Func(function.clone()),
             ],
         )
         .unwrap();
@@ -498,13 +499,13 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
         &mut vm,
         &p,
         &[Value::Closure(Closure {
-            func: FuncId(0),
+            func: function.clone(),
             env,
         })],
     );
     drop(vm);
     let output = returned(&record);
-    let Value::Closure(outer) = output.values()[0] else {
+    let Value::Closure(outer) = &output.values()[0] else {
         panic!("closure");
     };
     assert_eq!(

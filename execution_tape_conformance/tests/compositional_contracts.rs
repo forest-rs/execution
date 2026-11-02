@@ -1054,12 +1054,9 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
     assert!(matches!(
         error.trap,
         Trap::ContractMismatch {
-            error: execution_tape::contract::ContractViolation {
-                mismatch: ContractMismatch::Aggregate { .. },
-                ..
-            },
+            error,
             ..
-        }
+        } if matches!(error.mismatch, ContractMismatch::Aggregate { .. })
     ));
     let wrong = vm
         .aggregates_mut()

@@ -706,10 +706,11 @@ fn value_text(value: ValueRef<'_>) -> String {
             object.handle.0, object.host_type.0
         ),
         ValueRef::Agg(handle) => format!("aggregate @{} · Enter to inspect", handle.0),
-        ValueRef::Func(func) => format!("function f{}", func.0),
+        ValueRef::Func(func) => format!("function f{}", func.function().0),
         ValueRef::Closure(closure) => format!(
             "closure f{} · environment @{}",
-            closure.func.0, closure.env.0
+            closure.func.function().0,
+            closure.env.0
         ),
     }
 }

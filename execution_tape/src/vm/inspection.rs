@@ -59,8 +59,8 @@ impl fmt::Debug for ActivationId {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Activation {
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Activation {
     ordinal: u64,
     caller: Option<TraceLocation>,
 }
@@ -71,10 +71,10 @@ pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
     pub(super) yield_host_calls: bool,
     pub(super) pending_host: Option<host_call::PendingHost>,
+    pub(super) pending_guest: Option<PendingGuest>,
     pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
     owner: Option<Arc<()>>,
     execution: Option<Arc<()>>,
-    frames: Vec<Activation>,
     last: u64,
     pub(super) segment: u64,
 }
@@ -89,22 +89,19 @@ impl ExecutionControl {
             remaining: 0,
             yield_host_calls,
             pending_host: None,
+            pending_guest: None,
             callbacks: None,
             owner: Some(Arc::clone(&owner)),
             execution: Some(owner),
-            frames: vec![Activation {
-                ordinal: 0,
-                caller: None,
-            }],
             last: 0,
             segment: 0,
         }
     }
-    pub(super) fn activation(&self, index: usize) -> ActivationId {
+    pub(super) fn activation(&self, ctx: &Registers, index: usize) -> ActivationId {
         ActivationId {
             owner: Arc::clone(self.owner()),
             execution: Arc::clone(self.execution.as_ref().expect("execution identity")),
-            ordinal: self.frames[index].ordinal,
+            ordinal: ctx.frames[index].activation.ordinal,
             segment: self.segment,
         }
     }
@@ -130,9 +127,15 @@ impl ExecutionControl {
 
     pub(super) fn paused_location(&self, ctx: &Registers, index: usize) -> TraceLocation {
         if index + 1 < ctx.frames.len() {
-            self.frames[index + 1]
+            ctx.frames[index + 1]
+                .activation
                 .caller
                 .expect("nested activation has caller")
+        } else if let Some(pending) = self
+            .pending_guest
+            .filter(|pending| pending.depth == ctx.frames.len())
+        {
+            pending.location
         } else if let Some(pending) = self
             .pending_host
             .filter(|pending| pending.depth == ctx.frames.len())
@@ -146,7 +149,11 @@ impl ExecutionControl {
             }
         }
     }
-    pub(super) fn target_index(&self, id: &ActivationId) -> Result<usize, ControlError> {
+    pub(super) fn target_index(
+        &self,
+        ctx: &Registers,
+        id: &ActivationId,
+    ) -> Result<usize, ControlError> {
         if !self
             .owner
             .as_ref()
@@ -154,25 +161,27 @@ impl ExecutionControl {
         {
             return Err(ControlError::ForeignInvocation);
         }
-        self.frames
+        ctx.frames
             .iter()
-            .position(|frame| frame.ordinal == id.ordinal)
+            .position(|frame| frame.activation.ordinal == id.ordinal)
             .ok_or(ControlError::ExpiredActivation)
     }
-    pub(super) fn enter(&mut self, caller: TraceLocation) {
-        // Every call consumes hard fuel, which cannot be replenished in an invocation.
-        // Even u64::MAX fuel therefore cannot exhaust ordinals before it is exhausted.
+    pub(super) fn enter(&mut self, ctx: &mut Registers, caller: TraceLocation) {
         self.last += 1;
-        self.frames.push(Activation {
+        ctx.frames.last_mut().expect("entered frame").activation = Activation {
             ordinal: self.last,
             caller: Some(caller),
-        });
+        };
     }
-    pub(super) fn truncate(&mut self, count: usize) {
-        self.frames.truncate(count);
+    pub(super) fn enable_identity(&mut self) {
+        if self.owner.is_none() {
+            let owner = Arc::new(());
+            self.owner = Some(Arc::clone(&owner));
+            self.execution = Some(owner);
+        }
     }
-    pub(super) fn leave(&mut self) {
-        self.frames.pop().expect("active guest activation");
+    pub(super) fn proof_owner(&self) -> Option<&Arc<()>> {
+        self.owner.as_ref()
     }
 }
 
@@ -360,19 +369,24 @@ fn inspection<'a>(
 impl<'a> InvocationInspection<'a> {
     fn frame_at(&self, index: usize) -> PausedFrame {
         let frame = &self.ctx.frames[index];
-        let activation = self.control.frames[index];
+        let activation = frame.activation;
         let child = index + 1 < self.ctx.frames.len();
         let pending = self
             .control
             .pending_host
             .filter(|pending| !child && pending.depth == self.ctx.frames.len());
-        let waiting = child || pending.is_some();
+        let waiting = child
+            || pending.is_some()
+            || self
+                .control
+                .pending_guest
+                .is_some_and(|pending| pending.depth == self.ctx.frames.len());
         let location = self.control.paused_location(self.ctx, index);
         PausedFrame {
             program: self.program.clone(),
             instance: self.ctx.instance.clone(),
             parent: if index > 0 {
-                Some(self.control.activation(index - 1))
+                Some(self.control.activation(self.ctx, index - 1))
             } else {
                 self.parent.as_ref().map(|(id, _)| id.clone())
             },
@@ -400,10 +414,10 @@ impl<'a> InvocationInspection<'a> {
         {
             return None;
         }
-        self.control
+        self.ctx
             .frames
             .iter()
-            .position(|frame| frame.ordinal == id.ordinal)
+            .position(|frame| frame.activation.ordinal == id.ordinal)
     }
 
     /// Visits active and suspended parent frames, innermost first. Frame metadata is materialized

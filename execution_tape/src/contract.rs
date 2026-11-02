@@ -527,7 +527,7 @@ pub enum ContractMismatch {
     /// A callable does not match its exact exposed signature.
     Callable {
         /// Concrete target when runtime checking identified one.
-        function: Option<crate::value::FuncId>,
+        function: Option<crate::value::FunctionRef>,
     },
     /// An aggregate handle does not resolve.
     Heap(crate::aggregates::AggError),
@@ -537,7 +537,12 @@ impl fmt::Display for ContractMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Callable { function } => match function {
-                Some(id) => write!(f, "function #{} has incompatible callable contracts", id.0),
+                Some(target) => write!(
+                    f,
+                    "function #{} in {:?} has incompatible callable contracts",
+                    target.function().0,
+                    target.instance().program().program().name()
+                ),
                 None => f.write_str("incompatible callable contracts"),
             },
             Self::Kind { expected, actual } => {
@@ -604,8 +609,11 @@ pub enum ContractPath {
 }
 
 /// A contract failure at a specific nested member, without copying its contract graph.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ContractViolation {
+    /// Exact definition owning `contract` when checking a captured foreign environment.
+    /// `None` uses the definition of the reported boundary.
+    pub contract_program: Option<crate::verifier::VerifiedProgram>,
     /// Expected contract at the failing position, local to the originating program.
     pub contract: ContractId,
     /// Member/environment steps from the checked root; empty for a root failure.
@@ -613,6 +621,19 @@ pub struct ContractViolation {
     /// Expected versus observed kind, shape, or handle failure.
     pub mismatch: ContractMismatch,
 }
+impl PartialEq for ContractViolation {
+    fn eq(&self, other: &Self) -> bool {
+        self.contract == other.contract
+            && self.path == other.path
+            && self.mismatch == other.mismatch
+            && match (&self.contract_program, &other.contract_program) {
+                (Some(a), Some(b)) => a.shares_definition_with(b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+impl Eq for ContractViolation {}
 impl fmt::Display for ContractViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("value")?;
@@ -737,6 +758,7 @@ mod tests {
         use crate::value::FuncId;
         use alloc::format;
         let error = ContractViolation {
+            contract_program: None,
             contract: ContractId(99),
             path: vec![ContractPath::Member(0), ContractPath::Member(0)],
             mismatch: ContractMismatch::Kind {
@@ -761,7 +783,7 @@ mod tests {
                 callee: FuncId(3),
                 index: 1,
             },
-            error,
+            error: alloc::boxed::Box::new(error),
         };
         assert_eq!(
             format!("{trapped}"),

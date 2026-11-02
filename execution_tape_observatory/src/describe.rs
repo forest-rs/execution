@@ -338,11 +338,13 @@ fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
         RecordedValue::Obj(value) => {
             format!("object #{} token {}", value.host_type.0, value.handle.0)
         }
-        RecordedValue::Func(id) => function(record.program().program(), *id),
+        RecordedValue::Func(target) => {
+            function(target.instance().program().program(), target.function())
+        }
         RecordedValue::Closure { func, env } => {
             format!(
                 "{} [environment @{}]",
-                function(record.program().program(), *func),
+                function(func.instance().program().program(), func.function()),
                 env.get()
             )
         }
