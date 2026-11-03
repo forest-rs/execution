@@ -1577,14 +1577,14 @@ fn same_trap(
             Trap::ControlArityMismatch {
                 boundary: a,
                 expected: ae,
-                actual: aa,
+                actual: actual_a,
             },
             Trap::ControlArityMismatch {
                 boundary: b,
                 expected: be,
-                actual: ba,
+                actual: actual_b,
             },
-        ) => a == b && ae == be && aa == ba,
+        ) => a == b && ae == be && actual_a == actual_b,
         (Trap::Continuation(a), Trap::Continuation(b)) => a == b,
         (Trap::ContinuationLimitExceeded, Trap::ContinuationLimitExceeded) => true,
         (Trap::ContractBoundary(a), Trap::ContractBoundary(b)) => {

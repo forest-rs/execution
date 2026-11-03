@@ -827,6 +827,7 @@ fn suspension_requests_follow_the_same_code_ownership_rules_as_ordinary_calls() 
 }
 
 #[test]
+#[cfg(panic = "unwind")]
 fn panicking_return_observers_preserve_the_root_and_poison_the_transfer() {
     use execution_tape::{
         trace::{TraceContext, TraceLocation, TraceMask, TraceOutcome, TraceSink},
@@ -898,6 +899,7 @@ fn panicking_return_observers_preserve_the_root_and_poison_the_transfer() {
 }
 
 #[test]
+#[cfg(panic = "unwind")]
 fn panicking_entry_observers_cannot_retry_entry_or_execute_the_admitted_child() {
     use execution_tape::{
         trace::{ScopeKind, TraceContext, TraceMask, TraceSink},
@@ -976,6 +978,7 @@ fn panicking_entry_observers_cannot_retry_entry_or_execute_the_admitted_child() 
 }
 
 #[test]
+#[cfg(panic = "unwind")]
 fn cancellation_observer_panics_cannot_skip_storage_rollback_or_frame_retirement() {
     use execution_tape::{
         program::HostTypeId,
