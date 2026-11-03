@@ -192,6 +192,12 @@ This release has an [MSRV][] of 1.88.
   budgets and ordinary host/value/recording semantics. Dropping an unfinished
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
+### Fixed
+
+- Make captured control's live ancestry follow attachment: a parked suffix has no outside
+  resumer frame, and resumption reports its actual new parent and resume instruction.
+  Creation ancestry remains separate from the current call chain.
+
 ### Changed
 
 - Use one native-to-guest entry point for qualified functions and closures. Resolve an explicit

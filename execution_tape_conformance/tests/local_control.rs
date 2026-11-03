@@ -175,6 +175,7 @@ fn suspension_bindings_preserve_rich_contracts_and_report_only_the_selected_outp
     let answer = program
         .emit_suspend(&mut body, tag, protocol, &[request])
         .unwrap();
+    let worker_return = body.pc();
     body.ret(0, &answer);
     program.define_function(worker, body).unwrap();
 
@@ -282,17 +283,48 @@ fn suspension_bindings_preserve_rich_contracts_and_report_only_the_selected_outp
         observed: vec![],
     };
     let mut vm = Vm::new(NoHost, Limits::default());
-    assert_eq!(
-        vm.run(
-            &program,
-            root,
-            &[],
-            TraceMask::REGISTERS,
-            Some(&mut outputs)
-        )
-        .unwrap(),
-        [Value::I64(42)]
-    );
+    let mut saw_resumed_parent = false;
+    {
+        let mut run = vm
+            .start(
+                &program,
+                root,
+                &[],
+                execution_tape::vm::InvocationOptions::default()
+                    .trace(TraceMask::REGISTERS, &mut outputs),
+            )
+            .unwrap();
+        while run.resume(1).unwrap() != execution_tape::vm::RunStatus::Complete {
+            let inspection = run.inspect();
+            for saved in inspection.saved_continuations() {
+                if let Some(frame) = saved.frames().last() {
+                    assert!(
+                        frame.parent.is_none(),
+                        "the matching resumer is outside the saved suffix"
+                    );
+                }
+            }
+            let mut frames = inspection.frames();
+            if let Some(frame) = frames.next()
+                && frame.location.func == worker
+                && frame.location.pc == worker_return
+            {
+                let parent = frames.next().expect("actual resumer");
+                assert_eq!(frame.parent, Some(parent.activation));
+                assert_eq!(
+                    frame.caller,
+                    Some(TraceLocation {
+                        func: root,
+                        pc: second_resume
+                    }),
+                    "resumption ancestry follows the new resume site"
+                );
+                saw_resumed_parent = true;
+            }
+        }
+        assert_eq!(run.result().unwrap().unwrap(), [Value::I64(42)]);
+    }
+    assert!(saw_resumed_parent);
     assert_eq!(
         outputs.observed,
         [

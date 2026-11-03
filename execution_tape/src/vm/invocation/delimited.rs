@@ -351,10 +351,15 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
 
     fn save(
         &mut self,
-        saved: Saved<'a>,
+        mut saved: Saved<'a>,
         parameters: ContractOwner,
         results: ContractOwner,
     ) -> Result<ContinuationRef, Trap> {
+        if let Saved::Suspended(stacks) = &mut saved {
+            // The matching resumer is outside this suffix. Creation/capture provenance is
+            // history, not a live parent relationship retained by independently saved control.
+            stacks.first_mut().expect("captured root").parent = None;
+        }
         match self.resumptions.insert(
             self.continuation.control.execution_owner(),
             saved,
@@ -651,7 +656,15 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 return Ok(true);
             }
             Saved::Suspended(mut stack) => {
-                stack.first_mut().expect("captured root").delimiter = Some(delimiter);
+                let root = stack.first_mut().expect("captured root");
+                root.parent = Some((
+                    self.continuation.control.activation(
+                        &self.continuation.ctx,
+                        self.continuation.ctx.frames.len() - 1,
+                    ),
+                    location,
+                ));
+                root.delimiter = Some(delimiter);
                 let active = stack.pop().expect("captured stack");
                 let parent = core::mem::replace(self.continuation, active);
                 self.parents.push(parent);
