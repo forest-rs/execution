@@ -301,6 +301,7 @@ impl<'a, H: Host> Running<'_, 'a, H> {
         root.structural_results |= replacement.structural_results;
         let recipient = root.parent.as_ref().map(|(id, _)| id.clone());
         let active = replacement.stacks.pop().expect("replacement leaf");
+        let replacement_parent_count = replacement.stacks.len();
         let mut retired = core::mem::replace(self.continuation, active);
         // Install every surviving owner and poison the replacement before arbitrary observers.
         self.continuation.control.waiting = if replacement.response.is_some() {
@@ -352,6 +353,11 @@ impl<'a, H: Host> Running<'_, 'a, H> {
             );
         }
         if let Some(response) = replacement.response {
+            let first = self.parents.len() - replacement_parent_count;
+            for stack in &mut self.parents[first..] {
+                delimited::attach_trace(stack);
+            }
+            delimited::attach_trace(self.continuation);
             let pending = self
                 .continuation
                 .control

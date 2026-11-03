@@ -822,6 +822,14 @@ impl<'a> TraceCtx<'a> {
         }
     }
 
+    fn stack_activity(&mut self, program: &Program, activity: crate::trace::StackActivity<'_>) {
+        if self.mask != TraceMask::NONE
+            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+        {
+            sink.stack_activity(TraceContext::new(program, self.stack.as_ref()), activity);
+        }
+    }
+
     #[inline]
     fn values<'event>(&mut self, program: &Program, event: impl FnOnce() -> ValueEvent<'event>) {
         let context = TraceContext::new(program, self.stack.as_ref());

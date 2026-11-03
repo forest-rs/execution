@@ -389,6 +389,33 @@ fn handler_edges_cannot_read_values_available_only_on_normal_return() {
 
 #[test]
 fn an_inner_nonmatching_table_survives_capture_and_matching_tables_are_outside_clauses() {
+    use execution_tape::{
+        trace::{StackActivity, TraceContext, TraceOutcome, TraceSink},
+        value::FuncId,
+        vm::ActivationId,
+    };
+    #[derive(Default)]
+    struct Lifecycle {
+        starts: Vec<(ActivationId, FuncId)>,
+        parks: Vec<ActivationId>,
+        attaches: Vec<(ActivationId, Option<ActivationId>)>,
+        ends: Vec<ActivationId>,
+    }
+    impl TraceSink for Lifecycle {
+        fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, _: usize) {
+            self.starts.push((context.stack().unwrap().clone(), entry));
+        }
+        fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
+            let id = context.stack().unwrap().clone();
+            match activity {
+                StackActivity::Parked => self.parks.push(id),
+                StackActivity::Attached { parent } => self.attaches.push((id, parent.cloned())),
+            }
+        }
+        fn run_end(&mut self, context: TraceContext<'_>, _: TraceOutcome<'_>) {
+            self.ends.push(context.stack().unwrap().clone());
+        }
+    }
     for tail_outer in [false, true] {
         let mut program = ProgramBuilder::new();
         let result = FunctionSig {
@@ -498,10 +525,49 @@ fn an_inner_nonmatching_table_survives_capture_and_matching_tables_are_outside_c
                 ..Limits::default()
             },
         );
+        let mut lifecycle = Lifecycle::default();
         assert_eq!(
-            vm.run(&program, root, &[], TraceMask::NONE, None).unwrap(),
+            vm.run(&program, root, &[], TraceMask::RUN, Some(&mut lifecycle))
+                .unwrap(),
             [Value::I64(30)]
         );
+        let id = |function| {
+            lifecycle
+                .starts
+                .iter()
+                .find(|(_, entry)| *entry == function)
+                .unwrap()
+                .0
+                .clone()
+        };
+        let root_id = id(root);
+        let middle_id = id(middle);
+        let worker_id = id(worker);
+        assert_eq!(
+            lifecycle.starts.len(),
+            3,
+            "reattachment preserves logical runs"
+        );
+        assert_eq!(
+            lifecycle.parks,
+            [worker_id.clone(), middle_id.clone(), worker_id.clone()]
+        );
+        assert_eq!(
+            lifecycle.attaches,
+            [
+                (
+                    middle_id.clone(),
+                    if tail_outer { None } else { Some(root_id) }
+                ),
+                (worker_id.clone(), Some(middle_id.clone())),
+                (worker_id.clone(), Some(middle_id)),
+            ],
+            "restore the outer captured stack before its inner leaf"
+        );
+        assert_eq!(lifecycle.ends.len(), 3);
+        for (id, _) in lifecycle.starts {
+            assert!(lifecycle.ends.contains(&id));
+        }
     }
 }
 

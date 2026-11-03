@@ -143,6 +143,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Forward code-qualified control and stack park/attach observations to selected tape observers,
+  respecting their masks even when strict dependency checking requests extra internal events.
+
 - Allow acyclic rewiring without evaluating intermediate edits. Scheduling and cycle checks
   use current authored prerequisites after rewiring; committed reads and cached outputs survive
   failures, and historical reads continue to propagate invalidation until publication. Pending

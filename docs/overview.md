@@ -481,6 +481,21 @@ checkpoints and compact aggregate write effects; its cursor replays only the sel
 Each register's outgoing fact comes directly from its write effect. There are no full per-instruction
 register-state snapshots, no `Program` clones, and no inspection storage in normal VM artifacts.
 
+## Logical scopes and physical profiling
+
+A logical stack keeps its exact code and identity while captured. `TraceSink::stack_activity`
+reports `Parked` from leaf to root and `Attached` from root to leaf before resumed instruction
+observations. It is delivered for every nonempty trace mask, including run-only and call-only
+subscriptions. Logical run/scope boundaries are unchanged: parking does not mean returning,
+and attachment is not a new invocation. `Attached.parent` identifies the actual current resumer.
+
+Profiling adapters retain descriptions by logical stack identity and keep physical guards only
+while attached. Thus a captured interval is excluded, while scheduling pauses and host waiting
+within the attached chain still count. These are elapsed intervals, not CPU-time measurements.
+Cancelling a parked computation closes its logical evidence without closing another stack's
+physical scopes. Both adapters expose `is_consistent()` and stop opening spans on malformed
+scope evidence instead of guessing from function IDs or nesting depth.
+
 ## Borrowed value observations
 
 `TraceMask::VALUES` enables `TraceSink::values` on the ordinary execution path. `ValueEvent::Entry`

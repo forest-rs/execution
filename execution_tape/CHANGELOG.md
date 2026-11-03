@@ -17,6 +17,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- `TraceSink::stack_activity` separates capture parking and attachment from logical run/scope
+  lifetime. Trace forwarding adapters must forward this callback for every nonempty mask,
+  including run-only and call-only subscriptions. Attachment retains logical stack identity
+  and identifies its actual parent; it does not emit another run or scope start.
+
 - Add proper terminal transfer through `emit_tail_call` and `emit_tail_resume`. The current
   activation is retired, its result recipient and enclosing control context survive, and long
   chains retain no forwarding frames. Verification requires the same final-result contracts;

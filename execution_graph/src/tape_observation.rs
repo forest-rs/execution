@@ -125,6 +125,29 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
             observer.run_mask(context, self.observer_mask);
         }
     }
+    fn stack_activity(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        activity: execution_tape::trace::StackActivity<'_>,
+    ) {
+        if self.observer_mask != TraceMask::NONE
+            && let Some(observer) = self.observer.as_deref_mut()
+        {
+            observer.stack_activity(context, activity);
+        }
+    }
+    fn control(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        event: execution_tape::trace::ControlEvent<'_>,
+    ) {
+        if (self.observer_mask.contains(TraceMask::CONTROL)
+            || self.observer_mask.contains(TraceMask::VALUES))
+            && let Some(observer) = self.observer.as_deref_mut()
+        {
+            observer.control(context, event);
+        }
+    }
     fn wants_registers(
         &self,
         event_context: execution_tape::trace::TraceContext<'_>,

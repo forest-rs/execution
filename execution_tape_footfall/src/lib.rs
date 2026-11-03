@@ -21,6 +21,10 @@
 //! These observations do not contain register values or complete host inputs and results;
 //! they are not a deterministic replay record. Panic unwinding closes active profiling scopes
 //! when the sink is dropped, without inventing successful VM completion events.
+//! Captured stacks retain logical scope descriptions but close their physical guards while
+//! parked. Attachment reopens those descriptions under the current caller. Physical spans
+//! measure attached-chain elapsed intervals; scheduling pauses and host waiting still count.
+//! [`FootfallSink::is_consistent`] rejects structurally inconsistent observation streams.
 //! After catching a host panic, drop and recreate the sink before another run, regardless of mask.
 //!
 //! This adapter needs only `no_std + alloc`. Runtime capture and export dependencies belong
@@ -40,7 +44,13 @@ use execution_tape::trace::{
 };
 use execution_tape::value::FuncId;
 use execution_tape::verifier::VerifiedProgram;
-use footfall::{Args, ContextHandle, EventDesc, ScopeDesc, ScopeGuard};
+use footfall::{Args, ContextHandle, EventDesc, ScopeDesc};
+
+mod scopes;
+use scopes::{Scope, Scopes};
+
+static STACK_PARK: EventDesc = EventDesc::new("execution_tape.stack_park");
+static STACK_ATTACH: EventDesc = EventDesc::new("execution_tape.stack_attach");
 
 static RUN: ScopeDesc = ScopeDesc::new("execution_tape.run");
 static CALL: ScopeDesc = ScopeDesc::new("execution_tape.call");
@@ -68,15 +78,9 @@ static REJECT_INSTANCE: EventDesc = EventDesc::new("execution_tape.reject_instan
 /// callbacks omitted by that run's mask; pass an explicit mask when that behavior is needed.
 pub struct FootfallSink {
     context: ContextHandle,
-    runs: Vec<RunScope>,
-    scopes: Vec<ScopeGuard>,
+    scopes: Scopes,
     programs: Vec<(VerifiedProgram, ContextHandle)>,
     thread: PhantomData<Rc<()>>,
-}
-
-struct RunScope {
-    guard: ScopeGuard,
-    scope_base: usize,
 }
 
 impl FootfallSink {
@@ -88,8 +92,7 @@ impl FootfallSink {
     pub const fn new(context: ContextHandle) -> Self {
         Self {
             context,
-            runs: Vec::new(),
-            scopes: Vec::new(),
+            scopes: Scopes::new(),
             programs: Vec::new(),
             thread: PhantomData,
         }
@@ -153,22 +156,12 @@ impl FootfallSink {
         }
     }
 
-    fn close_run(&mut self) {
-        if let Some(run) = self.runs.pop() {
-            while self.scopes.len() > run.scope_base {
-                self.scopes.pop();
-            }
-            drop(run.guard);
-        }
-    }
-
-    fn close_scopes(&mut self) {
-        while !self.runs.is_empty() {
-            self.close_run();
-        }
-        while let Some(scope) = self.scopes.pop() {
-            drop(scope);
-        }
+    /// Whether delivered scope and stack transitions have remained structurally consistent.
+    /// An inconsistent stream closes physical guards and stops opening new ones. It must not
+    /// be interpreted as a complete profile; recreate the sink before another execution.
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.scopes.consistent()
     }
 }
 
@@ -176,15 +169,9 @@ impl core::fmt::Debug for FootfallSink {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FootfallSink")
             .field("context", &self.context)
-            .field("run_depth", &self.runs.len())
-            .field("scope_depth", &self.scopes.len())
+            .field("scope_depth", &self.scopes.depth())
+            .field("consistent", &self.is_consistent())
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for FootfallSink {
-    fn drop(&mut self) {
-        self.close_scopes();
     }
 }
 
@@ -218,6 +205,35 @@ impl TraceSink for FootfallSink {
         footfall::message_with(kind, self.context_for(program), "transfer", &args);
     }
 
+    fn stack_activity(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        activity: execution_tape::trace::StackActivity<'_>,
+    ) {
+        let Some(stack) = context.stack() else {
+            return;
+        };
+        let mut args = Args::none()
+            .with("segment", stack.segment_ordinal())
+            .with("activation", stack.ordinal());
+        let desc = match activity {
+            execution_tape::trace::StackActivity::Parked => {
+                self.scopes.park(Some(stack));
+                &STACK_PARK
+            }
+            execution_tape::trace::StackActivity::Attached { parent } => {
+                self.scopes.attach(Some(stack));
+                if let Some(parent) = parent {
+                    args = args
+                        .with("parent_segment", parent.segment_ordinal())
+                        .with("parent_activation", parent.ordinal());
+                }
+                &STACK_ATTACH
+            }
+        };
+        footfall::message_with(desc, self.context_for(context.program()), "stack", &args);
+    }
+
     fn run_start(
         &mut self,
         context: execution_tape::trace::TraceContext<'_>,
@@ -225,14 +241,18 @@ impl TraceSink for FootfallSink {
         arg_count: usize,
     ) {
         let program = context.program();
+        let stack = context.stack();
         let context = self.context_for(program);
-        let args = Args::none()
+        let mut args = Args::none()
             .with("entry", entry.0)
             .with("arg_count", arg_count as u64);
-        self.runs.push(RunScope {
-            guard: footfall::scope_with(&RUN, context, &args),
-            scope_base: self.scopes.len(),
-        });
+        if let Some(stack) = stack {
+            args = args
+                .with("segment", stack.segment_ordinal())
+                .with("activation", stack.ordinal());
+        }
+        self.scopes
+            .start_run(stack, Scope::new(&RUN, context, args));
     }
 
     fn run_end(
@@ -242,10 +262,8 @@ impl TraceSink for FootfallSink {
     ) {
         let program = context.program();
         let mut args = Args::none();
-        if let Some(run) = self.runs.last()
-            && run.guard.token().is_valid()
-        {
-            args = args.with("scope_token", run.guard.token().get());
+        if let Some(token) = self.scopes.run_token(context.stack()) {
+            args = args.with("scope_token", token);
         }
         if let TraceOutcome::Trap(error) = outcome {
             args = args.with("func", error.func.0).with("pc", error.pc);
@@ -257,7 +275,7 @@ impl TraceSink for FootfallSink {
             self.context_for(program),
             outcome,
         );
-        self.close_run();
+        self.scopes.end_run(context.stack());
     }
 
     fn instr(
@@ -321,8 +339,10 @@ impl TraceSink for FootfallSink {
             ScopeKind::CallFrame { .. } => (&CALL, args),
             ScopeKind::HostCall { host_sig, .. } => (&HOST, args.with("host_sig", host_sig.0)),
         };
-        self.scopes
-            .push(footfall::scope_with(desc, self.context_for(program), &args));
+        self.scopes.enter(
+            context.stack(),
+            Scope::new(desc, self.context_for(program), args),
+        );
     }
 
     fn scope_exit(
@@ -340,10 +360,8 @@ impl TraceSink for FootfallSink {
             .with("func", func.0)
             .with("pc", pc)
             .with("depth", depth as u64);
-        if let Some(scope) = self.scopes.last()
-            && scope.token().is_valid()
-        {
-            args = args.with("scope_token", scope.token().get());
+        if let Some(token) = self.scopes.scope_token(context.stack()) {
+            args = args.with("scope_token", token);
         }
         self.outcome(
             &SCOPE_END,
@@ -352,7 +370,7 @@ impl TraceSink for FootfallSink {
             self.context_for(program),
             outcome,
         );
-        self.scopes.pop();
+        self.scopes.exit(context.stack());
     }
 }
 
@@ -360,6 +378,17 @@ impl TraceSink for FootfallSink {
 mod tests {
     use super::*;
     use execution_tape::asm::ProgramBuilder;
+
+    #[test]
+    fn an_unmatched_run_end_is_inconsistent_evidence() {
+        let code = ProgramBuilder::new().build();
+        let mut sink = FootfallSink::new(ContextHandle::ROOT);
+        sink.run_end(
+            execution_tape::trace::TraceContext::unscoped(&code),
+            TraceOutcome::Ok,
+        );
+        assert!(!sink.is_consistent());
+    }
 
     #[test]
     fn a_nested_run_retains_the_waiting_parent_scope() {
@@ -386,9 +415,9 @@ mod tests {
             FuncId(0),
             0,
         );
-        assert_eq!(sink.runs.len(), 2, "child entry retains the parent run");
+        assert_eq!(sink.scopes.runs(), 2, "child entry retains the parent run");
         assert_eq!(
-            sink.scopes.len(),
+            sink.scopes.depth(),
             1,
             "child entry retains the parent's actual waiting frame"
         );
@@ -408,12 +437,12 @@ mod tests {
             TraceOutcome::Ok,
         );
         assert_eq!(
-            sink.runs.len(),
+            sink.scopes.runs(),
             1,
             "child completion closes only its own run"
         );
         assert_eq!(
-            sink.scopes.len(),
+            sink.scopes.depth(),
             1,
             "parent scope remains live until its own outcome"
         );
@@ -422,7 +451,7 @@ mod tests {
             TraceOutcome::Cancelled,
         );
         assert!(
-            sink.runs.is_empty() && sink.scopes.is_empty(),
+            sink.scopes.runs() == 0 && sink.scopes.depth() == 0,
             "root completion closes the remaining scopes"
         );
     }

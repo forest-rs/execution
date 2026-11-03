@@ -66,6 +66,22 @@ impl core::fmt::Debug for TraceContext<'_> {
     }
 }
 
+/// Membership of a logical stack in the currently attached guest call chain.
+///
+/// This is distinct from logical run/scope lifetime and from scheduler waiting time. Parking
+/// preserves the computation and its open scopes; attachment resumes those same identities.
+#[derive(Clone, Copy, Debug)]
+pub enum StackActivity<'a> {
+    /// A captured stack leaves the active chain. Physical profiling guards must close, but
+    /// logical scope descriptors remain available for attachment or terminal cancellation.
+    Parked,
+    /// A previously parked stack rejoins the chain under its actual current resumer.
+    Attached {
+        /// Live parent activation, or `None` when replacing the root.
+        parent: Option<&'a ActivationId>,
+    },
+}
+
 /// What caused entry into another code instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryOrigin {
@@ -593,6 +609,15 @@ pub trait TraceSink {
     /// - `arg_count`: number of value arguments passed (not including the effect token)
     fn run_start(&mut self, _context: TraceContext<'_>, _entry: FuncId, _arg_count: usize) {}
 
+    /// Observes parking or attachment of an existing logical guest stack.
+    ///
+    /// Delivered for every nonempty trace mask, including RUN-only, before observations from
+    /// the resumed instruction. Capture parks a suffix from leaf to root; attachment restores
+    /// it from root to leaf. Neither transition fabricates run or scope starts/ends. Use
+    /// [`TraceContext::stack`] to retain scope descriptors separately from physical guards.
+    /// Scheduler quantum expiry and waiting for a host do not themselves park a stack.
+    fn stack_activity(&mut self, _context: TraceContext<'_>, _activity: StackActivity<'_>) {}
+
     /// Borrows values at an execution boundary without changing execution or retaining data.
     ///
     /// Enabled only by [`TraceMask::VALUES`]. `Entry` follows `run_start` when both are enabled;
@@ -737,6 +762,9 @@ impl<S: TraceSink + ?Sized> TraceSink for &mut S {
     fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, arg_count: usize) {
         (**self).run_start(context, entry, arg_count);
     }
+    fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
+        (**self).stack_activity(context, activity);
+    }
     fn values(&mut self, context: TraceContext<'_>, event: ValueEvent<'_>) {
         (**self).values(context, event);
     }
@@ -815,6 +843,9 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         self.as_ref()
             .borrow_mut()
             .run_start(context, entry, arg_count);
+    }
+    fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
+        self.as_ref().borrow_mut().stack_activity(context, activity);
     }
     fn values(&mut self, context: TraceContext<'_>, event: ValueEvent<'_>) {
         self.as_ref().borrow_mut().values(context, event);

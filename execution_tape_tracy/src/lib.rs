@@ -6,6 +6,10 @@
 //! This crate is `std`-only and keeps `execution_tape` itself free of profiling dependencies.
 //! It listens for scope enter/exit callbacks and emits matching profiling scopes. Dropping the
 //! sink closes active scopes from inner to outer, including after host panic unwinding.
+//! Capture parking closes physical spans while retaining logical descriptions. Attachment
+//! reopens those descriptions with their original labels and source locations. Span durations
+//! measure attached-chain elapsed intervals; scheduling pauses and host waiting still count.
+//! [`ProfilingTraceSink::is_consistent`] reports inconsistent observation streams.
 //! After catching a host panic, drop and recreate the sink before another run.
 //!
 //! ## Backend

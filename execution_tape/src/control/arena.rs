@@ -139,6 +139,11 @@ impl<T> Resumptions<T> {
         Ok(self.slots[index].saved.as_ref().expect("live capability"))
     }
 
+    pub(crate) fn get_mut(&mut self, key: &ContinuationId) -> Result<&mut T, LookupError> {
+        let index = self.index(key)?;
+        Ok(self.slots[index].saved.as_mut().expect("live capability"))
+    }
+
     /// Consumes authority before lending storage to arbitrary execution or observation code.
     pub(crate) fn take(&mut self, key: &ContinuationId) -> Result<T, LookupError> {
         let index = self.index(key)?;

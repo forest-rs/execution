@@ -36,8 +36,10 @@ pub enum RunStatus {
 
 /// Optional borrowed or owned observers of one logical invocation.
 ///
-/// Scheduling does not change the VM's hard resource limits. Trace scopes cover the logical
-/// invocation, including time spent suspended; they measure elapsed latency, not active CPU time.
+/// Scheduling does not change the VM's hard resource limits. Logical trace scopes retain their
+/// identities across suspension. Profiling adapters measure attached-chain elapsed intervals:
+/// capture parking closes physical spans, but scheduling pauses and host waiting still count.
+/// Those intervals measure elapsed latency, not active CPU time.
 #[derive(Default)]
 pub struct InvocationOptions<'a> {
     pub(super) yield_host_calls: bool,

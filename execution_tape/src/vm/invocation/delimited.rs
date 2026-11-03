@@ -374,7 +374,27 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             saved,
             self.vm.limits.max_continuations,
         ) {
-            Ok(key) => Ok(ContinuationRef::new(key, parameters, results)),
+            Ok(key) => {
+                if let Saved::Suspended(stacks) =
+                    self.resumptions.get_mut(&key).expect("installed suffix")
+                {
+                    if matches!(self.continuation.control.waiting, Waiting::Ready) {
+                        self.continuation.control.waiting = Waiting::Transition(TraceLocation {
+                            func: self.continuation.entry,
+                            pc: 0,
+                        });
+                    } else {
+                        self.continuation.control.waiting.poison();
+                    }
+                    for stack in stacks.iter_mut().rev() {
+                        stack.trace.stack_activity(
+                            stack.program.program(),
+                            crate::trace::StackActivity::Parked,
+                        );
+                    }
+                }
+                Ok(ContinuationRef::new(key, parameters, results))
+            }
             Err((_, saved)) => {
                 self.cancel_stack(saved);
                 Err(Trap::ContinuationLimitExceeded)
@@ -678,9 +698,17 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 ));
                 root.delimiter = Some(delimiter);
                 let active = stack.pop().expect("captured stack");
+                let stack_count = stack.len();
                 let parent = core::mem::replace(self.continuation, active);
                 self.parents.push(parent);
                 self.parents.extend(stack);
+                // Poison the installed suffix before any attachment observer can interrupt it.
+                self.continuation.control.waiting.poison();
+                let first = self.parents.len() - stack_count;
+                for stack in &mut self.parents[first..] {
+                    attach_trace(stack);
+                }
+                attach_trace(self.continuation);
                 Self::complete_control(self.continuation, args, self.vm.memory.aggs())?;
                 self.budget.select(&self.continuation.control);
             }
@@ -1173,4 +1201,14 @@ impl<H: Host> Running<'_, '_, H> {
         self.finish(Err(error.clone()));
         ControlError::Trapped(error)
     }
+}
+
+/// The owner is installed before this observer runs; the waiting operation stays poisoned.
+pub(super) fn attach_trace(stack: &mut continuation::Continuation<'_>) {
+    stack.trace.stack_activity(
+        stack.program.program(),
+        crate::trace::StackActivity::Attached {
+            parent: stack.parent.as_ref().map(|(id, _)| id),
+        },
+    );
 }

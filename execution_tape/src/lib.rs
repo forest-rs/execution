@@ -239,8 +239,10 @@
 //!
 //! Dropping an unfinished invocation cancels it and rolls back its new aggregates. Host effects
 //! remain performed. Trace scopes close with `TraceOutcome::Cancelled`; a cancelled recording is
-//! incomplete and cannot be replayed as a finished invocation. Logical profiling scopes include
-//! suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
+//! incomplete and cannot be replayed as a finished invocation. Logical scopes retain their identity;
+//! [`trace::StackActivity`] distinguishes capture parking and reattachment. Profiling adapters close
+//! physical spans while parked; scheduler pauses and host waiting within the attached chain still
+//! count as elapsed time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 //! use the unbounded dispatch specialization without scheduling checks.
 //!
 //! A stored task can instead transfer its VM into [`callable::Callable::start_owned`].

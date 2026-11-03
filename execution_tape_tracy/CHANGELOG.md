@@ -13,6 +13,14 @@ Changes for the initial Execution Tape Tracy [0.1.0](#010-2026-10-27) release, d
 
 This release has an [MSRV][] of 1.88.
 
+### Fixed
+
+- Keep physical profiling guards only for attached stacks. Capture parks scopes inner to
+  outer; attachment reopens retained descriptions with the same logical identities. Ending
+  or cancelling a parked stack no longer closes another stack's scopes. Physical intervals
+  exclude capture parking, while scheduler pauses and host waiting within the attached chain
+  still count. `is_consistent()` reports malformed observation streams.
+
 ### Added
 
 - Close profiling scopes when a resumable invocation is cancelled. Logical scopes span scheduling
