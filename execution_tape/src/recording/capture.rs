@@ -9,7 +9,7 @@ use crate::program::Program;
 use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, InstructionCapture,
     InstructionOutcome, InstructionStatus, RecordLimits, Recording,
-    control::{Action, Command, Returned},
+    control::{Action, Command},
     frames::{Frame, FrameId},
     instructions::History,
     values::Builder,
@@ -39,7 +39,6 @@ pub(super) struct SegmentRecorder {
     calls: Vec<Call>,
     commands: Vec<Command>,
     sequence: usize,
-    active_commands: Vec<usize>,
     frames: Vec<Frame>,
     top: Option<FrameId>,
     outcome_frame: Option<FrameId>,
@@ -62,7 +61,6 @@ impl SegmentRecorder {
             calls: Vec::new(),
             commands: Vec::new(),
             sequence: 0,
-            active_commands: Vec::new(),
             frames: Vec::new(),
             top: None,
             outcome_frame: None,
@@ -196,7 +194,6 @@ impl SegmentRecorder {
                 location,
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 created,
@@ -222,12 +219,6 @@ impl SegmentRecorder {
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
-                let active = self
-                    .active_commands
-                    .len()
-                    .checked_sub(unwound_callbacks)
-                    .ok_or(CaptureFault::InvalidSequence)?;
-                self.active_commands.truncate(active);
                 self.commands.push(Command {
                     sequence: self.sequence,
                     location,
@@ -235,7 +226,6 @@ impl SegmentRecorder {
                     action: Action::ReturnFrom {
                         target,
                         target_location,
-                        unwound_callbacks,
                         values,
                         work,
                         constructed,
@@ -246,7 +236,7 @@ impl SegmentRecorder {
                     history.begin_transfer(target);
                 }
             }
-            ValueEvent::CallbackEnter {
+            ValueEvent::GuestCall {
                 location,
                 callee,
                 args,
@@ -278,7 +268,6 @@ impl SegmentRecorder {
                 let args = self
                     .builder
                     .roots(args.iter().map(ValueRef::from_value), aggregates)?;
-                self.active_commands.push(self.commands.len());
                 self.commands.push(Command {
                     sequence: self.sequence,
                     location,
@@ -288,47 +277,9 @@ impl SegmentRecorder {
                         args,
                         work,
                         constructed,
-                        returned: None,
                     },
                 });
                 self.sequence += 1;
-                if let Some(history) = &mut self.history {
-                    history.begin_callback(location);
-                }
-            }
-            ValueEvent::CallbackReturn {
-                location,
-                caller,
-                values,
-                aggregates,
-            } => {
-                let index = self
-                    .active_commands
-                    .pop()
-                    .ok_or(CaptureFault::InvalidSequence)?;
-                if self.commands[index].location != caller {
-                    return Err(CaptureFault::InvalidSequence);
-                }
-                self.check_location(location)?;
-                let values = self
-                    .builder
-                    .roots(values.iter().map(ValueRef::from_value), aggregates)?;
-                let Action::CallGuest { returned, .. } = &mut self.commands[index].action else {
-                    return Err(CaptureFault::InvalidSequence);
-                };
-                if returned.is_some() {
-                    return Err(CaptureFault::InvalidSequence);
-                }
-                *returned = Some(Returned {
-                    sequence: self.sequence,
-                    location,
-                    values,
-                    frame: self.top,
-                });
-                self.sequence += 1;
-                if let Some(history) = &mut self.history {
-                    history.end_callback();
-                }
             }
             ValueEvent::Entry {
                 entry,
@@ -574,8 +525,7 @@ impl TraceSink for SegmentRecorder {
         let location = match event {
             ValueEvent::Entry { .. } => None,
             ValueEvent::HostCall { location, .. }
-            | ValueEvent::CallbackEnter { location, .. }
-            | ValueEvent::CallbackReturn { location, .. }
+            | ValueEvent::GuestCall { location, .. }
             | ValueEvent::ReturnFrom { location, .. }
             | ValueEvent::ReturnCandidate { location, .. } => Some(location),
         };
@@ -718,9 +668,6 @@ impl TraceSink for SegmentRecorder {
             TraceOutcome::Unwound { .. } => self.fail(CaptureFault::InvalidSequence),
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),
             TraceOutcome::Ok => {
-                if !self.active_commands.is_empty() {
-                    self.fail(CaptureFault::InvalidSequence);
-                }
                 if self.entry.is_none() && self.fault.is_none() {
                     self.fail(CaptureFault::MissingEntry);
                 } else if self.candidate.is_none() && self.fault.is_none() {

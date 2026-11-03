@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Indirect guest calls use the value's code owner, without asking the host to interpret an ID.
+//! Guest entry retains the exact callable owner and returns through one segment boundary.
 
 use super::*;
 use crate::{program::CallSigId, trace::EntryOrigin, value::FunctionRef};
@@ -152,8 +152,12 @@ impl<'state, H: Host> Invocation<'state, H> {
         environment: Option<AggHandle>,
         args: Vec<Value>,
     ) -> Result<RunStatus, TrapInfo> {
+        let callee = match environment {
+            Some(env) => Value::Closure(Closure { func: target, env }),
+            None => Value::Func(target),
+        };
         self.running()
-            .enter_segment(&target, environment, args, EntryOrigin::GuestCall)?;
+            .enter_segment(callee, args, EntryOrigin::GuestCall)?;
         let parent = self.parents.last_mut().expect("guest caller retained");
         parent
             .control
@@ -162,5 +166,81 @@ impl<'state, H: Host> Invocation<'state, H> {
             .expect("pending guest call")
             .abandoned = false;
         Ok(RunStatus::Suspended)
+    }
+}
+
+impl<H: Host> PendingHostCall<'_, '_, H> {
+    /// Starts a guest function or closure in its exact instance while retaining this host request.
+    ///
+    /// Accepts a qualified function, closure, or dynamic `Value`. For an explicit instance,
+    /// pass `instance.function(entry)?` directly. All calls keep this execution's yielding policy,
+    /// observer and resource-access sink; those are selected once at root entry.
+    ///
+    /// Consumes the view, not the host operation. Drive the same invocation with `resume`:
+    /// the callback may yield further host requests, whose guards support the same operation.
+    /// When the callback returns, `resume` reports `AwaitingHost` for this original request.
+    /// Take its callback results, then complete the host operation explicitly. Repeated calls
+    /// discard any untaken previous callback results.
+    ///
+    /// The target must belong to this VM store; it may retain another verified definition. Raw
+    /// aggregate handles use this VM heap. Closure arguments exclude the hidden environment.
+    /// Arguments move into the invocation. Their immediate byte/string lengths are charged as
+    /// host ingress; result materialization uses the ordinary payload-work budget. Each callback
+    /// consumes one hard-fuel unit and shares call-depth, host-call and contract limits with its
+    /// suspended callers. There is no budget reset or native Rust stack capture.
+    ///
+    /// Previously staged host aggregates are promoted, preserving handles, before guest reentry.
+    /// Even unused staged nodes then live until root commit or rollback; their already admitted
+    /// work remains charged. Later host construction uses the updated shared heap/budgets.
+    /// Invalid targets, arguments or exhausted limits terminate the whole invocation, as guest
+    /// calls do. Dropping it cancels all waiting operations without executing guest code.
+    ///
+    /// Callback entry/return and actual guest ancestry are observable. The boundary recorder
+    /// retains the command and its actual return; checked replay reexecutes the guest callback.
+    pub fn call_guest(
+        mut self,
+        callee: impl Into<Value>,
+        args: Vec<Value>,
+    ) -> Result<(), ControlError> {
+        let callee = callee.into();
+        let instance = match &callee {
+            Value::Func(function) => Some(function.instance()),
+            Value::Closure(closure) => Some(closure.func.instance()),
+            _ => None,
+        };
+        if instance.is_some_and(|instance| !self.running.vm.owns_instance(instance)) {
+            return Err(ControlError::ForeignStore);
+        }
+        self.delivering = true;
+        let result = self
+            .running
+            .enter_segment(callee, args, EntryOrigin::HostRequest);
+        self.delivering = false;
+        result.map_err(ControlError::Trapped)
+    }
+
+    /// Borrows the latest successful callback results without consuming them.
+    ///
+    /// An empty successful callback yields `Some(&[])`; `None` means no results are available.
+    /// Aggregate handles use this VM heap; callable targets retain their own code.
+    /// Inspection spends no guest work.
+    #[must_use]
+    pub fn callback_results(&self) -> Option<&[Value]> {
+        self.running
+            .continuation
+            .control
+            .callback_results
+            .as_deref()
+    }
+
+    /// Takes the latest successful callback results belonging to this pending host operation.
+    ///
+    /// `None` means no callback has returned or the slots were already taken. The host operation
+    /// is still pending; aggregate handles use the execution heap and callable targets retain
+    /// their own code.
+    /// Taking values does not retain them independently. Completing the host operation discards
+    /// untaken slots. Use the request context's `retain` for an independent aggregate snapshot.
+    pub fn take_callback_results(&mut self) -> Option<Vec<Value>> {
+        self.running.continuation.control.callback_results.take()
     }
 }

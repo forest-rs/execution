@@ -8,9 +8,7 @@ use execution_tape::{
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::{HostTypeId, ValueType},
-    recording::{
-        ControlAction, InstructionCapture, InstructionStatus, RecordLimits, Recorder, ReplayOutcome,
-    },
+    recording::{InstructionCapture, InstructionStatus, RecordLimits, Recorder, ReplayOutcome},
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{AggHandle, Closure, FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
@@ -557,7 +555,10 @@ impl TraceSink for Trace {
         self.enter += 1;
         assert!(
             !(self.panic_callback_scope
-                && depth == 3
+                && _context
+                    .stack()
+                    .is_some_and(|stack| stack.segment_ordinal() != 0)
+                && depth == 1
                 && matches!(kind, ScopeKind::CallFrame { .. })),
             "injected callback entry observer panic"
         );
@@ -574,12 +575,22 @@ impl TraceSink for Trace {
     ) {
         self.exit += 1;
     }
+    fn control(
+        &mut self,
+        _: execution_tape::trace::TraceContext<'_>,
+        event: execution_tape::trace::ControlEvent<'_>,
+    ) {
+        if matches!(
+            event,
+            execution_tape::trace::ControlEvent::ReturnInstance { .. }
+        ) {
+            self.callback_return += 1;
+        }
+    }
     fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
         let _ = _context.program();
-        match event {
-            ValueEvent::CallbackEnter { .. } => self.callback_enter += 1,
-            ValueEvent::CallbackReturn { .. } => self.callback_return += 1,
-            _ => {}
+        if let ValueEvent::GuestCall { .. } = event {
+            self.callback_enter += 1;
         }
     }
 }
@@ -677,20 +688,20 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
         record.instruction_status(),
         Some(InstructionStatus::Complete)
     );
-    assert!(
-        record
-            .instructions()
-            .any(|step| step.parent_attempt.is_some()),
-        "callback attempts must name their outstanding parent host attempt"
-    );
-    let command = record.control_commands().next().unwrap();
-    let ControlAction::CallGuest {
-        returned: Some(returned),
-        ..
-    } = command.action
-    else {
-        panic!("captured guest return");
-    };
+    let child = record
+        .segments()
+        .find(|segment| segment.parent.is_some())
+        .expect("actual callback segment");
+    assert_eq!(child.entry, Some(f.plus_one));
+    let returned = record
+        .transfers()
+        .find(|transfer| {
+            matches!(
+                transfer.action,
+                execution_tape::recording::TransferAction::Returned { .. }
+            )
+        })
+        .expect("checked guest return");
     assert_eq!(returned.location.func, f.plus_one);
     let ReplayOutcome::Returned(snapshot) = record.replay().unwrap() else {
         panic!("successful checked callback replay");
@@ -741,7 +752,7 @@ fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_va
             "poison source belongs to the suspended parent, even for recursive reentry"
         );
         let error = run.resume(u64::MAX).unwrap_err();
-        assert!(matches!(error.trap, Trap::HostCallAbandoned));
+        assert!(matches!(error.trap, Trap::GuestTransferAbandoned));
         drop(run);
         assert_eq!(capture.borrow().enter, capture.borrow().exit);
         assert_eq!(capture.borrow().instr, capture.borrow().end);

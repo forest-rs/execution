@@ -44,9 +44,7 @@ impl TraceSink for Observe {
     fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
         let _ = _context.program();
         match event {
-            ValueEvent::ReturnFrom { .. }
-            | ValueEvent::CallbackEnter { .. }
-            | ValueEvent::CallbackReturn { .. } => {
+            ValueEvent::ReturnFrom { .. } | ValueEvent::GuestCall { .. } => {
                 panic!("fixture does not request callbacks")
             }
             ValueEvent::Entry {
@@ -459,9 +457,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                     s.as_ptr() as usize
                 }
                 ValueEvent::ReturnCandidate { .. } => return,
-                ValueEvent::ReturnFrom { .. }
-                | ValueEvent::CallbackEnter { .. }
-                | ValueEvent::CallbackReturn { .. } => {
+                ValueEvent::ReturnFrom { .. } | ValueEvent::GuestCall { .. } => {
                     panic!("fixture does not request callbacks")
                 }
             };

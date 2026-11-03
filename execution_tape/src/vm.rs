@@ -596,7 +596,7 @@ struct Frame {
     base: RegBase,
     /// Return continuation for this frame.
     ///
-    /// This is `None` for the entry frame and embedding callback roots.
+    /// This is `None` for the segment entry frame.
     ///
     /// Design note: we intentionally keep this metadata compact and avoid storing duplicated
     /// caller frame state (`func`, `base`, `pc`, `instr_ix`) because the caller frame remains on
@@ -2310,23 +2310,6 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::Ret { rets } => {
-                    if YIELD && invocation::callback::returns_to_host(control, ctx.frames.len()) {
-                        invocation::callback::return_to_host::<H, P>(
-                            self,
-                            ctx,
-                            budget,
-                            program,
-                            root_args,
-                            control,
-                            trace,
-                            vf,
-                            vf.vregs(*rets),
-                            TraceLocation { func: func_id, pc },
-                            span_id,
-                            base,
-                        )?;
-                        return Ok(Progress::AwaitingHost);
-                    }
                     if ctx.frames.len() == 1 {
                         let rets = vf.vregs(*rets);
                         outputs.reserve(rets.len());

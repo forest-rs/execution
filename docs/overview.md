@@ -343,10 +343,12 @@ updated heap/budgets. Unused promoted nodes survive until root commit/rollback. 
 owns scheduling and callback selection; no native Rust stack is captured. Cancellation executes
 no guest code. Exact activation-scoped typed exits are available as described below. Dynamic
 condition dispatch, restart policy and protected cleanup are language-runtime responsibilities;
-this VM does not automatically install them or provide typed delimited-effect opcodes.
+the delimited computation primitives above provide the VM transfer mechanism.
 
-Callback entry/return are explicit value events and guest frames have their actual host call
-sites as callers. The parent host instruction remains outstanding while child attempts execute.
+Every embedding-requested guest call owns a segment, even when it uses the same instance.
+`ValueEvent::GuestCall` records the proposal before validation; code-qualified entry and return
+control events identify the actual guest computation and its host caller. The parent host
+instruction remains outstanding while the child segment executes.
 Callback return goes to embedding code, with no next guest instruction; it does not complete the
 parent host instruction. On failure/cancellation all outstanding attempts and scopes close.
 The boundary recorder captures the embedding's command and the callback's actual return separately
@@ -514,8 +516,9 @@ all promoted staging, and the actual callback return separately from the eventua
 Their sequence numbers describe observation order; a callback return does not publish the root
 result. Replay issues the recorded command, executes the guest again, and checks the values it
 actually computes. It does not inject saved callback results. Optional instruction history orders
-attempts by admission and links callback instructions to their outstanding parent host attempt.
-Capture budgets and truncated histories remain independent of the live invocation's budgets.
+attempts by admission within each segment. Segment parents and control transfers identify the
+outstanding host caller. Root history completeness covers every child, while the instruction
+iterator stays local to its selected segment. Capture budgets and truncated histories remain independent of the live invocation's budgets.
 
 ### Activation-scoped typed exits
 
@@ -528,7 +531,7 @@ All intervening pending host operations are abandoned without dispatch. They and
 are observed as `Unwound` at the actual initiating source, with no fabricated `Ret` instruction.
 Staging is promoted before admission, one fuel unit and immediate payload ingress are charged,
 and existing hard limits never reset. This transfer primitive has no automatic protected cleanup
-registration. Recording retains admitted transfers, ingress, staging and abandoned callback counts;
+registration. Recording retains admitted transfers, ingress, staging and exact source/target identities;
 checked replay resolves the actual active target and reissues the transfer. Instruction histories
 can end in a checked root transfer rather than an executed `Ret`. Pure foreign/expired denials
 change no guest state and are not recorded as admitted control commands.

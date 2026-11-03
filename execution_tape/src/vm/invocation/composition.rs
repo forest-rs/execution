@@ -135,10 +135,23 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         )
     }
 
+    /// An admitted embedding entry spends work once, including a malformed callable proposal.
+    fn charge_guest_entry(&mut self, args: &[Value]) -> Result<(), Trap> {
+        self.budget.fuel = self.budget.fuel.checked_sub(1).ok_or(Trap::FuelExceeded)?;
+        let bytes = args.iter().try_fold(0_usize, |total, value| {
+            let bytes = match value {
+                Value::Bytes(bytes) => bytes.len(),
+                Value::Str(text) => text.len(),
+                _ => 0,
+            };
+            total.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
+        })?;
+        self.budget.data.charge_payload_bytes(bytes, 1)
+    }
+
     pub(super) fn enter_segment(
         &mut self,
-        target: &FunctionRef,
-        environment: Option<AggHandle>,
+        callee: Value,
         args: Vec<Value>,
         origin: EntryOrigin,
     ) -> Result<(), TrapInfo> {
@@ -154,25 +167,56 @@ impl<'state, H: Host> Running<'_, 'state, H> {
             location.pc,
         );
         self.continuation.control.enable_identity();
-        let control = self.new_control();
-        let child = self.segment(target, environment, args, control, location);
-        let instance = target.instance();
-        let entry = target.id();
-        let callee = match environment {
-            Some(env) => Value::Closure(Closure {
-                func: target.clone(),
-                env,
-            }),
-            None => Value::Func(target.clone()),
-        };
-        let parent_id = child.parent.as_ref().expect("source activation").0.clone();
-        let child_id = child.control.root_activation();
-        let result = (|| {
+        let preparation = (|| {
             let mut staged = self.continuation.host_results.take().unwrap_or_default();
             let work = staged.work;
             let created = staged
                 .promote(self.vm.memory.aggs_mut())
                 .map_err(Trap::AggError)?;
+            if origin == EntryOrigin::HostRequest {
+                self.continuation
+                    .trace
+                    .values(self.continuation.program.program(), || {
+                        ValueEvent::GuestCall {
+                            location,
+                            callee: &callee,
+                            args: &args,
+                            work,
+                            created: &created,
+                            aggregates: self.vm.memory.aggs(),
+                        }
+                    });
+            }
+            let (target, environment) = match &callee {
+                Value::Func(function) => (function.clone(), None),
+                Value::Closure(closure) => (closure.func.clone(), Some(closure.env)),
+                value => {
+                    if origin == EntryOrigin::HostRequest {
+                        self.charge_guest_entry(&args)?;
+                    }
+                    return Err(Trap::TypeMismatch {
+                        expected: ValueType::Func,
+                        actual: value.value_type(),
+                    });
+                }
+            };
+            Ok((target, environment, work, created))
+        })();
+        let (target, environment, work, created) = preparation.map_err(|trap| {
+            let error = self
+                .continuation
+                .ctx
+                .trap(location.func, location.pc, span, trap);
+            self.finish(Err(error.clone()));
+            error
+        })?;
+        let control = self.new_control();
+        let child = self.segment(&target, environment, args, control, location);
+        let instance = target.instance();
+        let entry = target.id();
+        let parent_id = child.parent.as_ref().expect("source activation").0.clone();
+        let child_id = child.control.root_activation();
+        let result = (|| {
             self.continuation
                 .trace
                 .control(self.continuation.program.program(), || {
@@ -197,19 +241,7 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                     }
                 });
             if origin == EntryOrigin::HostRequest {
-                if self.budget.fuel == 0 {
-                    return Err(Trap::FuelExceeded);
-                }
-                self.budget.fuel -= 1;
-                let payload = child.args.iter().try_fold(0_usize, |total, value| {
-                    let bytes = match value {
-                        Value::Bytes(bytes) => bytes.len(),
-                        Value::Str(text) => text.len(),
-                        _ => 0,
-                    };
-                    total.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
-                })?;
-                self.budget.data.charge_payload_bytes(payload, 1)?;
+                self.charge_guest_entry(&child.args)?;
             }
             self.admit_segment(&child, environment)
                 .map_err(|trap| trap.in_contract_definition(instance.program()))?;
@@ -247,14 +279,14 @@ impl<'state, H: Host> Running<'_, 'state, H> {
     }
 }
 
-impl<H: Host> Invocation<'_, H> {
+impl<H: Host> Running<'_, '_, H> {
     pub(super) fn finish_segment_return(&mut self, site: ReturnSite) -> Result<(), TrapInfo> {
-        self.running().check_return_transfer().map_err(|trap| {
+        self.check_return_transfer().map_err(|trap| {
             self.continuation
                 .ctx
                 .trap(site.location.func, site.location.pc, site.span, trap)
         })?;
-        let continuation = &mut self.continuation;
+        let continuation = &mut *self.continuation;
         continuation.returned_at = Some(site.location);
         continuation.trace.call_scope_exit_if_enabled(
             continuation.program.program(),
@@ -267,7 +299,7 @@ impl<H: Host> Invocation<'_, H> {
             .trace
             .instr_end(continuation.program.program(), None, TraceOutcome::Ok);
         self.budget.frames -= 1;
-        self.running().finish(Ok(()));
+        self.finish(Ok(()));
         Ok(())
     }
 
@@ -287,8 +319,8 @@ impl<H: Host> Invocation<'_, H> {
         if let Some(pending) = parent.control.waiting.guest() {
             let parent_id = parent.control.activation(&parent.ctx, pending.depth - 1);
             let values = core::mem::take(&mut self.continuation.outputs);
-            self.continuation = parent;
-            let parent = &mut self.continuation;
+            *self.continuation = parent;
+            let parent = &mut *self.continuation;
             parent
                 .control
                 .waiting
@@ -347,18 +379,17 @@ impl<H: Host> Invocation<'_, H> {
             .host()
             .expect("suspended parent host");
         let parent_id = parent.control.activation(&parent.ctx, pending.depth - 1);
-        parent.control.callbacks.get_or_insert_default().returned =
-            Some(core::mem::take(&mut self.continuation.outputs));
+        parent.control.callback_results = Some(core::mem::take(&mut self.continuation.outputs));
         // Install the parent before observers run. A panicking observer cannot lose the live
         // transaction owner or allow this transition to be observed a second time.
-        self.continuation = parent;
+        *self.continuation = parent;
         self.continuation
             .control
             .waiting
             .host_mut()
             .expect("resumed host")
             .abandoned = true;
-        let parent = &mut self.continuation;
+        let parent = &mut *self.continuation;
         parent
             .trace
             .control(parent.program.program(), || ControlEvent::ReturnInstance {
@@ -368,10 +399,7 @@ impl<H: Host> Invocation<'_, H> {
                 instance: &instance,
                 values: parent
                     .control
-                    .callbacks
-                    .as_ref()
-                    .expect("return slots")
-                    .returned
+                    .callback_results
                     .as_deref()
                     .expect("child return"),
                 aggregates: self.vm.memory.aggs(),

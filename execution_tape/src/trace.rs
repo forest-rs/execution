@@ -146,8 +146,7 @@ pub enum ControlEvent<'a> {
         instance: &'a Instance,
         /// Actual suspended instruction in the target's definition.
         target_location: TraceLocation,
-        /// Same-segment callbacks abandoned in the target, independently of crossed segments.
-        unwound_callbacks: usize,
+
         /// Raw proposed results, before boundary validation.
         values: &'a [Value],
         /// Staged host work admitted before the command.
@@ -370,8 +369,7 @@ pub enum ValueEvent<'a> {
         target: u64,
         /// Target frame's actual suspended instruction, using the same rule as live inspection.
         target_location: TraceLocation,
-        /// Callback bodies abandoned by this transfer, including a callback-root target.
-        unwound_callbacks: usize,
+
         /// Raw supplied results, checked against the target function's result contracts.
         values: &'a [Value],
         /// Host construction work promoted before admitting the transfer.
@@ -381,10 +379,10 @@ pub enum ValueEvent<'a> {
         /// Shared invocation heap after promotion.
         aggregates: &'a AggHeap,
     },
-    /// Embedding-requested guest reentry while a host instruction remains pending.
+    /// Embedding-requested guest entry while a host instruction remains pending.
     /// Observed before callback target, argument or fuel validation. IDs and handles use this
-    /// invocation's original code/heap. Promoted staging keeps its original handle identities.
-    CallbackEnter {
+    /// execution's shared heap; callables retain their exact code. Promoted staging keeps its original handle identities.
+    GuestCall {
         /// Host instruction whose embedding requested the callback.
         location: TraceLocation,
         /// Requested same-program function or closure.
@@ -396,17 +394,6 @@ pub enum ValueEvent<'a> {
         /// Promoted aggregate handles, including values still held by the embedding.
         created: &'a core::ops::Range<u32>,
         /// Shared invocation storage after promotion.
-        aggregates: &'a AggHeap,
-    },
-    /// A callback returned successfully to the embedding, without completing its host call.
-    CallbackReturn {
-        /// The callback root's actual return instruction.
-        location: TraceLocation,
-        /// Original pending host instruction.
-        caller: TraceLocation,
-        /// Contract-checked result slots. Handles still belong to this invocation.
-        values: &'a [Value],
-        /// Shared invocation storage; no root commit or handle compaction occurred.
         aggregates: &'a AggHeap,
     },
     /// Invocation inputs, before entry, argument, shape or execution-limit validation.
@@ -466,7 +453,6 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 location,
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 created,
@@ -476,13 +462,12 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("location", location)
                 .field("target", target)
                 .field("target_location", target_location)
-                .field("unwound_callbacks", unwound_callbacks)
                 .field("values", values)
                 .field("work", work)
                 .field("created", created)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
-            Self::CallbackEnter {
+            Self::GuestCall {
                 location,
                 callee,
                 args,
@@ -490,24 +475,12 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 created,
                 aggregates,
             } => f
-                .debug_struct("CallbackEnter")
+                .debug_struct("GuestCall")
                 .field("location", location)
                 .field("callee", callee)
                 .field("args", args)
                 .field("work", work)
                 .field("created", created)
-                .field("aggregate_count", &aggregates.len_u32())
-                .finish(),
-            Self::CallbackReturn {
-                location,
-                caller,
-                values,
-                aggregates,
-            } => f
-                .debug_struct("CallbackReturn")
-                .field("location", location)
-                .field("caller", caller)
-                .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::Entry {

@@ -280,6 +280,16 @@ struct Evidence {
     transfer: Option<TraceLocation>,
 }
 impl TraceSink for Evidence {
+    fn control(
+        &mut self,
+        _: execution_tape::trace::TraceContext<'_>,
+        event: execution_tape::trace::ControlEvent<'_>,
+    ) {
+        if let execution_tape::trace::ControlEvent::ReturnAcross { location, .. } = event {
+            self.exits += 1;
+            self.transfer = Some(location);
+        }
+    }
     fn mask(&self) -> TraceMask {
         TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR | TraceMask::VALUES
     }
@@ -468,32 +478,41 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                 }),
                 "case {case}, max_steps {max_steps}"
             );
-            let commands: Vec<_> = record.control_commands().collect();
-            let transfer = commands.last().unwrap();
-            assert_eq!(transfer.location, source);
-            let ControlAction::ReturnFrom {
-                target: captured,
-                target_location,
-                unwound_callbacks,
-                ..
-            } = transfer.action
-            else {
-                panic!("transfer command");
-            };
+            let local = record
+                .segments()
+                .filter_map(|segment| segment.recording)
+                .flat_map(|record| record.control_commands())
+                .find_map(|command| match command.action {
+                    ControlAction::ReturnFrom {
+                        target,
+                        target_location,
+                        ..
+                    } => Some((command.location, target, target_location)),
+                    _ => None,
+                });
+            let (location, captured, target_location) = local
+                .or_else(|| {
+                    record
+                        .transfers()
+                        .find_map(|transfer| match transfer.action {
+                            execution_tape::recording::TransferAction::ReturnFrom {
+                                target,
+                                target_location,
+                                ..
+                            } => Some((transfer.location, target.activation, target_location)),
+                            _ => None,
+                        })
+                })
+                .expect("admitted exit");
+            assert_eq!(location, source);
             assert_eq!(captured, target.ordinal());
             assert_eq!(target_location, target_source);
-            assert_eq!(
-                unwound_callbacks,
-                match case {
-                    2 => 1,
-                    3 => 2,
-                    _ => 0,
-                }
-            );
             if max_steps == 1000 {
                 assert!(
                     record
-                        .instructions()
+                        .segments()
+                        .filter_map(|segment| segment.recording)
+                        .flat_map(|record| record.instructions())
                         .any(|step| matches!(step.outcome, InstructionOutcome::Unwound { .. }))
                 );
             }

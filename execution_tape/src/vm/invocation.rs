@@ -16,7 +16,6 @@ pub(super) mod guest_call;
 mod host_request;
 pub use exits::ControlError;
 pub use host_request::PendingHostCall;
-pub(super) mod callback;
 
 use super::continuation::CodeOwner;
 
@@ -333,7 +332,7 @@ impl<H: Host> Invocation<'_, H> {
     ) -> Result<RunStatus, TrapInfo> {
         if let Some(outcome) = &self.continuation.outcome {
             return if outcome.is_ok() && !self.parents.is_empty() {
-                self.restore_after_return()
+                self.running().restore_after_return()
             } else {
                 outcome.clone().map(|()| RunStatus::Complete)
             };
@@ -370,8 +369,8 @@ impl<H: Host> Invocation<'_, H> {
                     args,
                 } => self.enter_guest(target, environment, args),
                 Progress::Returned(site) if !self.parents.is_empty() => {
-                    self.finish_segment_return(site)?;
-                    self.restore_after_return()
+                    self.running().finish_segment_return(site)?;
+                    self.running().restore_after_return()
                 }
                 Progress::Returned(site) => {
                     self.running().prepare_root_return(site.location);
@@ -684,12 +683,6 @@ fn cancel_continuation<H: Host>(
     continuation
         .trace
         .cancel(continuation.program.program(), location, span);
-    callback::finish_instructions(
-        &mut continuation.control,
-        &mut continuation.trace,
-        continuation.program.program(),
-        TraceOutcome::Cancelled,
-    );
     continuation
         .trace
         .run_end(continuation.program.program(), TraceOutcome::Cancelled);
@@ -727,12 +720,7 @@ fn finish_control_trace(
     continuation
         .trace
         .finish(continuation.program.program(), outcome);
-    callback::finish_instructions(
-        &mut continuation.control,
-        &mut continuation.trace,
-        continuation.program.program(),
-        outcome,
-    );
+
     continuation
         .trace
         .run_end(continuation.program.program(), outcome);

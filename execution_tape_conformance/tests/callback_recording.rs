@@ -107,6 +107,111 @@ fn finish(recorder: Rc<RefCell<Recorder>>) -> Recording {
         .into_inner()
         .finish()
 }
+
+#[test]
+fn a_child_command_can_first_observe_an_aggregate_created_before_its_entry() {
+    let mut builder = ProgramBuilder::new();
+    let produces_integer = FunctionSig {
+        arg_types: vec![],
+        ret_types: vec![ValueType::I64],
+    };
+    let root = builder.declare_function(produces_integer.clone()).unwrap();
+    let child = builder.declare_function(produces_integer).unwrap();
+    let integer = builder
+        .contract(execution_tape::contract::Contract::Kind(ValueType::I64))
+        .unwrap();
+    let tuple = builder
+        .contract(execution_tape::contract::Contract::Tuple(&[Some(integer)]))
+        .unwrap();
+    let extract = builder
+        .declare_function(execution_tape::asm::FunctionAbi {
+            args: vec![tuple.into()],
+            rets: vec![integer.into()],
+        })
+        .unwrap();
+    let outer = builder.host_sig_for(
+        "outer",
+        HostSig {
+            args: vec![ValueType::Agg],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let inner = builder.host_sig_for(
+        "inner",
+        HostSig {
+            args: vec![],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let mut body = builder.function_asm(root).unwrap();
+    let number = body.alloc_register(ValueType::I64);
+    let aggregate = body.alloc_register(ValueType::Agg);
+    body.const_i64(number, 42).tuple_new(aggregate, &[number]);
+    let [result] = builder.emit_call(&mut body, outer, &[aggregate]).unwrap();
+    body.ret(0, &[result]);
+    builder.define_function(root, body).unwrap();
+    let mut body = builder.function_asm(child).unwrap();
+    let [result] = builder.emit_call(&mut body, inner, &[]).unwrap();
+    body.ret(0, &[result]);
+    builder.define_function(child, body).unwrap();
+    let mut body = builder.function_asm(extract).unwrap();
+    let number = body.alloc_register(ValueType::I64);
+    body.tuple_get(number, 1, 0).ret(0, &[number]);
+    builder.define_function(extract, body).unwrap();
+    let program = Arc::new(builder.build_verified().unwrap());
+    let mut vm = Vm::new(NoHost, Limits::default());
+    // Deliberately omit this initial node from every observation. Replay's initial prefix
+    // therefore differs from the original; absolute aggregate handle numbers cannot work.
+    vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+    let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
+    {
+        let mut run = vm
+            .start(
+                &program,
+                root,
+                &[],
+                InvocationOptions::default()
+                    .yield_host_calls()
+                    .trace(recorder.mask(), &mut recorder),
+            )
+            .unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        let request = run.pending_host_call().unwrap();
+        let ValueRef::Agg(retained) = request.arguments().next().unwrap() else {
+            panic!("root aggregate")
+        };
+        let instance = request.instance().clone();
+        request
+            .call_guest(instance.function(child).unwrap(), vec![])
+            .unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        // This object is older than the child's entry, but was never in that child's
+        // arguments, any observed boundary, or its guest registers.
+        run.pending_host_call()
+            .unwrap()
+            .call_guest(
+                instance.function(extract).unwrap(),
+                vec![Value::Agg(retained)],
+            )
+            .unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        let mut request = run.pending_host_call().unwrap();
+        let mut results = request.take_callback_results().unwrap();
+        request.complete(&mut results, Ok(0)).unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        let mut request = run.pending_host_call().unwrap();
+        let mut results = request.take_callback_results().unwrap();
+        request.complete(&mut results, Ok(0)).unwrap();
+        assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
+        assert_eq!(run.result().unwrap().unwrap(), [Value::I64(42)]);
+    }
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    let ReplayOutcome::Returned(result) = recording.replay().unwrap() else {
+        panic!("checked execution")
+    };
+    assert_eq!(result.values(), [Value::I64(42)]);
+}
 fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording {
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
@@ -235,45 +340,40 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
 fn nested_callbacks_replay_with_closures_parent_staging_and_aliases_after_vm_drop() {
     let record = nested_recording(None, RecordLimits::default());
     record.status().unwrap();
-    assert_eq!(record.stats().control_commands, 2);
     let commands: Vec<_> = record.control_commands().collect();
-    assert_eq!(commands[0].sequence, 0);
-    assert_eq!(commands[1].sequence, 1);
+    assert_eq!(commands.len(), 1, "the root requested the outer guest call");
     let ControlAction::CallGuest {
-        work,
-        constructed,
-        returned: Some(outer_return),
-        ..
+        work, constructed, ..
     } = &commands[0].action
     else {
-        panic!("outer callback returned");
+        panic!("outer request")
     };
     assert_eq!(work.aggregate, 6);
     assert_eq!(work.payload, 32);
     assert_eq!(
         constructed.len(),
         2,
-        "even staging unused during callbacks must be restored"
+        "unused staging also survives admission"
     );
-    let ControlAction::CallGuest {
-        returned: Some(inner_return),
-        ..
-    } = &commands[1].action
-    else {
-        panic!("inner callback returned");
-    };
-    let calls: Vec<_> = record.host_calls().collect();
+    let segments: Vec<_> = record.segments().collect();
+    assert_eq!(segments.len(), 3);
+    assert_eq!(segments[1].parent.unwrap().segment, 0);
+    assert_eq!(segments[2].parent.unwrap().segment, segments[1].id);
+    assert_eq!(segments[1].recording.unwrap().control_commands().len(), 1);
+    let returns: Vec<_> = record
+        .transfers()
+        .filter_map(|transfer| match transfer.action {
+            execution_tape::recording::TransferAction::Returned { child, .. } => {
+                Some(child.segment)
+            }
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        (
-            inner_return.sequence,
-            calls[0].sequence,
-            outer_return.sequence,
-            calls[1].sequence
-        ),
-        (2, 3, 4, 5)
+        returns,
+        [segments[2].id, segments[1].id],
+        "inner return precedes outer return"
     );
-    assert_eq!(commands[1].stack.as_ref().unwrap().len(), 2);
-    assert_eq!(inner_return.stack.as_ref().unwrap().len(), 3);
     let ReplayOutcome::Returned(snapshot) = record.replay().unwrap() else {
         panic!("recomputed guest results");
     };
@@ -331,10 +431,12 @@ fn nested_attempts_and_late_parent_outputs_survive_instruction_prefix_limits() {
                 record.instruction_status(),
                 Some(InstructionStatus::Complete)
             );
-            assert!(
+            assert_eq!(
                 record
-                    .instructions()
-                    .any(|step| step.parent_attempt.is_some())
+                    .segments()
+                    .filter(|segment| segment.parent.is_some())
+                    .count(),
+                2
             );
         } else {
             assert_eq!(
@@ -463,14 +565,12 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
             record.instruction_status(),
             Some(InstructionStatus::Complete)
         );
-        let ControlAction::CallGuest { returned, .. } =
-            record.control_commands().next().unwrap().action
-        else {
-            panic!("callback fixture");
-        };
         assert!(
-            returned.is_none(),
-            "failed callbacks cannot acquire a successful return"
+            !record.transfers().any(|transfer| matches!(
+                transfer.action,
+                execution_tape::recording::TransferAction::Returned { .. }
+            )),
+            "failed callbacks cannot acquire successful returns"
         );
         assert!(matches!(
             record.replay().unwrap(),
@@ -521,13 +621,11 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
         let record = finish(recorder);
         assert_eq!(record.status(), Err(&CaptureFault::MissingCompletion));
         assert_eq!(record.control_commands().len(), 1);
-        let ControlAction::CallGuest { returned, .. } =
-            record.control_commands().next().unwrap().action
-        else {
-            panic!("callback fixture");
-        };
         assert_eq!(
-            returned.is_some(),
+            record.transfers().any(|transfer| matches!(
+                transfer.action,
+                execution_tape::recording::TransferAction::Returned { .. }
+            )),
             return_first,
             "guest return never fabricates parent completion"
         );

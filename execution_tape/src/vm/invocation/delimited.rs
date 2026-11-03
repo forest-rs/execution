@@ -913,7 +913,7 @@ impl<'state, H: Host> Running<'_, 'state, H> {
     }
 }
 
-impl<H: Host> Invocation<'_, H> {
+impl<H: Host> Running<'_, '_, H> {
     pub(super) fn restore_after_return(&mut self) -> Result<RunStatus, TrapInfo> {
         if self.continuation.delimiter.is_none() {
             return self.restore_parent();
@@ -922,24 +922,18 @@ impl<H: Host> Invocation<'_, H> {
         let parent = self.parents.pop().expect("resumer");
         let values = core::mem::take(&mut self.continuation.outputs);
         // Reinstall the transaction owner before notifying arbitrary observers.
-        self.continuation = parent;
+        *self.continuation = parent;
         self.budget.select(&self.continuation.control);
         // The returning root's ordinary boundary has already checked final contracts.
         let status = if self.continuation.control.waiting.control().is_some() {
-            if let Err(trap) = Running::<H>::complete_control(
-                &mut self.continuation,
-                values,
-                self.vm.memory.aggs(),
-            ) {
-                return Err(self.running().control_trap(location, trap));
+            if let Err(trap) =
+                Self::complete_control(self.continuation, values, self.vm.memory.aggs())
+            {
+                return Err(self.control_trap(location, trap));
             }
             RunStatus::Suspended
         } else {
-            self.continuation
-                .control
-                .callbacks
-                .get_or_insert_default()
-                .returned = Some(values);
+            self.continuation.control.callback_results = Some(values);
             RunStatus::AwaitingHost
         };
         Ok(status)
@@ -1090,12 +1084,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
                 .resumptions
                 .take(continuation.id())
                 .map_err(|error| Trap::Continuation(error.into()))?;
-            self.running
-                .continuation
-                .control
-                .callbacks
-                .get_or_insert_default()
-                .returned = None;
+            self.running.continuation.control.callback_results = None;
             self.running.attach_saved(saved, args, delimiter, location)
         })();
         let result = match admitted {

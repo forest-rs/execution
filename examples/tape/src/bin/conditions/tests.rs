@@ -349,13 +349,7 @@ fn local_exit_inside_cleanup_preserves_the_original_pending_transfer() {
             .any(|event| matches!(event.action, Action::CleanupAbandoned(_)))
     );
     let record = assert_replay(runtime, &[Value::I64(42), Value::Bool(true)]);
-    assert_eq!(
-        record
-            .control_commands()
-            .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
-            .count(),
-        2
-    );
+    assert_eq!(exit_count(&record), 2);
 }
 
 #[test]
@@ -566,14 +560,7 @@ fn owned_policy_evidence_distinguishes_replaced_intents_from_actual_vm_transfers
         })
         .collect();
     assert_eq!(intents, [42, 99]);
-    assert_eq!(
-        session
-            .recording
-            .control_commands()
-            .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
-            .count(),
-        1
-    );
+    assert_eq!(exit_count(&session.recording), 1);
     assert!(
         session
             .policy
@@ -615,15 +602,11 @@ fn authored_source_covers_policy_and_actual_vm_boundaries_without_invented_locat
         }
         for command in session.recording.control_commands() {
             check(command.location);
-            match command.action {
-                ControlAction::ReturnFrom {
-                    target_location, ..
-                } => check(target_location),
-                ControlAction::CallGuest {
-                    returned: Some(returned),
-                    ..
-                } => check(returned.location),
-                _ => {}
+            if let ControlAction::ReturnFrom {
+                target_location, ..
+            } = command.action
+            {
+                check(target_location);
             }
         }
     }
@@ -645,4 +628,27 @@ fn restart_lookup_checks_applicability_before_invocation() {
     runtime.recover(0, false).unwrap();
     drive(&mut runtime, 100);
     assert_replay(runtime, &[Value::I64(0), Value::Bool(false)]);
+}
+
+fn exit_count(record: &execution_tape::recording::Recording) -> usize {
+    let local = record
+        .segments()
+        .filter_map(|segment| segment.recording)
+        .map(|record| {
+            record
+                .control_commands()
+                .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
+                .count()
+        })
+        .sum::<usize>();
+    local
+        + record
+            .transfers()
+            .filter(|transfer| {
+                matches!(
+                    transfer.action,
+                    execution_tape::recording::TransferAction::ReturnFrom { .. }
+                )
+            })
+            .count()
 }

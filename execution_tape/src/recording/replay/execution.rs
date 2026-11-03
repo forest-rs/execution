@@ -15,6 +15,10 @@ use alloc::{boxed::Box, vec};
 #[derive(Default)]
 pub(super) struct Identities {
     pub(super) controls: ControlBindings,
+    /// Original execution's preexisting prefix and replay's restored prefix. Segment entry
+    /// prefixes differ: an older guest value can first become observable in a later child.
+    pub(super) heap_base: u32,
+    pub(super) initial_count: u32,
     forward: BTreeMap<u32, AggHandle>,
     inverse: BTreeMap<u32, u32>,
 }
@@ -34,6 +38,14 @@ impl Identities {
     }
     pub(super) fn handle(&self, origin: u32) -> Option<AggHandle> {
         self.forward.get(&origin).copied()
+    }
+    pub(super) fn candidate(&self, origin: u32) -> Option<AggHandle> {
+        self.handle(origin).or_else(|| {
+            origin
+                .checked_sub(self.heap_base)?
+                .checked_add(self.initial_count)
+                .map(AggHandle)
+        })
     }
 }
 
@@ -333,7 +345,7 @@ impl<'a> Context<'a> {
                     source,
                     target,
                     target_location,
-                    unwound_callbacks,
+
                     values,
                     work,
                     constructed,
@@ -343,7 +355,7 @@ impl<'a> Context<'a> {
                     target: actual_target,
                     instance,
                     target_location: actual_target_location,
-                    unwound_callbacks: actual_callbacks,
+
                     values: actual_values,
                     work: actual_work,
                     created,
@@ -359,7 +371,6 @@ impl<'a> Context<'a> {
                     || endpoint(actual_target) != *target
                     || *work != actual_work
                     || *target_location != actual_target_location
-                    || *unwound_callbacks != actual_callbacks
                     || target_index == index
                     || !self.stack.contains(&target_index)
                     || self.data.segments[target_index]
@@ -377,33 +388,6 @@ impl<'a> Context<'a> {
                     aggregates,
                 )?;
                 self.target = Some(*target);
-                // Same-program callback commands in crossed segments are abandoned by this
-                // actual global transfer, not by fabricated local commands.
-                state.active_commands.clear();
-                for &crossed in self
-                    .stack
-                    .iter()
-                    .rev()
-                    .skip(1)
-                    .take_while(|&&segment| segment != target_index)
-                {
-                    self.states[crossed]
-                        .as_ref()
-                        .expect("crossed state")
-                        .borrow_mut()
-                        .active_commands
-                        .clear();
-                }
-                let mut target_state = self.states[target_index]
-                    .as_ref()
-                    .expect("target state")
-                    .borrow_mut();
-                let keep = target_state
-                    .active_commands
-                    .len()
-                    .checked_sub(*unwound_callbacks)
-                    .ok_or_else(|| target_state.mismatch(Divergence::Outcome))?;
-                target_state.active_commands.truncate(keep);
                 Ok(())
             }
             _ => Err(state.mismatch(Divergence::Outcome)),
@@ -846,6 +830,8 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
         .expect("root state")
         .borrow_mut()
         .initial_count = vm.aggregates().len_u32();
+    identities.borrow_mut().heap_base = root.heap_base;
+    identities.borrow_mut().initial_count = vm.aggregates().len_u32();
     let args = states[0]
         .as_ref()
         .expect("root state")

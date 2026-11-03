@@ -945,26 +945,18 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     let screen = text(&mut view, 180, 42);
     assert!(screen.contains("CALLBACK #0 INPUTS"), "{screen}");
     assert!(screen.contains("42"));
-    press(&mut view, KeyCode::Down);
+    let returned = view.boundaries.iter().position(|boundary| matches!(boundary, model::Boundary::Transfer(index) if matches!(view.transfers[*index].action, execution_tape::recording::TransferAction::Returned { .. }))).expect("actual return boundary") + 1;
+    view.select(returned);
     assert_eq!(view.location().unwrap().func, handler);
-    assert_eq!(view.stack().unwrap().len(), 2);
     let screen = text(&mut view, 180, 42);
-    assert!(screen.contains("CALLBACK #0 RESULT"), "{screen}");
+    assert!(screen.contains("Return"), "{screen}");
     assert!(
-        screen.contains("original host request remains pending"),
-        "{screen}"
+        view.values()
+            .any(|(_, _, value)| matches!(value, RecordedValue::I64(42)))
     );
     press(&mut view, KeyCode::Down);
     assert_eq!(view.location().unwrap().func, root);
     assert!(text(&mut view, 180, 42).contains("signal"));
-    press(&mut view, KeyCode::Char('i'));
-    press(&mut view, KeyCode::Down);
-    let screen = text(&mut view, 180, 42);
-    assert!(
-        screen.contains("callback returned to embedding"),
-        "{screen}"
-    );
-    assert!(screen.contains("parent host attempt #0"), "{screen}");
     press(&mut view, KeyCode::Char('r'));
     assert!(text(&mut view, 180, 42).contains("MATCHED"));
 }
@@ -978,7 +970,8 @@ fn typed_transfer_rows_name_the_target_and_distinguish_embedding_inputs_from_gue
     );
     let mut view = View::new(&record);
     assert_eq!(view.calls.len(), 0);
-    view.select(3);
+    let exit = view.boundaries.iter().position(|boundary| matches!(boundary, model::Boundary::Command(index) if matches!(view.commands[*index].action, execution_tape::recording::ControlAction::ReturnFrom { .. }))).expect("exit boundary") + 1;
+    view.select(exit);
     let source = view.location().unwrap();
     assert_eq!(source.func, FuncId(0));
     let screen = text(&mut view, 180, 42);

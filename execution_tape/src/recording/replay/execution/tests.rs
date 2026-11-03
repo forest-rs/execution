@@ -21,6 +21,68 @@ impl Host for NoHost {
     }
 }
 
+#[test]
+fn baseline_fallback_checks_contents_and_global_aliases_before_returning_a_value() {
+    use crate::program::ValueType;
+    let mut builder = ProgramBuilder::new();
+    let entry = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::Agg],
+        })
+        .unwrap();
+    let mut body = builder.function_asm(entry).unwrap();
+    let number = body.alloc_register(ValueType::I64);
+    let member = body.alloc_register(ValueType::Agg);
+    let root = body.alloc_register(ValueType::Agg);
+    body.const_i64(number, 42)
+        .tuple_new(member, &[number])
+        .tuple_new(root, &[member, member])
+        .ret(0, &[root]);
+    builder.define_function(entry, body).unwrap();
+    let program = Arc::new(builder.build_verified().unwrap());
+    let mut vm = Vm::new(NoHost, crate::vm::Limits::default());
+    vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+    let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
+    vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+        .unwrap();
+    let mut record = recorder.finish();
+    let root = record.arena.values[record.candidate.as_ref().unwrap().1.start].clone();
+    // A later segment regards both nodes as preexisting. It has no local creation offsets
+    // or established bindings, so materialization must use the execution-wide baseline.
+    for node in &mut record.arena.nodes {
+        node.created_offset = None;
+    }
+    for change in 0..3 {
+        let mut heap = AggHeap::new();
+        let member = heap
+            .tuple_new(vec![Value::I64(if change == 1 { 99 } else { 42 })])
+            .unwrap();
+        let actual = heap
+            .tuple_new(vec![Value::Agg(member), Value::Agg(member)])
+            .unwrap();
+        let mut identities = Identities {
+            heap_base: record.heap_base,
+            ..Identities::default()
+        };
+        if change == 2 {
+            assert!(identities.bind(999, actual));
+        }
+        let mut state = State {
+            global: Some(Rc::new(RefCell::new(identities))),
+            origins: record.arena.nodes.iter().map(|node| node.origin).collect(),
+            ..State::default()
+        };
+        assert!(state.bindings.is_empty());
+        let result = state.materialize_value(&record, &root, &heap);
+        if change == 0 {
+            assert_eq!(result.unwrap(), Value::Agg(actual));
+        } else {
+            assert!(result.is_err(), "fallback must check corruption {change}");
+        }
+    }
+}
+
 fn capture(nonlocal: bool) -> Recording {
     let build = |parent: bool| {
         let mut builder = ProgramBuilder::new();

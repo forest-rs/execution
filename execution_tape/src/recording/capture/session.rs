@@ -232,7 +232,13 @@ impl Session {
             );
             if let Some(config) = &self.instructions {
                 let mut child_config = config.clone();
-                child_config.watches.clear();
+                if !self.slots[index]
+                    .meta
+                    .program
+                    .shares_definition_with(&self.slots[0].meta.program)
+                {
+                    child_config.watches.clear();
+                }
                 capture = capture.with_instructions(child_config);
             }
             self.slots[index].capture = Some(capture);
@@ -532,7 +538,6 @@ impl Session {
                 source,
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 created,
@@ -569,7 +574,6 @@ impl Session {
                         .capture
                         .as_mut()
                         .expect("active crossed segment");
-                    capture.active_commands.clear();
                     if let Some(history) = &mut capture.history {
                         history.begin_transfer(target.ordinal());
                     }
@@ -578,12 +582,6 @@ impl Session {
                     .capture
                     .as_mut()
                     .expect("target evidence");
-                let Some(keep) = capture.active_commands.len().checked_sub(unwound_callbacks)
-                else {
-                    self.fail(CaptureFault::InvalidSequence, Some(location));
-                    return;
-                };
-                capture.active_commands.truncate(keep);
                 if let Some(history) = &mut capture.history {
                     history.begin_transfer(target.ordinal());
                 }
@@ -600,7 +598,6 @@ impl Session {
                         source: activation(source),
                         target: activation(target),
                         target_location,
-                        unwound_callbacks,
                         values,
                         work,
                         constructed,
@@ -716,6 +713,7 @@ impl Session {
             root.fault_definition = Some(program);
         }
         root.execution = Some(Box::new(execution::ExecutionData {
+            instruction_limit: self.instructions.as_ref().map(|config| config.max_steps),
             segments: metadata,
             indices: self.indices,
             instances: self.instances,

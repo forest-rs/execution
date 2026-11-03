@@ -4,8 +4,8 @@
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
 use execution_tape::recording::{
-    AggregateId, CallStack, ControlAction, ControlCommand, GuestReturn, HostCall, HostOutcome,
-    Outcome, RecordedTransfer, RecordedValue, Recording, ReplayOutcome, TransferAction,
+    AggregateId, CallStack, ControlAction, ControlCommand, HostCall, HostOutcome, Outcome,
+    RecordedTransfer, RecordedValue, Recording, ReplayOutcome, TransferAction,
 };
 use execution_tape::trace::TraceLocation;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -21,7 +21,6 @@ pub(super) enum Focus {
 pub(super) enum Boundary {
     Host(usize),
     Command(usize),
-    CallbackReturn(usize),
     Transfer(usize),
 }
 
@@ -62,7 +61,7 @@ pub(super) struct View<'a> {
 impl<'a> View<'a> {
     #[cfg(test)]
     pub(super) fn new(record: &'a Recording) -> Self {
-        Self::with_options(record, None, false)
+        Self::in_execution(record, 0, Vec::new(), false).expect("observed root")
     }
 
     pub(super) fn with_options(
@@ -79,13 +78,6 @@ impl<'a> View<'a> {
             .collect();
         for (i, command) in commands.iter().enumerate() {
             ordered.push((command.sequence, Boundary::Command(i)));
-            if let ControlAction::CallGuest {
-                returned: Some(returned),
-                ..
-            } = &command.action
-            {
-                ordered.push((returned.sequence, Boundary::CallbackReturn(i)));
-            }
         }
         ordered.sort_by_key(|(sequence, _)| *sequence);
         let mut view = Self {
@@ -155,9 +147,6 @@ impl<'a> View<'a> {
                 let sequence = match boundary {
                     Boundary::Host(i) => view.calls[i].sequence,
                     Boundary::Command(i) => view.commands[i].sequence,
-                    Boundary::CallbackReturn(i) => {
-                        view.callback_return(i).expect("returned callback").sequence
-                    }
                     Boundary::Transfer(_) => unreachable!(),
                 };
                 (sequence, boundary)
@@ -235,13 +224,6 @@ impl<'a> View<'a> {
             .copied()
     }
 
-    pub(super) fn callback_return(&self, index: usize) -> Option<&GuestReturn<'a>> {
-        match &self.commands[index].action {
-            ControlAction::CallGuest { returned, .. } => returned.as_ref(),
-            ControlAction::ReturnFrom { .. } => None,
-        }
-    }
-
     pub(super) fn stack(&self) -> Option<CallStack<'a>> {
         if let Some(index) = self.instruction {
             return self.record.instruction(index).and_then(|step| step.stack);
@@ -253,9 +235,6 @@ impl<'a> View<'a> {
                 Boundary::Host(i) => self.calls[i].stack.clone(),
                 Boundary::Transfer(i) => self.transfers[i].stack.clone(),
                 Boundary::Command(i) => self.commands[i].stack.clone(),
-                Boundary::CallbackReturn(i) => {
-                    self.callback_return(i).and_then(|r| r.stack.clone())
-                }
             }
         } else {
             self.record.outcome_stack()
@@ -283,7 +262,6 @@ impl<'a> View<'a> {
                 Boundary::Host(i) => Some(self.calls[i].location),
                 Boundary::Transfer(i) => Some(self.transfers[i].location),
                 Boundary::Command(i) => Some(self.commands[i].location),
-                Boundary::CallbackReturn(i) => self.callback_return(i).map(|r| r.location),
             };
         }
         self.record.outcome_location()
@@ -475,11 +453,6 @@ impl<'a> View<'a> {
                         ControlAction::CallGuest { args, .. } => ("arg", *args, &[]),
                         ControlAction::ReturnFrom { values, .. } => ("exit", *values, &[]),
                     },
-                    Boundary::CallbackReturn(i) => (
-                        "ret",
-                        self.callback_return(i).map_or(&[], |r| r.values),
-                        &[],
-                    ),
                 }
             } else {
                 (

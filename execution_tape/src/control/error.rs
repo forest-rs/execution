@@ -19,7 +19,7 @@ pub enum ControlBoundary {
     Resume,
     /// A control operation's request and response values.
     Suspend,
-    /// A handler's request inputs and enclosing resumption's final results.
+    /// An installed handler's operation or callable protocol.
     Handler,
 }
 impl fmt::Display for ControlBoundary {

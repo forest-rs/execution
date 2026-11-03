@@ -149,7 +149,7 @@ pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
     pub(super) yield_host_calls: bool,
     pub(super) waiting: Waiting,
-    pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
+    pub(super) callback_results: Option<Vec<Value>>,
     owner: Option<Arc<()>>,
     execution: Option<Arc<()>>,
     last: u64,
@@ -170,7 +170,7 @@ impl ExecutionControl {
             remaining: 0,
             yield_host_calls,
             waiting: Waiting::Ready,
-            callbacks: None,
+            callback_results: None,
             owner: Some(Arc::clone(&owner)),
             execution: Some(owner),
             last: 0,
@@ -713,12 +713,7 @@ impl<'a> InvocationInspection<'a> {
                 });
             }
         }
-        if let Some(values) = self
-            .control
-            .callbacks
-            .as_ref()
-            .and_then(|callbacks| callbacks.returned.as_deref())
-        {
+        if let Some(values) = self.control.callback_results.as_deref() {
             for (index, value) in values.iter().enumerate() {
                 if let Value::Obj(object) = value {
                     visit(ObjectRoot {

@@ -17,6 +17,18 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Use one owned guest-entry path for every embedding `call_guest`, including same-instance
+  calls. Entry keeps the exact namespace and shares budgets, heap and pending host request;
+  a typed exit to its root restores that request immediately. Replay uses one execution-wide
+  allocation baseline for guest values first observed after a later segment's entry, checking
+  their contents and sharing before use. Root instruction completeness includes child captures.
+  Migration: `ValueEvent::GuestCall` replaces `CallbackEnter`; actual checked returns use
+  `ControlEvent::ReturnInstance` and `Recording::transfers`, replacing `CallbackReturn`,
+  `ControlAction::CallGuest::returned`, `GuestReturn` and `ReplayBoundary::ControlReturn`.
+  Callback bodies have their own segment and local frame ordinals. Use opaque activation IDs
+  and segment parents; `InstructionStep::parent_attempt` and `unwound_callbacks` are removed.
+
+
 - Resume guest computations into local typed outcome blocks. Suspension clauses share the
   resumer's lexical registers; reinstalling a clause keeps repeated handling at constant frame
   depth. Verifier analysis exposes exact request, continuation and result bindings for every arm,

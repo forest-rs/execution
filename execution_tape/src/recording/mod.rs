@@ -16,17 +16,18 @@
 //! Embedding-requested guest callbacks through `PendingHostCall::call_guest` are retained as
 //! [`ControlCommand`]s. Replay issues those commands into the same invocation and executes the
 //! guest bodies again; it checks actual callback results rather than supplying saved guest results.
-//! Commands, callback returns and native host outcomes carry a shared observation sequence.
+//! Commands, code-entry/return transfers and native host outcomes carry a shared observation
+//! sequence within each segment. The execution transfer order links the segments.
 //! A callback return does not complete its parent host request or publish the root result.
 //!
 //! Typed non-local returns through `PendingHostCall::return_from` retain the exact invocation-local
-//! target ordinal, supplied results, promoted staging and abandoned callback count. Replay resolves
+//! target identity, supplied results and promoted staging. Replay resolves
 //! the actual live activation and issues the transfer; it checks target contracts, budgets,
 //! resulting guest execution and `Unwound` instruction outcomes. Supplied exit results are embedding
 //! inputs, whereas normal callback returns are computed again by the guest. Foreign/expired target
 //! denials spend no guest work and are not recorded as admitted commands.
 //!
-//! Independently compiled calls through `PendingHostCall::call_guest` belong to the same
+//! All calls through `PendingHostCall::call_guest`, including same-instance targets, belong to one
 //! execution. Install one recorder at the root; all child calls inherit it.
 //! [`Recording::segments`] exposes exact code definitions and actual parents. Each segment owns
 //! its local host/callback/instruction evidence; [`Recording::transfers`] links them with actual
@@ -116,8 +117,8 @@
 //! and request no register inspection. `instructions()` iterates actual attempts in execution order;
 //! `instruction(index)` directly accesses one attempt, its actual successor and guest ancestry.
 //! Typed block headers have no execution event. Calls complete at callee entry; returns resume the
-//! suspended caller. Callback instructions link to their still-outstanding parent host attempt
-//! through `InstructionStep::parent_attempt`; completion order can differ from admission order.
+//! suspended caller. Code-qualified segments and transfers identify a guest entry's still-waiting
+//! host caller. Each segment retains its own instruction history.
 //! A callback return has no guest successor while embedding code decides what to do next.
 //! Fuel exhaustion before fetching an instruction creates no attempted step.
 //!
@@ -158,7 +159,7 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 pub use capture::Recorder;
-pub use control::{ControlAction, ControlCommand, GuestReturn};
+pub use control::{ControlAction, ControlCommand};
 pub use execution::{
     AggregateIdentity, RecordedActivation, RecordedSegment, RecordedTransfer, TransferAction,
 };
@@ -406,9 +407,34 @@ pub struct Recording {
 
 impl Recording {
     /// Returns optional instruction-history completeness. `None` means it was not requested.
+    /// The owning root includes every observed child and reports the execution-wide capture limit;
+    /// a child reports its local history. [`Self::instructions`] remains local to this segment.
     /// Boundary capture status is reported separately by [`Self::status`].
     pub fn instruction_status(&self) -> Option<InstructionStatus> {
-        self.history.as_ref().map(|history| history.status)
+        let status = self.history.as_ref()?.status;
+        let Some(execution) = &self.execution else {
+            return Some(status);
+        };
+        let mut truncated = matches!(status, InstructionStatus::Truncated { .. });
+        let mut incomplete = status == InstructionStatus::Incomplete;
+        for child in execution.children.iter().flatten() {
+            match child.history.as_ref().map(|history| history.status) {
+                Some(InstructionStatus::Complete) => {}
+                Some(InstructionStatus::Truncated { .. }) => truncated = true,
+                Some(InstructionStatus::Incomplete) | None => incomplete = true,
+            }
+        }
+        Some(if incomplete {
+            InstructionStatus::Incomplete
+        } else if truncated {
+            InstructionStatus::Truncated {
+                limit: execution
+                    .instruction_limit
+                    .expect("requested instruction history"),
+            }
+        } else {
+            InstructionStatus::Complete
+        })
     }
 
     /// Iterates retained attempts without reconstructing a path from static control flow.
@@ -430,7 +456,6 @@ impl Recording {
                     arena: &self.arena,
                 },
                 location: step.location,
-                parent_attempt: step.parent,
                 opcode: step.opcode,
                 next: step.next,
                 outcome: step.outcome,
@@ -453,7 +478,6 @@ impl Recording {
                 arena: &self.arena,
             },
             location: step.location,
-            parent_attempt: step.parent,
             opcode: step.opcode,
             next: step.next,
             outcome: step.outcome,

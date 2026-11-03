@@ -1031,9 +1031,9 @@ fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
         run.resume(100).unwrap();
         let home = run.inspect().frames().next().unwrap().activation;
         assert_ne!(
-            home.ordinal(),
+            home.segment_ordinal(),
             0,
-            "target the actual callback root, not the segment root"
+            "target the actual callback segment, not the original root"
         );
         run.pending_host_call()
             .unwrap()

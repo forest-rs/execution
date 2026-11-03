@@ -390,11 +390,12 @@ pending level without running guest code. Guest reentry does not capture a nativ
 stack or import another program's function, closure or nominal IDs. Synchronous `Host::call`
 retains its existing interface; reentry uses the explicit yielded-request protocol.
 
-`ValueEvent::CallbackEnter`/`CallbackReturn` and ordinary call scopes describe actual guest
+`ValueEvent::GuestCall` records the embedding proposal. Code-qualified
+`ControlEvent::EnterInstance`/`ReturnInstance` and ordinary call scopes describe actual guest
 activity. Callback return is distinct from host completion and root publication. Recording
 retains embedding callback commands, promoted staging and actual guest returns in observation
 order. Checked replay runs those guest bodies again and verifies their results. Optional
-instruction histories link callback attempts to the host instruction that remains pending.
+instruction histories stay with each segment; its parent identifies the retained host caller.
 
 ### Typed non-local returns
 

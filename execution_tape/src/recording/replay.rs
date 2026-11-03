@@ -129,11 +129,6 @@ pub enum ReplayBoundary {
         /// Zero-based command ordinal.
         index: usize,
     },
-    /// Checking a command's actual guest return.
-    ControlReturn {
-        /// Zero-based command ordinal.
-        index: usize,
-    },
     /// Checking the top-level return candidate before heap commit.
     ReturnCandidate,
     /// Comparing final call counts and run outcomes.
@@ -208,7 +203,6 @@ struct State {
     pending: Vec<usize>,
     commands: usize,
     sequence: usize,
-    active_commands: Vec<usize>,
     boundary: ReplayBoundary,
     bindings: BTreeMap<AggregateId, AggHandle>,
     inverse: BTreeMap<u32, AggregateId>,
@@ -568,10 +562,13 @@ impl State {
             // even when only observed initial nodes were restored. Check contents/aliasing
             // before using this mapping; no host mutation or guessed persistent ID needed.
             let node = &record.arena.nodes[id.0 as usize];
+            // Segment-local creation offsets do not cover values created by an older caller.
+            // The execution baseline is valid only while the shared heap remains append-only
+            // until root commit. Intermediate turn compaction must replace this relocation rule.
             let shared = self
                 .global
                 .as_ref()
-                .and_then(|global| global.borrow().handle(node.origin));
+                .and_then(|global| global.borrow().candidate(node.origin));
             let handle = shared
                 .or_else(|| {
                     node.created_offset
@@ -1042,12 +1039,6 @@ impl TraceSink for Check<'_> {
                 if step.location != (TraceLocation { func, pc })
                     || step.opcode != opcode
                     || step.frame.is_some_and(|frame| Some(frame) != state.top)
-                    || step.parent
-                        != state
-                            .pending
-                            .last()
-                            .copied()
-                            .filter(|&parent| parent < history.steps.len())
                 {
                     state.error = Some(state.mismatch(Divergence::Instruction));
                 }
@@ -1114,7 +1105,7 @@ impl TraceSink for Check<'_> {
                     location,
                     target,
                     target_location,
-                    unwound_callbacks,
+
                     values,
                     work,
                     created,
@@ -1142,7 +1133,6 @@ impl TraceSink for Check<'_> {
                     let Action::ReturnFrom {
                         target: expected_target,
                         target_location: expected_location,
-                        unwound_callbacks: expected_callbacks,
                         values: expected_values,
                         work: expected_work,
                         constructed,
@@ -1156,10 +1146,7 @@ impl TraceSink for Check<'_> {
                             actual: Some(target_location),
                         }));
                     }
-                    if target != *expected_target
-                        || unwound_callbacks != *expected_callbacks
-                        || work != *expected_work
-                    {
+                    if target != *expected_target || work != *expected_work {
                         return Err(state.mismatch(Divergence::Outcome));
                     }
                     check_created(self.record, &mut state, constructed, created)?;
@@ -1169,12 +1156,6 @@ impl TraceSink for Check<'_> {
                         values.iter().map(ValueRef::from_value),
                         aggregates,
                     )?;
-                    let active = state
-                        .active_commands
-                        .len()
-                        .checked_sub(unwound_callbacks)
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    state.active_commands.truncate(active);
                     state.commands += 1;
                     state.sequence += 1;
                 }
@@ -1223,7 +1204,7 @@ impl TraceSink for Check<'_> {
                     state.calls += 1;
                     state.sequence += 1;
                 }
-                ValueEvent::CallbackEnter {
+                ValueEvent::GuestCall {
                     location,
                     callee,
                     args,
@@ -1276,45 +1257,7 @@ impl TraceSink for Check<'_> {
                         args.iter().map(ValueRef::from_value),
                         aggregates,
                     )?;
-                    state.active_commands.push(index);
                     state.commands += 1;
-                    state.sequence += 1;
-                }
-                ValueEvent::CallbackReturn {
-                    location,
-                    caller,
-                    values,
-                    aggregates,
-                } => {
-                    let index = state
-                        .active_commands
-                        .pop()
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    state.boundary = ReplayBoundary::ControlReturn { index };
-                    state.location = Some(location);
-                    let command = &self.record.commands[index];
-                    let Action::CallGuest { returned, .. } = &command.action else {
-                        return Err(state.mismatch(Divergence::Outcome));
-                    };
-                    let returned = returned
-                        .as_ref()
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    check_sequence(&state, returned.sequence)?;
-                    if caller != command.location || location != returned.location {
-                        return Err(state.mismatch(Divergence::Location {
-                            expected: returned.location,
-                            actual: Some(location),
-                        }));
-                    }
-                    if !self.record.frames.is_empty() && returned.frame != state.top {
-                        return Err(state.mismatch(Divergence::CallStack));
-                    }
-                    state.matches(
-                        self.record,
-                        self.record.arena.slice(&returned.values),
-                        values.iter().map(ValueRef::from_value),
-                        aggregates,
-                    )?;
                     state.sequence += 1;
                 }
                 ValueEvent::ReturnCandidate {
@@ -1571,18 +1514,7 @@ fn check_finished(record: &Recording, state: &mut State) -> Result<(), ReplayErr
             actual: state.commands,
         }));
     }
-    if !state.pending.is_empty()
-        || state.active_commands.iter().any(|&index| {
-            matches!(
-                &record.commands[index].action,
-                Action::CallGuest {
-                    returned: Some(_),
-                    ..
-                }
-            )
-        })
-        || (matches!(record.end, Some(End::Returned)) && !state.active_commands.is_empty())
-    {
+    if !state.pending.is_empty() {
         return Err(state.mismatch(Divergence::Outcome));
     }
     if state.frames != record.frames.len()
@@ -1960,7 +1892,6 @@ mod tests {
             let Action::ReturnFrom {
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 ..
@@ -1973,7 +1904,7 @@ mod tests {
                 1 => command.sequence += 1,
                 2 => command.location.pc += 1,
                 3 => record.arena.values[values.start] = RecordedValue::I64(99),
-                4 => *unwound_callbacks += 1,
+                4 => command.frame = None,
                 5 => work.aggregate = 0,
                 6 => work.payload = 0,
                 7 => target_location.pc += 1,
@@ -1989,21 +1920,23 @@ mod tests {
     #[test]
     fn corrupted_callback_return_is_checked_against_reexecuted_guest() {
         let mut record = callback_recording();
-        let Action::CallGuest {
-            returned: Some(returned),
-            ..
-        } = &record.commands[0].action
-        else {
-            panic!("return")
-        };
-        record.arena.values[returned.values.start] = RecordedValue::I64(99);
-        assert!(matches!(
-            record.replay(),
-            Err(ReplayError::Diverged {
-                boundary: ReplayBoundary::ControlReturn { index: 0 },
-                ..
+        let data = record.execution.as_ref().expect("guest execution");
+        let crate::recording::execution::Action::Returned { values, .. } = &data
+            .transfers
+            .iter()
+            .find(|transfer| {
+                matches!(
+                    transfer.action,
+                    crate::recording::execution::Action::Returned { .. }
+                )
             })
-        ));
+            .expect("actual return")
+            .action
+        else {
+            unreachable!()
+        };
+        record.arena.values[values.start] = RecordedValue::I64(99);
+        assert!(record.replay().is_err());
     }
 
     #[test]
@@ -2033,23 +1966,21 @@ mod tests {
                     record.arena.values[args.start] = RecordedValue::I64(99);
                 }
                 4 => {
-                    let Action::CallGuest {
-                        ref mut returned, ..
-                    } = record.commands[0].action
-                    else {
-                        panic!("callback fixture");
-                    };
-                    *returned = None;
+                    record
+                        .execution
+                        .as_mut()
+                        .unwrap()
+                        .transfers
+                        .retain(|transfer| {
+                            !matches!(
+                                transfer.action,
+                                crate::recording::execution::Action::Returned { .. }
+                            )
+                        });
                 }
                 5 => record.calls[0].sequence += 1,
                 6 => {
-                    let history = record.history.as_mut().unwrap();
-                    let child = history
-                        .steps
-                        .iter_mut()
-                        .find(|step| step.parent.is_some())
-                        .unwrap();
-                    child.parent = None;
+                    record.execution.as_mut().unwrap().segments[1].parent = None;
                 }
                 7 => record.commands.clear(),
                 _ => unreachable!(),

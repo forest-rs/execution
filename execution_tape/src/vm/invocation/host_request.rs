@@ -402,9 +402,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         values: &mut [Value],
         outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
-        if let Some(callbacks) = &mut self.continuation.control.callbacks {
-            callbacks.returned = None;
-        }
+        self.continuation.control.callback_results = None;
         let mut results = self.continuation.host_results.take().unwrap_or_default();
         let work = results.work;
         let created = results.adopt(self.vm.memory.aggs_mut(), values, outcome.is_ok());

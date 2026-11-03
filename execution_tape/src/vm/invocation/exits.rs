@@ -107,6 +107,14 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             (None, index) => self.running.return_from(index, target.ordinal(), values),
             (Some(segment), index) => self.running.return_across(segment, index, target, values),
         };
+        let result = result.and_then(|()| {
+            if matches!(self.running.continuation.outcome, Some(Ok(())))
+                && self.running.has_parents()
+            {
+                self.running.restore_after_return()?;
+            }
+            Ok(())
+        });
         self.delivering = false;
         result.map_err(ControlError::Trapped)
     }
@@ -169,12 +177,6 @@ impl<H: Host> Running<'_, '_, H> {
                     .continuation
                     .control
                     .paused_location(&self.continuation.ctx, index),
-                unwound_callbacks: self
-                    .continuation
-                    .control
-                    .callbacks
-                    .as_ref()
-                    .map_or(0, |callbacks| callbacks.count_exited(index)),
                 values,
                 work,
                 created: &created,
@@ -228,11 +230,6 @@ impl<H: Host> Running<'_, '_, H> {
                         target_location: destination
                             .control
                             .paused_location(&destination.ctx, index),
-                        unwound_callbacks: destination
-                            .control
-                            .callbacks
-                            .as_ref()
-                            .map_or(0, |callbacks| callbacks.count_exited(index)),
                         values: &values,
                         work,
                         created: &created,
@@ -342,7 +339,6 @@ impl<H: Host> Running<'_, '_, H> {
         // poisons the original host request and inspection must still see waiting callers,
         // never the uninitialized result banks of a prematurely popped child.
         self.close_exited_host(location, outcome);
-        let mut restored = None;
         for depth in (index + 1..=self.continuation.ctx.frames.len()).rev() {
             self.continuation.trace.exit_frame(
                 self.continuation.program.program(),
@@ -351,32 +347,12 @@ impl<H: Host> Running<'_, '_, H> {
                 span,
                 outcome,
             );
-            let waiting = self
-                .continuation
-                .control
-                .callbacks
-                .as_ref()
-                .and_then(|callbacks| callbacks.waiting_at(depth - 1));
-            if let Some((host, instruction)) = waiting {
-                self.continuation.trace.pending = instruction.then_some(host.location);
-                if depth - 1 == index {
-                    restored = Some(host);
-                } else {
-                    self.close_exited_host(host.location, outcome);
-                }
-            }
         }
         self.budget.frames -= self.continuation.ctx.frames.len() - index;
         self.continuation.ctx.frames.truncate(index);
         self.continuation.ctx.truncate_to(target_base);
-        self.continuation.control.waiting = restored.map_or(Waiting::Ready, Waiting::Host);
-        if let Some(callbacks) = &mut self.continuation.control.callbacks {
-            callbacks.discard_exited(index);
-            if restored.is_some() {
-                callbacks.returned = Some(values);
-                return Ok(());
-            }
-        }
+        self.continuation.control.waiting = Waiting::Ready;
+        self.continuation.control.callback_results = None;
         if index == 0 {
             if !self.has_parents() {
                 self.prepare_root_return(location);

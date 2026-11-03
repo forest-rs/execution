@@ -50,9 +50,6 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
                 ReplayBoundary::ControlCommand { index } => format!("control command {index}"),
-                ReplayBoundary::ControlReturn { index } => {
-                    format!("guest return for command {index}")
-                }
                 ReplayBoundary::Completion => "completion".into(),
             };
             let location =
@@ -173,8 +170,8 @@ fn step_description(
             }
             Some(Opcode::Ret) => if step.next.is_some() {
                 "returned to caller"
-            } else if step.parent_attempt.is_some() {
-                "callback returned to embedding; original host request still pending"
+            } else if view.segment != 0 {
+                "segment returned; its original result recipient remains outside this frame"
             } else {
                 "root return"
             }
@@ -260,7 +257,6 @@ fn title(view: &View<'_>, index: usize) -> String {
                     describe::function(view.record.program().program(), target_location.func)
                 ),
             },
-            Boundary::CallbackReturn(i) => format!("Callback #{i} returned → embedding"),
         };
     }
     match view.record.outcome() {
@@ -486,12 +482,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             || "No attempts retained; check instruction history status.".into(),
             |step| {
                 format!(
-                    "Attempt #{index}: {}{}\nActual successor: {} · history {}",
+                    "Attempt #{index}: {}\nActual successor: {} · history {}",
                     step_description(view, &step),
-                    step.parent_attempt
-                        .map_or_else(String::new, |parent| format!(
-                            " · parent host attempt #{parent}"
-                        )),
                     step.next.map_or_else(
                         || "none".into(),
                         |loc| format!(
@@ -876,20 +868,13 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             Boundary::Command(i) => {
                 let section = match &view.commands[i].action {
                     execution_tape::recording::ControlAction::CallGuest {
-                        callee,
-                        args,
-                        returned,
-                        ..
+                        callee, args, ..
                     } => ValueSection {
                         title: format!(" CALLBACK #{i} INPUTS "),
                         note: format!(
                             "Target: {} · {}",
                             describe::value(view.record, callee),
-                            if returned.is_some() {
-                                "normal guest return observed separately"
-                            } else {
-                                "no normal return; inspect transfers/outcome"
-                            }
+                            "entry and return are in the execution transfers"
                         ),
                         label: "Input",
                         values: args,
@@ -900,12 +885,11 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                         target,
                         target_location,
                         values,
-                        unwound_callbacks,
                         ..
                     } => ValueSection {
                         title: format!(" EXIT VALUES · activation #{target} "),
                         note: format!(
-                            "To {}:{:06} · {unwound_callbacks} callbacks abandoned · embedding inputs",
+                            "To {}:{:06} · embedding inputs",
                             describe::function(
                                 view.record.program().program(),
                                 target_location.func
@@ -920,19 +904,6 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 };
                 value_section(frame, view, area, section);
             }
-            Boundary::CallbackReturn(i) => value_section(
-                frame,
-                view,
-                area,
-                ValueSection {
-                    title: format!(" CALLBACK #{i} RESULT "),
-                    note: "Returned to embedding; original host request remains pending".into(),
-                    label: "Output",
-                    values: view.callback_return(i).map_or(&[], |r| r.values),
-                    base: 0,
-                    empty: "Callback returned successfully without values.".into(),
-                },
-            ),
         }
     } else {
         let returned = match view.record.outcome() {

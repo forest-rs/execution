@@ -132,8 +132,6 @@ pub enum TransferAction<'a> {
         target: RecordedActivation,
         /// Target's actual suspended instruction, in its own definition.
         target_location: TraceLocation,
-        /// Same-segment callback bodies abandoned in that target.
-        unwound_callbacks: usize,
         /// Proposed results, before the target's contract validation.
         values: &'a [RecordedValue],
         /// Host construction already charged before staging promotion.
@@ -144,6 +142,7 @@ pub enum TransferAction<'a> {
 }
 
 pub(super) struct ExecutionData {
+    pub(super) instruction_limit: Option<usize>,
     pub(super) segments: Vec<Segment>,
     pub(super) indices: BTreeMap<u64, usize>,
     pub(super) instances: Vec<Instance>,
@@ -189,7 +188,6 @@ pub(super) enum Action {
         source: RecordedActivation,
         target: RecordedActivation,
         target_location: TraceLocation,
-        unwound_callbacks: usize,
         values: Range<usize>,
         work: DataWork,
         constructed: Vec<AggregateId>,
@@ -197,13 +195,7 @@ pub(super) enum Action {
 }
 impl Action {
     pub(super) fn is_command(&self) -> bool {
-        matches!(
-            self,
-            Self::Enter {
-                origin: crate::trace::EntryOrigin::HostRequest,
-                ..
-            } | Self::ReturnFrom { .. }
-        )
+        matches!(self, Self::ReturnFrom { .. })
     }
     pub(super) fn is_admission(&self) -> bool {
         matches!(self, Self::Enter { .. } | Self::ReturnFrom { .. })
@@ -323,7 +315,6 @@ impl Recording {
                         source,
                         target,
                         target_location,
-                        unwound_callbacks,
                         values,
                         work,
                         constructed,
@@ -331,7 +322,6 @@ impl Recording {
                         source: *source,
                         target: *target,
                         target_location: *target_location,
-                        unwound_callbacks: *unwound_callbacks,
                         values: evidence.arena.slice(values),
                         work: *work,
                         constructed,
