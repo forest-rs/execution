@@ -114,8 +114,8 @@ pub(crate) enum Instr {
         eff_out: u32,
         eff_in: u32,
         args: Vec<u32>,
-        rets: Vec<u32>,
-        handlers: Vec<crate::asm::HandlerArm>,
+        pc_return: u32,
+        handlers: Vec<crate::control::HandlerClause>,
     },
     /// Capture inside a matching dynamic delimiter.
     Suspend {
@@ -507,9 +507,31 @@ mod bytecode_encode_gen {
 use bytecode_encode_gen::encode_instr;
 
 impl Instr {
+    pub(crate) fn edge_count(&self) -> usize {
+        match self {
+            Self::ContResume { handlers, .. } => 1 + handlers.len(),
+            _ => 2,
+        }
+    }
     /// Arm 0 is jump/true; arm 1 is false. Distinct arms keep distinct arguments even at equal targets.
-    pub(crate) fn edge(&self, arm: usize) -> Option<(u32, &[u32])> {
-        match (self, arm) {
+    pub(crate) fn edge(&self, arm: usize) -> Option<(u32, EdgeValues<'_>)> {
+        if let Self::ContResume {
+            call_sig,
+            pc_return,
+            handlers,
+            ..
+        } = self
+        {
+            if arm == 0 {
+                return Some((
+                    *pc_return,
+                    EdgeValues::Results(crate::program::CallSigId(*call_sig)),
+                ));
+            }
+            let clause = *handlers.get(arm - 1)?;
+            return Some((clause.target(), EdgeValues::Suspension(clause.signature())));
+        }
+        let edge: Option<(u32, &[u32])> = match (self, arm) {
             (Self::Jmp { pc_target }, 0) => Some((*pc_target, &[])),
             (Self::JmpArgs { pc_target, args }, 0) => Some((*pc_target, args)),
             (Self::Br { pc_true, .. }, 0) => Some((*pc_true, &[])),
@@ -533,6 +555,57 @@ impl Instr {
                 1,
             ) => Some((*pc_false, args.get(*true_arg_count as usize..)?)),
             _ => None,
+        };
+        edge.map(|(target, args)| (target, EdgeValues::Registers(args)))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum EdgeValues<'a> {
+    Registers(&'a [u32]),
+    Results(crate::program::CallSigId),
+    Suspension(crate::program::CallSigId),
+}
+impl<'a> EdgeValues<'a> {
+    pub(crate) fn registers(self) -> Option<&'a [u32]> {
+        match self {
+            Self::Registers(values) => Some(values),
+            _ => None,
+        }
+    }
+    pub(crate) fn contracts(
+        self,
+        program: &crate::program::Program,
+    ) -> Option<(&[crate::contract::ContractId], bool)> {
+        match self {
+            Self::Registers(_) => None,
+            Self::Results(id) => Some((
+                program.verified_contracts(
+                    program
+                        .call_sig(id)
+                        .expect("verified result signature")
+                        .rets,
+                ),
+                false,
+            )),
+            Self::Suspension(id) => Some((
+                program.verified_contracts(
+                    program
+                        .call_sig(id)
+                        .expect("verified operation signature")
+                        .args,
+                ),
+                true,
+            )),
+        }
+    }
+    pub(crate) fn len(self, program: &crate::program::Program) -> usize {
+        match self {
+            Self::Registers(values) => values.len(),
+            _ => {
+                let (contracts, continuation) = self.contracts(program).expect("protocol edge");
+                contracts.len() + usize::from(continuation)
+            }
         }
     }
 }

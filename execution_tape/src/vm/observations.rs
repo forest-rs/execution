@@ -39,6 +39,57 @@ pub(super) fn emit(
     sources: ValueSources<'_>,
     phase: RegisterPhase,
 ) {
+    emit_selected(
+        register_state,
+        trace,
+        program,
+        ctx,
+        func,
+        pc,
+        base,
+        sources,
+        phase,
+        None,
+    );
+}
+
+/// An actual resume outcome binds the selected block's parameters, rather than all arms.
+pub(super) fn emit_edge(
+    register_state: &mut RegisterState,
+    trace: &mut TraceCtx<'_>,
+    program: &Program,
+    ctx: &Registers,
+    location: TraceLocation,
+    base: RegBase,
+    sources: ValueSources<'_>,
+    target: u32,
+) {
+    emit_selected(
+        register_state,
+        trace,
+        program,
+        ctx,
+        location.func,
+        location.pc,
+        base,
+        sources,
+        RegisterPhase::Outputs,
+        Some(target),
+    );
+}
+
+fn emit_selected(
+    register_state: &mut RegisterState,
+    trace: &mut TraceCtx<'_>,
+    program: &Program,
+    ctx: &Registers,
+    func: FuncId,
+    pc: u32,
+    base: RegBase,
+    sources: ValueSources<'_>,
+    phase: RegisterPhase,
+    target: Option<u32>,
+) {
     if !trace.enabled(TraceMask::REGISTERS) {
         return;
     }
@@ -76,9 +127,20 @@ pub(super) fn emit(
     {
         return;
     }
-    let registers = match phase {
-        RegisterPhase::Inputs => RegIter::from_operands(instruction.reads()),
-        RegisterPhase::Outputs => RegIter::from_operands(instruction.writes()),
+    let registers = match target {
+        Some(target) => {
+            let Ok(index) = map.instructions.binary_search_by_key(&target, |i| i.offset) else {
+                return;
+            };
+            let Instr::Block { params } = &map.instructions[index].instr else {
+                return;
+            };
+            RegIter::slice(params)
+        }
+        None => match phase {
+            RegisterPhase::Inputs => RegIter::from_operands(instruction.reads()),
+            RegisterPhase::Outputs => RegIter::from_operands(instruction.writes()),
+        },
     };
     let read = |reg: u32| {
         let reg = *map.registers.get(reg as usize)?;

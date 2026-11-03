@@ -7,6 +7,7 @@ pub(crate) mod arena;
 mod error;
 pub(crate) mod handler;
 pub use error::{ControlBoundary, SignatureMismatch};
+pub use handler::HandlerClause;
 
 use crate::{
     contract::{ContractId, ContractKinds},

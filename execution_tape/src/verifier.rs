@@ -16,8 +16,8 @@ mod metadata;
 pub use blocks::{BlockDeclarationError, BlockEdgeError};
 
 pub use contracts::inspection::{
-    EdgeBinding, FactOrigin, FunctionAnalysis, IncomingEdge, InstructionFacts, ProgramAnalysis,
-    RegisterFact, ValueFact,
+    EdgeBinding, EdgeValueSource, FactOrigin, FunctionAnalysis, IncomingEdge, InstructionFacts,
+    ProgramAnalysis, RegisterFact, ValueFact,
 };
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
@@ -252,6 +252,19 @@ pub enum VerifyError {
         pc: u32,
         /// Required indirect signature.
         call_sig: u32,
+    },
+    /// A statically known operation contradicts a local clause's request/response protocol.
+    HandlerProtocolMismatch {
+        /// Containing function.
+        func: u32,
+        /// Resumption instruction byte offset.
+        pc: u32,
+        /// Clause index in matching order.
+        arm: usize,
+        /// Register containing the incompatible operation.
+        tag: u32,
+        /// Protocol required by the clause.
+        signature: CallSigId,
     },
     /// A compositional contract contradicts its nominal schema, even if it is unused.
     InvalidContract {
@@ -747,6 +760,17 @@ impl fmt::Display for VerifyError {
             Self::CallIndirectContractMismatch { func, pc, call_sig } => write!(
                 f,
                 "function #{func} at {pc}: callable does not match indirect signature #{call_sig}"
+            ),
+            Self::HandlerProtocolMismatch {
+                func,
+                pc,
+                arm,
+                tag,
+                signature,
+            } => write!(
+                f,
+                "function #{func} at byte {pc}: handler clause {arm} requires protocol #{}, but operation r{tag} has a different request/response contract",
+                signature.0
             ),
             Self::InvalidContract { contract, error } => {
                 write!(f, "invalid contract {}: {error:?}", contract.0)
@@ -1569,6 +1593,19 @@ fn verify_id_operands_in_bounds(
                 call_sig: *call_sig,
             });
         }
+        if let Instr::ContResume { handlers, .. } = &di.instr {
+            for clause in handlers {
+                let signature = clause.signature();
+                if program.call_sig(signature).is_none() {
+                    err = Some(VerifyError::CallSigOutOfBounds {
+                        func,
+                        pc,
+                        call_sig: signature.0,
+                    });
+                    break;
+                }
+            }
+        }
 
         if let Some(err) = err {
             return Err(err);
@@ -1647,7 +1684,7 @@ fn verify_function_bytecode(
             pc: 0,
         });
     }
-    blocks::validate_structure(func_id, func.reg_count, decoded)?;
+    blocks::validate_structure(program, func_id, func.reg_count, decoded)?;
     let has_blocks = decoded
         .iter()
         .any(|di| matches!(di.instr, Instr::Block { .. }));
@@ -1864,7 +1901,14 @@ fn verify_function_bytecode(
     let mut copy_schedule = blocks::CopyScheduler::default();
     for (source_ix, di) in decoded.iter().enumerate() {
         if has_blocks {
-            blocks::validate_types(func_id, di.offset, &di.instr, register_types, decoded)?;
+            blocks::validate_types(
+                program,
+                func_id,
+                di.offset,
+                &di.instr,
+                register_types,
+                decoded,
+            )?;
         }
         validate_instr_types(
             program,
@@ -2009,23 +2053,39 @@ fn verify_function_bytecode(
                 continuation,
                 call_sig,
                 args,
-                rets,
+                pc_return,
                 handlers,
                 ..
             } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Resume {
                 continuation: map_continuation(*continuation)?,
                 signature: CallSigId(*call_sig),
                 args: push_vregs(args)?,
-                rets: push_vregs(rets)?,
+                returned: crate::typed::ControlTarget {
+                    pc: *pc_return,
+                    instruction: map_pc_to_ix(pc, *pc_return)?,
+                    parameters: push_vregs(
+                        blocks::declaration(decoded, *pc_return).expect("validated result block"),
+                    )?,
+                },
                 handlers: handlers
                     .iter()
                     .map(|arm| match *arm {
-                        crate::asm::HandlerArm::Suspend { tag, handler } => {
-                            Ok(crate::typed::ControlHandler {
-                                tag: map_tag(tag)?,
-                                handler: map(handler)?,
-                            })
-                        }
+                        crate::control::HandlerClause::Suspend {
+                            tag,
+                            signature,
+                            target,
+                        } => Ok(crate::typed::ControlHandler {
+                            tag: map_tag(tag)?,
+                            signature,
+                            target: crate::typed::ControlTarget {
+                                pc: target,
+                                instruction: map_pc_to_ix(pc, target)?,
+                                parameters: push_vregs(
+                                    blocks::declaration(decoded, target)
+                                        .expect("validated clause block"),
+                                )?,
+                            },
+                        }),
                     })
                     .collect::<Result<Vec<_>, VerifyError>>()?
                     .into_boxed_slice(),
@@ -3258,16 +3318,10 @@ fn validate_instr_types(
             call_sig,
             continuation: _,
             args,
-            rets,
             ..
         }
-        | Instr::Suspend {
-            call_sig,
-            args,
-            rets,
-            ..
-        } => {
-            match instr {
+        | Instr::Suspend { call_sig, args, .. } => {
+            let rets = match instr {
                 Instr::ContResume {
                     continuation,
                     handlers,
@@ -3282,39 +3336,35 @@ fn validate_instr_types(
                     )?;
                     for arm in handlers {
                         match *arm {
-                            crate::asm::HandlerArm::Suspend { tag, handler } => {
+                            crate::control::HandlerClause::Suspend { tag, .. } => {
                                 check_expected(func_id, pc, tag, t(tag), ValueType::Tag)?;
-                                if !matches!(t(handler), Some(ValueType::Func | ValueType::Closure))
-                                {
-                                    check_expected(
-                                        func_id,
-                                        pc,
-                                        handler,
-                                        t(handler),
-                                        ValueType::Func,
-                                    )?;
-                                }
                             }
                         }
                     }
+                    None
                 }
-                Instr::Suspend { tag, .. } => {
+                Instr::Suspend { tag, rets, .. } => {
                     check_expected(func_id, pc, *tag, t(*tag), ValueType::Tag)?;
+                    Some(rets)
                 }
                 _ => unreachable!(),
-            }
+            };
             let signature = program
                 .call_sig(CallSigId(*call_sig))
                 .expect("validated signature");
             let inputs = program.verified_contracts(signature.args);
             let outputs = program.verified_contracts(signature.rets);
-            if args.len() != inputs.len() || rets.len() != outputs.len() {
+            if args.len() != inputs.len() || rets.is_some_and(|rets| rets.len() != outputs.len()) {
                 return Err(VerifyError::CallArityMismatch { func: func_id, pc });
             }
             for (&reg, kind) in args.iter().zip(program.contracts.kinds(inputs)) {
                 check_expected(func_id, pc, reg, t(reg), *kind)?;
             }
-            for (&reg, kind) in rets.iter().zip(program.contracts.kinds(outputs)) {
+            for (&reg, kind) in rets
+                .into_iter()
+                .flatten()
+                .zip(program.contracts.kinds(outputs))
+            {
                 check_expected(func_id, pc, reg, t(reg), *kind)?;
             }
         }

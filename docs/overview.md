@@ -95,15 +95,21 @@ arguments and final results. At a later suspension, the control tag instead supp
 sent to a handler and the response required to resume. The captured computation retains its
 original final-result contract. These are separate protocols, each retaining its exact definition.
 
-Guest `cont.resume` installs a dynamic table of callable clauses. A suspension captures the stack
-suffix inside the nearest matching delimiter; its handler runs outside that table and receives
-the request plus a one-use continuation. Inner nonmatching tables stay captured. Resuming under
-a replacement table allows another handler to service later requests from the same computation.
+Guest `cont.resume` terminates a block with a normal result target and local suspension clauses.
+A suspension captures the stack suffix inside the nearest matching delimiter, then transfers
+request values and a one-use continuation to the selected clause's typed block. The clause keeps
+the resumer's lexical registers and frame, outside the matching table. Inner nonmatching tables
+stay captured. A clause can resume under its own table repeatedly without accumulating handler
+frames, or supply another table to change who services later requests.
 Fresh tags give recursive lexical exit scopes distinct identities. Equal signatures identify
 compatible protocols, while exact tag equality selects an operation.
 
-`ProgramBuilder::emit_continuation`, `emit_resume`, and `emit_suspend` provide the typed authoring
-path. Embeddings use `PendingHostCall::{create_continuation,resume_continuation,discard_continuation}`
+`ProgramBuilder::handler_block` and `result_block` declare the local outcome parameters.
+`emit_continuation`, `emit_resume`, and `emit_suspend` provide the typed instruction path;
+response registers follow the declared protocol's arity, including protocols built dynamically
+by a frontend. Run `cargo run -p execution_tape_examples --bin local_handlers -- --disassemble`
+to follow a computation through two requests and the same lexical handler clause.
+Embeddings use `PendingHostCall::{create_continuation,resume_continuation,discard_continuation}`
 on an explicitly yielded host operation. Each consumes the borrowed request view; reacquire it
 for another command. A successful resumption restores that host request with callback results.
 Pure foreign/stale denials preserve valid authority and the pending request. Admitted failures

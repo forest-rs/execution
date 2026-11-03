@@ -1,26 +1,39 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-/// A dynamically installed control clause. Clause bodies are ordinary qualified callables.
+use crate::program::CallSigId;
+
+/// An encoded local control clause in one function.
 ///
-/// Suspension clauses receive the operation's request values followed by a one-use
-/// continuation. Their results are the results of the enclosing `cont.resume`.
+/// The target is a typed block whose parameters receive request values followed by a one-use
+/// continuation. Symbolic authoring uses [`crate::asm::HandlerArm`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HandlerArm {
+pub enum HandlerClause {
     /// Captures the computation inside the nearest matching resume delimiter.
     Suspend {
         /// Register containing the exact control operation identity.
         tag: u32,
-        /// Function or closure register containing the handler body.
-        handler: u32,
+        /// Request and response protocol interpreted by the same program.
+        signature: CallSigId,
+        /// Typed block header byte offset in the resumer's function.
+        target: u32,
     },
 }
-impl HandlerArm {
+impl HandlerClause {
     pub(crate) fn register(self, index: usize) -> Option<u32> {
         match (self, index) {
             (Self::Suspend { tag, .. }, 0) => Some(tag),
-            (Self::Suspend { handler, .. }, 1) => Some(handler),
             _ => None,
+        }
+    }
+    pub(crate) fn target(self) -> u32 {
+        match self {
+            Self::Suspend { target, .. } => target,
+        }
+    }
+    pub(crate) fn signature(self) -> CallSigId {
+        match self {
+            Self::Suspend { signature, .. } => signature,
         }
     }
 }

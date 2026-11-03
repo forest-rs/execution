@@ -10,8 +10,13 @@ use crate::typed::ControlInstruction;
 use crate::value::FunctionRef;
 
 pub(in crate::vm) struct Delimiter {
-    handlers: Vec<Handler>,
+    handlers: HandlerTable,
     results: ContractOwner,
+}
+enum HandlerTable {
+    /// Bind dynamic tag registers in the frozen resumer to immutable prepared clause targets.
+    Guest,
+    Native(Vec<Handler>),
 }
 pub(in crate::vm) enum Saved<'a> {
     New {
@@ -148,7 +153,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                     signature,
                     continuation,
                     args,
-                    rets,
+                    returned,
                     handlers,
                 } => {
                     let reference = self.continuation.ctx.read_continuation(base, *continuation);
@@ -207,24 +212,34 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                         .program()
                         .call_sig(*signature)
                         .expect("verified signature");
+                    for arm in handlers {
+                        let tag = self.continuation.ctx.read_tag(base, arm.tag);
+                        if !self.vm.owns_instance(tag.instance()) {
+                            return Err(Trap::ForeignStoreValue {
+                                kind: ValueType::Tag,
+                            });
+                        }
+                        let declaration = tag
+                            .instance()
+                            .program()
+                            .program()
+                            .call_sig(tag.signature_id())
+                            .expect("operation declaration");
+                        self.check_signature(
+                            &code,
+                            arm.signature,
+                            (tag.instance().program(), declaration.args),
+                            (tag.instance().program(), declaration.rets),
+                            ControlBoundary::Handler,
+                        )?;
+                    }
                     let delimiter = Delimiter {
-                        handlers: handlers
-                            .iter()
-                            .map(|arm| Handler::Suspend {
-                                tag: self.continuation.ctx.read_tag(base, arm.tag),
-                                handler: Vm::<H>::contract_value(
-                                    &self.continuation.ctx,
-                                    base,
-                                    arm.handler,
-                                ),
-                            })
-                            .collect(),
+                        handlers: HandlerTable::Guest,
                         results: ContractOwner {
                             program: code.clone(),
                             range: entry.rets,
                         },
                     };
-                    self.check_handlers(&delimiter)?;
                     // All recoverable checks precede consuming authority. No observer runs between
                     // invalidating the capability and installing the stack in its execution owner.
                     let saved = self
@@ -235,7 +250,8 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                         location,
                         instruction,
                         depth: self.continuation.ctx.frames.len(),
-                        rets: *rets,
+                        rets: returned.parameters,
+                        successor: Some((returned.pc, returned.instruction)),
                         abandoned: false,
                     });
                     initialize = self.attach_saved(saved, arguments, delimiter, location)?;
@@ -271,7 +287,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                         &request,
                         ControlBoundary::Suspend,
                     )?;
-                    self.capture(
+                    initialize = self.capture(
                         tag,
                         request,
                         PendingGuest {
@@ -279,10 +295,10 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                             instruction,
                             depth: self.continuation.ctx.frames.len(),
                             rets: *rets,
+                            successor: None,
                             abandoned: false,
                         },
                     )?;
-                    initialize = true;
                     return Ok(());
                 }
                 ControlInstruction::Drop { continuation } => {
@@ -522,7 +538,10 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
     }
 
     fn check_handlers(&mut self, delimiter: &Delimiter) -> Result<(), Trap> {
-        for arm in &delimiter.handlers {
+        let HandlerTable::Native(handlers) = &delimiter.handlers else {
+            unreachable!("guest clauses checked against prepared protocols")
+        };
+        for arm in handlers {
             let Handler::Suspend { tag, handler } = arm;
             if !self.vm.owns_instance(tag.instance()) {
                 return Err(Trap::ForeignStoreValue {
@@ -651,16 +670,48 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             } else {
                 &self.parents[index]
             };
-            stack
-                .delimiter
-                .as_ref()?
-                .handlers
-                .iter()
-                .position(
+            let arm = match &stack.delimiter.as_ref()?.handlers {
+                HandlerTable::Native(handlers) => handlers.iter().position(
                     |arm| matches!(arm, Handler::Suspend { tag: expected, .. } if expected == tag),
-                )
-                .map(|arm| (index, arm))
+                ),
+                HandlerTable::Guest => {
+                    let resumer = self.parents.get(index.checked_sub(1)?)?;
+                    let site = resumer
+                        .control
+                        .waiting
+                        .control()
+                        .expect("waiting guest resume");
+                    let base = resumer.ctx.frames[site.depth - 1].base;
+                    Self::guest_clauses(resumer)
+                        .iter()
+                        .position(|arm| resumer.ctx.read_tag(base, arm.tag) == *tag)
+                }
+            }?;
+            Some((index, arm))
         })
+    }
+
+    fn guest_clauses<'s>(
+        resumer: &'s continuation::Continuation<'_>,
+    ) -> &'s [crate::typed::ControlHandler] {
+        let site = resumer
+            .control
+            .waiting
+            .control()
+            .expect("waiting guest resume");
+        let (ExecInstr::Control(operation), _, _) = resumer
+            .program
+            .verified(site.location.func)
+            .expect("resumer definition")
+            .fetch_at_ix(site.instruction)
+            .expect("resumer instruction")
+        else {
+            unreachable!()
+        };
+        let ControlInstruction::Resume { handlers, .. } = operation.as_ref() else {
+            unreachable!()
+        };
+        handlers
     }
 
     fn capture(
@@ -668,7 +719,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         tag: ControlTag,
         request: Vec<Value>,
         pending: PendingGuest,
-    ) -> Result<(), Trap> {
+    ) -> Result<bool, Trap> {
         let (index, arm) = self
             .handler_index(&tag)
             .ok_or_else(|| Trap::UnhandledControlTag { tag: tag.clone() })?;
@@ -681,11 +732,6 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             &mut self.parents[index]
         };
         let mut delimiter = root.delimiter.take().expect("matching delimiter");
-        let Handler::Suspend {
-            handler: callable, ..
-        } = delimiter.handlers.swap_remove(arm);
-        // Matching handlers are outside the captured continuation and inactive in their clause.
-        delimiter.handlers.clear();
         let results = delimiter.results.clone();
         let declaration = tag
             .instance()
@@ -698,6 +744,48 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             range: declaration.rets,
         };
         self.continuation.control.waiting = Waiting::Control(pending);
+        let callable = match &mut delimiter.handlers {
+            HandlerTable::Guest => {
+                let resumer = &self.parents[index - 1];
+                let target = Self::guest_clauses(resumer)[arm].target;
+                composition::check_transfer(
+                    self.vm.memory.aggs(),
+                    &request,
+                    self.continuation
+                        .ctx
+                        .instance
+                        .as_ref()
+                        .expect("suspender namespace"),
+                    resumer.ctx.instance.as_ref().expect("resumer namespace"),
+                    self.budget,
+                    &self.vm.limits,
+                    pending.location.func,
+                    true,
+                )?;
+                let mut captured = self.parents.split_off(index);
+                let resumer = self.parents.pop().expect("matching resumer");
+                captured.push(core::mem::replace(self.continuation, resumer));
+                let reference = self.save(Saved::Suspended(captured), parameters, results)?;
+                let mut values = request;
+                values.push(Value::Continuation(reference));
+                let site = self
+                    .continuation
+                    .control
+                    .waiting
+                    .control_mut()
+                    .expect("waiting guest resume");
+                site.rets = target.parameters;
+                site.successor = Some((target.pc, target.instruction));
+                Self::complete_control(self.continuation, values, self.vm.memory.aggs())?;
+                self.budget.select(&self.continuation.control);
+                return Ok(false);
+            }
+            HandlerTable::Native(handlers) => {
+                let Handler::Suspend { handler, .. } = handlers.swap_remove(arm);
+                handlers.clear();
+                handler
+            }
+        };
         let control = self.new_control();
         // Validate the actual request across the code boundary before moving its source
         // stack. The generated continuation is execution-local metadata, appended below.
@@ -721,7 +809,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             .args
             .to_mut()
             .push(Value::Continuation(reference));
-        Ok(())
+        Ok(true)
     }
 
     fn complete_control(
@@ -751,17 +839,40 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         for (&destination, value) in destinations.iter().zip(values) {
             stack.ctx.write_owned_value(base, destination, value)?;
         }
-        observations::emit(
-            &mut stack.register_state,
-            &mut stack.trace,
-            stack.program.program(),
-            &stack.ctx,
-            pending.location.func,
-            pending.location.pc,
-            base,
-            ValueSources::new(stack.program.program(), &stack.args, heap),
-            crate::trace::RegisterPhase::Outputs,
-        );
+        if let Some((_, instruction)) = pending.successor {
+            let frame = &mut stack.ctx.frames[pending.depth - 1];
+            frame.instr_ix = instruction as usize;
+            frame.pc = stack
+                .program
+                .verified(frame.func)
+                .expect("resumer definition")
+                .pc_at_ix(instruction as usize)
+                .expect("typed target");
+        }
+        if let Some((target, _)) = pending.successor {
+            observations::emit_edge(
+                &mut stack.register_state,
+                &mut stack.trace,
+                stack.program.program(),
+                &stack.ctx,
+                pending.location,
+                base,
+                ValueSources::new(stack.program.program(), &stack.args, heap),
+                target,
+            );
+        } else {
+            observations::emit(
+                &mut stack.register_state,
+                &mut stack.trace,
+                stack.program.program(),
+                &stack.ctx,
+                pending.location.func,
+                pending.location.pc,
+                base,
+                ValueSources::new(stack.program.program(), &stack.args, heap),
+                crate::trace::RegisterPhase::Outputs,
+            );
+        }
         let frame = &stack.ctx.frames[pending.depth - 1];
         let next = TraceLocation {
             func: frame.func,
@@ -933,7 +1044,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
                 ControlBoundary::Resume,
             )?;
             let delimiter = Delimiter {
-                handlers: handlers.to_vec(),
+                handlers: HandlerTable::Native(handlers.to_vec()),
                 results: continuation.result_owner().clone(),
             };
             self.running.check_handlers(&delimiter)?;

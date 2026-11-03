@@ -726,6 +726,7 @@ struct PendingGuest {
     instruction: usize,
     depth: usize,
     rets: VRegSlice,
+    successor: Option<(u32, u32)>,
     abandoned: bool,
 }
 

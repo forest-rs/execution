@@ -110,6 +110,7 @@ impl<H: Host> Vm<H> {
             instruction: transfer.instruction,
             depth: ctx.frames.len(),
             rets: transfer.rets,
+            successor: None,
             abandoned: true,
         };
         let base = frame.base;

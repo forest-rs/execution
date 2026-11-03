@@ -446,7 +446,7 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::EffOut, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::EffIn, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::RegList, OperandRole::Args, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Read)),
-    OperandSchema::new(OperandKind::RegList, OperandRole::Rets, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Pc, OperandRole::PcTarget, OperandEncoding::U32Uleb, None),
     OperandSchema::new(OperandKind::HandlerList, OperandRole::Handlers, OperandEncoding::HandlerList, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::ImmU32, OperandRole::Imm, OperandEncoding::U32Uleb, None),
     OperandSchema::new(OperandKind::Reg, OperandRole::Src, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
@@ -655,7 +655,7 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x9E
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x9F
     OpcodeInfo { mnemonic: "cont.new", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 303, len: 5 } }, // 0xA0 ContNew
-    OpcodeInfo { mnemonic: "cont.resume", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 308, len: 7 } }, // 0xA1 ContResume
+    OpcodeInfo { mnemonic: "cont.resume", is_terminator: true, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 308, len: 7 } }, // 0xA1 ContResume
     OpcodeInfo { mnemonic: "suspend", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 315, len: 6 } }, // 0xA2 Suspend
     OpcodeInfo { mnemonic: "cont.drop", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 321, len: 3 } }, // 0xA3 ContDrop
     OpcodeInfo { mnemonic: "tag.is_handled", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 324, len: 2 } }, // 0xA4 TagIsHandled
@@ -889,7 +889,7 @@ pub enum Opcode {
     F64FromBits = 0x93,
     /// Create a one-use, execution-owned computation from a qualified callable.
     ContNew = 0xA0,
-    /// Consume a continuation and resume it under the supplied handler arms.
+    /// Resume a computation, dispatching final results or suspension to typed local blocks.
     ContResume = 0xA1,
     /// Suspend to the nearest matching dynamic handler; resume with response values.
     Suspend = 0xA2,

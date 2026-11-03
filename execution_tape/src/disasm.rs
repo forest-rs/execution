@@ -258,10 +258,10 @@ pub enum Operands<'a> {
         signature: CallSigId,
         /// Resume value registers.
         args: &'a [u32],
-        /// Final result registers.
-        rets: &'a [u32],
+        /// Typed block receiving final results.
+        returned: u32,
         /// Operation-to-handler bindings in matching order.
-        handlers: &'a [crate::asm::HandlerArm],
+        handlers: &'a [crate::control::HandlerClause],
         /// Effect input register.
         eff_in: u32,
         /// Effect output register.
@@ -540,7 +540,7 @@ impl<'a> InstrView<'a> {
                 continuation,
                 call_sig,
                 args,
-                rets,
+                pc_return,
                 handlers,
                 eff_in,
                 eff_out,
@@ -549,7 +549,7 @@ impl<'a> InstrView<'a> {
                     continuation: *continuation,
                     signature: CallSigId(*call_sig),
                     args,
-                    rets,
+                    returned: *pc_return,
                     handlers,
                     eff_in: *eff_in,
                     eff_out: *eff_out,
@@ -660,15 +660,20 @@ impl<'a> InstrView<'a> {
         }
     }
 
-    /// Returns a source edge: zero for jump/true, one for false.
+    /// Returns a register-argument branch edge: zero for jump/true, one for false.
     ///
+    /// Control outcomes bind protocol values rather than source registers. Inspect
+    /// [`Operands::Resume`] for their normal and suspension targets, or verifier analysis for
+    /// their typed incoming bindings; this method returns `None` for those edges.
     /// Malformed argument splits return `None`; the verifier reports a structured error.
     #[must_use]
     pub fn edge(&self, arm: usize) -> Option<BlockEdge<'a>> {
-        self.decoded
-            .instr
-            .edge(arm)
-            .map(|(target, args)| BlockEdge { target, args })
+        self.decoded.instr.edge(arm).and_then(|(target, args)| {
+            Some(BlockEdge {
+                target,
+                args: args.registers()?,
+            })
+        })
     }
 
     /// Registers read by this instruction (best-effort; intended for tooling/dataflow).
@@ -1115,7 +1120,7 @@ fn fmt_control(f: &mut fmt::Formatter<'_>, op: Operands<'_>, program: &Program) 
             continuation,
             signature,
             args,
-            rets,
+            returned,
             handlers,
             eff_in,
             eff_out,
@@ -1128,13 +1133,16 @@ fn fmt_control(f: &mut fmt::Formatter<'_>, op: Operands<'_>, program: &Program) 
                     f.write_str(", ")?;
                 }
                 match arm {
-                    crate::asm::HandlerArm::Suspend { tag, handler } => {
-                        write!(f, "suspend r{tag} => r{handler}")?;
+                    crate::control::HandlerClause::Suspend {
+                        tag,
+                        signature,
+                        target,
+                    } => {
+                        write!(f, "suspend r{tag} #{:} => @{target:06}", signature.0)?;
                     }
                 }
             }
-            f.write_str("], rets=")?;
-            fmt_reg_list(f, rets)?;
+            write!(f, "], returned=@{returned:06}")?;
             (signature, eff_in, eff_out)
         }
         Operands::Suspend {

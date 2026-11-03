@@ -9,6 +9,7 @@ use super::*;
 use crate::contract::{
     Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
 };
+use crate::program::ByteRange;
 use crate::value::AggType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -50,7 +51,8 @@ enum Node {
     Array(ElemTypeId, Fact),
     Function(FuncId),
     Indirect {
-        signature: CallSigId,
+        args: ByteRange,
+        rets: ByteRange,
         kind: SignatureKind,
     },
     Closure(Fact),
@@ -208,6 +210,7 @@ struct Arena<'a> {
     imported: BTreeMap<ContractId, Fact>,
     function_facts: BTreeMap<u32, Fact>,
     indirect_facts: BTreeMap<(u32, SignatureKind), Fact>,
+    suspension_facts: BTreeMap<(u32, u32), Fact>,
     common_cache: BTreeMap<(Fact, Fact), Option<Fact>>,
     replacements: Vec<(u32, Fact)>,
     check_frames: Vec<Check>,
@@ -226,6 +229,7 @@ impl<'a> Arena<'a> {
             imported: BTreeMap::new(),
             function_facts: BTreeMap::new(),
             indirect_facts: BTreeMap::new(),
+            suspension_facts: BTreeMap::new(),
             common_cache: BTreeMap::new(),
             replacements: Vec::new(),
             check_frames: Vec::new(),
@@ -304,10 +308,9 @@ impl<'a> Arena<'a> {
                     members: Members::Signature(args, rets, &self.imported),
                 }
             }
-            Node::Indirect { signature, kind } => {
-                let entry = &self.program.call_sigs[signature.0 as usize];
-                let args = self.program.verified_contracts(entry.args);
-                let rets = self.program.verified_contracts(entry.rets);
+            Node::Indirect { args, rets, kind } => {
+                let args = self.program.verified_contracts(*args);
+                let rets = self.program.verified_contracts(*rets);
                 View {
                     descriptor: Descriptor::Signature {
                         kind: *kind,
@@ -513,16 +516,38 @@ impl<'a> Arena<'a> {
             return fact;
         }
         let entry = &self.program.call_sigs[signature.0 as usize];
+        let fact = self.signature_ranges(entry.args, entry.rets, kind);
+        self.indirect_facts.insert((signature.0, kind), fact);
+        fact
+    }
+    fn signature_ranges(&mut self, args: ByteRange, rets: ByteRange, kind: SignatureKind) -> Fact {
         for &id in self
             .program
-            .verified_contracts(entry.args)
+            .verified_contracts(args)
             .iter()
-            .chain(self.program.verified_contracts(entry.rets))
+            .chain(self.program.verified_contracts(rets))
         {
             self.import(id);
         }
-        let fact = self.intern(Node::Indirect { signature, kind });
-        self.indirect_facts.insert((signature.0, kind), fact);
+        self.intern(Node::Indirect { args, rets, kind })
+    }
+    fn suspension_signature(&mut self, operation: CallSigId, resumed: CallSigId) -> Fact {
+        let key = (operation.0, resumed.0);
+        if let Some(&fact) = self.suspension_facts.get(&key) {
+            return fact;
+        }
+        let fact = self.signature_ranges(
+            self.program
+                .call_sig(operation)
+                .expect("operation protocol")
+                .rets,
+            self.program
+                .call_sig(resumed)
+                .expect("resume protocol")
+                .rets,
+            SignatureKind::Continuation,
+        );
+        self.suspension_facts.insert(key, fact);
         fact
     }
     fn callable(&mut self, func: FuncId) -> Fact {
@@ -815,9 +840,7 @@ fn transfer(
                 replacements.push((*dst, fact));
             }
         }
-        Instr::CallIndirect { call_sig, rets, .. }
-        | Instr::ContResume { call_sig, rets, .. }
-        | Instr::Suspend { call_sig, rets, .. } => {
+        Instr::CallIndirect { call_sig, rets, .. } | Instr::Suspend { call_sig, rets, .. } => {
             for (&reg, &id) in rets.iter().zip(
                 arena
                     .program
@@ -1115,6 +1138,22 @@ fn validate(
                         error,
                     })?;
             }
+            if let Instr::ContResume { handlers, .. } = instr {
+                for (arm, &clause) in handlers.iter().enumerate() {
+                    let crate::control::HandlerClause::Suspend { tag, signature, .. } = clause;
+                    let expected = arena.indirect_signature(signature, ValueType::Tag);
+                    let actual = arena.fact(state, types, tag);
+                    if matches!(actual, Fact::Refined(_)) && actual != expected {
+                        return Err(VerifyError::HandlerProtocolMismatch {
+                            func: func_id,
+                            pc,
+                            arm,
+                            tag,
+                            signature,
+                        });
+                    }
+                }
+            }
         }
         Instr::Ret { rets, .. } => {
             for (index, (&reg, &contract)) in rets
@@ -1210,13 +1249,47 @@ fn solve_flow<'a>(
             facts: Vec::new(),
         },
         |pred, arm, _, acc, incoming| {
+            if incoming.top {
+                return false;
+            }
             let branch = &decoded[blocks[pred].instr_end - 1].instr;
-            let incoming = if let Some((target, args)) =
-                branch.edge(arm).filter(|(_, args)| !args.is_empty())
+            let mut arena = arena.borrow_mut();
+            let incoming = if let Some((target, args)) = branch
+                .edge(arm)
+                .filter(|(_, args)| args.registers().is_none_or(|values| !values.is_empty()))
             {
-                let params = blocks::declaration(decoded, target).expect("validated target");
+                let params =
+                    blocks::declaration(decoded, target).expect("validated parameter target");
                 let scratch = edge_scratch.get_or_insert_with(|| incoming.clone());
-                blocks::transfer_edge(incoming, scratch, params, args);
+                if let Some(registers) = args.registers() {
+                    blocks::transfer_edge(incoming, scratch, params, registers);
+                } else {
+                    scratch.clone_from(incoming);
+                    let (contracts, continuation) = args.contracts(program).expect("protocol edge");
+                    for (&param, &contract) in params.iter().zip(contracts) {
+                        let refinement = match arena.import(contract) {
+                            Fact::Kind(_) => None,
+                            Fact::Refined(id) => Some(id),
+                        };
+                        scratch.set_refinement(param as usize, refinement);
+                    }
+                    if continuation {
+                        let crate::bytecode::EdgeValues::Suspension(protocol) = args else {
+                            unreachable!()
+                        };
+                        let Instr::ContResume { call_sig, .. } = branch else {
+                            unreachable!()
+                        };
+                        let fact = arena.suspension_signature(protocol, CallSigId(*call_sig));
+                        let Fact::Refined(id) = fact else {
+                            unreachable!()
+                        };
+                        scratch.set_refinement(
+                            *params.last().expect("continuation parameter") as usize,
+                            Some(id),
+                        );
+                    }
+                }
                 &*scratch
             } else {
                 incoming
@@ -1228,7 +1301,6 @@ fn solve_flow<'a>(
                 acc.clone_from(incoming);
                 return true;
             }
-            let mut arena = arena.borrow_mut();
             let mut changed = false;
             acc.facts.retain_mut(|(reg, fact)| {
                 let common = incoming

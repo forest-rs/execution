@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     fact.origin_after
                 );
             }
-            println!("incoming_pc\tarm\tparameter\targument\tvalue");
+            println!("incoming_pc\tarm\tparameter\tsource\tvalue");
             for edge in facts.incoming_edges() {
                 for binding in edge.bindings() {
                     println!(
@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         edge.source_pc(),
                         edge.arm(),
                         binding.parameter,
-                        binding.argument,
+                        binding.source,
                         value_fact(binding.value)
                     );
                 }

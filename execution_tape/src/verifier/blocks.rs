@@ -30,6 +30,8 @@ pub enum BlockDeclarationError {
 /// A failed control-flow edge contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockEdgeError {
+    /// A resumption outcome must target a declared typed block header.
+    MissingHeader,
     /// The encoded branch argument split exceeds the combined list.
     InvalidArgumentSplit,
     /// Argument count does not match the target declaration (zero for an untyped target).
@@ -66,6 +68,7 @@ pub(super) fn declaration(decoded: &[DecodedInstr], target: u32) -> Option<&[u32
 }
 
 pub(super) fn validate_structure(
+    program: &Program,
     func: u32,
     reg_count: u32,
     decoded: &[DecodedInstr],
@@ -73,7 +76,10 @@ pub(super) fn validate_structure(
     if !decoded.iter().any(|di| {
         matches!(
             di.instr,
-            Instr::Block { .. } | Instr::JmpArgs { .. } | Instr::BrArgs { .. }
+            Instr::Block { .. }
+                | Instr::JmpArgs { .. }
+                | Instr::BrArgs { .. }
+                | Instr::ContResume { .. }
         )
     }) {
         return Ok(());
@@ -134,7 +140,7 @@ pub(super) fn validate_structure(
                 error: BlockEdgeError::InvalidArgumentSplit,
             });
         }
-        for arm in 0..2 {
+        for arm in 0..di.instr.edge_count() {
             let Some((target, args)) = di.instr.edge(arm) else {
                 continue;
             };
@@ -143,11 +149,13 @@ pub(super) fn validate_structure(
             };
             let error = if let Some(header) = owners[ix].filter(|&header| header != target) {
                 Some(BlockEdgeError::BypassesHeader { header })
+            } else if args.registers().is_none() && declaration(decoded, target).is_none() {
+                Some(BlockEdgeError::MissingHeader)
             } else {
                 let expected = declaration(decoded, target).map_or(0, |params| params.len());
-                (expected != args.len()).then_some(BlockEdgeError::Arity {
+                (expected != args.len(program)).then_some(BlockEdgeError::Arity {
                     expected,
-                    actual: args.len(),
+                    actual: args.len(program),
                 })
             };
             if let Some(error) = error {
@@ -172,11 +180,14 @@ pub(super) fn validate_initialized(
     types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
-    for arm in 0..2 {
+    for arm in 0..instr.edge_count() {
         let Some((target, args)) = instr.edge(arm) else {
             continue;
         };
         let Some(params) = declaration(decoded, target) else {
+            continue;
+        };
+        let Some(args) = args.registers() else {
             continue;
         };
         for (index, (&reg, &param)) in args.iter().zip(params).enumerate() {
@@ -201,22 +212,36 @@ pub(super) fn validate_initialized(
 }
 
 pub(super) fn validate_types(
+    program: &Program,
     func: u32,
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
-    for arm in 0..2 {
+    for arm in 0..instr.edge_count() {
         let Some((target, args)) = instr.edge(arm) else {
             continue;
         };
         let Some(params) = declaration(decoded, target) else {
             continue;
         };
-        for (index, (&reg, &param)) in args.iter().zip(params).enumerate() {
+        for (index, &param) in params.iter().enumerate() {
             let expected = types.get(param).expect("validated parameter register");
-            let actual = types.get(reg);
+            let (reg, actual) = if let Some(args) = args.registers() {
+                let reg = args[index];
+                (reg, types.get(reg))
+            } else {
+                let (contracts, continuation) = args.contracts(program).expect("protocol edge");
+                let actual = contracts
+                    .get(index)
+                    .and_then(|&id| program.contracts.kind(id))
+                    .or_else(|| {
+                        (continuation && index == contracts.len())
+                            .then_some(ValueType::Continuation)
+                    });
+                (param, actual)
+            };
             if actual != Some(expected) {
                 return Err(VerifyError::BlockEdge {
                     func,

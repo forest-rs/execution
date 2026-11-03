@@ -4,7 +4,7 @@
 //! Public control authoring: a captured computation resumes under a new handler context.
 
 use execution_tape::{
-    asm::{FunctionSig, HandlerArm, ProgramBuilder},
+    asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::ValueType,
     value::{FuncId, Value},
@@ -49,10 +49,10 @@ fn worker(nested: bool) -> (VerifiedProgram, FuncId) {
     let mut leaf_body = program.function_asm(leaf).unwrap();
     let tag = program.argument(leaf, 0).unwrap();
     let request = program.argument(leaf, 1).unwrap();
-    let [response] = program
+    let response = program
         .emit_suspend(&mut leaf_body, tag, exchange, &[request])
         .unwrap();
-    leaf_body.ret(0, &[response]);
+    leaf_body.ret(0, &response);
     program.define_function(leaf, leaf_body).unwrap();
 
     let mut body = program.function_asm(function).unwrap();
@@ -60,20 +60,22 @@ fn worker(nested: bool) -> (VerifiedProgram, FuncId) {
     let request = body.alloc_register(ValueType::I64);
     let sum = body.alloc_register(ValueType::I64);
     body.const_i64(request, 1);
-    let [first] = if nested {
-        program.emit_call(&mut body, leaf, &[tag, request]).unwrap()
+    let first = if nested {
+        let [first] = program.emit_call(&mut body, leaf, &[tag, request]).unwrap();
+        first
     } else {
         program
             .emit_suspend(&mut body, tag, exchange, &[request])
-            .unwrap()
+            .unwrap()[0]
     };
     body.const_i64(request, 2);
-    let [second] = if nested {
-        program.emit_call(&mut body, leaf, &[tag, request]).unwrap()
+    let second = if nested {
+        let [second] = program.emit_call(&mut body, leaf, &[tag, request]).unwrap();
+        second
     } else {
         program
             .emit_suspend(&mut body, tag, exchange, &[request])
-            .unwrap()
+            .unwrap()[0]
     };
     body.i64_add(sum, first, second);
     body.ret(0, &[sum]);
@@ -110,70 +112,88 @@ fn driver() -> (VerifiedProgram, FuncId, FuncId) {
             ret_types: vec![ValueType::I64],
         })
         .unwrap();
-    let clause = FunctionSig {
-        arg_types: vec![ValueType::I64, ValueType::Continuation],
-        ret_types: vec![ValueType::I64],
-    };
-    let first_handler = program.declare_function(clause.clone()).unwrap();
-    let second_handler = program.declare_function(clause).unwrap();
-
-    let mut body = program.function_asm(root).unwrap();
-    let tag = body.alloc_register(ValueType::Tag);
-    let handler = body.alloc_register(ValueType::Func);
-    let worker = program.argument(root, 0).unwrap();
-    body.const_tag(tag, operation);
-    body.const_func(handler, first_handler);
-    let computation = program
-        .emit_continuation(&mut body, worker, initial)
+    let native_handler = program
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64, ValueType::Continuation],
+            ret_types: vec![ValueType::I64],
+        })
         .unwrap();
-    let [answer] = program
-        .emit_resume(
-            &mut body,
-            computation,
-            initial,
-            &[tag],
-            &[HandlerArm::Suspend { tag, handler }],
-        )
+    let add_nine = program
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
         .unwrap();
-    body.ret(0, &[answer]);
-    program.define_function(root, body).unwrap();
-
-    let mut body = program.function_asm(first_handler).unwrap();
-    let tag = body.alloc_register(ValueType::Tag);
-    let handler = body.alloc_register(ValueType::Func);
-    let increment = body.alloc_register(ValueType::I64);
+    let mut body = program.function_asm(add_nine).unwrap();
+    let request = program.argument(add_nine, 0).unwrap();
+    let nine = body.alloc_register(ValueType::I64);
     let response = body.alloc_register(ValueType::I64);
-    let request = program.argument(first_handler, 0).unwrap();
-    let continuation = program.argument(first_handler, 1).unwrap();
-    body.const_tag(tag, operation);
-    body.const_func(handler, second_handler);
-    body.const_i64(increment, 9);
-    body.i64_add(response, request, increment);
-    let [answer] = program
-        .emit_resume(
-            &mut body,
-            continuation,
-            exchange,
-            &[response],
-            &[HandlerArm::Suspend { tag, handler }],
-        )
-        .unwrap();
-    body.ret(0, &[answer]);
-    program.define_function(first_handler, body).unwrap();
+    body.const_i64(nine, 9)
+        .i64_add(response, request, nine)
+        .ret(0, &[response]);
+    program.define_function(add_nine, body).unwrap();
 
-    let mut body = program.function_asm(second_handler).unwrap();
-    let increment = body.alloc_register(ValueType::I64);
-    let response = body.alloc_register(ValueType::I64);
-    let request = program.argument(second_handler, 0).unwrap();
-    let continuation = program.argument(second_handler, 1).unwrap();
-    body.const_i64(increment, 18);
-    body.i64_add(response, request, increment);
-    let [answer] = program
-        .emit_resume(&mut body, continuation, exchange, &[response], &[])
-        .unwrap();
-    body.ret(0, &[answer]);
-    program.define_function(second_handler, body).unwrap();
-    (program.build_verified().unwrap(), root, first_handler)
+    for entry in [root, native_handler] {
+        let mut body = program.function_asm(entry).unwrap();
+        let tag = body.alloc_register(ValueType::Tag);
+        body.const_tag(tag, operation);
+        let returned = program.result_block(&mut body, exchange).unwrap();
+        let second = program.handler_block(&mut body, tag, exchange).unwrap();
+        let (request, continuation) = if entry == root {
+            let worker = program.argument(root, 0).unwrap();
+            let computation = program
+                .emit_continuation(&mut body, worker, initial)
+                .unwrap();
+            let first = program.handler_block(&mut body, tag, exchange).unwrap();
+            program
+                .emit_resume(
+                    &mut body,
+                    computation,
+                    initial,
+                    &[tag],
+                    returned.label(),
+                    &[first.arm()],
+                )
+                .unwrap();
+            body.place(first.label()).unwrap();
+            (first.request()[0], first.continuation())
+        } else {
+            (
+                program.argument(native_handler, 0).unwrap(),
+                program.argument(native_handler, 1).unwrap(),
+            )
+        };
+        let [response] = program.emit_call(&mut body, add_nine, &[request]).unwrap();
+        program
+            .emit_resume(
+                &mut body,
+                continuation,
+                exchange,
+                &[response],
+                returned.label(),
+                &[second.arm()],
+            )
+            .unwrap();
+        body.place(second.label()).unwrap();
+        let increment = body.alloc_register(ValueType::I64);
+        let response = body.alloc_register(ValueType::I64);
+        body.const_i64(increment, 18)
+            .i64_add(response, second.request()[0], increment);
+        program
+            .emit_resume(
+                &mut body,
+                second.continuation(),
+                exchange,
+                &[response],
+                returned.label(),
+                &[],
+            )
+            .unwrap();
+        body.place(returned.label()).unwrap();
+        body.ret(0, returned.results());
+        program.define_function(entry, body).unwrap();
+    }
+    (program.build_verified().unwrap(), root, native_handler)
 }
 
 #[test]
@@ -229,8 +249,12 @@ fn aliases_cannot_resume_a_consumed_computation() {
     body.const_func(target, leaf);
     body.cont_new(computation, target, signature);
     body.mov(alias, computation);
-    body.cont_resume(computation, signature, &[], &[], &[result]);
-    body.cont_resume(alias, signature, &[], &[], &[result]);
+    let first = body.block(&[result]);
+    let second = body.block(&[result]);
+    body.cont_resume(computation, signature, &[], first, &[]);
+    body.place(first).unwrap();
+    body.cont_resume(alias, signature, &[], second, &[]);
+    body.place(second).unwrap();
     body.ret(0, &[result]);
     program.define_function(root, body).unwrap();
     let program = program.build_verified().unwrap();
@@ -332,58 +356,51 @@ fn paused_worker() -> (VerifiedProgram, FuncId, FuncId, u32, u32) {
             ret_types: vec![ValueType::I64],
         })
         .unwrap();
-    let handler = program
-        .declare_function(FunctionSig {
-            arg_types: vec![ValueType::I64, ValueType::Continuation],
-            ret_types: vec![ValueType::I64],
-        })
-        .unwrap();
-
     let mut body = program.function_asm(worker).unwrap();
     let tag = program.argument(worker, 0).unwrap();
     let object_register = program.argument(worker, 1).unwrap();
     let request = body.alloc_register(ValueType::I64);
     body.const_i64(request, 42);
-    let [response] = program
+    let response = program
         .emit_suspend(&mut body, tag, exchange, &[request])
-        .unwrap();
+        .unwrap()[0];
     body.ret(0, &[response]);
     program.define_function(worker, body).unwrap();
-
-    let mut body = program.function_asm(handler).unwrap();
-    let request = program.argument(handler, 0).unwrap();
-    let continuation = program.argument(handler, 1).unwrap();
-    let [] = program.emit_call(&mut body, pause, &[]).unwrap();
-    let [answer] = program
-        .emit_resume(&mut body, continuation, exchange, &[request], &[])
-        .unwrap();
-    body.ret(0, &[answer]);
-    program.define_function(handler, body).unwrap();
 
     let mut body = program.function_asm(root).unwrap();
     let object = program.argument(root, 0).unwrap();
     let tag = body.alloc_register(ValueType::Tag);
     let target = body.alloc_register(ValueType::Func);
-    let clause = body.alloc_register(ValueType::Func);
-    body.const_tag(tag, operation)
-        .const_func(target, worker)
-        .const_func(clause, handler);
+    body.const_tag(tag, operation).const_func(target, worker);
     let computation = program
         .emit_continuation(&mut body, target, initial)
         .unwrap();
-    let [answer] = program
+    let returned = program.result_block(&mut body, initial).unwrap();
+    let clause = program.handler_block(&mut body, tag, exchange).unwrap();
+    program
         .emit_resume(
             &mut body,
             computation,
             initial,
             &[tag, object],
-            &[HandlerArm::Suspend {
-                tag,
-                handler: clause,
-            }],
+            returned.label(),
+            &[clause.arm()],
         )
         .unwrap();
-    body.ret(0, &[answer]);
+    body.place(clause.label()).unwrap();
+    let [] = program.emit_call(&mut body, pause, &[]).unwrap();
+    program
+        .emit_resume(
+            &mut body,
+            clause.continuation(),
+            exchange,
+            clause.request(),
+            returned.label(),
+            &[],
+        )
+        .unwrap();
+    body.place(returned.label()).unwrap();
+    body.ret(0, returned.results());
     program.define_function(root, body).unwrap();
     (
         program.build_verified().unwrap(),
@@ -726,9 +743,9 @@ fn suspension_requests_follow_the_same_code_ownership_rules_as_ordinary_calls() 
         } else {
             body.tuple_new(request, &[number]);
         }
-        let [response] = producer
+        let response = producer
             .emit_suspend(&mut body, tag, exchange, &[request])
-            .unwrap();
+            .unwrap()[0];
         body.ret(0, &[response]);
         producer.define_function(worker, body).unwrap();
         let producer = producer.build_verified().unwrap();
@@ -755,34 +772,36 @@ fn suspension_requests_follow_the_same_code_ownership_rules_as_ordinary_calls() 
                 ret_types: vec![ValueType::I64],
             })
             .unwrap();
-        let clause = consumer
-            .declare_function(FunctionSig {
-                arg_types: vec![ValueType::Agg, ValueType::Continuation],
-                ret_types: vec![ValueType::I64],
-            })
-            .unwrap();
-        let mut body = consumer.function_asm(clause).unwrap();
-        let answer = body.alloc_register(ValueType::I64);
-        body.const_i64(answer, 42).ret(0, &[answer]);
-        consumer.define_function(clause, body).unwrap();
         let mut body = consumer.function_asm(root).unwrap();
         let target = consumer.argument(root, 0).unwrap();
         let tag = body.alloc_register(ValueType::Tag);
-        let handler = body.alloc_register(ValueType::Func);
-        body.const_tag(tag, operation).const_func(handler, clause);
+        body.const_tag(tag, operation);
         let computation = consumer
             .emit_continuation(&mut body, target, initial)
             .unwrap();
-        let [answer] = consumer
+        let returned = consumer.result_block(&mut body, initial).unwrap();
+        let exchange = consumer
+            .call_sig(FunctionSig {
+                arg_types: vec![ValueType::Agg],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let handler = consumer.handler_block(&mut body, tag, exchange).unwrap();
+        consumer
             .emit_resume(
                 &mut body,
                 computation,
                 initial,
                 &[tag],
-                &[HandlerArm::Suspend { tag, handler }],
+                returned.label(),
+                &[handler.arm()],
             )
             .unwrap();
-        body.ret(0, &[answer]);
+        body.place(handler.label()).unwrap();
+        let answer = body.alloc_register(ValueType::I64);
+        body.const_i64(answer, 42).ret(0, &[answer]);
+        body.place(returned.label()).unwrap();
+        body.ret(0, returned.results());
         consumer.define_function(root, body).unwrap();
         let consumer = consumer.build_verified().unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
@@ -1202,9 +1221,9 @@ fn trace_context_identifies_a_resumed_stack_without_restarting_its_logical_run()
         )
         .unwrap();
     assert_eq!(outputs, [Value::I64(30)]);
-    assert_eq!(observed.starts, [0, 1, 2, 3]);
+    assert_eq!(observed.starts, [0, 1]);
     observed.instructions.dedup();
-    assert_eq!(observed.instructions, [0, 1, 2, 1, 3, 1, 3, 2, 0]);
+    assert_eq!(observed.instructions, [0, 1, 0, 1, 0, 1, 0]);
 }
 
 #[test]

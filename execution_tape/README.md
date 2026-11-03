@@ -104,6 +104,25 @@ stay hidden from their exposed signature and are checked against the concrete bo
 Run `cargo run -p execution_tape_examples --bin nested_contracts` for a complete example.
 Run `cargo run -p execution_tape_examples --bin typed_callable` for an indirect nested result.
 
+## Delimited computations
+
+A computation has separate initial arguments, suspension responses and final results.
+[`ProgramBuilder::emit_continuation`](asm::ProgramBuilder::emit_continuation) creates its
+one-use capability; [`emit_resume`](asm::ProgramBuilder::emit_resume) transfers control with
+an explicit normal result block and local suspension clauses. Declare those targets with
+[`result_block`](asm::ProgramBuilder::result_block) and
+[`handler_block`](asm::ProgramBuilder::handler_block). A selected clause receives request
+values followed by the captured continuation, sharing the resumer's lexical registers.
+Reinstalling a clause in a loop does not accumulate handler call frames.
+
+[`emit_suspend`](asm::ProgramBuilder::emit_suspend) derives response registers from the
+operation protocol. Exact [`ControlTag`](control::ControlTag) identity selects a handler;
+equal signatures alone do not. Inner nonmatching handlers remain inside a capture; the
+matching table is outside it. Capabilities are execution-local and one-use, including aliases.
+Hard discard does not execute guest cleanup. Language condition and restart policy belongs
+above these primitives. See `examples/tape/src/bin/local_handlers.rs` for a source-linked
+example and `docs/overview.md` for the current lifetime and replay limits.
+
 ## Source connections
 
 [`source::SourceMap`] owns optional frontend snapshots and exact instruction-to-source ranges.

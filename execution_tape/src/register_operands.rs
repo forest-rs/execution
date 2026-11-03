@@ -18,7 +18,7 @@ pub(crate) struct OperandIter<
     tails: [&'a [u32]; LISTS],
     tail_idx: u8,
     item_idx: usize,
-    handlers: [&'a [crate::asm::HandlerArm]; HANDLERS],
+    handlers: [&'a [crate::control::HandlerClause]; HANDLERS],
     handler_list: usize,
     handler_arm: usize,
     handler_register: usize,
@@ -40,7 +40,7 @@ impl<'a, const SCALARS: usize, const LISTS: usize, const HANDLERS: usize>
         prefix: [u32; SCALARS],
         prefix_len: u8,
         tails: [&'a [u32]; LISTS],
-        handlers: [&'a [crate::asm::HandlerArm]; HANDLERS],
+        handlers: [&'a [crate::control::HandlerClause]; HANDLERS],
     ) -> Self {
         Self {
             handlers,

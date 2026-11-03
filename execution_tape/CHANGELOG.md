@@ -17,6 +17,18 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Resume guest computations into local typed outcome blocks. Suspension clauses share the
+  resumer's lexical registers; reinstalling a clause keeps repeated handling at constant frame
+  depth. Verifier analysis exposes exact request, continuation and result bindings for every arm,
+  and register observations report only the selected outcome's parameters.
+  Migration within the unreleased wire 0.6: replace callable `HandlerArm` targets with
+  `handler_block` clauses and declare the normal successor with `result_block`. Pass that label
+  to the terminating `emit_resume`; it no longer returns result registers. `emit_suspend` now
+  returns a `Vec` sized from the protocol instead of requiring a const result count. Regenerate
+  tapes. `Operands::Resume` exposes `returned` in place of `rets`; incoming `EdgeBinding` uses
+  `source: EdgeValueSource` in place of a register-only `argument`. Handle
+  `VerifyError::HandlerProtocolMismatch` and the new `ControlBuildError` target errors.
+
 - Qualify trace callbacks with `TraceContext`, carrying the exact definition and logical stack
   identity independently of dynamic call nesting. Migration: trace sinks accept a context in
   place of `&Program`; use `context.program()` for local IDs and `context.stack()` for live

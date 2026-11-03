@@ -1079,7 +1079,7 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             let eff_out = crate::codec_primitives::read_reg(r)?;
             let eff_in = crate::codec_primitives::read_reg(r)?;
             let args = crate::codec_primitives::read_reg_list(r)?;
-            let rets = crate::codec_primitives::read_reg_list(r)?;
+            let pc_return = crate::codec_primitives::read_u32_uleb(r)?;
             let handlers = crate::codec_primitives::read_handlers(r)?;
             Instr::ContResume {
                 call_sig,
@@ -1087,7 +1087,7 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 eff_out,
                 eff_in,
                 args,
-                rets,
+                pc_return,
                 handlers,
             }
         },

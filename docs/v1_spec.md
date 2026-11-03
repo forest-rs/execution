@@ -163,8 +163,10 @@ through owned snapshots or graph edges.
 `cont.new` creates an unstarted computation from a qualified function or closure. `cont.resume`
 consumes its current capability and attaches it beneath a new dynamic handler table. `suspend`
 finds the nearest active handler for the exact tag and captures the owned stack suffix inside that
-delimiter. The clause receives the tag's request values followed by a new continuation capability;
-its result supplies the enclosing resumption's final results.
+delimiter. `cont.resume` is a terminator: its normal edge targets a typed block receiving the
+computation's final results; each suspension edge targets a local typed block receiving the
+tag's request values followed by a new continuation capability. Only the selected edge's
+parameters are initialized. Clause bodies keep the resumer's frame and lexical registers.
 
 The matched handler table is outside the captured suffix and inactive while its clause executes.
 Inner nonmatching delimiters stay captured. A later resumption supplies a replacement table, so the
@@ -180,9 +182,12 @@ Saved frames continue to consume the shared frame limit; resumption resets no re
 Only the root owns the aggregate transaction. Native Rust stacks are never captured: embedding
 control commands operate on an explicit `PendingHostCall` and leave that host operation pending.
 
-`ProgramBuilder::emit_continuation`, `emit_resume` and `emit_suspend` derive typed destinations from
-declared protocols and validate authoring inputs before changing the assembler. Runtime handler
-installation validates request, result and declared continuation contracts before entry.
+`ProgramBuilder::handler_block` and `result_block` declare typed outcome blocks;
+`emit_continuation`, `emit_resume` and `emit_suspend` validate authoring inputs before changing the
+assembler. `emit_suspend` allocates response registers from the declared protocol. The verifier
+checks every outcome edge's parameter kinds, propagates its rich contracts and rejects known tag
+protocol contradictions. Runtime installation checks opaque tag protocols before consuming the
+computation's authority or entering it. Local handler loops need no extra call frames.
 
 ### Control flow invariants
 - All jump targets must point to instruction boundaries.
@@ -528,11 +533,12 @@ ID for each declaration (both ULEB128). The call signature describes request inp
 outputs. Declaration order determines the local `ControlTagId`; repeated names and signatures
 remain distinct declarations. Omit the section when there are no declarations.
 
-The `cont.resume` handler-list operand contains a ULEB128 arm count followed by each arm's `u8`
-kind and ULEB128 register operands. Kind `0` is a suspension clause: tag register, then callable
-register. Decoding rejects unknown arm kinds; verification checks both register reads, including
-unreachable instructions. The opcode schema in `execution_tape/opcodes.json` is authoritative for
-instruction operand order.
+The `cont.resume` normal target is a ULEB128 function-relative byte PC. Its handler-list operand
+contains a ULEB128 arm count followed by each arm's `u8` kind and ULEB128 operands. Kind `0` is a
+suspension clause: tag register, call-signature ID describing the operation's request/response
+protocol, then target byte PC. Both normal and clause targets must be typed block headers.
+Decoding rejects unknown arm kinds; verification checks all arms, including unreachable
+instructions. The opcode schema in `execution_tape/opcodes.json` is authoritative for operand order.
 
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.

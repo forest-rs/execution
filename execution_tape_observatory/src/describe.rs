@@ -502,21 +502,20 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
             continuation,
             args,
             handlers,
-            rets,
+            returned,
             ..
         } => {
             let handlers = handlers
                 .iter()
                 .map(|arm| match arm {
-                    execution_tape::asm::HandlerArm::Suspend { tag, handler } => {
-                        format!("suspend r{tag} ⇒ r{handler}")
+                    execution_tape::control::HandlerClause::Suspend { tag, target, .. } => {
+                        format!("suspend r{tag} ⇒ {target:06}")
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "{} = resume r{} ({}) under [{}]",
-                registers(rets.iter().copied()),
+                "resume r{} ({}) returned ⇒ {returned:06} under [{}]",
                 continuation,
                 registers(args.iter().copied()),
                 handlers

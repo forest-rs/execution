@@ -169,6 +169,8 @@ pub struct FunctionAnalysis<'a> {
     changes: Vec<Change>,
     change_offsets: Vec<usize>,
     contracts: ContractTable,
+    source_contracts: BTreeMap<ContractId, ContractId>,
+    suspension_contracts: BTreeMap<(u32, u32), ContractId>,
     kinds: BTreeMap<ValueType, ContractId>,
     incoming: Vec<Incoming>,
     incoming_ranges: Vec<Range<usize>>,
@@ -226,7 +228,31 @@ impl<'a> FunctionAnalysis<'a> {
             }
         }
         roots.extend(raw_changes.iter().filter_map(|&(_, id)| id));
+        roots.extend(
+            arena
+                .imported
+                .values()
+                .chain(arena.suspension_facts.values())
+                .filter_map(|fact| match fact {
+                    Fact::Refined(id) => Some(*id),
+                    Fact::Kind(_) => None,
+                }),
+        );
         let (contracts, shapes, kinds) = freeze(&arena, roots, types);
+        let frozen = |fact: &Fact| match fact {
+            Fact::Kind(kind) => kinds[kind],
+            Fact::Refined(id) => shapes[*id as usize].expect("retained protocol fact"),
+        };
+        let source_contracts = arena
+            .imported
+            .iter()
+            .map(|(id, fact)| (*id, frozen(fact)))
+            .collect();
+        let suspension_contracts = arena
+            .suspension_facts
+            .iter()
+            .map(|(pair, fact)| (*pair, frozen(fact)))
+            .collect();
         let convert = |states: Vec<RefinementState>| {
             states
                 .into_iter()
@@ -285,6 +311,8 @@ impl<'a> FunctionAnalysis<'a> {
             changes,
             change_offsets,
             contracts,
+            source_contracts,
+            suspension_contracts,
             kinds,
             incoming,
             incoming_ranges,
@@ -509,10 +537,32 @@ pub struct IncomingEdge<'a> {
 pub struct EdgeBinding {
     /// Destination parameter register at block entry.
     pub parameter: u32,
-    /// Source register in the predecessor.
-    pub argument: u32,
+    /// A predecessor register or a value supplied by a resumption outcome.
+    pub source: EdgeValueSource,
     /// Source value before the transfer, using the instruction view's contract table.
     pub value: ValueFact,
+}
+/// How an incoming edge supplies a block parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeValueSource {
+    /// An ordinary branch argument register.
+    Register(u32),
+    /// A completed computation's final result position.
+    Result(u32),
+    /// A suspension's request position.
+    Request(u32),
+    /// One-use authority for the suspended computation.
+    Continuation,
+}
+impl fmt::Display for EdgeValueSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Register(register) => write!(f, "r{register}"),
+            Self::Result(index) => write!(f, "result[{index}]"),
+            Self::Request(index) => write!(f, "request[{index}]"),
+            Self::Continuation => f.write_str("captured continuation"),
+        }
+    }
 }
 impl IncomingEdge<'_> {
     /// Source terminator's bytecode offset.
@@ -551,14 +601,49 @@ impl IncomingEdge<'_> {
             .edge(self.source.arm)
             .expect("CFG edge");
         let params = blocks::declaration(&self.analysis.decoded, target).unwrap_or(&[]);
-        params
-            .iter()
-            .zip(args)
-            .map(|(&parameter, &argument)| EdgeBinding {
+        params.iter().enumerate().map(move |(index, &parameter)| {
+            if let Some(registers) = args.registers() {
+                let argument = registers[index];
+                return EdgeBinding {
+                    parameter,
+                    source: EdgeValueSource::Register(argument),
+                    value: self.register(argument).expect("verified edge register"),
+                };
+            }
+            let (contracts, continuation) = args
+                .contracts(self.analysis.program)
+                .expect("protocol edge");
+            let (source, contract) = if let Some(contract) = contracts.get(index) {
+                (
+                    if continuation {
+                        EdgeValueSource::Request(
+                            u32::try_from(index).expect("verified request arity"),
+                        )
+                    } else {
+                        EdgeValueSource::Result(
+                            u32::try_from(index).expect("verified result arity"),
+                        )
+                    },
+                    self.analysis.source_contracts[contract],
+                )
+            } else {
+                let Instr::ContResume { call_sig, .. } = self.instruction().instr else {
+                    unreachable!()
+                };
+                let crate::bytecode::EdgeValues::Suspension(operation) = args else {
+                    unreachable!()
+                };
+                (
+                    EdgeValueSource::Continuation,
+                    self.analysis.suspension_contracts[&(operation.0, call_sig)],
+                )
+            };
+            EdgeBinding {
                 parameter,
-                argument,
-                value: self.register(argument).expect("verified edge register"),
-            })
+                source,
+                value: ValueFact::Contract(contract),
+            }
+        })
     }
 }
 
@@ -585,7 +670,13 @@ fn freeze(
     }
     let mut builder = ContractTableBuilder::new();
     let mut kinds = BTreeMap::new();
-    for kind in types.iter() {
+    for kind in types
+        .iter()
+        .chain(arena.imported.values().filter_map(|fact| match fact {
+            Fact::Kind(kind) => Some(*kind),
+            Fact::Refined(_) => None,
+        }))
+    {
         kinds
             .entry(kind)
             .or_insert_with(|| builder.intern(Contract::Kind(kind)).expect("kind capacity"));

@@ -892,10 +892,17 @@ pub(crate) struct ContractCheck {
     pub(crate) contract: crate::contract::ContractId,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ControlTarget {
+    pub(crate) pc: u32,
+    pub(crate) instruction: u32,
+    pub(crate) parameters: VRegSlice,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ControlHandler {
     pub(crate) tag: TagReg,
-    pub(crate) handler: VReg,
+    pub(crate) signature: CallSigId,
+    pub(crate) target: ControlTarget,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ControlInstruction {
@@ -913,7 +920,7 @@ pub(crate) enum ControlInstruction {
         signature: CallSigId,
         continuation: ContinuationReg,
         args: VRegSlice,
-        rets: VRegSlice,
+        returned: ControlTarget,
         handlers: alloc::boxed::Box<[ControlHandler]>,
     },
     Suspend {

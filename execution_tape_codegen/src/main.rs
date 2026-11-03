@@ -1137,61 +1137,44 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
 
     out.push_str("#[rustfmt::skip]\n");
     out.push_str("pub(crate) fn visit_pcs(instr: &Instr, mut f: impl FnMut(u32)) {\n");
-    let mut pc_arms: Vec<(&str, Vec<&str>)> = Vec::new();
-    for (_b, op) in &ops {
-        let pc_fields: Vec<&str> = op
+    let mut emitted = false;
+    for (_, op) in &ops {
+        let fields: Vec<_> = op
             .operands
             .iter()
-            .filter(|o| o.kind == "pc")
-            .map(|o| {
-                rust_field_name(&o.field)
-                    .with_context(|| format!("bad field name '{}' for opcode {}", o.field, op.name))
-            })
-            .collect::<Result<_>>()?;
-        if !pc_fields.is_empty() {
-            pc_arms.push((op.name.as_str(), pc_fields));
+            .filter(|operand| matches!(operand.kind.as_str(), "pc" | "handler_list"))
+            .collect();
+        if fields.is_empty() {
+            continue;
         }
-    }
-
-    match pc_arms.len() {
-        0 => {
-            out.push_str("    let _ = instr;\n");
-            out.push_str("    let _ = f;\n");
-        }
-        1 => {
-            let (op_name, fields) = &pc_arms[0];
-            out.push_str(&format!("    if let Instr::{op_name} {{ "));
-            for (i, field) in fields.iter().enumerate() {
-                if i != 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(field);
-            }
-            out.push_str(", .. } = instr {\n");
-            for field in fields {
-                out.push_str(&format!("        f(*{field});\n"));
-            }
-            out.push_str("    }\n");
-        }
-        _ => {
+        if !emitted {
             out.push_str("    match instr {\n");
-            for (op_name, fields) in &pc_arms {
-                out.push_str(&format!("        Instr::{op_name} {{ "));
-                for (i, field) in fields.iter().enumerate() {
-                    if i != 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(field);
-                }
-                out.push_str(", .. } => {\n");
-                for field in fields {
-                    out.push_str(&format!("            f(*{field});\n"));
-                }
-                out.push_str("        }\n");
-            }
-            out.push_str("        _ => {}\n");
-            out.push_str("    }\n");
+            emitted = true;
         }
+        out.push_str(&format!("        Instr::{} {{ ", op.name));
+        for (index, field) in fields.iter().enumerate() {
+            if index != 0 {
+                out.push_str(", ");
+            }
+            out.push_str(rust_field_name(&field.field)?);
+        }
+        out.push_str(", .. } => {\n");
+        for field in fields {
+            let name = rust_field_name(&field.field)?;
+            if field.kind == "pc" {
+                out.push_str(&format!("            f(*{name});\n"));
+            } else {
+                out.push_str(&format!(
+                    "            for clause in {name} {{ f(clause.target()); }}\n"
+                ));
+            }
+        }
+        out.push_str("        }\n");
+    }
+    if emitted {
+        out.push_str("        _ => {}\n    }\n");
+    } else {
+        out.push_str("    let _ = instr;\n    let _ = f;\n");
     }
     out.push_str("}\n\n");
 
@@ -1564,22 +1547,27 @@ mod tests {
         fs::write(&source,format!(r#"
             #[allow(dead_code, reason="fixture tests generated iteration")]
             #[path={iterator:?}] mod register_operands;
-            #[path={handler:?}] mod asm;
+            mod program {{ #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub struct CallSigId(pub u32); }}
+            mod control {{ #[path={handler:?}] pub mod handler; pub use handler::HandlerClause; }}
             mod bytecode {{
                 use crate::register_operands::OperandIter;
                 enum Instr {{
                     ReadLists{{cond:u32,left:Vec<u32>,right:Vec<u32>}},
                     WriteLists{{left:Vec<u32>,right:Vec<u32>}},
                     Wide{{a:u32,b:u32,c:u32,d:u32,x:u32,y:u32}},
-                    Control{{source:u32,args:Vec<u32>,handlers:Vec<crate::asm::HandlerArm>}},
+                    Control{{source:u32,args:Vec<u32>,handlers:Vec<crate::control::HandlerClause>}},
                 }}
                 include!({generated:?});
                 pub fn check() {{
-                    let control=Instr::Control{{source:1,args:vec![2,3],handlers:vec![crate::asm::HandlerArm::Suspend{{tag:4,handler:5}},crate::asm::HandlerArm::Suspend{{tag:6,handler:7}}]}};
-                    assert_eq!(control.reads().collect::<Vec<_>>(),vec![1,2,3,4,5,6,7]);
+                    let control=Instr::Control{{source:1,args:vec![2,3],handlers:vec![crate::control::HandlerClause::Suspend{{tag:4,signature:crate::program::CallSigId(0),target:5}},crate::control::HandlerClause::Suspend{{tag:6,signature:crate::program::CallSigId(0),target:7}}]}};
+                    assert_eq!(control.reads().collect::<Vec<_>>(),vec![1,2,3,4,6]);
                     let mut partial=control.reads(); for _ in 0..4 {{ partial.next(); }}
-                    assert_eq!(crate::register_operands::RegIter::from_operands(partial).collect::<Vec<_>>(),vec![5,6,7]);
+                    assert_eq!(crate::register_operands::RegIter::from_operands(partial).collect::<Vec<_>>(),vec![6]);
                     assert_eq!(control.writes().count(),0);
+                    if let Instr::Control {{ handlers, .. }} = &control {{
+                        assert_eq!(handlers.iter().map(|arm| arm.target()).collect::<Vec<_>>(),vec![5,7]);
+                        assert_eq!(handlers.iter().map(|arm| arm.signature().0).collect::<Vec<_>>(),vec![0,0]);
+                    }}
                     assert_eq!(MAX_SCALAR_OPERANDS,4);
                     assert_eq!(MAX_REGISTER_LISTS,2);
                     for (left,right) in [(vec![],vec![9,10]),(vec![4,5],vec![]),(vec![4,5],vec![9,10]),(vec![],vec![])] {{

@@ -763,14 +763,14 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *eff_in);
             Ok(())
         },
-        Instr::ContResume { args, call_sig, continuation, eff_in, eff_out, handlers, rets } => {
+        Instr::ContResume { args, call_sig, continuation, eff_in, eff_out, handlers, pc_return } => {
             out.push(Opcode::ContResume as u8);
             crate::codec_primitives::write_u32_uleb(out, *call_sig);
             crate::codec_primitives::write_reg(out, *continuation);
             crate::codec_primitives::write_reg(out, *eff_out);
             crate::codec_primitives::write_reg(out, *eff_in);
             crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
-            crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_u32_uleb(out, *pc_return);
             crate::codec_primitives::write_handlers(out, handlers).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },

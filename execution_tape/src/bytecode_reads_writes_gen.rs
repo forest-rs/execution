@@ -249,7 +249,7 @@ impl Instr {
             Self::F64ToBits { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
             Self::F64FromBits { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
             Self::ContNew { dst, eff_out, .. } => WritesIter::from_parts([*dst, *eff_out], 2, [&[]]),
-            Self::ContResume { eff_out, rets, .. } => WritesIter::from_parts([*eff_out, 0], 1, [rets.as_slice()]),
+            Self::ContResume { eff_out, .. } => WritesIter::from_parts([*eff_out, 0], 1, [&[]]),
             Self::Suspend { eff_out, rets, .. } => WritesIter::from_parts([*eff_out, 0], 1, [rets.as_slice()]),
             Self::ContDrop { eff_out, .. } => WritesIter::from_parts([*eff_out, 0], 1, [&[]]),
             Self::TagIsHandled { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),

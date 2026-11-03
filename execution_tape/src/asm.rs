@@ -10,14 +10,12 @@
 //! `docs/v1_spec.md`.
 
 mod control;
-pub use control::ControlBuildError;
+pub use control::{ControlBuildError, HandlerArm, HandlerBlock, ResultBlock};
 mod calls;
 pub use calls::{CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
 mod sources;
-
-pub use crate::control::handler::HandlerArm;
 
 use alloc::string::String;
 use alloc::vec;
@@ -1968,15 +1966,15 @@ impl Asm {
     /// Consumes a continuation and attaches it under these dynamic handlers.
     ///
     /// `signature` describes this suspension's resume inputs and eventual final results.
-    /// Handler bodies receive request values followed by the captured continuation, and return
-    /// the final results. The matching handler runs outside the captured delimiter.
+    /// Handler targets are local typed blocks receiving request values followed by the captured
+    /// continuation. The target runs outside the captured delimiter in this same frame.
     pub fn cont_resume(
         &mut self,
         continuation: u32,
         signature: CallSigId,
         args: &[u32],
+        returned: Label,
         handlers: &[HandlerArm],
-        rets: &[u32],
     ) -> &mut Self {
         self.opcode(Opcode::ContResume);
         self.uleb(signature.0);
@@ -1987,17 +1985,19 @@ impl Asm {
         for &reg in args {
             self.reg(reg);
         }
-        self.uleb(u32::try_from(rets.len()).unwrap_or(u32::MAX));
-        for &reg in rets {
-            self.reg(reg);
-        }
+        self.pc_label(returned);
         self.uleb(u32::try_from(handlers.len()).unwrap_or(u32::MAX));
         for &arm in handlers {
             match arm {
-                HandlerArm::Suspend { tag, handler } => {
+                HandlerArm::Suspend {
+                    tag,
+                    signature,
+                    target,
+                } => {
                     self.bytes.push(0);
                     self.reg(tag);
-                    self.reg(handler);
+                    self.uleb(signature.0);
+                    self.pc_label(target);
                 }
             }
         }

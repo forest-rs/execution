@@ -3260,11 +3260,11 @@
       "name": "ContResume",
       "mnemonic": "cont.resume",
       "byte": "0xA1",
-      "terminator": false,
+      "terminator": true,
       "flags": [
         "call_like"
       ],
-      "doc": "Consume a continuation and resume it under the supplied handler arms.",
+      "doc": "Resume a computation, dispatching final results or suspension to typed local blocks.",
       "operands": [
         {
           "kind": "imm_u32",
@@ -3301,11 +3301,10 @@
           "access": "read"
         },
         {
-          "kind": "reg_list",
-          "role": "rets",
-          "encoding": "reg_list_u32_uleb_count_then_regs",
-          "field": "rets",
-          "access": "write"
+          "kind": "pc",
+          "role": "pc_target",
+          "encoding": "u32_uleb",
+          "field": "pc_return"
         },
         {
           "kind": "handler_list",
