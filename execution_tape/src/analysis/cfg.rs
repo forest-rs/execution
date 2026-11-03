@@ -12,13 +12,53 @@ use crate::bytecode::DecodedInstr;
 use crate::instr_operands;
 use crate::opcode::Opcode;
 
+/// Ordinary branches stay inline; control clauses can have any number of successors.
+/// Order is significant even when multiple arms target the same block.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Successors {
+    #[default]
+    None,
+    One(usize),
+    Two([usize; 2]),
+    Many(Vec<usize>),
+}
+
+impl Successors {
+    fn push(&mut self, target: usize) {
+        match self {
+            Self::None => *self = Self::One(target),
+            Self::One(first) => *self = Self::Two([*first, target]),
+            Self::Two(pair) => *self = Self::Many(vec![pair[0], pair[1], target]),
+            Self::Many(targets) => targets.push(target),
+        }
+    }
+    pub(crate) fn iter(&self) -> core::slice::Iter<'_, usize> {
+        match self {
+            Self::None => [].iter(),
+            Self::One(target) => core::slice::from_ref(target).iter(),
+            Self::Two(pair) => pair.iter(),
+            Self::Many(targets) => targets.iter(),
+        }
+    }
+}
+
+impl FromIterator<usize> for Successors {
+    fn from_iter<T: IntoIterator<Item = usize>>(targets: T) -> Self {
+        let mut successors = Self::None;
+        for target in targets {
+            successors.push(target);
+        }
+        successors
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BasicBlock {
     pub(crate) start_pc: u32,
     pub(crate) end_pc: u32,
     pub(crate) instr_start: usize,
     pub(crate) instr_end: usize,
-    pub(crate) succs: [Option<usize>; 2],
+    pub(crate) succs: Successors,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -134,7 +174,7 @@ pub(crate) fn build_basic_blocks(
             end_pc,
             instr_start,
             instr_end,
-            succs: [None, None],
+            succs: Successors::None,
         });
     }
 
@@ -158,22 +198,15 @@ pub(crate) fn build_basic_blocks(
         };
 
         if !op.is_terminator() {
-            blocks[i].succs = [fallthrough, None];
+            blocks[i].succs = fallthrough.into_iter().collect();
             continue;
         }
 
-        let mut pcs: [Option<u32>; 2] = [None, None];
-        let mut pc_len: usize = 0;
+        let mut successors = Successors::None;
         instr_operands::visit_pcs(&di.instr, |pc| {
-            if pc_len < pcs.len() {
-                pcs[pc_len] = Some(pc);
-                pc_len += 1;
-            }
+            successors.push(pc_to_block[pc as usize]);
         });
-        blocks[i].succs = [
-            pcs[0].map(|pc| pc_to_block[pc as usize]),
-            pcs[1].map(|pc| pc_to_block[pc as usize]),
-        ];
+        blocks[i].succs = successors;
     }
 
     Ok(blocks)
@@ -188,8 +221,7 @@ pub(crate) fn compute_reachable(blocks: &[BasicBlock]) -> Vec<bool> {
     let mut stack = vec![0_usize];
     reachable[0] = true;
     while let Some(b) = stack.pop() {
-        for &succ in &blocks[b].succs {
-            let Some(s) = succ else { continue };
+        for &s in blocks[b].succs.iter() {
             if s >= reachable.len() {
                 continue;
             }
