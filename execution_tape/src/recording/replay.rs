@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
+use crate::control::{ContinuationRef, ControlTag};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, Program};
 use crate::recording::control::Action;
@@ -20,6 +21,16 @@ mod execution;
 /// Difference between the replay and the captured boundary contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Divergence {
+    /// An operation's declaration, namespace, freshness or sharing differs.
+    ControlTag {
+        /// Original operation identity and request/response contracts.
+        expected: ControlTag,
+    },
+    /// Recorded continuation authority has no corresponding computation in this replay.
+    Continuation {
+        /// Original logical capability and its separate parameter/result contracts.
+        expected: ContinuationRef,
+    },
     /// Host invocation occurred at another guest instruction.
     Location {
         /// Recorded instruction.
@@ -191,6 +202,7 @@ pub enum ReplayOutcome {
 
 #[derive(Default)]
 struct State {
+    controls: ControlBindings,
     instances: Option<Rc<BTreeMap<usize, crate::instance::Instance>>>,
     instructions: usize,
     pending: Vec<usize>,
@@ -212,7 +224,148 @@ struct State {
     origins: Vec<u32>,
 }
 
+type ControlIdentity = (usize, u32, u64);
+
+#[derive(Default)]
+struct ControlBindings {
+    forward: BTreeMap<ControlIdentity, ContinuationRef>,
+    inverse: BTreeMap<ControlIdentity, ControlIdentity>,
+    tags: BTreeMap<(usize, u32, usize), ControlTag>,
+    tag_inverse: BTreeMap<(usize, u32, usize), (usize, u32, usize)>,
+}
+impl ControlBindings {
+    fn bind_tag(&mut self, expected: &ControlTag, actual: &ControlTag) -> bool {
+        let source = expected.identity();
+        let target = actual.identity();
+        if let Some(prior) = self.tags.get(&source) {
+            return prior == actual;
+        }
+        if self
+            .tag_inverse
+            .get(&target)
+            .is_some_and(|prior| *prior != source)
+        {
+            return false;
+        }
+        self.tags.insert(source, actual.clone());
+        self.tag_inverse.insert(target, source);
+        true
+    }
+    fn get_tag(&self, expected: &ControlTag) -> Option<ControlTag> {
+        self.tags.get(&expected.identity()).cloned()
+    }
+    fn bind(&mut self, expected: &ContinuationRef, actual: &ContinuationRef) -> bool {
+        if !expected.has_signature(actual) {
+            return false;
+        }
+        let source = expected.identity();
+        let target = actual.identity();
+        if let Some(prior) = self.forward.get(&source) {
+            return prior == actual;
+        }
+        if self
+            .inverse
+            .get(&target)
+            .is_some_and(|prior| *prior != source)
+        {
+            return false;
+        }
+        self.forward.insert(source, actual.clone());
+        self.inverse.insert(target, source);
+        true
+    }
+    fn get(&self, expected: &ContinuationRef) -> Option<ContinuationRef> {
+        self.forward.get(&expected.identity()).cloned()
+    }
+}
+
 impl State {
+    fn bound_tag(&self, expected: &ControlTag) -> Option<ControlTag> {
+        if let Some(global) = &self.global {
+            global.borrow().controls.get_tag(expected)
+        } else {
+            self.controls.get_tag(expected)
+        }
+    }
+
+    fn bind_tag(&mut self, expected: &ControlTag, actual: &ControlTag) -> Result<(), ReplayError> {
+        let instance = self
+            .instances
+            .as_ref()
+            .and_then(|instances| instances.get(&(Arc::as_ptr(&expected.instance().0) as usize)));
+        let compatible = instance == Some(actual.instance())
+            && expected.id() == actual.id()
+            && expected.is_fresh() == actual.is_fresh();
+        let bound = compatible
+            && if let Some(global) = &self.global {
+                global.borrow_mut().controls.bind_tag(expected, actual)
+            } else {
+                self.controls.bind_tag(expected, actual)
+            };
+        if bound {
+            Ok(())
+        } else {
+            Err(self.mismatch(Divergence::ControlTag {
+                expected: expected.clone(),
+            }))
+        }
+    }
+
+    fn tag(&mut self, source: &ControlTag) -> Result<ControlTag, ReplayError> {
+        if let Some(actual) = self.bound_tag(source) {
+            return Ok(actual);
+        }
+        let key = Arc::as_ptr(&source.instance().0) as usize;
+        let prototype = self
+            .instances
+            .as_ref()
+            .and_then(|instances| instances.get(&key))
+            .and_then(|instance| instance.control_tag(source.id()).ok())
+            .ok_or_else(|| {
+                self.mismatch(Divergence::ControlTag {
+                    expected: source.clone(),
+                })
+            })?;
+        let actual = if source.is_fresh() {
+            prototype.fresh()
+        } else {
+            prototype
+        };
+        self.bind_tag(source, &actual)?;
+        Ok(actual)
+    }
+
+    fn bind_continuation(
+        &mut self,
+        expected: &ContinuationRef,
+        actual: &ContinuationRef,
+    ) -> Result<(), ReplayError> {
+        let bound = if let Some(global) = &self.global {
+            global.borrow_mut().controls.bind(expected, actual)
+        } else {
+            self.controls.bind(expected, actual)
+        };
+        if bound {
+            Ok(())
+        } else {
+            Err(self.mismatch(Divergence::Continuation {
+                expected: expected.clone(),
+            }))
+        }
+    }
+
+    fn continuation(&self, expected: &ContinuationRef) -> Result<ContinuationRef, ReplayError> {
+        let actual = if let Some(global) = &self.global {
+            global.borrow().controls.get(expected)
+        } else {
+            self.controls.get(expected)
+        };
+        actual.ok_or_else(|| {
+            self.mismatch(Divergence::Continuation {
+                expected: expected.clone(),
+            })
+        })
+    }
     fn same_trap(&self, expected: &TrapInfo, actual: &TrapInfo) -> bool {
         same_trap(expected, actual, self.instances.as_deref())
     }
@@ -226,10 +379,9 @@ impl State {
             .as_ref()
             .and_then(|instances| instances.get(&key))
             .ok_or_else(|| self.mismatch(Divergence::Outcome))?;
-        Ok(crate::value::FunctionRef::from_verified(
-            instance.clone(),
-            source.id(),
-        ))
+        instance
+            .function(source.id())
+            .map_err(|_| self.mismatch(Divergence::Outcome))
     }
 
     fn mismatch(&self, reason: Divergence) -> ReplayError {
@@ -290,6 +442,14 @@ impl State {
                     .as_ref()
                     .is_ok_and(|expected| expected == b) =>
             {
+                None
+            }
+            (RecordedValue::Tag(a), ValueRef::Tag(b)) => {
+                self.bind_tag(a, b)?;
+                None
+            }
+            (RecordedValue::Continuation(expected), ValueRef::Continuation(actual)) => {
+                self.bind_continuation(expected, actual)?;
                 None
             }
             (RecordedValue::Agg(id), ValueRef::Agg(handle)) => Some((*id, handle)),
@@ -445,6 +605,8 @@ impl State {
             RecordedValue::Str(value) => Value::Str(value.as_ref().into()),
             RecordedValue::Obj(value) => Value::Obj(*value),
             RecordedValue::Func(value) => Value::Func(self.function(value)?),
+            RecordedValue::Tag(value) => Value::Tag(self.tag(value)?),
+            RecordedValue::Continuation(value) => Value::Continuation(self.continuation(value)?),
             RecordedValue::Agg(id) => Value::Agg(self.bindings[id]),
             RecordedValue::Closure { func, env } => Value::Closure(Closure {
                 func: self.function(func)?,
@@ -483,6 +645,7 @@ fn prepare_instances<'a, H: Host>(
                 RecordedValue::Func(function) | RecordedValue::Closure { func: function, .. } => {
                     add(function.instance())?;
                 }
+                RecordedValue::Tag(tag) => add(tag.instance())?,
                 _ => {}
             }
         }
@@ -723,7 +886,12 @@ struct Check<'a> {
     state: Rc<RefCell<State>>,
 }
 impl TraceSink for Check<'_> {
-    fn wants_registers(&self, location: TraceLocation, phase: crate::trace::RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: crate::trace::TraceContext<'_>,
+        location: TraceLocation,
+        phase: crate::trace::RegisterPhase,
+    ) -> bool {
         let state = self.state.borrow();
         let Some(step) = state
             .pending
@@ -740,7 +908,12 @@ impl TraceSink for Check<'_> {
             }
     }
 
-    fn registers(&mut self, _: &Program, event: crate::trace::RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        _context: crate::trace::TraceContext<'_>,
+        event: crate::trace::RegisterEvent<'_>,
+    ) {
+        let _ = _context.program();
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -785,7 +958,7 @@ impl TraceSink for Check<'_> {
     }
     fn scope_enter(
         &mut self,
-        _: &Program,
+        _context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -819,7 +992,7 @@ impl TraceSink for Check<'_> {
 
     fn scope_exit(
         &mut self,
-        _: &Program,
+        _context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         _: usize,
         _: FuncId,
@@ -827,6 +1000,7 @@ impl TraceSink for Check<'_> {
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let _ = _context.program();
         if !matches!(kind, ScopeKind::CallFrame { .. }) {
             return;
         }
@@ -846,7 +1020,15 @@ impl TraceSink for Check<'_> {
             .and_then(|top| self.record.frames[top.index()].parent);
     }
 
-    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
+    fn instr(
+        &mut self,
+        _context: crate::trace::TraceContext<'_>,
+        func: FuncId,
+        pc: u32,
+        _: u32,
+        _: Option<u64>,
+        opcode: u8,
+    ) {
         let mut state = self.state.borrow_mut();
         state.location = Some(TraceLocation { func, pc });
         let index = state.instructions;
@@ -880,11 +1062,12 @@ impl TraceSink for Check<'_> {
 
     fn instr_end(
         &mut self,
-        _: &Program,
+        _context: crate::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let _ = _context.program();
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -919,7 +1102,8 @@ impl TraceSink for Check<'_> {
             state.error = Some(state.mismatch(Divergence::Instruction));
         }
     }
-    fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: crate::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let _ = _context.program();
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -1448,6 +1632,21 @@ fn same_trap(
         return false;
     }
     match (&a.trap, &b.trap) {
+        (Trap::ControlSignatureMismatch(a), Trap::ControlSignatureMismatch(b)) => a == b,
+        (
+            Trap::ControlArityMismatch {
+                boundary: a,
+                expected: ae,
+                actual: aa,
+            },
+            Trap::ControlArityMismatch {
+                boundary: b,
+                expected: be,
+                actual: ba,
+            },
+        ) => a == b && ae == be && aa == ba,
+        (Trap::Continuation(a), Trap::Continuation(b)) => a == b,
+        (Trap::ContinuationLimitExceeded, Trap::ContinuationLimitExceeded) => true,
         (Trap::ContractBoundary(a), Trap::ContractBoundary(b)) => {
             a.program.shares_definition_with(&b.program)
                 && a.function == b.function
@@ -1463,7 +1662,7 @@ fn same_trap(
         (Trap::CrossInstanceValue { kind: a }, Trap::CrossInstanceValue { kind: b }) => a == b,
         (Trap::ForeignStoreValue { kind: a }, Trap::ForeignStoreValue { kind: b }) => a == b,
         (Trap::FuelExceeded, Trap::FuelExceeded)
-        | (Trap::GuestCallAbandoned, Trap::GuestCallAbandoned)
+        | (Trap::GuestTransferAbandoned, Trap::GuestTransferAbandoned)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
         | (Trap::InstanceLimitExceeded, Trap::InstanceLimitExceeded)

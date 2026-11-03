@@ -17,6 +17,32 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Qualify trace callbacks with `TraceContext`, carrying the exact definition and logical stack
+  identity independently of dynamic call nesting. Migration: trace sinks accept a context in
+  place of `&Program`; use `context.program()` for local IDs and `context.stack()` for live
+  stack identity. Forward the complete context through adapters. Synthetic observations can
+  explicitly use `TraceContext::unscoped` without claiming a live execution identity.
+
+- Add typed control protocols and execution-owned one-use continuations. Guest code can create
+  computations, suspend to a matching dynamic handler, and resume captured stacks under new
+  handlers. `ProgramBuilder::emit_continuation`, `emit_suspend`, and `emit_resume` validate
+  authoring inputs and allocate typed destinations. `InvocationInspection::saved_continuations`
+  distinguishes parked frames from active callers; object-root enumeration includes both.
+  Migration: regenerate bytecode for wire version 0.6. Handle the new `Tag` and `Continuation`
+  value kinds and signature contracts in exhaustive matches. Full `Limits` literals need
+  `max_continuations`; parked frames still count against `max_call_depth`. Owned snapshots and
+  graph inputs reject execution-local continuation capabilities.
+  Native control uses `PendingHostCall::{create_continuation,resume_continuation,discard_continuation}`;
+  each consumes its request view. Staged host aggregates are admitted before heap-dependent
+  validation. Handle `Trap::{GuestTransferAbandoned,ControlSignatureMismatch,ControlArityMismatch}`
+  and `ContractPosition::Control` in exhaustive diagnostic matches.
+
+- Bind retained code through `Vm::bind_instance`, then resolve functions through that instance
+  or preserve a control tag's fresh token with `ControlTag::in_instance`. Migration:
+  replace `vm.bind_function(&function)` with
+  `vm.bind_instance(function.instance())?.function(function.id())?`. Namespace binding transfers
+  code identity independently of mutable host state and aggregate storage.
+
 - Keep independently compiled guest calls in one execution through `PendingHostCall::call_guest`.
   Suspended parents share the store and all resource budgets; only the root commits or rolls back
   aggregate storage. `return_from` can target a live activation across those code boundaries.
@@ -167,7 +193,7 @@ This release has an [MSRV][] of 1.88.
   indirect guest calls charge actual argument materialization. `PendingHostCall::call_guest`
   returns `ControlError`, allowing foreign-store denial before admission. Trace entry events carry
   `EntryOrigin`, and recording's control quota also bounds automatic cross-code entries. Migration:
-  handle `Trap::{ForeignStoreValue,GuestCallAbandoned}` and the new origin field in exhaustive
+  handle `Trap::{ForeignStoreValue,GuestTransferAbandoned}` and the new origin field in exhaustive
   matches. `Trap::CallableSignatureMismatch` and recorded callable values retain qualified targets.
   `Trap::ContractMismatch::error` is boxed; `ContractViolation::contract_program` identifies a
   foreign captured environment's expected contract table. Checked replay reconstructs these

@@ -5,7 +5,6 @@ use super::{StrictDepsTrace, TapeError};
 use crate::NodeId;
 use alloc::sync::Arc;
 use core::fmt;
-use execution_tape::program::Program;
 use execution_tape::trace::{
     RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink,
     ValueEvent,
@@ -118,39 +117,53 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
                 TraceMask::NONE
             }
     }
-    fn run_mask(&mut self, program: &Program, _: TraceMask) {
+    fn run_mask(&mut self, context: execution_tape::trace::TraceContext<'_>, _: TraceMask) {
         // Internal strict-dependency events are filtered; report actual delivery to this sink.
         if self.observer_mask != TraceMask::NONE
             && let Some(observer) = self.observer.as_deref_mut()
         {
-            observer.run_mask(program, self.observer_mask);
+            observer.run_mask(context, self.observer_mask);
         }
     }
-    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        event_context: execution_tape::trace::TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
         self.observer_mask.contains(TraceMask::REGISTERS)
             && self
                 .observer
                 .as_ref()
-                .is_some_and(|sink| sink.wants_registers(location, phase))
+                .is_some_and(|sink| sink.wants_registers(event_context, location, phase))
     }
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        event: RegisterEvent<'_>,
+    ) {
         if let Some(observer) = self.observer(TraceMask::REGISTERS) {
-            observer.registers(program, event);
+            observer.registers(context, event);
         }
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, count: usize) {
+    fn run_start(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        entry: FuncId,
+        count: usize,
+    ) {
         if let Some(observer) = self.observer(TraceMask::RUN) {
-            observer.run_start(program, entry, count);
+            observer.run_start(context, entry, count);
         }
     }
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
         if let Some(observer) = self.observer(TraceMask::VALUES) {
-            observer.values(program, event);
+            observer.values(context, event);
         }
     }
     fn instr(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         func: FuncId,
         pc: u32,
         next: u32,
@@ -158,23 +171,23 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         opcode: u8,
     ) {
         if let Some(observer) = self.observer(TraceMask::INSTR) {
-            observer.instr(program, func, pc, next, span, opcode);
+            observer.instr(context, func, pc, next, span, opcode);
         }
     }
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
         if let Some(observer) = self.observer(TraceMask::INSTR) {
-            observer.instr_end(program, location, next, outcome);
+            observer.instr_end(context, location, next, outcome);
         }
     }
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -183,19 +196,19 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
     ) {
         if self.strict_enabled {
             self.strict
-                .scope_enter(program, kind, depth, func, pc, span);
+                .scope_enter(context, kind, depth, func, pc, span);
         }
         let mask = match kind {
             ScopeKind::CallFrame { .. } => TraceMask::CALL,
             ScopeKind::HostCall { .. } => TraceMask::HOST,
         };
         if let Some(observer) = self.observer(mask) {
-            observer.scope_enter(program, kind, depth, func, pc, span);
+            observer.scope_enter(context, kind, depth, func, pc, span);
         }
     }
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -205,19 +218,23 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
     ) {
         if self.strict_enabled {
             self.strict
-                .scope_exit(program, kind, depth, func, pc, span, outcome);
+                .scope_exit(context, kind, depth, func, pc, span, outcome);
         }
         let mask = match kind {
             ScopeKind::CallFrame { .. } => TraceMask::CALL,
             ScopeKind::HostCall { .. } => TraceMask::HOST,
         };
         if let Some(observer) = self.observer(mask) {
-            observer.scope_exit(program, kind, depth, func, pc, span, outcome);
+            observer.scope_exit(context, kind, depth, func, pc, span, outcome);
         }
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        outcome: TraceOutcome<'_>,
+    ) {
         if let Some(observer) = self.observer(TraceMask::RUN) {
-            observer.run_end(program, outcome);
+            observer.run_end(context, outcome);
         }
     }
 }

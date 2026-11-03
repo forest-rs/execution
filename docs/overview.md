@@ -1,6 +1,6 @@
 # `execution_tape` — execution design
 
-This document describes the Rust 0.1 API and wire format 0.5. See the
+This document describes the unreleased Rust API and wire format 0.6. See the
 [bytecode and execution specification](v1_spec.md) for encoding details; its filename is historical.
 Rust package versions and wire versions are independent. Decoding requires an exact wire-version
 match, so compiled programs must be regenerated when the wire format changes.
@@ -29,6 +29,10 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
   serialized `Program`, it includes verifier-produced, execution-ready function bodies (decoded/validated
   instruction stream + register layout) used by the VM.
 - **`Frame`**: a call instance with bases into typed register banks and a program counter.
+- **`Instance`**: an exact verified definition bound to one VM store namespace. Function values
+  and closures retain their defining instance across independently compiled calls.
+- **`ContinuationRef`**: one-use authority for an unstarted or captured computation. Its execution
+  owns the frames and storage; cloning the reference creates an alias, not another computation.
 - **Register**: a virtual slot with a statically verified `ValueType`. Payload-bearing kinds use
   per-`RegClass` banks; Unit/effect registers have no runtime payload storage.
 - **`SpanId`**: a nonzero frontend-supplied identifier. Its meaning and stability belong to the
@@ -44,7 +48,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Synchronous host dispatch by default, with optional borrow-scoped requests for externally
   completed or asynchronous host operations. The embedding owns scheduling and async runtimes.
 - Limits: instruction fuel, host calls, call depth, contract work, aggregate construction work,
-  and logical byte/string work;
+  saved computation count, and logical byte/string work;
   host calls may contribute additional fuel cost.
 - Errors are traps:
   - Verification rejects malformed bytecode before execution. Runtime traps cover arithmetic,
@@ -82,6 +86,35 @@ reports the configured limit, charged work and rejected request without charging
 counter; each new invocation resets it. Failed invocations roll back their new aggregates as usual.
 Inputs and previously retained results, host allocations, graph imports, frame storage,
 preparation, and capture remain outside this construction-work budget. It is not a heap limit.
+
+## Delimited computations
+
+The execution owns active callers and independently saved computations under one storage
+transaction and one resource budget. A qualified callable supplies a new computation's initial
+arguments and final results. At a later suspension, the control tag instead supplies the request
+sent to a handler and the response required to resume. The captured computation retains its
+original final-result contract. These are separate protocols, each retaining its exact definition.
+
+Guest `cont.resume` installs a dynamic table of callable clauses. A suspension captures the stack
+suffix inside the nearest matching delimiter; its handler runs outside that table and receives
+the request plus a one-use continuation. Inner nonmatching tables stay captured. Resuming under
+a replacement table allows another handler to service later requests from the same computation.
+Fresh tags give recursive lexical exit scopes distinct identities. Equal signatures identify
+compatible protocols, while exact tag equality selects an operation.
+
+`ProgramBuilder::emit_continuation`, `emit_resume`, and `emit_suspend` provide the typed authoring
+path. Embeddings use `PendingHostCall::{create_continuation,resume_continuation,discard_continuation}`
+on an explicitly yielded host operation. Each consumes the borrowed request view; reacquire it
+for another command. A successful resumption restores that host request with callback results.
+Pure foreign/stale denials preserve valid authority and the pending request. Admitted failures
+terminate the execution. Staged host aggregates are promoted before checking environments or
+rich resume inputs.
+
+`InvocationInspection::saved_continuations` separates parked computations from active call
+ancestry. Saved registers also contribute object roots. The execution retains their frame charges
+and caps saved computations with `Limits::max_continuations`. Completing the root retires every
+saved capability before heap compaction. Explicit discard and hard cancellation execute no guest
+cleanup. Checked replay of delimited continuation lifecycles remains unfinished.
 
 ## Authoring register declarations
 

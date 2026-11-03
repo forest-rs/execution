@@ -16,18 +16,21 @@ use core::fmt;
 use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
 use crate::contract::{Contract, ContractPosition, ContractViolation};
+use crate::control::{ContinuationRef, ControlTag};
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::instance::Instance;
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::program_memory::{Checkpoint, ProgramMemory};
 use crate::trace::{
-    HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
+    HostCallOutcome, ScopeKind, TraceContext, TraceLocation, TraceMask, TraceOutcome, TraceSink,
+    ValueEvent,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
     I64Reg, ObjReg, StrReg, U64Reg, VReg, VRegSlice,
 };
+use crate::typed::{ContinuationReg, TagReg};
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
 
@@ -40,10 +43,11 @@ mod host_call;
 mod inspection;
 mod instances;
 mod invocation;
-use inspection::ExecutionControl;
 pub use inspection::{
     ActivationId, InvocationInspection, ObjectRoot, ObjectRootOrigin, PausedFrame, RegisterValue,
+    SavedContinuation,
 };
+use inspection::{ExecutionControl, Waiting};
 mod observations;
 mod observer;
 use observer::Observer;
@@ -62,6 +66,9 @@ pub struct Limits {
     pub fuel: u64,
     /// Maximum call depth (frames).
     pub max_call_depth: usize,
+    /// Maximum saved one-use computations in a single execution (1,024 by default).
+    /// Parked frames also remain charged against [`Self::max_call_depth`].
+    pub max_continuations: usize,
     /// Maximum host calls.
     pub max_host_calls: u64,
     /// Maximum aggregate contract and transfer-provenance work per execution:
@@ -140,6 +147,7 @@ impl Default for Limits {
         Self {
             fuel: 1_000_000,
             max_call_depth: 256,
+            max_continuations: 1024,
             max_host_calls: 1_000_000,
             max_contract_work: 1_000_000,
             max_aggregate_work: 1_000_000,
@@ -244,6 +252,27 @@ impl core::error::Error for ContractBoundaryError {
 /// A runtime trap.
 #[derive(Clone, Debug)]
 pub enum Trap {
+    /// A control value or handler offers a different typed protocol.
+    ControlSignatureMismatch(Box<crate::control::SignatureMismatch>),
+    /// A control operation received the wrong number of input values.
+    ControlArityMismatch {
+        /// Operation receiving the inputs.
+        boundary: crate::control::ControlBoundary,
+        /// Required input count.
+        expected: usize,
+        /// Supplied input count.
+        actual: usize,
+    },
+    /// A continuation belongs to another execution or its one-use authority was consumed.
+    Continuation(crate::control::ResumeError),
+    /// An execution retained its configured maximum number of saved computations.
+    ContinuationLimitExceeded,
+    /// No active dynamic delimiter handles this exact operation.
+    UnhandledControlTag {
+        /// Exact operation lacking an active matching handler.
+        tag: ControlTag,
+    },
+
     /// Fuel limit exceeded.
     FuelExceeded,
     /// Call depth limit exceeded.
@@ -263,7 +292,7 @@ pub enum Trap {
         kind: ValueType,
     },
     /// An observer unwound during an admitted guest control transfer.
-    GuestCallAbandoned,
+    GuestTransferAbandoned,
     /// The initiating instruction checked a contract owned by another code definition.
     ContractBoundary(Box<ContractBoundaryError>),
     /// Guest aggregate construction would exceed the run's node-and-field work budget.
@@ -379,13 +408,19 @@ pub enum Trap {
 impl fmt::Display for Trap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ControlSignatureMismatch(error) => error.fmt(f),
+            Self::ControlArityMismatch { boundary, expected, actual } => write!(f, "{boundary} requires {expected} input values, got {actual}"),
+            Self::Continuation(error) => error.fmt(f),
+            Self::ContinuationLimitExceeded => f.write_str("saved computation limit exceeded"),
+            Self::UnhandledControlTag { tag } => write!(f, "no active handler for control operation {:?}", tag.name()),
+
             Self::FuelExceeded => write!(f, "fuel limit exceeded"),
             Self::CallDepthExceeded => write!(f, "call depth limit exceeded"),
             Self::HostCallLimitExceeded => write!(f, "host call limit exceeded"),
             Self::InstanceLimitExceeded => write!(f, "VM instance capacity exhausted"),
             Self::CrossInstanceValue { kind } => write!(f, "cannot transfer code-local {kind:?} to another instance"),
             Self::ForeignStoreValue { kind } => write!(f, "cannot execute {kind:?} from another VM store"),
-            Self::GuestCallAbandoned => f.write_str("guest control transfer was abandoned"),
+            Self::GuestTransferAbandoned => f.write_str("guest control transfer was abandoned"),
             Self::ContractBoundary(error) => fmt::Display::fmt(error, f),
             Self::AggregateWorkExceeded {
                 limit,
@@ -476,6 +511,8 @@ impl core::error::Error for Trap {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::ContractBoundary(error) => Some(error),
+            Self::ControlSignatureMismatch(error) => Some(error),
+            Self::Continuation(error) => Some(error),
             Self::HostCallFailed { error, .. } => Some(error),
             Self::AggError(error) => Some(error),
             Self::ContractMismatch { error, .. } => Some(error),
@@ -540,6 +577,8 @@ struct RegBase {
     funcs: usize,
     /// Base offset for the closure register bank.
     closures: usize,
+    tags: usize,
+    continuations: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -611,6 +650,8 @@ struct Registers {
     funcs: Vec<Option<crate::value::FunctionRef>>,
     /// Closure registers.
     closures: Vec<Option<Closure>>,
+    tags: Vec<Option<ControlTag>>,
+    continuations: Vec<Option<ContinuationRef>>,
 
     /// Call stack.
     frames: Vec<Frame>,
@@ -652,6 +693,8 @@ impl Registers {
         self.aggs.clear();
         self.funcs.clear();
         self.closures.clear();
+        self.tags.clear();
+        self.continuations.clear();
         self.arena.clear();
     }
 }
@@ -664,10 +707,15 @@ struct ReturnSite {
 
 enum Progress {
     Suspended,
+    Control {
+        location: TraceLocation,
+        instruction: usize,
+    },
     AwaitingHost,
     Returned(ReturnSite),
     GuestCall {
         target: crate::value::FunctionRef,
+        environment: Option<AggHandle>,
         args: Vec<Value>,
     },
 }
@@ -704,6 +752,7 @@ impl<H: Host> fmt::Debug for Vm<H> {
 /// Keeping this out of [`ExecutionContext`] avoids storing borrowed trace state in the long-lived
 /// per-run context while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
+    stack: Option<ActivationId>,
     mask: TraceMask,
     sink: Option<Observer<'a, dyn TraceSink + 'a>>,
     scopes: Vec<(ScopeKind, usize)>,
@@ -716,6 +765,7 @@ impl<'a> TraceCtx<'a> {
         sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
     ) -> Self {
         Self {
+            stack: None,
             mask,
             sink: sink.map(Observer::Unique),
             scopes: Vec::new(),
@@ -740,35 +790,38 @@ impl<'a> TraceCtx<'a> {
 
     #[inline]
     fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.mask != TraceMask::NONE
             && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            sink.run_mask(program, self.mask);
+            sink.run_mask(context, self.mask);
         }
         if self.enabled(TraceMask::RUN)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             let t: &mut dyn TraceSink = &mut *t;
-            t.run_start(program, entry, arg_count);
+            t.run_start(context, entry, arg_count);
         }
     }
 
     #[inline]
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::RUN)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             let t: &mut dyn TraceSink = &mut *t;
-            t.run_end(program, outcome);
+            t.run_end(context, outcome);
         }
     }
 
     #[inline]
     fn values<'event>(&mut self, program: &Program, event: impl FnOnce() -> ValueEvent<'event>) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::VALUES)
             && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            sink.values(program, event());
+            sink.values(context, event());
         }
     }
 
@@ -777,10 +830,11 @@ impl<'a> TraceCtx<'a> {
         program: &Program,
         event: impl FnOnce() -> crate::trace::ControlEvent<'event>,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if (self.enabled(TraceMask::CONTROL) || self.enabled(TraceMask::VALUES))
             && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            sink.control(program, event());
+            sink.control(context, event());
         }
     }
 
@@ -794,12 +848,13 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         opcode: u8,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::INSTR)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             let t: &mut dyn TraceSink = &mut *t;
             self.pending = Some(TraceLocation { func, pc });
-            t.instr(program, func, pc, next_pc, span_id, opcode);
+            t.instr(context, func, pc, next_pc, span_id, opcode);
         }
     }
 
@@ -813,6 +868,7 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         caller: Option<TraceLocation>,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::CALL)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
@@ -820,7 +876,7 @@ impl<'a> TraceCtx<'a> {
             self.scopes
                 .push((ScopeKind::CallFrame { func, caller }, depth));
             t.scope_enter(
-                program,
+                context,
                 ScopeKind::CallFrame { func, caller },
                 depth,
                 func,
@@ -839,12 +895,13 @@ impl<'a> TraceCtx<'a> {
         pc: u32,
         span_id: Option<u64>,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::CALL)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             let t: &mut dyn TraceSink = &mut *t;
             let (kind, _) = self.scopes.pop().expect("entered call frame");
-            t.scope_exit(program, kind, depth, func, pc, span_id, TraceOutcome::Ok);
+            t.scope_exit(context, kind, depth, func, pc, span_id, TraceOutcome::Ok);
         }
     }
 
@@ -860,6 +917,7 @@ impl<'a> TraceCtx<'a> {
         pc: u32,
         span_id: Option<u64>,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::HOST)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
@@ -873,7 +931,7 @@ impl<'a> TraceCtx<'a> {
                 depth,
             ));
             t.scope_enter(
-                program,
+                context,
                 ScopeKind::HostCall {
                     host_sig,
                     symbol,
@@ -899,13 +957,14 @@ impl<'a> TraceCtx<'a> {
         pc: u32,
         span_id: Option<u64>,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::HOST)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             let t: &mut dyn TraceSink = &mut *t;
             self.scopes.pop();
             t.scope_exit(
-                program,
+                context,
                 ScopeKind::HostCall {
                     host_sig,
                     symbol,
@@ -925,10 +984,11 @@ impl<'a> TraceCtx<'a> {
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let context = TraceContext::new(program, self.stack.as_ref());
         if let Some(location) = self.pending.take()
             && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
         {
-            sink.instr_end(program, location, next, outcome);
+            sink.instr_end(context, location, next, outcome);
         }
     }
 
@@ -939,12 +999,14 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let stack = self.stack.clone();
+        let context = TraceContext::new(program, stack.as_ref());
         // A host failure/cancellation closes the host scope before its instruction attempt.
         if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
             let (kind, depth) = self.scopes.pop().expect("open host scope");
             if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
                 sink.scope_exit(
-                    program,
+                    context,
                     kind,
                     depth,
                     location.func,
@@ -958,7 +1020,7 @@ impl<'a> TraceCtx<'a> {
         while let Some((kind, depth)) = self.scopes.pop() {
             if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
                 sink.scope_exit(
-                    program,
+                    context,
                     kind,
                     depth,
                     location.func,
@@ -1531,6 +1593,12 @@ impl<H: Host> Vm<H> {
                 crate::trace::RegisterPhase::Inputs,
             );
             match instr {
+                ExecInstr::Control(_) => {
+                    return Ok(Progress::Control {
+                        location: TraceLocation { func: func_id, pc },
+                        instruction: instr_ix,
+                    });
+                }
                 ExecInstr::Nop => {}
                 ExecInstr::Trap { code } => {
                     return Err(ctx.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
@@ -1599,6 +1667,18 @@ impl<H: Host> Vm<H> {
                 ExecInstr::MovClosure { dst, src } => {
                     let v = ctx.read_closure(base, *src);
                     ctx.write_closure(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
+                ExecInstr::MovTag { dst, src } => {
+                    let v = ctx.read_tag(base, *src);
+                    ctx.write_tag(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
+                ExecInstr::MovContinuation { dst, src } => {
+                    let v = ctx.read_continuation(base, *src);
+                    ctx.write_continuation(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
@@ -2100,6 +2180,24 @@ impl<H: Host> Vm<H> {
                     ctx.write_closure(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::SelectTag { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_tag(base, *a)
+                    } else {
+                        ctx.read_tag(base, *b)
+                    };
+                    ctx.write_tag(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::SelectContinuation { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_continuation(base, *a)
+                    } else {
+                        ctx.read_continuation(base, *b)
+                    };
+                    ctx.write_continuation(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
 
                 ExecInstr::Br {
                     cond,
@@ -2368,6 +2466,8 @@ impl<H: Host> Vm<H> {
                             &ctx.aggs,
                             &ctx.funcs,
                             &ctx.closures,
+                            &ctx.tags,
+                            &ctx.continuations,
                             base,
                             a,
                         )
@@ -2389,7 +2489,7 @@ impl<H: Host> Vm<H> {
                     );
 
                     if YIELD && control.yield_host_calls {
-                        control.pending_host = Some(host_call::PendingHost {
+                        control.waiting = Waiting::Host(host_call::PendingHost {
                             location: TraceLocation { func: func_id, pc },
                             instruction: instr_ix,
                             depth: frame_index + 1,
@@ -2443,6 +2543,8 @@ impl<H: Host> Vm<H> {
                                     &ctx.aggs,
                                     &ctx.funcs,
                                     &ctx.closures,
+                                    &ctx.tags,
+                                    &ctx.continuations,
                                     base,
                                     a,
                                 )
@@ -3490,6 +3592,8 @@ impl<H: Host> Vm<H> {
             VReg::Agg(reg) => Value::Agg(ctx.read_agg_handle(base, reg)),
             VReg::Func(reg) => Value::Func(ctx.read_func(base, reg)),
             VReg::Closure(reg) => Value::Closure(ctx.read_closure(base, reg)),
+            VReg::Tag(reg) => Value::Tag(ctx.read_tag(base, reg)),
+            VReg::Continuation(reg) => Value::Continuation(ctx.read_continuation(base, reg)),
             _ => unreachable!("refined contract kind"),
         }
     }
@@ -3618,6 +3722,8 @@ impl Registers {
             aggs: self.aggs.len(),
             funcs: self.funcs.len(),
             closures: self.closures.len(),
+            tags: self.tags.len(),
+            continuations: self.continuations.len(),
         };
 
         self.bools.resize(base.bools + counts.bools, false);
@@ -3638,6 +3744,9 @@ impl Registers {
         self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
         self.funcs.resize(base.funcs + counts.funcs, None);
         self.closures.resize(base.closures + counts.closures, None);
+        self.tags.resize(base.tags + counts.tags, None);
+        self.continuations
+            .resize(base.continuations + counts.continuations, None);
 
         base
     }
@@ -3654,6 +3763,8 @@ impl Registers {
         self.aggs.truncate(base.aggs);
         self.funcs.truncate(base.funcs);
         self.closures.truncate(base.closures);
+        self.tags.truncate(base.tags);
+        self.continuations.truncate(base.continuations);
     }
 
     fn init_args(&mut self, base: RegBase, vf: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
@@ -3750,6 +3861,14 @@ impl Registers {
                 self.write_closure(base, r, c.clone());
                 Ok(())
             }
+            (VReg::Tag(r), Value::Tag(c)) => {
+                self.write_tag(base, r, c.clone());
+                Ok(())
+            }
+            (VReg::Continuation(r), Value::Continuation(c)) => {
+                self.write_continuation(base, r, c.clone());
+                Ok(())
+            }
             _ => Err(Trap::InvalidPc),
         }
     }
@@ -3799,6 +3918,8 @@ impl Registers {
             VReg::Agg(r) => Value::Agg(self.read_agg_handle(base, r)),
             VReg::Func(r) => Value::Func(self.read_func(base, r)),
             VReg::Closure(r) => Value::Closure(self.read_closure(base, r)),
+            VReg::Tag(r) => Value::Tag(self.read_tag(base, r)),
+            VReg::Continuation(r) => Value::Continuation(self.read_continuation(base, r)),
         })
     }
 
@@ -3864,6 +3985,16 @@ impl Registers {
             (VReg::Closure(s), VReg::Closure(d)) => {
                 let v = self.read_closure(src_base, s);
                 self.write_closure(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::Tag(s), VReg::Tag(d)) => {
+                let v = self.read_tag(src_base, s);
+                self.write_tag(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::Continuation(s), VReg::Continuation(d)) => {
+                let v = self.read_continuation(src_base, s);
+                self.write_continuation(dst_base, d, v);
                 Ok(())
             }
             _ => Err(Trap::InvalidPc),
@@ -3985,6 +4116,30 @@ impl Registers {
     fn write_closure(&mut self, base: RegBase, r: ClosureReg, v: Closure) {
         self.closures[base.closures + r.0 as usize] = Some(v);
     }
+    #[inline(always)]
+    #[must_use]
+    fn read_tag(&self, base: RegBase, r: TagReg) -> ControlTag {
+        self.tags[base.tags + r.0 as usize]
+            .as_ref()
+            .expect("initialized tag register")
+            .clone()
+    }
+    #[inline(always)]
+    fn write_tag(&mut self, base: RegBase, r: TagReg, v: ControlTag) {
+        self.tags[base.tags + r.0 as usize] = Some(v);
+    }
+    #[inline(always)]
+    #[must_use]
+    fn read_continuation(&self, base: RegBase, r: ContinuationReg) -> ContinuationRef {
+        self.continuations[base.continuations + r.0 as usize]
+            .as_ref()
+            .expect("initialized continuation register")
+            .clone()
+    }
+    #[inline(always)]
+    fn write_continuation(&mut self, base: RegBase, r: ContinuationReg, v: ContinuationRef) {
+        self.continuations[base.continuations + r.0 as usize] = Some(v);
+    }
 
     #[inline]
     #[must_use = "reads can trap; handle the Result"]
@@ -4073,6 +4228,8 @@ impl Value {
             Self::Agg(_) => ValueType::Agg,
             Self::Func(_) => ValueType::Func,
             Self::Closure(_) => ValueType::Closure,
+            Self::Tag(_) => ValueType::Tag,
+            Self::Continuation(_) => ValueType::Continuation,
         }
     }
 
@@ -4209,6 +4366,8 @@ fn read_value_ref_at<'a>(
     aggs: &'a [AggHandle],
     funcs: &'a [Option<crate::value::FunctionRef>],
     closures: &'a [Option<Closure>],
+    tags: &'a [Option<ControlTag>],
+    continuations: &'a [Option<ContinuationRef>],
     base: RegBase,
     v: VReg,
 ) -> Result<ValueRef<'a>, Trap> {
@@ -4238,6 +4397,16 @@ fn read_value_ref_at<'a>(
             closures[base.closures + r.0 as usize]
                 .as_ref()
                 .expect("initialized closure register"),
+        ),
+        VReg::Tag(r) => ValueRef::Tag(
+            tags[base.tags + r.0 as usize]
+                .as_ref()
+                .expect("initialized tag register"),
+        ),
+        VReg::Continuation(r) => ValueRef::Continuation(
+            continuations[base.continuations + r.0 as usize]
+                .as_ref()
+                .expect("initialized continuation register"),
         ),
     })
 }
@@ -4471,23 +4640,32 @@ mod tests {
             trapped_scopes: usize,
         }
         impl TraceSink for Sink {
-            fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, _: u8) {
+            fn instr(
+                &mut self,
+                _context: TraceContext<'_>,
+                func: FuncId,
+                pc: u32,
+                _: u32,
+                _: Option<u64>,
+                _: u8,
+            ) {
                 assert!(self.pending.replace(TraceLocation { func, pc }).is_none());
             }
             fn instr_end(
                 &mut self,
-                _: &Program,
+                _context: TraceContext<'_>,
                 location: TraceLocation,
                 next: Option<TraceLocation>,
                 outcome: TraceOutcome<'_>,
             ) {
+                let _ = _context.program();
                 assert_eq!(self.pending.take(), Some(location));
                 self.ends
                     .push((location, next, matches!(outcome, TraceOutcome::Trap(_))));
             }
             fn scope_enter(
                 &mut self,
-                _: &Program,
+                _context: TraceContext<'_>,
                 kind: ScopeKind,
                 depth: usize,
                 _: FuncId,
@@ -4498,7 +4676,7 @@ mod tests {
             }
             fn scope_exit(
                 &mut self,
-                _: &Program,
+                _context: TraceContext<'_>,
                 kind: ScopeKind,
                 depth: usize,
                 _: FuncId,
@@ -4506,6 +4684,7 @@ mod tests {
                 _: Option<u64>,
                 outcome: TraceOutcome<'_>,
             ) {
+                let _ = _context.program();
                 assert_eq!(self.scopes.pop(), Some((kind, depth)));
                 self.scope_ends += 1;
                 self.trapped_scopes += usize::from(matches!(outcome, TraceOutcome::Trap(_)));
@@ -4679,7 +4858,7 @@ mod tests {
         impl TraceSink for Observe {
             fn instr_end(
                 &mut self,
-                _: &Program,
+                _context: TraceContext<'_>,
                 _: TraceLocation,
                 _: Option<TraceLocation>,
                 outcome: TraceOutcome<'_>,
@@ -4981,7 +5160,7 @@ mod tests {
         impl TraceSink for Ends {
             fn instr_end(
                 &mut self,
-                _: &Program,
+                _context: TraceContext<'_>,
                 _: TraceLocation,
                 _: Option<TraceLocation>,
                 outcome: TraceOutcome<'_>,
@@ -4991,7 +5170,7 @@ mod tests {
 
             fn scope_exit(
                 &mut self,
-                _: &Program,
+                _context: TraceContext<'_>,
                 _: ScopeKind,
                 _: usize,
                 _: FuncId,
@@ -5537,13 +5716,13 @@ mod tests {
                 TraceMask::RUN | TraceMask::INSTR
             }
 
-            fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {
+            fn run_start(&mut self, _context: TraceContext<'_>, _entry: FuncId, _arg_count: usize) {
                 self.starts += 1;
             }
 
             fn instr(
                 &mut self,
-                _program: &Program,
+                _context: TraceContext<'_>,
                 _func: FuncId,
                 _pc: u32,
                 _next_pc: u32,
@@ -5553,7 +5732,7 @@ mod tests {
                 self.instrs.push(opcode);
             }
 
-            fn run_end(&mut self, _program: &Program, outcome: TraceOutcome<'_>) {
+            fn run_end(&mut self, _context: TraceContext<'_>, outcome: TraceOutcome<'_>) {
                 self.ends += 1;
                 assert!(matches!(outcome, TraceOutcome::Ok));
             }

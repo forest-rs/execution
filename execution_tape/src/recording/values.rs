@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::aggregates::AggHeap;
+use crate::control::{ContinuationRef, ControlTag};
 use crate::host::ValueRef;
 use crate::recording::{CaptureFault, CaptureResource, RecordLimits};
 use crate::value::{AggHandle, AggType, Decimal, FunctionRef, Obj};
@@ -49,6 +50,10 @@ pub enum RecordedValue {
     Agg(AggregateId),
     /// Function in the recorded program.
     Func(FunctionRef),
+    /// The exact instance-qualified operation; signature equality does not merge identities.
+    Tag(ControlTag),
+    /// Logical continuation identity and contracts, not serialized suspended register storage.
+    Continuation(ContinuationRef),
     /// Function and captured environment.
     Closure {
         /// Closure body in the recorded program.
@@ -215,6 +220,8 @@ impl Builder {
             ValueRef::Decimal(value) => RecordedValue::Decimal(*value),
             ValueRef::Obj(value) => RecordedValue::Obj(value),
             ValueRef::Func(value) => RecordedValue::Func(value.clone()),
+            ValueRef::Tag(value) => RecordedValue::Tag(value.clone()),
+            ValueRef::Continuation(value) => RecordedValue::Continuation(value.clone()),
             ValueRef::Agg(handle) => RecordedValue::Agg(self.handle(handle, heap)?),
             ValueRef::Closure(value) => RecordedValue::Closure {
                 func: value.func.clone(),

@@ -9,6 +9,8 @@ use crate::trace::ControlEvent;
 /// A denied control target or a terminal failure after a control operation was admitted.
 #[derive(Clone, Debug)]
 pub enum ControlError {
+    /// A foreign, consumed or closed continuation was denied without changing this request.
+    Resumption(crate::control::ResumeError),
     /// The code instance belongs to another VM store. The pending request remains usable.
     ForeignStore,
     /// The target belongs to another execution. The pending request remains usable.
@@ -21,6 +23,7 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Resumption(error) => error.fmt(f),
             Self::ForeignStore => f.write_str("code instance belongs to another VM store"),
             Self::ForeignInvocation => f.write_str("control target belongs to another invocation"),
             Self::ExpiredActivation => f.write_str("control target activation has already left"),
@@ -32,6 +35,7 @@ impl core::error::Error for ControlError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Trapped(trap) => Some(trap),
+            Self::Resumption(error) => Some(error),
             _ => None,
         }
     }
@@ -69,8 +73,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             .continuation
             .control
             .target_index(&self.running.continuation.ctx, target);
-        let ancestor = self.running.parents.as_ref().and_then(|parents| {
-            parents
+        let ancestor = {
+            self.running
+                .parents
                 .iter()
                 .enumerate()
                 .rev()
@@ -80,7 +85,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
                         result => Some((segment, result)),
                     }
                 })
-        });
+        };
         let destination = match local {
             Ok(index) => (None, index),
             Err(ControlError::ExpiredActivation) => return Err(ControlError::ExpiredActivation),
@@ -117,7 +122,8 @@ impl<H: Host> Running<'_, '_, H> {
         let pending = self
             .continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .expect("pending host guard");
         let location = pending.location;
         let span = self.continuation.ctx.span_at(
@@ -129,7 +135,7 @@ impl<H: Host> Running<'_, '_, H> {
             .prepare_exit(index, ordinal, &values)
             .and_then(|()| self.apply_exit(index, ordinal, values));
         if let Err(trap) = result {
-            self.continuation.control.pending_host = None;
+            self.continuation.control.waiting = Waiting::Ready;
             let error = self
                 .continuation
                 .ctx
@@ -144,7 +150,8 @@ impl<H: Host> Running<'_, '_, H> {
         let pending = self
             .continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .expect("pending host guard");
         let mut staging = self.continuation.host_results.take().unwrap_or_default();
         let work = staging.work;
@@ -190,7 +197,8 @@ impl<H: Host> Running<'_, '_, H> {
         let pending = self
             .continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .expect("active host request");
         let location = pending.location;
         let span = self.continuation.ctx.span_at(
@@ -208,7 +216,7 @@ impl<H: Host> Running<'_, '_, H> {
                 .continuation
                 .control
                 .activation(&self.continuation.ctx, pending.depth - 1);
-            let destination = &self.parents.as_ref().expect("parent chain")[segment];
+            let destination = &self.parents[segment];
             self.continuation
                 .trace
                 .control(self.continuation.program.program(), || {
@@ -235,7 +243,7 @@ impl<H: Host> Running<'_, '_, H> {
                 return Err(Trap::FuelExceeded);
             }
             self.budget.fuel -= 1;
-            let target = &self.parents.as_ref().expect("execution parent chain")[segment];
+            let target = &self.parents[segment];
             composition::check_transfer(
                 self.vm.memory.aggs(),
                 &values,
@@ -266,28 +274,19 @@ impl<H: Host> Running<'_, '_, H> {
         // Validation precedes every destructive control change. Storage remains untouched until
         // the root transaction completes, so surviving values never need snapshots or remaps.
         self.unwind_segment(target_id.ordinal());
-        while self.parents.as_ref().expect("parent chain").len() > segment + 1 {
-            let parent = self
-                .parents
-                .as_deref_mut()
-                .expect("parent chain")
-                .pop()
-                .expect("intermediate parent");
+        while self.parents.len() > segment + 1 {
+            let parent = self.parents.pop().expect("intermediate parent");
             *self.continuation = parent;
             self.unwind_segment(target_id.ordinal());
         }
-        *self.continuation = self
-            .parents
-            .as_deref_mut()
-            .expect("parent chain")
-            .pop()
-            .expect("target parent");
+        *self.continuation = self.parents.pop().expect("target parent");
         self.budget.select(&self.continuation.control);
         if let Err(trap) = self.apply_exit(index, target_id.ordinal(), values) {
             let current = self
                 .continuation
                 .control
-                .pending_host
+                .waiting
+                .host()
                 .map_or(location, |pending| pending.location);
             let error = self
                 .continuation
@@ -312,12 +311,12 @@ impl<H: Host> Running<'_, '_, H> {
         ordinal: u64,
         mut values: Vec<Value>,
     ) -> Result<(), Trap> {
-        let location = self
+        let (location, _) = self
             .continuation
             .control
-            .pending_host
-            .expect("pending host guard")
-            .location;
+            .waiting
+            .site()
+            .expect("target retains its waiting boundary");
         if index == 0 {
             self.check_return_values(&values)?;
         }
@@ -370,7 +369,7 @@ impl<H: Host> Running<'_, '_, H> {
         self.budget.frames -= self.continuation.ctx.frames.len() - index;
         self.continuation.ctx.frames.truncate(index);
         self.continuation.ctx.truncate_to(target_base);
-        self.continuation.control.pending_host = restored;
+        self.continuation.control.waiting = restored.map_or(Waiting::Ready, Waiting::Host);
         if let Some(callbacks) = &mut self.continuation.control.callbacks {
             callbacks.discard_exited(index);
             if restored.is_some() {
@@ -379,8 +378,8 @@ impl<H: Host> Running<'_, '_, H> {
             }
         }
         if index == 0 {
-            self.budget.contract_scratch.clear_proofs();
             if !self.has_parents() {
+                self.prepare_root_return(location);
                 self.vm
                     .memory
                     .commit(self.checkpoint, &mut values)
@@ -440,7 +439,7 @@ impl TraceCtx<'_> {
             let (kind, depth) = self.scopes.pop().expect("entered host scope");
             if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
                 sink.scope_exit(
-                    program,
+                    TraceContext::new(program, self.stack.as_ref()),
                     kind,
                     depth,
                     location.func,
@@ -467,7 +466,7 @@ impl TraceCtx<'_> {
             );
             if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
                 sink.scope_exit(
-                    program,
+                    TraceContext::new(program, self.stack.as_ref()),
                     kind,
                     depth,
                     location.func,

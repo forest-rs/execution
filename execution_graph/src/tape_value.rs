@@ -52,6 +52,8 @@ pub enum TapeValueDomain<'a> {
     Program(&'a Arc<VerifiedProgram>),
     /// A raw aggregate or closure was converted without its storage owner; execution rejects it.
     Unowned,
+    /// A control capability belongs to one execution and cannot become a durable graph edge.
+    ExecutionLocal,
 }
 
 impl fmt::Debug for TapeValueDomain<'_> {
@@ -59,6 +61,7 @@ impl fmt::Debug for TapeValueDomain<'_> {
         match self {
             Self::Portable => f.write_str("Portable"),
             Self::Unowned => f.write_str("Unowned"),
+            Self::ExecutionLocal => f.write_str("ExecutionLocal"),
             Self::Program(program) => f
                 .debug_tuple("Program")
                 .field(&program.program().name())
@@ -263,6 +266,7 @@ impl TapeValue {
     pub fn domain(&self) -> TapeValueDomain<'_> {
         match &self.repr {
             Repr::Inline(Value::Agg(_) | Value::Closure(_)) => TapeValueDomain::Unowned,
+            Repr::Inline(Value::Continuation(_)) => TapeValueDomain::ExecutionLocal,
             Repr::Shared { bundle, index } if bundle.local[*index] => {
                 TapeValueDomain::Program(bundle.program.as_ref().expect("scoped value has program"))
             }
@@ -282,6 +286,9 @@ impl TapeValue {
         index: usize,
         program: &Arc<VerifiedProgram>,
     ) -> Result<(), TapeError> {
+        if matches!(self.domain(), TapeValueDomain::ExecutionLocal) {
+            return Err(TapeError::ExecutionLocalInput { input: index });
+        }
         if matches!(self.domain(), TapeValueDomain::Unowned) {
             return Err(TapeError::UnownedInput { input: index });
         }
@@ -592,10 +599,22 @@ fn bind_value<H: execution_tape::host::Host>(
     value: &mut Value,
 ) -> Result<(), TapeError> {
     let function = match value {
+        Value::Tag(tag) => {
+            let instance = vm
+                .bind_instance(tag.instance())
+                .map_err(TapeError::Instance)?;
+            *tag = tag.in_instance(&instance).map_err(TapeError::Instance)?;
+            return Ok(());
+        }
         Value::Func(function) => function,
         Value::Closure(closure) => &mut closure.func,
         _ => return Ok(()),
     };
-    *function = vm.bind_function(function).map_err(TapeError::Instance)?;
+    let instance = vm
+        .bind_instance(function.instance())
+        .map_err(TapeError::Instance)?;
+    *function = instance
+        .function(function.id())
+        .map_err(TapeError::Instance)?;
     Ok(())
 }

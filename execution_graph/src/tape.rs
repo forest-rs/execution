@@ -37,6 +37,11 @@ pub use observation::{NoTapeObserver, TapeInvocation, TapeObserver};
 /// Failures specific to tape nodes.
 #[derive(Clone, Debug)]
 pub enum TapeError {
+    /// A continuation is scoped to an execution and cannot be imported from a cached edge.
+    ExecutionLocalInput {
+        /// Positional graph input.
+        input: usize,
+    },
     /// A retained root contains program-local IDs without their owning program.
     MissingProgram {
         /// Root index in the retained snapshot.
@@ -87,6 +92,10 @@ impl fmt::Display for TapeError {
             Self::MissingProgram { root } => write!(
                 f,
                 "snapshot root {root} contains program-local IDs; supply its original prepared program"
+            ),
+            Self::ExecutionLocalInput { input } => write!(
+                f,
+                "input {input} contains an execution-local continuation; keep resumption within its owning invocation"
             ),
             Self::UnownedInput { input } => write!(
                 f,
@@ -917,7 +926,7 @@ impl TraceSink for StrictDepsTrace<'_> {
 
     fn scope_enter(
         &mut self,
-        _program: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -935,7 +944,7 @@ impl TraceSink for StrictDepsTrace<'_> {
 
     fn scope_exit(
         &mut self,
-        program: &execution_tape::program::Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -943,6 +952,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         _span_id: Option<u64>,
         outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
+        let program = context.program();
         let ScopeKind::HostCall { .. } = kind else {
             return;
         };

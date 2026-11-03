@@ -574,7 +574,7 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
     impl TraceSink for Events {
         fn instr(
             &mut self,
-            _: &Program,
+            _context: crate::trace::TraceContext<'_>,
             _: FuncId,
             pc: u32,
             end: u32,
@@ -585,7 +585,7 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
         }
         fn instr_end(
             &mut self,
-            _: &Program,
+            _context: crate::trace::TraceContext<'_>,
             location: TraceLocation,
             next: Option<TraceLocation>,
             outcome: TraceOutcome<'_>,
@@ -783,7 +783,7 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
     impl TraceSink for Scopes {
         fn scope_enter(
             &mut self,
-            _: &Program,
+            _context: crate::trace::TraceContext<'_>,
             kind: ScopeKind,
             _: usize,
             func: FuncId,

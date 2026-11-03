@@ -23,6 +23,49 @@ use crate::value::{FuncId, Value};
 use crate::vm::ActivationId;
 use crate::vm::{DataWork, Limits, TrapInfo};
 
+/// Exact code and logical guest stack producing a trace callback.
+///
+/// Parked stacks can resume in a different caller context. A program pointer or a nesting
+/// counter cannot identify that computation. VM-produced callbacks always carry a stack identity;
+/// manually synthesized observations can explicitly use [`Self::unscoped`].
+#[derive(Clone, Copy)]
+pub struct TraceContext<'a> {
+    program: &'a Program,
+    stack: Option<&'a ActivationId>,
+}
+impl<'a> TraceContext<'a> {
+    pub(crate) fn new(program: &'a Program, stack: Option<&'a ActivationId>) -> Self {
+        Self { program, stack }
+    }
+    /// Constructs an observation with no claim about a live VM stack identity.
+    #[must_use]
+    pub fn unscoped(program: &'a Program) -> Self {
+        Self {
+            program,
+            stack: None,
+        }
+    }
+    /// Exact definition interpreting local function, instruction and value identities.
+    #[must_use]
+    pub fn program(self) -> &'a Program {
+        self.program
+    }
+    /// Root identity of the logical stack producing this event, independent of its current caller.
+    #[must_use]
+    pub fn stack(self) -> Option<&'a ActivationId> {
+        self.stack
+    }
+}
+
+impl core::fmt::Debug for TraceContext<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TraceContext")
+            .field("program", &self.program.name())
+            .field("stack", &self.stack)
+            .finish()
+    }
+}
+
 /// What caused entry into another code instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryOrigin {
@@ -54,7 +97,9 @@ pub enum ControlEvent<'a> {
         instance: &'a Instance,
         /// Program-local entry in the child definition.
         entry: FuncId,
-        /// Supplied arguments, in the shared store.
+        /// Actual qualified function or closure, including its hidden environment ownership.
+        callee: &'a Value,
+        /// Explicit arguments in the shared store, excluding a closure's hidden environment.
         args: &'a [Value],
         /// Staged host construction already charged before promotion.
         work: DataWork,
@@ -520,18 +565,23 @@ pub trait TraceSink {
     /// Reports the actual event subscription once before any events for a traced invocation.
     /// This is independent of [`TraceMask::RUN`]; [`TraceMask::NONE`] emits no callbacks.
     /// The recommended [`Self::mask`] does not prove which mask the caller passed to the VM.
-    fn run_mask(&mut self, _program: &Program, _mask: TraceMask) {}
+    fn run_mask(&mut self, _context: TraceContext<'_>, _mask: TraceMask) {}
 
     /// Selects register observations before decoding/mapping a function. Called only with
     /// [`TraceMask::REGISTERS`]. Returning false avoids constructing the event.
-    fn wants_registers(&self, _location: TraceLocation, _phase: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: TraceContext<'_>,
+        _location: TraceLocation,
+        _phase: RegisterPhase,
+    ) -> bool {
         true
     }
 
     /// Borrows the selected instruction's inputs or successful local writes. Enabled by
     /// [`TraceMask::REGISTERS`] independently of instruction/boundary tracing.
     /// No outputs are emitted for a trapping instruction, call dispatch or guest return.
-    fn registers(&mut self, _program: &Program, _event: RegisterEvent<'_>) {}
+    fn registers(&mut self, _context: TraceContext<'_>, _event: RegisterEvent<'_>) {}
 
     /// Returns the recommended event mask for callers to pass to the VM.
     /// The explicit mask passed to the run controls delivery.
@@ -546,7 +596,7 @@ pub trait TraceSink {
     /// - `program`: program being executed (unverified container data)
     /// - `entry`: entry function id
     /// - `arg_count`: number of value arguments passed (not including the effect token)
-    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {}
+    fn run_start(&mut self, _context: TraceContext<'_>, _entry: FuncId, _arg_count: usize) {}
 
     /// Borrows values at an execution boundary without changing execution or retaining data.
     ///
@@ -558,12 +608,12 @@ pub trait TraceSink {
     /// These events supply recording primitives, not a replay guarantee. A recorder owns program
     /// identity, exact values, run-local aggregate sharing, host outcomes and its completeness
     /// policy. Invalid graphs and opaque host state/errors require explicit handling.
-    fn values(&mut self, _program: &Program, _event: ValueEvent<'_>) {}
+    fn values(&mut self, _context: TraceContext<'_>, _event: ValueEvent<'_>) {}
 
     /// Observes execution-owned cross-instance control, separately from a host outcome.
     /// Enabled by [`TraceMask::CONTROL`] or [`TraceMask::VALUES`]. These commands never imply
     /// native host completion.
-    fn control(&mut self, _program: &Program, _event: ControlEvent<'_>) {}
+    fn control(&mut self, _context: TraceContext<'_>, _event: ControlEvent<'_>) {}
 
     /// Called before each attempted instruction, before any of its effects.
     ///
@@ -577,7 +627,7 @@ pub trait TraceSink {
     /// - `opcode`: opcode byte
     fn instr(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _func: FuncId,
         _pc: u32,
         _next_pc: u32,
@@ -599,7 +649,7 @@ pub trait TraceSink {
     /// reports whether that invocation eventually returned or trapped.
     fn instr_end(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _location: TraceLocation,
         _next: Option<TraceLocation>,
         _outcome: TraceOutcome<'_>,
@@ -620,7 +670,7 @@ pub trait TraceSink {
     /// - `span_id`: best-effort span id at the scope boundary
     fn scope_enter(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -648,7 +698,7 @@ pub trait TraceSink {
     /// - `span_id`: best-effort span id at the scope boundary
     fn scope_exit(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -664,7 +714,7 @@ pub trait TraceSink {
     ///
     /// - `program`: program being executed (unverified container data)
     /// - `outcome`: whether the run ended successfully or trapped
-    fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {}
+    fn run_end(&mut self, _context: TraceContext<'_>, _outcome: TraceOutcome<'_>) {}
 }
 
 // Shared ownership keeps observations available after an owned invocation is dropped.
@@ -672,61 +722,66 @@ pub trait TraceSink {
 // Borrowed observers can be lent for a shorter execution without changing the
 // lifetime of the underlying trait object or allocating an owned adapter.
 impl<S: TraceSink + ?Sized> TraceSink for &mut S {
-    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
-        (**self).run_mask(program, mask);
+    fn run_mask(&mut self, context: TraceContext<'_>, mask: TraceMask) {
+        (**self).run_mask(context, mask);
     }
-    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
-        (**self).wants_registers(location, phase)
+    fn wants_registers(
+        &self,
+        event_context: TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
+        (**self).wants_registers(event_context, location, phase)
     }
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        (**self).registers(program, event);
+    fn registers(&mut self, context: TraceContext<'_>, event: RegisterEvent<'_>) {
+        (**self).registers(context, event);
     }
     fn mask(&self) -> TraceMask {
         (**self).mask()
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
-        (**self).run_start(program, entry, arg_count);
+    fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, arg_count: usize) {
+        (**self).run_start(context, entry, arg_count);
     }
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
-        (**self).values(program, event);
+    fn values(&mut self, context: TraceContext<'_>, event: ValueEvent<'_>) {
+        (**self).values(context, event);
     }
-    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
-        (**self).control(program, event);
+    fn control(&mut self, context: TraceContext<'_>, event: ControlEvent<'_>) {
+        (**self).control(context, event);
     }
     fn instr(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         func: FuncId,
         pc: u32,
         next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
     ) {
-        (**self).instr(program, func, pc, next_pc, span_id, opcode);
+        (**self).instr(context, func, pc, next_pc, span_id, opcode);
     }
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
-        (**self).instr_end(program, location, next, outcome);
+        (**self).instr_end(context, location, next, outcome);
     }
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         span_id: Option<u64>,
     ) {
-        (**self).scope_enter(program, kind, depth, func, pc, span_id);
+        (**self).scope_enter(context, kind, depth, func, pc, span_id);
     }
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -734,40 +789,47 @@ impl<S: TraceSink + ?Sized> TraceSink for &mut S {
         span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
-        (**self).scope_exit(program, kind, depth, func, pc, span_id, outcome);
+        (**self).scope_exit(context, kind, depth, func, pc, span_id, outcome);
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
-        (**self).run_end(program, outcome);
+    fn run_end(&mut self, context: TraceContext<'_>, outcome: TraceOutcome<'_>) {
+        (**self).run_end(context, outcome);
     }
 }
 
 impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> {
-    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
-        self.as_ref().borrow_mut().run_mask(program, mask);
+    fn run_mask(&mut self, context: TraceContext<'_>, mask: TraceMask) {
+        self.as_ref().borrow_mut().run_mask(context, mask);
     }
-    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
-        self.as_ref().borrow().wants_registers(location, phase)
+    fn wants_registers(
+        &self,
+        event_context: TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
+        self.as_ref()
+            .borrow()
+            .wants_registers(event_context, location, phase)
     }
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        self.as_ref().borrow_mut().registers(program, event);
+    fn registers(&mut self, context: TraceContext<'_>, event: RegisterEvent<'_>) {
+        self.as_ref().borrow_mut().registers(context, event);
     }
     fn mask(&self) -> TraceMask {
         self.as_ref().borrow().mask()
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+    fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, arg_count: usize) {
         self.as_ref()
             .borrow_mut()
-            .run_start(program, entry, arg_count);
+            .run_start(context, entry, arg_count);
     }
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
-        self.as_ref().borrow_mut().values(program, event);
+    fn values(&mut self, context: TraceContext<'_>, event: ValueEvent<'_>) {
+        self.as_ref().borrow_mut().values(context, event);
     }
-    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
-        self.as_ref().borrow_mut().control(program, event);
+    fn control(&mut self, context: TraceContext<'_>, event: ControlEvent<'_>) {
+        self.as_ref().borrow_mut().control(context, event);
     }
     fn instr(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         func: FuncId,
         pc: u32,
         next_pc: u32,
@@ -776,22 +838,22 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     ) {
         self.as_ref()
             .borrow_mut()
-            .instr(program, func, pc, next_pc, span_id, opcode);
+            .instr(context, func, pc, next_pc, span_id, opcode);
     }
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
         self.as_ref()
             .borrow_mut()
-            .instr_end(program, location, next, outcome);
+            .instr_end(context, location, next, outcome);
     }
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -800,11 +862,11 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     ) {
         self.as_ref()
             .borrow_mut()
-            .scope_enter(program, kind, depth, func, pc, span_id);
+            .scope_enter(context, kind, depth, func, pc, span_id);
     }
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -814,9 +876,9 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     ) {
         self.as_ref()
             .borrow_mut()
-            .scope_exit(program, kind, depth, func, pc, span_id, outcome);
+            .scope_exit(context, kind, depth, func, pc, span_id, outcome);
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
-        self.as_ref().borrow_mut().run_end(program, outcome);
+    fn run_end(&mut self, context: TraceContext<'_>, outcome: TraceOutcome<'_>) {
+        self.as_ref().borrow_mut().run_end(context, outcome);
     }
 }

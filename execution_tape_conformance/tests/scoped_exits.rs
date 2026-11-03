@@ -283,7 +283,7 @@ impl TraceSink for Evidence {
     fn mask(&self) -> TraceMask {
         TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR | TraceMask::VALUES
     }
-    fn values(&mut self, _: &execution_tape::program::Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
         if let ValueEvent::ReturnFrom { location, .. } = event {
             self.exits += 1;
             self.transfer = Some(location);
@@ -291,7 +291,7 @@ impl TraceSink for Evidence {
     }
     fn scope_enter(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: ScopeKind,
         _: usize,
         _: FuncId,
@@ -302,7 +302,7 @@ impl TraceSink for Evidence {
     }
     fn scope_exit(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _: usize,
         _: FuncId,
@@ -318,7 +318,7 @@ impl TraceSink for Evidence {
     }
     fn instr_end(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: TraceLocation,
         _: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
@@ -701,14 +701,18 @@ fn panicking_transfer_observers_cannot_expose_caller_results_or_retry_the_operat
         fn mask(&self) -> TraceMask {
             TraceMask::CALL | TraceMask::HOST | TraceMask::VALUES | TraceMask::INSTR
         }
-        fn values(&mut self, _: &execution_tape::program::Program, event: ValueEvent<'_>) {
+        fn values(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            event: ValueEvent<'_>,
+        ) {
             if !self.on_scope && matches!(event, ValueEvent::ReturnFrom { .. }) {
                 panic!("admission observer");
             }
         }
         fn scope_exit(
             &mut self,
-            _: &execution_tape::program::Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             kind: ScopeKind,
             _: usize,
             _: FuncId,

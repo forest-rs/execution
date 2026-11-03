@@ -34,7 +34,7 @@ impl core::ops::Deref for CodeOwner {
 }
 
 impl CodeOwner {
-    fn instance(&self) -> Option<&Instance> {
+    pub(super) fn instance(&self) -> Option<&Instance> {
         match self {
             Self::Instance(instance) | Self::RetainedInstance { instance, .. } => Some(instance),
             _ => None,
@@ -46,6 +46,7 @@ pub(super) struct Continuation<'a> {
     pub(super) program: CodeOwner,
     pub(super) entry: FuncId,
     pub(super) parent: Option<(ActivationId, TraceLocation)>,
+    pub(super) delimiter: Option<invocation::delimited::Delimiter>,
     pub(super) returned_at: Option<TraceLocation>,
     pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: Registers,
@@ -81,6 +82,7 @@ impl<'a> Continuation<'a> {
             program,
             entry,
             parent: None,
+            delimiter: None,
             returned_at: None,
             args,
             ctx: Registers::default(),
@@ -102,6 +104,17 @@ impl<'a> Continuation<'a> {
         work: DataWork,
     ) -> Result<(), TrapInfo> {
         budget.select(&self.control);
+        // Every entry path installs ownership before it calls this method. Leave an
+        // interrupted admission poisoned, whether an observer panics before or after
+        // frame setup; a later resume must neither retry entry nor execute guest code.
+        self.control.waiting = Waiting::Transition(TraceLocation {
+            func: self.entry,
+            pc: 0,
+        });
+        if self.trace.active() {
+            self.control.enable_identity();
+            self.trace.stack = Some(self.control.root_activation());
+        }
         self.trace
             .run_start(self.program.program(), self.entry, self.args.len());
         self.trace
@@ -136,6 +149,7 @@ impl<'a> Continuation<'a> {
                 self.program.instance(),
             )?;
         }
+        self.control.waiting = Waiting::Ready;
         Ok(())
     }
 }
@@ -196,6 +210,7 @@ impl Continuation<'_> {
 mod tests {
     use super::*;
     use crate::asm::{FunctionSig, ProgramBuilder};
+    use crate::control::arena::Resumptions;
     use crate::host::SigHash;
 
     struct NoHost;
@@ -368,11 +383,19 @@ mod tests {
             Ok(Progress::Returned(_))
         ));
         let child_output = child.outputs[0].clone();
-        Running::new(&mut vm, &mut parent, &mut budget, checkpoint)
-            .pending_host_call()
-            .unwrap()
-            .complete(&mut [child_output.clone()], Ok(0))
-            .unwrap();
+        Running {
+            vm: &mut vm,
+            continuation: &mut parent,
+            budget: &mut budget,
+            checkpoint,
+            parents: &mut Vec::new(),
+            next_segment: &mut 1,
+            resumptions: &mut Resumptions::default(),
+        }
+        .pending_host_call()
+        .unwrap()
+        .complete(&mut [child_output.clone()], Ok(0))
+        .unwrap();
         assert!(matches!(
             parent.advance(&mut vm, &mut budget, 10),
             Ok(Progress::Returned(_))
@@ -631,18 +654,34 @@ mod tests {
                     Ok(Progress::AwaitingHost)
                 ));
             }
-            Running::new(&mut vm, &mut first, &mut budget, checkpoint)
-                .pending_host_call()
-                .unwrap()
-                .context()
-                .tuple_new(vec![Value::Str("one".into())])
-                .unwrap();
-            let error = Running::new(&mut vm, &mut second, &mut budget, checkpoint)
-                .pending_host_call()
-                .unwrap()
-                .context()
-                .tuple_new(vec![Value::Str("two".into())])
-                .unwrap_err();
+            Running {
+                vm: &mut vm,
+                continuation: &mut first,
+                budget: &mut budget,
+                checkpoint,
+                parents: &mut Vec::new(),
+                next_segment: &mut 1,
+                resumptions: &mut Resumptions::default(),
+            }
+            .pending_host_call()
+            .unwrap()
+            .context()
+            .tuple_new(vec![Value::Str("one".into())])
+            .unwrap();
+            let error = Running {
+                vm: &mut vm,
+                continuation: &mut second,
+                budget: &mut budget,
+                checkpoint,
+                parents: &mut Vec::new(),
+                next_segment: &mut 1,
+                resumptions: &mut Resumptions::default(),
+            }
+            .pending_host_call()
+            .unwrap()
+            .context()
+            .tuple_new(vec![Value::Str("two".into())])
+            .unwrap_err();
             let HostError::Custom(error) = error else {
                 panic!("typed denial")
             };

@@ -6,7 +6,7 @@
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::{Program, ValueType},
+    program::ValueType,
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     trace::{
@@ -734,17 +734,30 @@ fn cancellation_of_a_pending_host_call_is_incomplete_and_releases_only_new_aggre
 #[derive(Clone, Default)]
 struct Log(Rc<RefCell<Vec<String>>>);
 impl TraceSink for Log {
-    fn run_start(&mut self, _: &Program, entry: FuncId, count: usize) {
+    fn run_start(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        entry: FuncId,
+        count: usize,
+    ) {
         self.0.borrow_mut().push(format!("start {entry:?} {count}"));
     }
-    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, next: u32, _: Option<u64>, _: u8) {
+    fn instr(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        func: FuncId,
+        pc: u32,
+        next: u32,
+        _: Option<u64>,
+        _: u8,
+    ) {
         self.0
             .borrow_mut()
             .push(format!("instruction {func:?} {pc} {next}"));
     }
     fn instr_end(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
@@ -755,7 +768,7 @@ impl TraceSink for Log {
     }
     fn scope_enter(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -768,7 +781,7 @@ impl TraceSink for Log {
     }
     fn scope_exit(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -780,10 +793,15 @@ impl TraceSink for Log {
             .borrow_mut()
             .push(format!("exit {kind:?} {depth} {func:?} {pc} {outcome:?}"));
     }
-    fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
         self.0.borrow_mut().push(format!("value {event:?}"));
     }
-    fn registers(&mut self, _: &Program, event: RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        event: RegisterEvent<'_>,
+    ) {
+        let _ = _context.program();
         self.0.borrow_mut().push(format!(
             "registers {:?} {:?} {:?}",
             event.location,
@@ -791,7 +809,11 @@ impl TraceSink for Log {
             event.values.iter().collect::<Vec<_>>()
         ));
     }
-    fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        outcome: TraceOutcome<'_>,
+    ) {
         self.0.borrow_mut().push(format!("run end {outcome:?}"));
     }
 }
@@ -916,7 +938,7 @@ fn abandonment_is_terminal_even_when_a_cancellation_observer_panics() {
     impl TraceSink for PanicOnCancellation {
         fn instr_end(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             _: TraceLocation,
             _: Option<TraceLocation>,
             outcome: TraceOutcome<'_>,

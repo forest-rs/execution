@@ -423,7 +423,8 @@ impl core::fmt::Debug for SegmentRecorder {
 }
 
 impl TraceSink for SegmentRecorder {
-    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
+    fn run_mask(&mut self, context: crate::trace::TraceContext<'_>, mask: TraceMask) {
+        let program = context.program();
         if !self.check(program) {
             return;
         }
@@ -436,7 +437,12 @@ impl TraceSink for SegmentRecorder {
             }
         }
     }
-    fn wants_registers(&self, location: TraceLocation, _: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: crate::trace::TraceContext<'_>,
+        location: TraceLocation,
+        _: RegisterPhase,
+    ) -> bool {
         self.fault.is_none()
             && self.history.as_ref().is_some_and(|h| {
                 h.status != InstructionStatus::Incomplete
@@ -446,8 +452,9 @@ impl TraceSink for SegmentRecorder {
             })
     }
 
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        if !self.check(program) || !self.wants_registers(event.location, event.phase) {
+    fn registers(&mut self, context: crate::trace::TraceContext<'_>, event: RegisterEvent<'_>) {
+        let program = context.program();
+        if !self.check(program) || !self.wants_registers(context, event.location, event.phase) {
             return;
         }
         let history = self.history.as_mut().expect("enabled history");
@@ -511,7 +518,8 @@ impl TraceSink for SegmentRecorder {
             }
     }
 
-    fn run_start(&mut self, program: &Program, _: FuncId, _: usize) {
+    fn run_start(&mut self, context: crate::trace::TraceContext<'_>, _: FuncId, _: usize) {
+        let program = context.program();
         if self.started || self.entry.is_some() {
             self.fail(CaptureFault::MultipleRuns);
         }
@@ -527,13 +535,14 @@ impl TraceSink for SegmentRecorder {
 
     fn instr(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         func: FuncId,
         pc: u32,
         _: u32,
         _: Option<u64>,
         opcode: u8,
     ) {
+        let program = context.program();
         if !self.check(program) {
             return;
         }
@@ -545,11 +554,12 @@ impl TraceSink for SegmentRecorder {
 
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = context.program();
         if !self.check(program) {
             return;
         }
@@ -559,7 +569,8 @@ impl TraceSink for SegmentRecorder {
         history.complete_instruction(location, next, outcome);
     }
 
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, context: crate::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let program = context.program();
         let location = match event {
             ValueEvent::Entry { .. } => None,
             ValueEvent::HostCall { location, .. }
@@ -577,13 +588,14 @@ impl TraceSink for SegmentRecorder {
 
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         _: Option<u64>,
     ) {
+        let program = context.program();
         let ScopeKind::CallFrame {
             func: callee,
             caller,
@@ -638,7 +650,7 @@ impl TraceSink for SegmentRecorder {
 
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -646,6 +658,7 @@ impl TraceSink for SegmentRecorder {
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = context.program();
         let ScopeKind::CallFrame {
             func: callee,
             caller,
@@ -682,7 +695,8 @@ impl TraceSink for SegmentRecorder {
         self.top = frame.parent;
     }
 
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(&mut self, context: crate::trace::TraceContext<'_>, outcome: TraceOutcome<'_>) {
+        let program = context.program();
         if let Some(history) = &mut self.history {
             history.finished = true;
             if history.has_pending() {

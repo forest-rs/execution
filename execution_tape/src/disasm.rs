@@ -250,6 +250,38 @@ pub enum CallTarget<'a> {
 /// Disassembled instruction operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operands<'a> {
+    /// Consume a computation under a dynamically installed handler context.
+    Resume {
+        /// One-use continuation register.
+        continuation: u32,
+        /// Expected resume input and final result contracts.
+        signature: CallSigId,
+        /// Resume value registers.
+        args: &'a [u32],
+        /// Final result registers.
+        rets: &'a [u32],
+        /// Operation-to-handler bindings in matching order.
+        handlers: &'a [crate::asm::HandlerArm],
+        /// Effect input register.
+        eff_in: u32,
+        /// Effect output register.
+        eff_out: u32,
+    },
+    /// Capture the computation inside its nearest matching delimiter.
+    Suspend {
+        /// Exact operation identity register.
+        tag: u32,
+        /// Expected request and response contracts.
+        signature: CallSigId,
+        /// Request value registers.
+        request: &'a [u32],
+        /// Response destination registers.
+        response: &'a [u32],
+        /// Effect input register.
+        eff_in: u32,
+        /// Effect output register.
+        eff_out: u32,
+    },
     /// Typed parameter declaration; no runtime instruction is emitted.
     Block {
         /// Destination registers in declaration order.
@@ -314,6 +346,10 @@ pub struct BlockEdge<'a> {
 /// A table/index-like immediate operand.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum InputIndex {
+    /// Instance-local control protocol declaration.
+    ControlTag(crate::program::ControlTagId),
+    /// Signature used by a callable or control operation.
+    CallSig(CallSigId),
     /// Trap code for [`Opcode::Trap`].
     TrapCode(u32),
     /// Constant pool index for [`Opcode::ConstPool`].
@@ -383,6 +419,17 @@ impl<'a> InstrView<'a> {
     /// Optional index-like immediate operand (const pool, host sig table, type ids, etc.).
     #[must_use]
     pub fn input_index(&self) -> Option<InputIndex> {
+        match self.decoded.instr {
+            Instr::ConstTag { tag_id, .. } | Instr::TagNew { tag_id, .. } => {
+                return Some(InputIndex::ControlTag(crate::program::ControlTagId(tag_id)));
+            }
+            Instr::ContNew { call_sig, .. }
+            | Instr::ContResume { call_sig, .. }
+            | Instr::Suspend { call_sig, .. } => {
+                return Some(InputIndex::CallSig(CallSigId(call_sig)));
+            }
+            _ => {}
+        }
         let operands = self.opcode().operands();
         // Keep the behavior stable: if there are multiple index-like roles, prefer the first one.
         if operands
@@ -488,6 +535,45 @@ impl<'a> InstrView<'a> {
     /// Full-fidelity operands for instructions that don't fit the `dst/srcs/input_index` shape.
     #[must_use]
     pub fn operands(&self) -> Operands<'a> {
+        match &self.decoded.instr {
+            Instr::ContResume {
+                continuation,
+                call_sig,
+                args,
+                rets,
+                handlers,
+                eff_in,
+                eff_out,
+            } => {
+                return Operands::Resume {
+                    continuation: *continuation,
+                    signature: CallSigId(*call_sig),
+                    args,
+                    rets,
+                    handlers,
+                    eff_in: *eff_in,
+                    eff_out: *eff_out,
+                };
+            }
+            Instr::Suspend {
+                tag,
+                call_sig,
+                args,
+                rets,
+                eff_in,
+                eff_out,
+            } => {
+                return Operands::Suspend {
+                    tag: *tag,
+                    signature: CallSigId(*call_sig),
+                    request: args,
+                    response: rets,
+                    eff_in: *eff_in,
+                    eff_out: *eff_out,
+                };
+            }
+            _ => {}
+        }
         let opcode = self.opcode();
         if opcode.is_call_like() {
             return match &self.decoded.instr {
@@ -617,340 +703,6 @@ pub enum ConstValue<'a> {
     Bytes(&'a [u8]),
     /// UTF-8 string constant (borrowed from the program constant pool).
     Str(&'a str),
-}
-
-#[cfg(any())]
-fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> InstrView<'a> {
-    let opcode = Opcode::from_u8(di.opcode).unwrap();
-    let mut view = InstrView {
-        func,
-        pc: di.offset,
-        opcode,
-        dst: None,
-        srcs: Vec::new(),
-        input_index: None,
-        host_op_symbol: None,
-        operands: Operands::Simple,
-        const_value: None,
-    };
-
-    match di.instr {
-        Instr::Nop => {}
-        Instr::Mov { dst, src } => {
-            view.dst = Some(dst);
-            view.srcs = vec![src];
-        }
-        Instr::Trap { code } => {
-            view.input_index = Some(InputIndex::TrapCode(code));
-        }
-
-        Instr::ConstUnit { dst } => {
-            view.dst = Some(dst);
-            view.const_value = Some(ConstValue::Unit);
-        }
-        Instr::ConstBool { dst, imm } => {
-            view.dst = Some(dst);
-            view.const_value = Some(ConstValue::Bool(imm));
-        }
-        Instr::ConstI64 { dst, imm } => {
-            view.dst = Some(dst);
-            view.const_value = Some(ConstValue::I64(imm));
-        }
-        Instr::ConstU64 { dst, imm } => {
-            view.dst = Some(dst);
-            view.const_value = Some(ConstValue::U64(imm));
-        }
-        Instr::ConstF64 { dst, bits } => {
-            view.dst = Some(dst);
-            view.const_value = Some(ConstValue::F64Bits(bits));
-        }
-        Instr::ConstDecimal { dst, value } => {
-            view.dst = Some(dst);
-            view.const_value = Some(ConstValue::Decimal(value));
-        }
-        Instr::ConstPool { dst, idx } => {
-            view.dst = Some(dst);
-            view.input_index = Some(InputIndex::Const(idx));
-            view.const_value = const_pool_value(program, idx);
-        }
-
-        Instr::DecAdd { dst, a, b }
-        | Instr::DecSub { dst, a, b }
-        | Instr::DecMul { dst, a, b }
-        | Instr::F64Add { dst, a, b }
-        | Instr::F64Sub { dst, a, b }
-        | Instr::F64Mul { dst, a, b }
-        | Instr::F64Div { dst, a, b }
-        | Instr::F64Min { dst, a, b }
-        | Instr::F64Max { dst, a, b }
-        | Instr::F64MinNum { dst, a, b }
-        | Instr::F64MaxNum { dst, a, b }
-        | Instr::F64Rem { dst, a, b }
-        | Instr::I64Add { dst, a, b }
-        | Instr::I64Sub { dst, a, b }
-        | Instr::I64Mul { dst, a, b }
-        | Instr::U64Add { dst, a, b }
-        | Instr::U64Sub { dst, a, b }
-        | Instr::U64Mul { dst, a, b }
-        | Instr::U64And { dst, a, b }
-        | Instr::U64Or { dst, a, b }
-        | Instr::U64Xor { dst, a, b }
-        | Instr::U64Shl { dst, a, b }
-        | Instr::U64Shr { dst, a, b }
-        | Instr::I64And { dst, a, b }
-        | Instr::I64Or { dst, a, b }
-        | Instr::I64Xor { dst, a, b }
-        | Instr::I64Shl { dst, a, b }
-        | Instr::I64Shr { dst, a, b }
-        | Instr::U64Div { dst, a, b }
-        | Instr::U64Rem { dst, a, b }
-        | Instr::I64Div { dst, a, b }
-        | Instr::I64Rem { dst, a, b }
-        | Instr::U64Eq { dst, a, b }
-        | Instr::U64Lt { dst, a, b }
-        | Instr::U64Gt { dst, a, b }
-        | Instr::U64Le { dst, a, b }
-        | Instr::U64Ge { dst, a, b }
-        | Instr::I64Eq { dst, a, b }
-        | Instr::I64Lt { dst, a, b }
-        | Instr::I64Gt { dst, a, b }
-        | Instr::I64Le { dst, a, b }
-        | Instr::I64Ge { dst, a, b }
-        | Instr::F64Eq { dst, a, b }
-        | Instr::F64Lt { dst, a, b }
-        | Instr::F64Gt { dst, a, b }
-        | Instr::F64Le { dst, a, b }
-        | Instr::F64Ge { dst, a, b }
-        | Instr::BoolAnd { dst, a, b }
-        | Instr::BoolOr { dst, a, b }
-        | Instr::BoolXor { dst, a, b } => {
-            view.dst = Some(dst);
-            view.srcs = vec![a, b];
-        }
-
-        Instr::F64Neg { dst, a } | Instr::F64Abs { dst, a } | Instr::BoolNot { dst, a } => {
-            view.dst = Some(dst);
-            view.srcs = vec![a];
-        }
-
-        Instr::F64ToBits { dst, a }
-        | Instr::F64FromBits { dst, a }
-        | Instr::I64ToU64 { dst, a }
-        | Instr::U64ToI64 { dst, a }
-        | Instr::I64ToF64 { dst, a }
-        | Instr::U64ToF64 { dst, a }
-        | Instr::F64ToI64 { dst, a }
-        | Instr::F64ToU64 { dst, a }
-        | Instr::DecToI64 { dst, a }
-        | Instr::DecToU64 { dst, a } => {
-            view.dst = Some(dst);
-            view.srcs = vec![a];
-        }
-
-        Instr::I64ToDec { dst, a, scale } | Instr::U64ToDec { dst, a, scale } => {
-            view.dst = Some(dst);
-            view.srcs = vec![a];
-            view.input_index = Some(InputIndex::Index(u32::from(scale)));
-        }
-
-        Instr::Select { dst, cond, a, b } => {
-            view.dst = Some(dst);
-            view.srcs = vec![cond, a, b];
-        }
-
-        Instr::Br {
-            cond,
-            pc_true,
-            pc_false,
-        } => {
-            view.srcs = vec![cond];
-            view.operands = Operands::Br {
-                cond,
-                pc_true,
-                pc_false,
-            };
-        }
-        Instr::Jmp { pc_target } => {
-            view.operands = Operands::Jmp { pc_target };
-        }
-
-        Instr::Call {
-            eff_out,
-            func_id,
-            eff_in,
-            args,
-            rets,
-        } => {
-            view.dst = Some(eff_out);
-            view.input_index = Some(InputIndex::Func(func_id));
-            view.srcs = Vec::with_capacity(1 + args.len() + rets.len());
-            view.srcs.push(eff_in);
-            view.srcs.extend(args.iter().copied());
-            view.srcs.extend(rets.iter().copied());
-            view.operands = Operands::Call(CallLikeOperands {
-                eff_out,
-                callee: CallTarget::Func(func_id),
-                eff_in,
-                args,
-                rets,
-            });
-        }
-        Instr::Ret { eff_in, rets } => {
-            view.srcs = Vec::with_capacity(1 + rets.len());
-            view.srcs.push(eff_in);
-            view.srcs.extend(rets.iter().copied());
-            view.operands = Operands::Ret { eff_in, rets };
-        }
-        Instr::HostCall {
-            eff_out,
-            host_sig,
-            eff_in,
-            args,
-            rets,
-        } => {
-            view.dst = Some(eff_out);
-            view.input_index = Some(InputIndex::HostSig(host_sig));
-            view.host_op_symbol = host_sig_symbol(program, host_sig);
-            view.srcs = Vec::with_capacity(1 + args.len() + rets.len());
-            view.srcs.push(eff_in);
-            view.srcs.extend(args.iter().copied());
-            view.srcs.extend(rets.iter().copied());
-            view.operands = Operands::Call(CallLikeOperands {
-                eff_out,
-                callee: CallTarget::HostSig(host_sig, view.host_op_symbol),
-                eff_in,
-                args,
-                rets,
-            });
-        }
-        Instr::CallIndirect {
-            eff_out,
-            call_sig,
-            callee,
-            eff_in,
-            args,
-            rets,
-        } => {
-            view.dst = Some(eff_out);
-            view.input_index = Some(InputIndex::Index(call_sig));
-            view.srcs = Vec::with_capacity(2 + args.len() + rets.len());
-            view.srcs.push(callee);
-            view.srcs.push(eff_in);
-            view.srcs.extend(args.iter().copied());
-            view.srcs.extend(rets.iter().copied());
-        }
-        Instr::ClosureNew { dst, func, env } => {
-            view.dst = Some(dst);
-            view.srcs = vec![func, env];
-        }
-
-        Instr::TupleNew { dst, values } => {
-            view.dst = Some(dst);
-            view.srcs = values;
-        }
-        Instr::TupleGet { dst, tuple, index } => {
-            view.dst = Some(dst);
-            view.srcs = vec![tuple];
-            view.input_index = Some(InputIndex::Index(index));
-        }
-        Instr::StructNew {
-            dst,
-            type_id,
-            values,
-        } => {
-            view.dst = Some(dst);
-            view.srcs = values;
-            view.input_index = Some(InputIndex::Type(type_id));
-        }
-        Instr::StructGet {
-            dst,
-            st,
-            field_index,
-        } => {
-            view.dst = Some(dst);
-            view.srcs = vec![st];
-            view.input_index = Some(InputIndex::Index(field_index));
-        }
-        Instr::ArrayNew {
-            dst,
-            elem_type_id,
-            len,
-            values,
-        } => {
-            view.dst = Some(dst);
-            view.srcs = values;
-            // `len` is redundant with `values.len()` but is part of the encoding.
-            view.input_index = Some(InputIndex::ElemType(elem_type_id));
-            let _ = len;
-        }
-        Instr::ArrayLen { dst, arr } => {
-            view.dst = Some(dst);
-            view.srcs = vec![arr];
-        }
-        Instr::ArrayGet { dst, arr, index } => {
-            view.dst = Some(dst);
-            view.srcs = vec![arr, index];
-        }
-        Instr::ArrayGetImm { dst, arr, index } => {
-            view.dst = Some(dst);
-            view.srcs = vec![arr];
-            view.input_index = Some(InputIndex::Index(index));
-        }
-        Instr::TupleLen { dst, tuple } => {
-            view.dst = Some(dst);
-            view.srcs = vec![tuple];
-        }
-        Instr::StructFieldCount { dst, st } => {
-            view.dst = Some(dst);
-            view.srcs = vec![st];
-        }
-        Instr::BytesLen { dst, bytes } => {
-            view.dst = Some(dst);
-            view.srcs = vec![bytes];
-        }
-        Instr::StrLen { dst, s } => {
-            view.dst = Some(dst);
-            view.srcs = vec![s];
-        }
-        Instr::BytesEq { dst, a, b } | Instr::StrEq { dst, a, b } => {
-            view.dst = Some(dst);
-            view.srcs = vec![a, b];
-        }
-        Instr::BytesConcat { dst, a, b } | Instr::StrConcat { dst, a, b } => {
-            view.dst = Some(dst);
-            view.srcs = vec![a, b];
-        }
-        Instr::BytesGet { dst, bytes, index } => {
-            view.dst = Some(dst);
-            view.srcs = vec![bytes, index];
-        }
-        Instr::BytesGetImm { dst, bytes, index } => {
-            view.dst = Some(dst);
-            view.srcs = vec![bytes];
-            view.input_index = Some(InputIndex::Index(index));
-        }
-        Instr::BytesSlice {
-            dst,
-            bytes,
-            start,
-            end,
-        }
-        | Instr::StrSlice {
-            dst,
-            s: bytes,
-            start,
-            end,
-        } => {
-            view.dst = Some(dst);
-            view.srcs = vec![bytes, start, end];
-        }
-        Instr::StrToBytes { dst, s } | Instr::BytesToStr { dst, bytes: s } => {
-            view.dst = Some(dst);
-            view.srcs = vec![s];
-        }
-    }
-
-    view
 }
 
 fn instr_view<'a>(program: &'a Program, func: FuncId, di: &'a DecodedInstr) -> InstrView<'a> {
@@ -1096,6 +848,8 @@ fn fmt_value_type(w: &mut fmt::Formatter<'_>, ty: ValueType) -> fmt::Result {
         ValueType::Agg => write!(w, "Agg"),
         ValueType::Func => write!(w, "Func"),
         ValueType::Closure => write!(w, "Closure"),
+        ValueType::Tag => write!(w, "Tag"),
+        ValueType::Continuation => write!(w, "Continuation"),
     }
 }
 
@@ -1239,6 +993,9 @@ fn fmt_instr_with_labels(
 ) -> fmt::Result {
     write!(f, "  {:06}: {}", iv.pc(), iv.opcode().mnemonic())?;
     match iv.operands() {
+        op @ (Operands::Resume { .. } | Operands::Suspend { .. }) => {
+            fmt_control(f, op, iv.program)?;
+        }
         Operands::Block { params } => fmt_block(f, params, iv)?,
         Operands::JmpArgs { pc_target, args } => {
             write!(f, " ")?;
@@ -1352,6 +1109,54 @@ fn fmt_instr_with_labels(
     Ok(())
 }
 
+fn fmt_control(f: &mut fmt::Formatter<'_>, op: Operands<'_>, program: &Program) -> fmt::Result {
+    let (signature, eff_in, eff_out) = match op {
+        Operands::Resume {
+            continuation,
+            signature,
+            args,
+            rets,
+            handlers,
+            eff_in,
+            eff_out,
+        } => {
+            write!(f, " r{continuation}, args=")?;
+            fmt_reg_list(f, args)?;
+            f.write_str(", handlers=[")?;
+            for (index, arm) in handlers.iter().enumerate() {
+                if index != 0 {
+                    f.write_str(", ")?;
+                }
+                match arm {
+                    crate::asm::HandlerArm::Suspend { tag, handler } => {
+                        write!(f, "suspend r{tag} => r{handler}")?;
+                    }
+                }
+            }
+            f.write_str("], rets=")?;
+            fmt_reg_list(f, rets)?;
+            (signature, eff_in, eff_out)
+        }
+        Operands::Suspend {
+            tag,
+            signature,
+            request,
+            response,
+            eff_in,
+            eff_out,
+        } => {
+            write!(f, " r{tag}, request=")?;
+            fmt_reg_list(f, request)?;
+            f.write_str(", response=")?;
+            fmt_reg_list(f, response)?;
+            (signature, eff_in, eff_out)
+        }
+        _ => unreachable!("control operands"),
+    };
+    write!(f, ", eff=r{eff_in}→r{eff_out}")?;
+    fmt_call_sig_annotation(f, program, signature)
+}
+
 fn fmt_const_value(f: &mut fmt::Formatter<'_>, v: ConstValue<'_>) -> fmt::Result {
     match v {
         ConstValue::Unit => write!(f, "()"),
@@ -1396,6 +1201,9 @@ impl fmt::Display for InstrView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:06}: {}", self.pc(), self.opcode().mnemonic())?;
         match self.operands() {
+            op @ (Operands::Resume { .. } | Operands::Suspend { .. }) => {
+                fmt_control(f, op, self.program)?;
+            }
             Operands::Block { params } => fmt_block(f, params, self)?,
             Operands::JmpArgs { pc_target, args } => {
                 write!(f, " @{pc_target:06}(")?;
@@ -1503,6 +1311,8 @@ impl fmt::Display for InstrView<'_> {
 impl fmt::Display for InputIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            Self::ControlTag(id) => write!(f, "control_tag#{}", id.0),
+            Self::CallSig(id) => write!(f, "call_sig#{}", id.0),
             Self::TrapCode(code) => write!(f, "trap_code={code}"),
             Self::Const(id) => write!(f, "const#{}", id.0),
             Self::HostSig(id) => write!(f, "host_sig#{}", id.0),

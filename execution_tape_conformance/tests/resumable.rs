@@ -6,7 +6,7 @@
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::{Program, ValueType},
+    program::ValueType,
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink},
     value::{FuncId, Value},
@@ -134,7 +134,7 @@ struct Events {
 impl TraceSink for Events {
     fn scope_enter(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: ScopeKind,
         _: usize,
         _: FuncId,
@@ -145,7 +145,7 @@ impl TraceSink for Events {
     }
     fn scope_exit(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: ScopeKind,
         _: usize,
         _: FuncId,
@@ -155,7 +155,11 @@ impl TraceSink for Events {
     ) {
         self.cancelled_scopes += usize::from(matches!(outcome, TraceOutcome::Cancelled));
     }
-    fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        outcome: TraceOutcome<'_>,
+    ) {
         self.cancelled_runs += usize::from(matches!(outcome, TraceOutcome::Cancelled));
     }
 }
@@ -332,7 +336,7 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
     impl TraceSink for PanicAtReturn {
         fn instr_end(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             _: execution_tape::trace::TraceLocation,
             next: Option<execution_tape::trace::TraceLocation>,
             outcome: TraceOutcome<'_>,
@@ -348,7 +352,7 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
         }
         fn scope_exit(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             _: ScopeKind,
             _: usize,
             _: FuncId,

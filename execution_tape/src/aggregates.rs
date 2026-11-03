@@ -22,6 +22,9 @@ use crate::value::{AggHandle, AggType, Value};
 /// An aggregate heap error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AggError {
+    /// An execution-local control capability cannot be retained in a durable snapshot.
+    ExecutionLocalValue,
+
     /// Handle was out of bounds.
     BadHandle,
     /// Type mismatch (e.g. non-array passed to `array_get`).
@@ -39,6 +42,9 @@ pub enum AggError {
 impl fmt::Display for AggError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ExecutionLocalValue => f.write_str(
+                "execution-local control capability cannot be retained in an owned snapshot",
+            ),
             Self::BadHandle => write!(f, "aggregate handle out of bounds"),
             Self::WrongKind => write!(f, "aggregate kind mismatch"),
             Self::OutOfBounds => write!(f, "index out of bounds"),
@@ -577,7 +583,8 @@ impl AggHeap {
     /// Copies roots and their reachable aggregate graph into an independent owned snapshot.
     ///
     /// Visits only reachable nodes, preserves sharing and distinct node identity, and rejects
-    /// dangling handles. Plain byte/string roots are copied. Unreachable heap data is not copied.
+    /// dangling handles and execution-local control capabilities. Plain byte/string roots are
+    /// copied. Unreachable heap data is not copied.
     pub fn snapshot(&self, values: &[Value]) -> Result<ValueSnapshot, AggError> {
         self.snapshot_owned(values.to_vec())
     }
@@ -604,6 +611,13 @@ impl AggHeap {
                 }
             })?
             .expect("requested remapping");
+        if values
+            .iter()
+            .chain(self.nodes.iter().flat_map(AggNode::values))
+            .any(|value| matches!(value, Value::Continuation(_)))
+        {
+            return Err(AggError::ExecutionLocalValue);
+        }
         self.nodes.shrink_to_fit();
         Ok((
             ValueSnapshot {
@@ -885,6 +899,7 @@ fn copy_roots_into<'a>(
                  pending: &mut Vec<u32>|
      -> Result<(), AggError> {
         let handle = match value {
+            Value::Continuation(_) => return Err(AggError::ExecutionLocalValue),
             Value::Agg(h) => h,
             Value::Closure(c) => &mut c.env,
             _ => return Ok(()),

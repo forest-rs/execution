@@ -267,22 +267,27 @@ impl TraceSink for RunOnly {
             TraceMask::RUN
         }
     }
-    fn run_mask(&mut self, _: &execution_tape::program::Program, mask: TraceMask) {
+    fn run_mask(&mut self, _context: execution_tape::trace::TraceContext<'_>, mask: TraceMask) {
         self.masks.push(mask);
     }
-    fn run_start(&mut self, _: &execution_tape::program::Program, _: FuncId, _: usize) {
+    fn run_start(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _: FuncId,
+        _: usize,
+    ) {
         self.starts += 1;
     }
     fn run_end(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: execution_tape::trace::TraceOutcome<'_>,
     ) {
         self.ends += 1;
     }
     fn scope_enter(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: execution_tape::trace::ScopeKind,
         _: usize,
         _: FuncId,

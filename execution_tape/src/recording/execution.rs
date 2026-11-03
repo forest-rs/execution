@@ -99,7 +99,9 @@ pub enum TransferAction<'a> {
         parent: RecordedActivation,
         /// Requested child root, including rejected entries.
         child: RecordedActivation,
-        /// Arguments in the shared store.
+        /// Exact function or closure requested, retaining its code and environment ownership.
+        callee: &'a RecordedValue,
+        /// Explicit arguments in the shared store, excluding a closure's environment.
         args: &'a [RecordedValue],
         /// Host construction already charged before staging promotion.
         work: DataWork,
@@ -169,6 +171,7 @@ pub(super) enum Action {
         origin: crate::trace::EntryOrigin,
         parent: RecordedActivation,
         child: RecordedActivation,
+        callee: Range<usize>,
         args: Range<usize>,
         work: DataWork,
         constructed: Vec<AggregateId>,
@@ -286,6 +289,7 @@ impl Recording {
                         origin,
                         parent,
                         child,
+                        callee,
                         args,
                         work,
                         constructed,
@@ -293,6 +297,11 @@ impl Recording {
                         origin: *origin,
                         parent: *parent,
                         child: *child,
+                        callee: evidence
+                            .arena
+                            .slice(callee)
+                            .first()
+                            .expect("captured callable"),
                         args: evidence.arena.slice(args),
                         work: *work,
                         constructed,

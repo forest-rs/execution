@@ -14,6 +14,7 @@ use alloc::{boxed::Box, vec};
 
 #[derive(Default)]
 pub(super) struct Identities {
+    pub(super) controls: ControlBindings,
     forward: BTreeMap<u32, AggHandle>,
     inverse: BTreeMap<u32, u32>,
 }
@@ -42,6 +43,7 @@ struct Context<'a> {
     states: Vec<Option<Rc<RefCell<State>>>>,
     instances: Vec<Instance>,
     stack: Vec<usize>,
+    selected: usize,
     pending: Option<usize>,
     next: usize,
     started: Vec<bool>,
@@ -62,6 +64,7 @@ fn endpoint(id: &crate::vm::ActivationId) -> RecordedActivation {
 fn limits_match(a: &crate::vm::Limits, b: &crate::vm::Limits) -> bool {
     a.fuel == b.fuel
         && a.max_call_depth == b.max_call_depth
+        && a.max_continuations == b.max_continuations
         && a.max_host_calls == b.max_host_calls
         && a.max_contract_work == b.max_contract_work
         && a.max_aggregate_work == b.max_aggregate_work
@@ -73,7 +76,20 @@ impl<'a> Context<'a> {
         self.data.evidence(self.root, index)
     }
     fn current(&self) -> usize {
-        self.stack.last().copied().unwrap_or(0)
+        self.selected
+    }
+    fn index_for(&self, event: crate::trace::TraceContext<'_>) -> Option<usize> {
+        event.stack().map_or(Some(self.current()), |stack| {
+            self.data.index(stack.segment_ordinal())
+        })
+    }
+    fn select(&mut self, event: crate::trace::TraceContext<'_>) -> Option<usize> {
+        let Some(index) = self.index_for(event) else {
+            self.fail(self.current(), Divergence::CallStack);
+            return None;
+        };
+        self.selected = index;
+        Some(index)
     }
     fn qualify(&self, index: usize, error: ReplayError) -> ReplayError {
         ReplayError::InSegment {
@@ -195,6 +211,7 @@ impl<'a> Context<'a> {
                     origin,
                     parent,
                     child,
+                    callee,
                     args,
                     work,
                     constructed,
@@ -206,6 +223,7 @@ impl<'a> Context<'a> {
                     source_instance,
                     instance,
                     entry,
+                    callee: actual_callee,
                     args: actual_args,
                     work: actual_work,
                     created,
@@ -233,6 +251,12 @@ impl<'a> Context<'a> {
                     return Err(self.qualify(index, state.mismatch(Divergence::CallStack)));
                 }
                 check_created(record, &mut state, constructed, created)?;
+                state.matches(
+                    record,
+                    record.arena.slice(callee),
+                    [ValueRef::from_value(actual_callee)],
+                    aggregates,
+                )?;
                 state.matches(
                     record,
                     record.arena.slice(args),
@@ -452,44 +476,78 @@ impl<'a> Context<'a> {
             return;
         }
         self.finished[index] = true;
-        self.stack.pop();
+        if self.stack.last() == Some(&index) {
+            self.stack.pop();
+        }
     }
 }
 
 struct Observer<'a>(Rc<RefCell<Context<'a>>>);
 impl TraceSink for Observer<'_> {
-    fn run_mask(&mut self, program: &Program, _: TraceMask) {
+    fn run_mask(&mut self, event_context: crate::trace::TraceContext<'_>, _: TraceMask) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.pending.unwrap_or_else(|| context.current());
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
         context.check_program(index, program);
     }
-    fn run_start(&mut self, program: &Program, _: FuncId, _: usize) {
-        self.0.borrow_mut().begin(program);
+    fn run_start(&mut self, event_context: crate::trace::TraceContext<'_>, _: FuncId, _: usize) {
+        let program = event_context.program();
+        let mut context = self.0.borrow_mut();
+        if context.select(event_context).is_some() {
+            context.begin(program);
+        }
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
-        self.0.borrow_mut().end(program, outcome);
+    fn run_end(
+        &mut self,
+        event_context: crate::trace::TraceContext<'_>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        let program = event_context.program();
+        let mut context = self.0.borrow_mut();
+        if context.select(event_context).is_some() {
+            context.end(program, outcome);
+        }
     }
-    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        event_context: crate::trace::TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
         let context = self.0.borrow();
         if context.error.is_some() {
             return false;
         }
-        let index = context.current();
+        let Some(index) = context.index_for(event_context) else {
+            return false;
+        };
         let record = context.record(index).expect("active record");
         Check {
             record,
             state: Rc::clone(context.states[index].as_ref().expect("state")),
         }
-        .wants_registers(location, phase)
+        .wants_registers(event_context, location, phase)
     }
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        event_context: crate::trace::TraceContext<'_>,
+        event: RegisterEvent<'_>,
+    ) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.current();
-        context.dispatch(index, program, |check| check.registers(program, event));
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
+        context.dispatch(index, program, |check| {
+            check.registers(event_context, event);
+        });
     }
-    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+    fn control(&mut self, event_context: crate::trace::TraceContext<'_>, event: ControlEvent<'_>) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        if context.error.is_some() {
+        if context.error.is_some() || context.select(event_context).is_none() {
             return;
         }
         if let Err(error) = context.check_control(program, event) {
@@ -500,9 +558,12 @@ impl TraceSink for Observer<'_> {
             });
         }
     }
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, event_context: crate::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.current();
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
         if context.error.is_some() {
             return;
         }
@@ -538,60 +599,69 @@ impl TraceSink for Observer<'_> {
                 return;
             }
         }
-        context.dispatch(index, program, |check| check.values(program, event));
+        context.dispatch(index, program, |check| check.values(event_context, event));
     }
     fn instr(
         &mut self,
-        program: &Program,
+        event_context: crate::trace::TraceContext<'_>,
         func: FuncId,
         pc: u32,
         next: u32,
         span: Option<u64>,
         opcode: u8,
     ) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.current();
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
         context.locations[index] = Some(TraceLocation { func, pc });
         context.dispatch(index, program, |check| {
-            check.instr(program, func, pc, next, span, opcode);
+            check.instr(event_context, func, pc, next, span, opcode);
         });
     }
     fn instr_end(
         &mut self,
-        program: &Program,
+        event_context: crate::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.current();
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
         context.dispatch(index, program, |check| {
-            check.instr_end(program, location, next, outcome);
+            check.instr_end(event_context, location, next, outcome);
         });
     }
     fn scope_enter(
         &mut self,
-        program: &Program,
+        event_context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         span: Option<u64>,
     ) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.current();
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
         if context
             .record(index)
             .is_some_and(|record| !record.frames.is_empty())
         {
             context.dispatch(index, program, |check| {
-                check.scope_enter(program, kind, depth, func, pc, span);
+                check.scope_enter(event_context, kind, depth, func, pc, span);
             });
         }
     }
     fn scope_exit(
         &mut self,
-        program: &Program,
+        event_context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -599,15 +669,18 @@ impl TraceSink for Observer<'_> {
         span: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = event_context.program();
         let mut context = self.0.borrow_mut();
-        let index = context.current();
+        let Some(index) = context.select(event_context) else {
+            return;
+        };
         context.locations[index] = Some(TraceLocation { func, pc });
         if context
             .record(index)
             .is_some_and(|record| !record.frames.is_empty())
         {
             context.dispatch(index, program, |check| {
-                check.scope_exit(program, kind, depth, func, pc, span, outcome);
+                check.scope_exit(event_context, kind, depth, func, pc, span, outcome);
             });
         }
     }
@@ -616,8 +689,7 @@ impl TraceSink for Observer<'_> {
 enum Next {
     Ordinary(Delivery),
     Enter {
-        instance: Instance,
-        entry: FuncId,
+        callee: Value,
         args: Vec<Value>,
     },
     Exit {
@@ -659,27 +731,17 @@ fn delivery(
         restore_construction(record, &mut state, request, work, constructed)
             .map_err(|error| context.qualify(index, error))?;
         return match &transfer.action {
-            TransferAction::Enter { child, args, .. } => {
-                let child_index = context
-                    .data
-                    .index(child.segment)
+            TransferAction::Enter { callee, args, .. } => {
+                let mut callee = state
+                    .materialize(record, record.arena.slice(callee), request.aggregates())
+                    .map_err(|error| context.qualify(index, error))?;
+                let callee = callee
+                    .pop()
                     .ok_or_else(|| context.qualify(index, state.mismatch(Divergence::Outcome)))?;
-                let meta = &context.data.segments[child_index];
-                let instance = meta
-                    .instance
-                    .and_then(|id| context.instances.get(id))
-                    .ok_or_else(|| context.qualify(index, state.mismatch(Divergence::Outcome)))?
-                    .clone();
                 let args = state
                     .materialize(record, record.arena.slice(args), request.aggregates())
                     .map_err(|error| context.qualify(index, error))?;
-                Ok(Next::Enter {
-                    instance,
-                    entry: meta.entry.ok_or_else(|| {
-                        context.qualify(index, state.mismatch(Divergence::Outcome))
-                    })?,
-                    args,
-                })
+                Ok(Next::Enter { callee, args })
             }
             TransferAction::ReturnFrom { target, values, .. } => {
                 let activation = request
@@ -807,6 +869,7 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
         states,
         instances,
         stack: Vec::new(),
+        selected: 0,
         pending: None,
         next: 0,
         started: vec![false; count],
@@ -850,18 +913,7 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
                     };
                     let next = next?;
                     match next {
-                        Next::Enter {
-                            instance,
-                            entry,
-                            args,
-                        } => match request.call_guest(
-                            instance.function(entry).map_err(|_| {
-                                context
-                                    .borrow()
-                                    .mismatch(context.borrow().current(), Divergence::Outcome)
-                            })?,
-                            args,
-                        ) {
+                        Next::Enter { callee, args } => match request.call_guest(callee, args) {
                             Ok(()) => {}
                             Err(crate::vm::ControlError::Trapped(error)) => break Err(error),
                             Err(_) => {
@@ -1002,8 +1054,29 @@ fn validate(root: &Recording, data: &evidence::ExecutionData) -> Result<(), Repl
                 args,
                 parent,
                 child,
+                callee,
                 ..
-            } => (Some(args), [*parent, *child]),
+            } => {
+                let Some([value]) = record.arena.values.get(callee.clone()) else {
+                    return Err(invalid(transfer.segment));
+                };
+                let function = match value {
+                    RecordedValue::Func(function) => function,
+                    RecordedValue::Closure { func, .. } => func,
+                    _ => return Err(invalid(transfer.segment)),
+                };
+                let child_index = data
+                    .index(child.segment)
+                    .ok_or_else(|| invalid(transfer.segment))?;
+                let meta = &data.segments[child_index];
+                if meta.entry != Some(function.id())
+                    || meta.instance.and_then(|index| data.instances.get(index))
+                        != Some(function.instance())
+                {
+                    return Err(invalid(transfer.segment));
+                }
+                (Some(args), [*parent, *child])
+            }
             TransferAction::Rejected { parent, child }
             | TransferAction::Returned { parent, child, .. } => {
                 let values = if let TransferAction::Returned { values, .. } = &transfer.action {

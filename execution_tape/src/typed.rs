@@ -29,6 +29,8 @@ pub(crate) enum RegClass {
     Agg,
     Func,
     Closure,
+    Tag,
+    Continuation,
 }
 
 impl RegClass {
@@ -46,6 +48,8 @@ impl RegClass {
             ValueType::Agg => Self::Agg,
             ValueType::Func => Self::Func,
             ValueType::Closure => Self::Closure,
+            ValueType::Tag => Self::Tag,
+            ValueType::Continuation => Self::Continuation,
         }
     }
 }
@@ -72,6 +76,10 @@ pub(crate) struct AggReg(pub u32);
 pub(crate) struct FuncReg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClosureReg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TagReg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContinuationReg(pub u32);
 
 /// A typed register reference (class + class-local index).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -89,6 +97,8 @@ pub(crate) enum VReg {
     Agg(AggReg),
     Func(FuncReg),
     Closure(ClosureReg),
+    Tag(TagReg),
+    Continuation(ContinuationReg),
 }
 
 impl VReg {
@@ -107,6 +117,8 @@ impl VReg {
             Self::Agg(reg) => (9, reg.0),
             Self::Func(reg) => (10, reg.0),
             Self::Closure(reg) => (11, reg.0),
+            Self::Tag(reg) => (12, reg.0),
+            Self::Continuation(reg) => (13, reg.0),
         }
     }
 }
@@ -143,6 +155,8 @@ pub(crate) struct RegCounts {
     pub(crate) aggs: usize,
     pub(crate) funcs: usize,
     pub(crate) closures: usize,
+    pub(crate) tags: usize,
+    pub(crate) continuations: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,6 +175,7 @@ pub(crate) struct ExecDecoded {
 /// A verifier-produced instruction stream with typed register operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ExecInstr {
+    Control(alloc::boxed::Box<ControlInstruction>),
     /// No payload action. Source instruction, fuel and observations are preserved.
     Nop,
     /// Trap unconditionally with a trap code.
@@ -211,6 +226,14 @@ pub(crate) enum ExecInstr {
     MovClosure {
         dst: ClosureReg,
         src: ClosureReg,
+    },
+    MovTag {
+        dst: TagReg,
+        src: TagReg,
+    },
+    MovContinuation {
+        dst: ContinuationReg,
+        src: ContinuationReg,
     },
 
     ConstBool {
@@ -596,6 +619,18 @@ pub(crate) enum ExecInstr {
         a: ClosureReg,
         b: ClosureReg,
     },
+    SelectTag {
+        dst: TagReg,
+        cond: BoolReg,
+        a: TagReg,
+        b: TagReg,
+    },
+    SelectContinuation {
+        dst: ContinuationReg,
+        cond: BoolReg,
+        a: ContinuationReg,
+        b: ContinuationReg,
+    },
 
     Br {
         true_copies: VRegSlice,
@@ -819,6 +854,8 @@ pub(crate) struct ExecFunc {
     pub(crate) reg_layout: RegLayout,
     pub(crate) operands: Vec<VReg>,
     pub(crate) instrs: Vec<ExecDecoded>,
+    /// Exact owned allocation payloads behind prepared control instruction boxes.
+    pub(crate) control_bytes: usize,
     /// Optional source span id for each decoded instruction index.
     ///
     /// This is precomputed by the verifier from the function span table so VM execution can do
@@ -853,4 +890,53 @@ impl ExecFunc {
 pub(crate) struct ContractCheck {
     pub(crate) index: u32,
     pub(crate) contract: crate::contract::ContractId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ControlHandler {
+    pub(crate) tag: TagReg,
+    pub(crate) handler: VReg,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ControlInstruction {
+    Tag {
+        dst: TagReg,
+        declaration: crate::program::ControlTagId,
+        fresh: bool,
+    },
+    New {
+        dst: ContinuationReg,
+        signature: CallSigId,
+        callee: VReg,
+    },
+    Resume {
+        signature: CallSigId,
+        continuation: ContinuationReg,
+        args: VRegSlice,
+        rets: VRegSlice,
+        handlers: alloc::boxed::Box<[ControlHandler]>,
+    },
+    Suspend {
+        signature: CallSigId,
+        tag: TagReg,
+        args: VRegSlice,
+        rets: VRegSlice,
+    },
+    Drop {
+        continuation: ContinuationReg,
+    },
+    IsHandled {
+        dst: BoolReg,
+        tag: TagReg,
+    },
+}
+
+impl ControlInstruction {
+    pub(crate) fn prepared_bytes(&self) -> usize {
+        size_of::<Self>()
+            + match self {
+                Self::Resume { handlers, .. } => size_of_val(handlers.as_ref()),
+                _ => 0,
+            }
+    }
 }

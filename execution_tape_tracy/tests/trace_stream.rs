@@ -156,7 +156,6 @@ fn profiling_sink_handles_real_scope_stream() {
 #[test]
 fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
     use execution_tape::{
-        program::Program,
         source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
         trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome},
     };
@@ -170,24 +169,25 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
         }
         fn scope_enter(
             &mut self,
-            program: &Program,
+            context: execution_tape::trace::TraceContext<'_>,
             kind: ScopeKind,
             depth: usize,
             func: FuncId,
             pc: u32,
             span: Option<u64>,
         ) {
+            let program = context.program();
             let source = self
                 .sink
                 .source_location(program, TraceLocation { func, pc })
                 .expect("scope maps to its own function/PC");
             self.locations
                 .push((func, source.document().name.clone(), source.start().line));
-            self.sink.scope_enter(program, kind, depth, func, pc, span);
+            self.sink.scope_enter(context, kind, depth, func, pc, span);
         }
         fn scope_exit(
             &mut self,
-            program: &Program,
+            context: execution_tape::trace::TraceContext<'_>,
             kind: ScopeKind,
             depth: usize,
             func: FuncId,
@@ -196,7 +196,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
             outcome: TraceOutcome<'_>,
         ) {
             self.sink
-                .scope_exit(program, kind, depth, func, pc, span, outcome);
+                .scope_exit(context, kind, depth, func, pc, span, outcome);
         }
     }
     let (program, entry, expected_sig) = build_program();

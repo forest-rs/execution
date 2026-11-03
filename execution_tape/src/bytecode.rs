@@ -90,6 +90,50 @@ pub(crate) struct DecodedInstr {
 /// Instruction set (draft).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Instr {
+    /// Instance-local control operation.
+    ConstTag { dst: u32, tag_id: u32 },
+    /// Fresh lexical control operation.
+    TagNew {
+        dst: u32,
+        tag_id: u32,
+        eff_out: u32,
+        eff_in: u32,
+    },
+    /// Unstarted execution-owned computation.
+    ContNew {
+        dst: u32,
+        call_sig: u32,
+        callee: u32,
+        eff_out: u32,
+        eff_in: u32,
+    },
+    /// Attach a computation under dynamic handler arms.
+    ContResume {
+        call_sig: u32,
+        continuation: u32,
+        eff_out: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+        handlers: Vec<crate::asm::HandlerArm>,
+    },
+    /// Capture inside a matching dynamic delimiter.
+    Suspend {
+        call_sig: u32,
+        tag: u32,
+        eff_out: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
+    /// Hard-cancel saved computation.
+    ContDrop {
+        continuation: u32,
+        eff_out: u32,
+        eff_in: u32,
+    },
+    /// Query dynamic operation availability.
+    TagIsHandled { dst: u32, tag: u32 },
     /// No-op.
     Nop,
     /// Typed block parameter declaration, erased during preparation.

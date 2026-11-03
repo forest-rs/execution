@@ -5,7 +5,7 @@
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use execution_tape::program::{Program, ValueType};
+use execution_tape::program::ValueType;
 use execution_tape::trace::{RegisterEvent, RegisterPhase, TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
@@ -32,13 +32,22 @@ struct Observe {
     selected: Option<u32>,
 }
 impl TraceSink for Observe {
-    fn run_mask(&mut self, _: &Program, mask: TraceMask) {
+    fn run_mask(&mut self, _context: execution_tape::trace::TraceContext<'_>, mask: TraceMask) {
         self.masks.push(mask);
     }
-    fn wants_registers(&self, location: TraceLocation, _: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        location: TraceLocation,
+        _: RegisterPhase,
+    ) -> bool {
         self.selected.is_none_or(|pc| location.pc == pc)
     }
-    fn registers(&mut self, _: &Program, event: RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        event: RegisterEvent<'_>,
+    ) {
         self.events.push((
             event.location.pc,
             event.phase,

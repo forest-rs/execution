@@ -332,7 +332,7 @@ Generic dispatch and publication policy remain with the language runtime.
 Live values use their original store. Explicit `Callable::retain(heap, value)` exports code
 and copies a closure's reachable captures. Starting that owned callable imports the graph
 and binds captured code references to destination namespaces; it does not copy native host
-state or retain external objects. `Vm::bind_function` explicitly binds a retained function
+state or retain external objects. `Vm::bind_instance` explicitly binds a retained code namespace
 without an environment. Copying a heap snapshot alone preserves its original function
 namespaces and does not grant another VM permission to invoke them.
 

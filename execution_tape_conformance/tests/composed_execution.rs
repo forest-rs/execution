@@ -297,12 +297,14 @@ struct Audit {
     entered: Vec<String>,
 }
 impl TraceSink for Audit {
-    fn run_start(&mut self, code: &execution_tape::program::Program, _: FuncId, _: usize) {
+    fn run_start(&mut self, context: execution_tape::trace::TraceContext<'_>, _: FuncId, _: usize) {
+        let code = context.program();
         let name = code.name().unwrap_or("unnamed").to_owned();
         self.entered.push(name.clone());
         self.runs.push(name);
     }
-    fn run_end(&mut self, code: &execution_tape::program::Program, _: TraceOutcome<'_>) {
+    fn run_end(&mut self, context: execution_tape::trace::TraceContext<'_>, _: TraceOutcome<'_>) {
+        let code = context.program();
         assert_eq!(
             self.runs.pop().as_deref(),
             code.name(),
@@ -311,19 +313,20 @@ impl TraceSink for Audit {
     }
     fn scope_enter(
         &mut self,
-        code: &execution_tape::program::Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _: usize,
         _: FuncId,
         _: u32,
         _: Option<u64>,
     ) {
+        let code = context.program();
         self.scopes
             .push((code.name().unwrap_or("unnamed").into(), kind));
     }
     fn scope_exit(
         &mut self,
-        code: &execution_tape::program::Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _: usize,
         _: FuncId,
@@ -331,13 +334,18 @@ impl TraceSink for Audit {
         _: Option<u64>,
         _: TraceOutcome<'_>,
     ) {
+        let code = context.program();
         assert_eq!(
             self.scopes.pop(),
             Some((code.name().unwrap_or("unnamed").into(), kind)),
             "profiling scopes retain their exact code owner across a switch"
         );
     }
-    fn control(&mut self, _: &execution_tape::program::Program, event: ControlEvent<'_>) {
+    fn control(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        event: ControlEvent<'_>,
+    ) {
         let (kind, source, target) = match event {
             ControlEvent::EnterInstance { parent, child, .. } => ("enter", parent, child),
             ControlEvent::RejectInstance { parent, child, .. } => ("reject", parent, child),
@@ -348,7 +356,7 @@ impl TraceSink for Audit {
     }
     fn instr_end(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: TraceLocation,
         _: Option<TraceLocation>,
         _: TraceOutcome<'_>,

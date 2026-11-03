@@ -672,7 +672,7 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
     impl TraceSink for InputProbe {
         fn values(
             &mut self,
-            _: &execution_tape::program::Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             event: execution_tape::trace::ValueEvent<'_>,
         ) {
             if let execution_tape::trace::ValueEvent::Entry { args, work, .. } = event {

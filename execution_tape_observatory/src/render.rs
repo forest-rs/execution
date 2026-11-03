@@ -58,6 +58,14 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
             let location =
                 location.map_or_else(String::new, |loc| format!(" f{}:{:06}", loc.func.0, loc.pc));
             let reason = match reason {
+                Divergence::ControlTag { expected } => {
+                    format!("control tag identity mismatch for {}", expected.name())
+                }
+                Divergence::Continuation { expected } => format!(
+                    "continuation identity or contract mismatch for #{}:{}",
+                    expected.id().ordinal(),
+                    expected.id().revision()
+                ),
                 Divergence::Value { aggregate, index } => aggregate.map_or_else(
                     || format!("value mismatch root[{index}]"),
                     |id| format!("value mismatch @{} field[{index}]", id.get()),

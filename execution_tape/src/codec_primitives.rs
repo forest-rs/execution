@@ -106,3 +106,39 @@ pub(crate) fn write_reg_list(out: &mut Vec<u8>, regs: &[u32]) -> Result<(), OutO
     }
     Ok(())
 }
+
+pub(crate) fn read_handlers(
+    r: &mut Reader<'_>,
+) -> Result<Vec<crate::asm::HandlerArm>, DecodeError> {
+    let count = read_u32_uleb(r)? as usize;
+    if count > r.remaining() / 3 {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let mut arms = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mode = r.read_u8()?;
+        let tag = read_reg(r)?;
+        let handler = read_reg(r)?;
+        arms.push(match mode {
+            0 => crate::asm::HandlerArm::Suspend { tag, handler },
+            _ => return Err(DecodeError::OutOfBounds),
+        });
+    }
+    Ok(arms)
+}
+pub(crate) fn write_handlers(
+    out: &mut Vec<u8>,
+    arms: &[crate::asm::HandlerArm],
+) -> Result<(), OutOfBounds> {
+    write_u32_uleb(out, u32::try_from(arms.len()).map_err(|_| OutOfBounds)?);
+    for &arm in arms {
+        match arm {
+            crate::asm::HandlerArm::Suspend { tag, handler } => {
+                out.push(0);
+                write_reg(out, tag);
+                write_reg(out, handler);
+            }
+        }
+    }
+    Ok(())
+}

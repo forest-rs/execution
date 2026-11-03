@@ -193,7 +193,12 @@ impl TraceSink for FootfallSink {
         }
     }
 
-    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+    fn control(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        event: ControlEvent<'_>,
+    ) {
+        let program = context.program();
         let (kind, source, target) = match event {
             ControlEvent::EnterInstance { parent, child, .. } => (&ENTER_INSTANCE, parent, child),
             ControlEvent::RejectInstance { parent, child, .. } => (&REJECT_INSTANCE, parent, child),
@@ -208,7 +213,13 @@ impl TraceSink for FootfallSink {
         footfall::message_with(kind, self.context_for(program), "transfer", &args);
     }
 
-    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+    fn run_start(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        entry: FuncId,
+        arg_count: usize,
+    ) {
+        let program = context.program();
         let context = self.context_for(program);
         let args = Args::none()
             .with("entry", entry.0)
@@ -219,7 +230,12 @@ impl TraceSink for FootfallSink {
         });
     }
 
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        let program = context.program();
         let mut args = Args::none();
         if let Some(run) = self.runs.last()
             && run.guard.token().is_valid()
@@ -241,13 +257,14 @@ impl TraceSink for FootfallSink {
 
     fn instr(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         func: FuncId,
         pc: u32,
         _next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
     ) {
+        let program = context.program();
         let mut args = Args::none()
             .with("func", func.0)
             .with("pc", pc)
@@ -260,11 +277,12 @@ impl TraceSink for FootfallSink {
 
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = context.program();
         let mut args = Args::none()
             .with("func", location.func.0)
             .with("pc", location.pc);
@@ -282,13 +300,14 @@ impl TraceSink for FootfallSink {
 
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         _span_id: Option<u64>,
     ) {
+        let program = context.program();
         let args = Args::none()
             .with("func", func.0)
             .with("pc", pc)
@@ -303,7 +322,7 @@ impl TraceSink for FootfallSink {
 
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         _kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -311,6 +330,7 @@ impl TraceSink for FootfallSink {
         _span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = context.program();
         let mut args = Args::none()
             .with("func", func.0)
             .with("pc", pc)
@@ -340,9 +360,13 @@ mod tests {
     fn a_nested_run_retains_the_waiting_parent_scope() {
         let code = ProgramBuilder::new().build();
         let mut sink = FootfallSink::new(ContextHandle::ROOT);
-        sink.run_start(&code, FuncId(0), 0);
+        sink.run_start(
+            execution_tape::trace::TraceContext::unscoped(&code),
+            FuncId(0),
+            0,
+        );
         sink.scope_enter(
-            &code,
+            execution_tape::trace::TraceContext::unscoped(&code),
             ScopeKind::CallFrame {
                 func: FuncId(0),
                 caller: None,
@@ -352,7 +376,11 @@ mod tests {
             0,
             None,
         );
-        sink.run_start(&code, FuncId(0), 0);
+        sink.run_start(
+            execution_tape::trace::TraceContext::unscoped(&code),
+            FuncId(0),
+            0,
+        );
         assert_eq!(sink.runs.len(), 2, "child entry retains the parent run");
         assert_eq!(
             sink.scopes.len(),
@@ -360,7 +388,7 @@ mod tests {
             "child entry retains the parent's actual waiting frame"
         );
         sink.scope_enter(
-            &code,
+            execution_tape::trace::TraceContext::unscoped(&code),
             ScopeKind::CallFrame {
                 func: FuncId(0),
                 caller: None,
@@ -370,7 +398,10 @@ mod tests {
             0,
             None,
         );
-        sink.run_end(&code, TraceOutcome::Ok);
+        sink.run_end(
+            execution_tape::trace::TraceContext::unscoped(&code),
+            TraceOutcome::Ok,
+        );
         assert_eq!(
             sink.runs.len(),
             1,
@@ -381,7 +412,10 @@ mod tests {
             1,
             "parent scope remains live until its own outcome"
         );
-        sink.run_end(&code, TraceOutcome::Cancelled);
+        sink.run_end(
+            execution_tape::trace::TraceContext::unscoped(&code),
+            TraceOutcome::Cancelled,
+        );
         assert!(
             sink.runs.is_empty() && sink.scopes.is_empty(),
             "root completion closes the remaining scopes"

@@ -7,7 +7,7 @@ use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     instance::{Instance, InstanceError},
-    program::{Program, ValueType},
+    program::ValueType,
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{TraceMask, TraceSink},
     value::{FuncId, Value},
@@ -124,7 +124,12 @@ fn default_namespaces_survive_switching_between_shared_definitions() {
 fn foreign_store_denial_precedes_entry_observation_and_host_effects() {
     struct NoEntry;
     impl TraceSink for NoEntry {
-        fn run_start(&mut self, _: &Program, _: FuncId, _: usize) {
+        fn run_start(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            _: FuncId,
+            _: usize,
+        ) {
             panic!("foreign entry was observed")
         }
     }

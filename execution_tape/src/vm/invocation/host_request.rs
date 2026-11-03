@@ -78,6 +78,8 @@ fn arguments<'a>(
             &ctx.aggs,
             &ctx.funcs,
             &ctx.closures,
+            &ctx.tags,
+            &ctx.continuations,
             base,
             register,
         )
@@ -120,7 +122,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             self.running
                 .continuation
                 .control
-                .pending_host
+                .waiting
+                .host()
                 .expect("pending guard"),
         )
     }
@@ -295,13 +298,11 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
 impl<H: Host> Drop for PendingHostCall<'_, '_, H> {
     fn drop(&mut self) {
         if self.delivering && self.running.continuation.outcome.is_none() {
-            let pending = self
-                .running
-                .continuation
-                .control
-                .pending_host
-                .get_or_insert(self.original);
-            pending.abandoned = true;
+            let waiting = &mut self.running.continuation.control.waiting;
+            if matches!(waiting, Waiting::Ready) {
+                *waiting = Waiting::Host(self.original);
+            }
+            waiting.poison();
         }
     }
 }
@@ -323,13 +324,15 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         }
         self.continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .filter(|pending| !pending.abandoned)?;
         Some(PendingHostCall {
             original: self
                 .continuation
                 .control
-                .pending_host
+                .waiting
+                .host()
                 .expect("pending guard"),
             running: self,
             delivering: false,
@@ -340,7 +343,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         let pending = self
             .continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .expect("pending guard");
         let site = site(&self.continuation.program, &self.continuation.ctx, pending);
         let vm = &mut *self.vm;
@@ -414,7 +418,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 self.vm.memory.aggs(),
                 self.continuation
                     .control
-                    .pending_host
+                    .waiting
+                    .host()
                     .expect("pending guard"),
                 values,
                 outcome,
@@ -432,7 +437,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 self.vm.memory.aggs(),
                 self.continuation
                     .control
-                    .pending_host
+                    .waiting
+                    .host()
                     .expect("pending guard"),
                 values,
                 outcome,
@@ -442,7 +448,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 &mut (),
             )
         };
-        self.continuation.control.pending_host = None;
+        self.continuation.control.waiting = Waiting::Ready;
         if let Err(error) = &result {
             self.finish(Err(error.clone()));
         }
@@ -462,7 +468,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             Trap::HostCallAbandoned,
         );
         self.finish_outcome(Err(error.clone()), true);
-        self.continuation.control.pending_host = None;
+        self.continuation.control.waiting = Waiting::Ready;
         error
     }
 }

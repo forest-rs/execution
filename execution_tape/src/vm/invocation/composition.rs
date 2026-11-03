@@ -6,17 +6,97 @@
 use super::*;
 use crate::trace::{ControlEvent, EntryOrigin};
 use crate::value::AggType;
+use crate::value::FunctionRef;
 use alloc::collections::BTreeSet;
 
 impl<'state, H: Host> Running<'_, 'state, H> {
+    pub(super) fn new_control(&mut self) -> ExecutionControl {
+        let mut control = ExecutionControl::start(self.continuation.control.yield_host_calls);
+        control.inherit_execution(&self.continuation.control);
+        control.segment = *self.next_segment;
+        *self.next_segment = self
+            .next_segment
+            .checked_add(1)
+            .expect("segment creation spends hard fuel");
+        control
+    }
+
+    /// Build owned control state uniformly; admission and initialization remain explicit.
+    pub(super) fn segment(
+        &mut self,
+        target: &FunctionRef,
+        environment: Option<AggHandle>,
+        mut args: Vec<Value>,
+        control: ExecutionControl,
+        location: TraceLocation,
+    ) -> continuation::Continuation<'state> {
+        if let Some(environment) = environment {
+            args.insert(0, Value::Agg(environment));
+        }
+        let mut child = continuation::Continuation::with_control(
+            CodeOwner::Instance(target.instance().clone()),
+            target.id(),
+            Cow::Owned(args),
+            InvocationOptions::default(),
+            control,
+        );
+        child.trace.mask = self.continuation.trace.mask;
+        child.trace.sink = Observer::share(&mut self.continuation.trace.sink);
+        child.access = Observer::share(&mut self.continuation.access);
+        child.parent = Some((
+            self.continuation.control.activation(
+                &self.continuation.ctx,
+                self.continuation.ctx.frames.len() - 1,
+            ),
+            location,
+        ));
+        child
+    }
+
+    pub(super) fn admit_segment(
+        &mut self,
+        child: &continuation::Continuation<'_>,
+        environment: Option<AggHandle>,
+    ) -> Result<(), Trap> {
+        let target = child.program.instance().expect("qualified segment");
+        let mut args = child.args.as_ref();
+        if environment.is_some() {
+            // A closure carries its environment's code interpretation. Only explicit
+            // arguments originate in the invoking definition.
+            check_transfer(
+                self.vm.memory.aggs(),
+                &args[..1],
+                target,
+                target,
+                self.budget,
+                &self.vm.limits,
+                child.entry,
+                true,
+            )?;
+            args = &args[1..];
+        }
+        check_transfer(
+            self.vm.memory.aggs(),
+            args,
+            self.continuation
+                .ctx
+                .instance
+                .as_ref()
+                .expect("source namespace"),
+            target,
+            self.budget,
+            &self.vm.limits,
+            child.entry,
+            true,
+        )
+    }
+
     pub(super) fn has_parents(&self) -> bool {
-        self.parents
-            .as_ref()
-            .is_some_and(|parents| !parents.is_empty())
+        !self.parents.is_empty()
     }
 
     pub(super) fn check_return_values(&mut self, values: &[Value]) -> Result<(), Trap> {
-        let Some(parent) = self.parents.as_ref().and_then(|parents| parents.last()) else {
+        let Some(parent) = self.parents.last() else {
             return Ok(());
         };
         check_transfer(
@@ -36,7 +116,7 @@ impl<'state, H: Host> Running<'_, 'state, H> {
     }
 
     fn check_return_transfer(&mut self) -> Result<(), Trap> {
-        let Some(parent) = self.parents.as_ref().and_then(|parents| parents.last()) else {
+        let Some(parent) = self.parents.last() else {
             return Ok(());
         };
         check_transfer(
@@ -55,55 +135,37 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         )
     }
 
-    pub(super) fn enter_instance(
+    pub(super) fn enter_segment(
         &mut self,
-        instance: &Instance,
-        entry: FuncId,
+        target: &FunctionRef,
+        environment: Option<AggHandle>,
         args: Vec<Value>,
         origin: EntryOrigin,
     ) -> Result<(), TrapInfo> {
-        let (location, depth) = if let Some(pending) = self.continuation.control.pending_guest {
-            (pending.location, pending.depth)
-        } else {
-            let pending = self
-                .continuation
-                .control
-                .pending_host
-                .expect("pending call");
-            (pending.location, pending.depth)
-        };
+        let (location, _) = self
+            .continuation
+            .control
+            .waiting
+            .site()
+            .expect("pending call");
         let span = self.continuation.ctx.span_at(
             self.continuation.program.program(),
             location.func,
             location.pc,
         );
         self.continuation.control.enable_identity();
-        let mut child = continuation::Continuation::new(
-            CodeOwner::Instance(instance.clone()),
-            entry,
-            Cow::Owned(args),
-            InvocationOptions {
-                yield_host_calls: self.continuation.control.yield_host_calls,
-                ..InvocationOptions::default()
-            },
-        );
-        child.trace.sink = Observer::share(&mut self.continuation.trace.sink);
-        child.trace.mask = self.continuation.trace.mask;
-        child.access = Observer::share(&mut self.continuation.access);
-        child.control.inherit_execution(&self.continuation.control);
-        let next = self
-            .next_segment
-            .as_deref_mut()
-            .expect("execution segment allocator");
-        child.control.segment = *next;
-        *next = next
-            .checked_add(1)
-            .expect("each new segment consumes execution fuel");
-        let parent_id = self
-            .continuation
-            .control
-            .activation(&self.continuation.ctx, depth - 1);
-        child.parent = Some((parent_id.clone(), location));
+        let control = self.new_control();
+        let child = self.segment(target, environment, args, control, location);
+        let instance = target.instance();
+        let entry = target.id();
+        let callee = match environment {
+            Some(env) => Value::Closure(Closure {
+                func: target.clone(),
+                env,
+            }),
+            None => Value::Func(target.clone()),
+        };
+        let parent_id = child.parent.as_ref().expect("source activation").0.clone();
         let child_id = child.control.root_activation();
         let result = (|| {
             let mut staged = self.continuation.host_results.take().unwrap_or_default();
@@ -127,7 +189,8 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                             .expect("source instance"),
                         instance,
                         entry,
-                        args: &child.args,
+                        callee: &callee,
+                        args: &child.args[usize::from(environment.is_some())..],
                         work,
                         created: &created,
                         aggregates: self.vm.memory.aggs(),
@@ -148,21 +211,8 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 })?;
                 self.budget.data.charge_payload_bytes(payload, 1)?;
             }
-            check_transfer(
-                self.vm.memory.aggs(),
-                &child.args,
-                self.continuation
-                    .ctx
-                    .instance
-                    .as_ref()
-                    .expect("host instance"),
-                instance,
-                self.budget,
-                &self.vm.limits,
-                entry,
-                true,
-            )
-            .map_err(|trap| trap.in_contract_definition(instance.program()))?;
+            self.admit_segment(&child, environment)
+                .map_err(|trap| trap.in_contract_definition(instance.program()))?;
             Ok(())
         })();
         if let Err(trap) = result {
@@ -183,14 +233,12 @@ impl<'state, H: Host> Running<'_, 'state, H> {
             self.finish(Err(error.clone()));
             return Err(error);
         }
-        let result = child.initialize(self.vm, self.budget, DataWork::default());
-        // Install the actual parent before handling rejection. Fatal admission closes every
-        // retained stack and rolls back only through the execution's one transaction owner.
+        // Install both owners before initialization can notify arbitrary observers.
         let parent = core::mem::replace(self.continuation, child);
-        self.parents
-            .as_deref_mut()
-            .expect("execution owner")
-            .push(parent);
+        self.parents.push(parent);
+        let result = self
+            .continuation
+            .initialize(self.vm, self.budget, DataWork::default());
         if let Err(error) = result {
             self.finish(Err(error.clone()));
             return Err(error);
@@ -236,15 +284,15 @@ impl<H: Host> Invocation<'_, H> {
             .continuation
             .returned_at
             .expect("actual child return site");
-        if let Some(pending) = parent.control.pending_guest {
+        if let Some(pending) = parent.control.waiting.guest() {
             let parent_id = parent.control.activation(&parent.ctx, pending.depth - 1);
             let values = core::mem::take(&mut self.continuation.outputs);
             self.continuation = parent;
             let parent = &mut self.continuation;
             parent
                 .control
-                .pending_guest
-                .as_mut()
+                .waiting
+                .guest_mut()
                 .expect("waiting guest call")
                 .abandoned = true;
             parent
@@ -289,11 +337,15 @@ impl<H: Host> Invocation<'_, H> {
             let frame = &mut parent.ctx.frames[pending.depth - 1];
             frame.pc = pc;
             frame.instr_ix = next;
-            parent.control.pending_guest = None;
+            parent.control.waiting = Waiting::Ready;
             self.budget.select(&parent.control);
             return Ok(RunStatus::Suspended);
         }
-        let pending = parent.control.pending_host.expect("suspended parent host");
+        let pending = parent
+            .control
+            .waiting
+            .host()
+            .expect("suspended parent host");
         let parent_id = parent.control.activation(&parent.ctx, pending.depth - 1);
         parent.control.callbacks.get_or_insert_default().returned =
             Some(core::mem::take(&mut self.continuation.outputs));
@@ -302,8 +354,8 @@ impl<H: Host> Invocation<'_, H> {
         self.continuation = parent;
         self.continuation
             .control
-            .pending_host
-            .as_mut()
+            .waiting
+            .host_mut()
             .expect("resumed host")
             .abandoned = true;
         let parent = &mut self.continuation;
@@ -326,8 +378,8 @@ impl<H: Host> Invocation<'_, H> {
             });
         self.continuation
             .control
-            .pending_host
-            .as_mut()
+            .waiting
+            .host_mut()
             .expect("resumed host")
             .abandoned = false;
         self.budget.select(&self.continuation.control);
@@ -348,12 +400,13 @@ pub(in crate::vm) fn check_transfer(
     let same_definition = source.program().shares_definition_with(target.program());
     let mut seen = BTreeSet::new();
     for (index, value) in values.iter().enumerate() {
-        let mut work = vec![core::slice::from_ref(value).iter()];
-        while let Some(frame) = work.last_mut() {
+        let mut work = vec![(core::slice::from_ref(value).iter(), false)];
+        while let Some((frame, encapsulated)) = work.last_mut() {
             let Some(value) = frame.next() else {
                 work.pop();
                 continue;
             };
+            let encapsulated = *encapsulated;
             budget
                 .contract_scratch
                 .charge(limits.max_contract_work)
@@ -385,16 +438,24 @@ pub(in crate::vm) fn check_transfer(
                             kind: ValueType::Closure,
                         });
                     }
-                    work.push(heap.fields(closure.env).map_err(Trap::AggError)?.iter());
+                    work.push((
+                        heap.fields(closure.env).map_err(Trap::AggError)?.iter(),
+                        true,
+                    ));
                 }
-                Value::Agg(handle) if seen.insert(handle.0) => {
+                Value::Agg(handle) if seen.insert((handle.0, encapsulated)) => {
                     let kind = heap.agg_type(*handle).map_err(Trap::AggError)?;
-                    if !same_definition && !matches!(kind, AggType::Tuple { .. }) {
+                    // Nominal captures stay inside a code-qualified closure. Passing that
+                    // closure does not expose its private schemas to the receiving code.
+                    if !encapsulated && !same_definition && !matches!(kind, AggType::Tuple { .. }) {
                         return Err(Trap::CrossInstanceValue {
                             kind: ValueType::Agg,
                         });
                     }
-                    work.push(heap.fields(*handle).map_err(Trap::AggError)?.iter());
+                    work.push((
+                        heap.fields(*handle).map_err(Trap::AggError)?.iter(),
+                        encapsulated,
+                    ));
                 }
                 _ => {}
             }

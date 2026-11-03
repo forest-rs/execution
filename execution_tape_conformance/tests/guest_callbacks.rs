@@ -7,7 +7,7 @@ use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
     contract::Contract,
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::{HostTypeId, Program, ValueType},
+    program::{HostTypeId, ValueType},
     recording::{
         ControlAction, InstructionCapture, InstructionStatus, RecordLimits, Recorder, ReplayOutcome,
     },
@@ -525,12 +525,20 @@ struct Trace {
     panic_callback_scope: bool,
 }
 impl TraceSink for Trace {
-    fn instr(&mut self, _: &Program, _: FuncId, _: u32, _: u32, _: Option<u64>, _: u8) {
+    fn instr(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _: FuncId,
+        _: u32,
+        _: u32,
+        _: Option<u64>,
+        _: u8,
+    ) {
         self.instr += 1;
     }
     fn instr_end(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: TraceLocation,
         _: Option<TraceLocation>,
         _: TraceOutcome<'_>,
@@ -539,7 +547,7 @@ impl TraceSink for Trace {
     }
     fn scope_enter(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         _: FuncId,
@@ -556,7 +564,7 @@ impl TraceSink for Trace {
     }
     fn scope_exit(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: ScopeKind,
         _: usize,
         _: FuncId,
@@ -566,7 +574,8 @@ impl TraceSink for Trace {
     ) {
         self.exit += 1;
     }
-    fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let _ = _context.program();
         match event {
             ValueEvent::CallbackEnter { .. } => self.callback_enter += 1,
             ValueEvent::CallbackReturn { .. } => self.callback_return += 1,

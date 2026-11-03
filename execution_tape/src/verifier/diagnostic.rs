@@ -12,7 +12,8 @@ impl VerifyError {
     #[must_use]
     pub fn function(&self) -> Option<FuncId> {
         match self {
-            Self::BlockDeclaration { func, .. }
+            Self::ControlTagOutOfBounds { func, .. }
+            | Self::BlockDeclaration { func, .. }
             | Self::BlockEdge { func, .. }
             | Self::InternalOpcodeSchemaMismatch { func, .. }
             | Self::UnsupportedInstruction { func, .. }
@@ -69,6 +70,8 @@ impl VerifyError {
             | Self::Decode(..)
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
+            | Self::ControlTagSignature { .. }
+            | Self::ControlTagName { .. }
             | Self::HostSigHashMismatch { .. } => None,
         }
     }
@@ -80,7 +83,8 @@ impl VerifyError {
     #[must_use]
     pub fn pc(&self) -> Option<u32> {
         match self {
-            Self::BlockDeclaration { pc, .. }
+            Self::ControlTagOutOfBounds { pc, .. }
+            | Self::BlockDeclaration { pc, .. }
             | Self::BlockEdge { pc, .. }
             | Self::InternalOpcodeSchemaMismatch { pc, .. }
             | Self::UnsupportedInstruction { pc, .. }
@@ -135,6 +139,8 @@ impl VerifyError {
             | Self::ArgCountExceedsRegs { .. }
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
+            | Self::ControlTagSignature { .. }
+            | Self::ControlTagName { .. }
             | Self::HostSigHashMismatch { .. }
             | Self::MissingRegisterTypes { .. }
             | Self::BytecodeDecode { .. } => None,

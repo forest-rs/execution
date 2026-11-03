@@ -106,6 +106,20 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
+        Instr::ConstTag { dst, tag_id } => {
+            out.push(Opcode::ConstTag as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, *tag_id);
+            Ok(())
+        },
+        Instr::TagNew { dst, eff_in, eff_out, tag_id } => {
+            out.push(Opcode::TagNew as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, *tag_id);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            Ok(())
+        },
         Instr::I64Add { a, b, dst } => {
             out.push(Opcode::I64Add as u8);
             crate::codec_primitives::write_reg(out, *dst);
@@ -738,6 +752,49 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             out.push(Opcode::F64FromBits as u8);
             crate::codec_primitives::write_reg(out, *dst);
             crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::ContNew { call_sig, callee, dst, eff_in, eff_out } => {
+            out.push(Opcode::ContNew as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_u32_uleb(out, *call_sig);
+            crate::codec_primitives::write_reg(out, *callee);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            Ok(())
+        },
+        Instr::ContResume { args, call_sig, continuation, eff_in, eff_out, handlers, rets } => {
+            out.push(Opcode::ContResume as u8);
+            crate::codec_primitives::write_u32_uleb(out, *call_sig);
+            crate::codec_primitives::write_reg(out, *continuation);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_handlers(out, handlers).map_err(|_| EncodeError::OutOfBounds)?;
+            Ok(())
+        },
+        Instr::Suspend { args, call_sig, eff_in, eff_out, rets, tag } => {
+            out.push(Opcode::Suspend as u8);
+            crate::codec_primitives::write_u32_uleb(out, *call_sig);
+            crate::codec_primitives::write_reg(out, *tag);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            crate::codec_primitives::write_reg_list(out, rets).map_err(|_| EncodeError::OutOfBounds)?;
+            Ok(())
+        },
+        Instr::ContDrop { continuation, eff_in, eff_out } => {
+            out.push(Opcode::ContDrop as u8);
+            crate::codec_primitives::write_reg(out, *continuation);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            Ok(())
+        },
+        Instr::TagIsHandled { dst, tag } => {
+            out.push(Opcode::TagIsHandled as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *tag);
             Ok(())
         },
     }

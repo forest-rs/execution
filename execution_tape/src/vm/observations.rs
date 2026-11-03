@@ -46,7 +46,11 @@ pub(super) fn emit(
     let Some(mut sink) = trace.sink.as_mut().map(Observer::borrow_mut) else {
         return;
     };
-    if !sink.wants_registers(location, phase) {
+    if !sink.wants_registers(
+        TraceContext::new(program, trace.stack.as_ref()),
+        location,
+        phase,
+    ) {
         return;
     }
     let map = match register_state.entry(func.0) {
@@ -92,13 +96,15 @@ pub(super) fn emit(
             &ctx.aggs,
             &ctx.funcs,
             &ctx.closures,
+            &ctx.tags,
+            &ctx.continuations,
             base,
             reg,
         )
         .ok()
     };
     sink.registers(
-        program,
+        TraceContext::new(program, trace.stack.as_ref()),
         RegisterEvent {
             location,
             phase,
@@ -114,7 +120,7 @@ pub(super) fn emit(
 /// Source-to-bank mapping requested by optional tracing or paused inspection.
 pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>> {
     let function = program.functions.get(func.0 as usize)?;
-    let mut counts = [0_u32; 12];
+    let mut counts = [0_u32; 14];
     let mut registers = Vec::with_capacity(function.reg_count as usize);
     for kind in function.register_types(program).ok()?.iter() {
         let class = crate::typed::RegClass::of(kind);
@@ -134,6 +140,8 @@ pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>>
             ValueType::Agg => VReg::Agg(AggReg(n)),
             ValueType::Func => VReg::Func(FuncReg(n)),
             ValueType::Closure => VReg::Closure(ClosureReg(n)),
+            ValueType::Tag => VReg::Tag(TagReg(n)),
+            ValueType::Continuation => VReg::Continuation(ContinuationReg(n)),
         });
     }
     Some(registers)

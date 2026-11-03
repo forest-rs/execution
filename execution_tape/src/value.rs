@@ -9,6 +9,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::control::{ContinuationRef, ControlTag};
 use crate::program::{ElemTypeId, HostTypeId, TypeId};
 
 mod function;
@@ -137,6 +138,10 @@ pub enum Value {
     Func(FunctionRef),
     /// Closure reference (function + captured environment).
     Closure(Closure),
+    /// Instance-qualified resumable operation identity.
+    Tag(ControlTag),
+    /// A single-use capability retained by its originating execution.
+    Continuation(ContinuationRef),
 }
 
 impl From<FunctionRef> for Value {

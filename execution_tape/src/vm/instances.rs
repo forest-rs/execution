@@ -96,24 +96,17 @@ impl Instances {
 }
 
 impl<H: Host> Vm<H> {
-    /// Binds retained code to a namespace in this VM's host store.
+    /// Binds one retained code namespace to this VM's host store.
     ///
-    /// A same-store value keeps its exact identity. A foreign reference retains its definition
-    /// and receives a destination namespace; repeated bindings preserve that association while
-    /// both namespaces remain live. This transfers no native host state or aggregate handles.
-    /// Use an owned capture import for closures, whose environments also need relocation.
-    pub fn bind_function(
-        &mut self,
-        source: &crate::value::FunctionRef,
-    ) -> Result<crate::value::FunctionRef, InstanceError> {
-        let instance = self
-            .instances
-            .import(source.instance())
-            .map_err(|_| InstanceError::CapacityExceeded)?;
-        Ok(crate::value::FunctionRef::from_verified(
-            instance,
-            source.id(),
-        ))
+    /// A same-store instance preserves its exact identity. A foreign instance receives a
+    /// destination namespace; repeated bindings preserve the association while both remain live.
+    /// Resolve functions with `bound.function(source.id())` and preserve fresh control operation
+    /// identity with `tag.in_instance(&bound)`. This transfers no host state or heap handles;
+    /// closure environments still require an owned capture import.
+    pub fn bind_instance(&mut self, source: &Instance) -> Result<Instance, InstanceError> {
+        self.instances
+            .import(source)
+            .map_err(|_| InstanceError::CapacityExceeded)
     }
 
     /// Resolves a function in this VM's default namespace for the exact prepared definition.
@@ -150,6 +143,16 @@ impl<H: Host> Vm<H> {
             .map_err(Trap::AggError)?;
         let mut remap = |value: &mut Value| {
             let function = match value {
+                Value::Tag(tag) => {
+                    let instance = self.instances.import(tag.instance())?;
+                    *tag = tag.rebind(instance);
+                    return Ok(());
+                }
+                Value::Continuation(_) => {
+                    return Err(Trap::ForeignStoreValue {
+                        kind: ValueType::Continuation,
+                    });
+                }
                 Value::Func(function) => function,
                 Value::Closure(closure) => &mut closure.func,
                 _ => return Ok(()),

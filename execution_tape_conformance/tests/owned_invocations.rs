@@ -432,7 +432,6 @@ fn graph_owned_guest_tasks_cancel_old_vms_and_reject_their_late_replies() {
 #[test]
 fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_family() {
     use execution_tape::{
-        program::Program,
         trace::{
             RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask, TraceOutcome,
             ValueEvent,
@@ -463,32 +462,58 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         fn mask(&self) -> TraceMask {
             mask()
         }
-        fn run_mask(&mut self, _: &Program, mask: TraceMask) {
+        fn run_mask(&mut self, _context: execution_tape::trace::TraceContext<'_>, mask: TraceMask) {
             self.subscribed = Some(mask);
         }
-        fn wants_registers(&self, _: TraceLocation, _: RegisterPhase) -> bool {
+        fn wants_registers(
+            &self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            _: TraceLocation,
+            _: RegisterPhase,
+        ) -> bool {
             self.filters.set(self.filters.get() + 1);
             false
         }
-        fn registers(&mut self, _: &Program, _: RegisterEvent<'_>) {
+        fn registers(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            _: RegisterEvent<'_>,
+        ) {
             panic!("register filtering was not forwarded");
         }
-        fn run_start(&mut self, _: &Program, _: FuncId, _: usize) {
+        fn run_start(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            _: FuncId,
+            _: usize,
+        ) {
             self.starts += 1;
         }
-        fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
+        fn run_end(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            outcome: TraceOutcome<'_>,
+        ) {
             assert!(matches!(outcome, TraceOutcome::Ok));
             self.ends += 1;
         }
-        fn values(&mut self, _: &Program, _: ValueEvent<'_>) {
+        fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, _: ValueEvent<'_>) {
             self.values += 1;
         }
-        fn instr(&mut self, _: &Program, _: FuncId, _: u32, _: u32, _: Option<u64>, _: u8) {
+        fn instr(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            _: FuncId,
+            _: u32,
+            _: u32,
+            _: Option<u64>,
+            _: u8,
+        ) {
             self.instructions += 1;
         }
         fn instr_end(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             _: TraceLocation,
             _: Option<TraceLocation>,
             _: TraceOutcome<'_>,
@@ -497,7 +522,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         }
         fn scope_enter(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             _: ScopeKind,
             _: usize,
             _: FuncId,
@@ -508,7 +533,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         }
         fn scope_exit(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             _: ScopeKind,
             _: usize,
             _: FuncId,

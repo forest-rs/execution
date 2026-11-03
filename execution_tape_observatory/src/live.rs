@@ -695,6 +695,18 @@ fn value_text(value: ValueRef<'_>) -> String {
             if bytes.len() > 16 { "…" } else { "" },
             bytes.len()
         ),
+        ValueRef::Tag(tag) => format!(
+            "tag {} · declaration #{}",
+            describe::preview(tag.name(), 60),
+            tag.id().0
+        ),
+        ValueRef::Continuation(reference) => format!(
+            "continuation #{}:{} · {} resume values → {} final results",
+            reference.id().ordinal(),
+            reference.id().revision(),
+            reference.parameters().ids().len(),
+            reference.results().ids().len()
+        ),
         ValueRef::Unit => "()".into(),
         ValueRef::Bool(value) => value.to_string(),
         ValueRef::I64(value) => value.to_string(),

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::contract::{Contract, ContractId, ContractMismatch, ContractPath, ContractViolation};
+use crate::control::{ContinuationRef, ContractList, ControlTag};
 use crate::program::ValueType;
 use crate::value::FunctionRef;
 use crate::verifier::VerifiedProgram;
@@ -21,6 +22,8 @@ enum Input {
     Aggregate(AggHandle),
     Function(FunctionRef),
     Closure(FunctionRef, AggHandle),
+    Tag(ControlTag),
+    Continuation(ContinuationRef),
 }
 impl Input {
     fn new(value: &Value) -> Option<Self> {
@@ -28,6 +31,8 @@ impl Input {
             Value::Agg(handle) => Some(Self::Aggregate(*handle)),
             Value::Func(function) => Some(Self::Function(function.clone())),
             Value::Closure(closure) => Some(Self::Closure(closure.func.clone(), closure.env)),
+            Value::Tag(tag) => Some(Self::Tag(tag.clone())),
+            Value::Continuation(reference) => Some(Self::Continuation(reference.clone())),
             _ => None,
         }
     }
@@ -47,6 +52,17 @@ impl Input {
                 0,
                 contract,
             ),
+            Self::Tag(tag) => (
+                owner,
+                3,
+                core::ptr::from_ref(tag.instance().program().program()) as usize,
+                tag.id().0,
+                0,
+                contract,
+            ),
+            Self::Continuation(reference) => {
+                (owner, 4, reference.metadata_identity(), 0, 0, contract)
+            }
             Self::Closure(func, env) => (
                 owner,
                 2,
@@ -62,6 +78,8 @@ impl Input {
             Self::Aggregate(_) => ValueType::Agg,
             Self::Function(_) => ValueType::Func,
             Self::Closure(..) => ValueType::Closure,
+            Self::Tag(_) => ValueType::Tag,
+            Self::Continuation(_) => ValueType::Continuation,
         }
     }
 }
@@ -81,9 +99,35 @@ pub(crate) struct ContractScratch {
     // Proof keys use definition addresses. Keep foreign definitions alive until the proof
     // cache is cleared, including when a host replaces the last live reference mid-run.
     definitions: BTreeMap<usize, VerifiedProgram>,
+    continuations: BTreeMap<usize, ContinuationRef>,
     work: u64,
 }
 impl ContractScratch {
+    pub(crate) fn same_protocol(
+        &mut self,
+        expected: (ContractList<'_>, ContractList<'_>),
+        actual: (ContractList<'_>, ContractList<'_>),
+        limit: u64,
+    ) -> Result<bool, CheckError> {
+        Ok(self.same_signature(
+            expected.0.program(),
+            expected.0.ids(),
+            &[],
+            actual.0.program(),
+            actual.0.ids(),
+            &[],
+            limit,
+        )? && self.same_signature(
+            expected.1.program(),
+            &[],
+            expected.1.ids(),
+            actual.1.program(),
+            &[],
+            actual.1.ids(),
+            limit,
+        )?)
+    }
+
     pub(crate) fn retain_definition(&mut self, program: &VerifiedProgram) {
         self.definitions
             .entry(core::ptr::from_ref(program.program()) as usize)
@@ -137,6 +181,26 @@ impl ContractScratch {
                 | (
                     Contract::Closure { args: a, rets: ar },
                     Contract::Closure { args: b, rets: br },
+                )
+                | (
+                    Contract::Tag {
+                        request: a,
+                        response: ar,
+                    },
+                    Contract::Tag {
+                        request: b,
+                        response: br,
+                    },
+                )
+                | (
+                    Contract::Continuation {
+                        parameters: a,
+                        results: ar,
+                    },
+                    Contract::Continuation {
+                        parameters: b,
+                        results: br,
+                    },
                 ) if a.len() == b.len() && ar.len() == br.len() => {
                     pending.extend(
                         a.iter()
@@ -191,6 +255,7 @@ impl ContractScratch {
         self.frames.clear();
         self.proven.clear();
         self.definitions.clear();
+        self.continuations.clear();
     }
     pub(crate) fn charge(&mut self, limit: u64) -> Result<(), CheckError> {
         if self.work >= limit {
@@ -396,6 +461,64 @@ impl ContractScratch {
                             env_contract.unwrap(),
                             ContractPath::Environment,
                             Some(owner.clone()),
+                        ));
+                    }
+                }
+                Contract::Tag { request, response } => {
+                    let Input::Tag(tag) = &frame.value else {
+                        unreachable!("checked kind")
+                    };
+                    self.retain_definition(tag.instance().program());
+                    let actual = tag.request();
+                    if !frame.entered
+                        && !self.same_signature(
+                            program,
+                            request,
+                            response,
+                            actual.program(),
+                            actual.ids(),
+                            tag.response().ids(),
+                            limit,
+                        )?
+                    {
+                        return Err(self.failure(
+                            frame.contract,
+                            None,
+                            ContractMismatch::Signature {
+                                kind: ValueType::Tag,
+                            },
+                        ));
+                    }
+                }
+                Contract::Continuation {
+                    parameters,
+                    results,
+                } => {
+                    let Input::Continuation(reference) = &frame.value else {
+                        unreachable!("checked kind")
+                    };
+                    // Pin metadata as long as its address participates in the proof cache.
+                    self.continuations
+                        .entry(reference.metadata_identity())
+                        .or_insert_with(|| reference.clone());
+                    let actual_parameters = reference.parameters();
+                    let actual_results = reference.results();
+                    if !frame.entered
+                        && !self.same_protocol(
+                            (
+                                ContractList::new(program, parameters),
+                                ContractList::new(program, results),
+                            ),
+                            (actual_parameters, actual_results),
+                            limit,
+                        )?
+                    {
+                        return Err(self.failure(
+                            frame.contract,
+                            None,
+                            ContractMismatch::Signature {
+                                kind: ValueType::Continuation,
+                            },
                         ));
                     }
                 }

@@ -22,6 +22,7 @@ pub use contracts::inspection::{
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -44,6 +45,7 @@ use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
     FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, VReg, VRegSlice,
 };
+use crate::typed::{ContinuationReg, TagReg};
 use crate::value::FuncId;
 use crate::{analysis::bitset::BitSet, analysis::cfg};
 
@@ -232,6 +234,16 @@ impl VerifiedProgram {
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
+    /// An instruction refers to a missing control declaration.
+    ControlTagOutOfBounds {
+        /// Containing function.
+        func: u32,
+        /// Instruction byte offset.
+        pc: u32,
+        /// Missing declaration.
+        tag: crate::program::ControlTagId,
+    },
+
     /// A statically known callable contradicts an indirect call's exact signature.
     CallIndirectContractMismatch {
         /// Containing function.
@@ -607,6 +619,20 @@ pub enum VerifyError {
         /// Call signature id.
         call_sig: u32,
     },
+    /// A control-tag declaration references an absent request/response signature.
+    ControlTagSignature {
+        /// Local declaration index.
+        tag: u32,
+        /// Missing program-local signature.
+        signature: u32,
+    },
+    /// A control protocol label does not resolve in the program's symbol table.
+    ControlTagName {
+        /// Local declaration index.
+        tag: u32,
+        /// Invalid symbol-table index.
+        name: u32,
+    },
     /// A `host_call` referenced a host signature, but that entry was malformed.
     HostCallSigMalformed {
         /// Function index within the program.
@@ -714,6 +740,10 @@ pub enum InvalidJumpTargetReason {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ControlTagOutOfBounds { func, pc, tag } => {
+                write!(f, "f{func}:{pc}: control tag #{} is not declared", tag.0)
+            }
+
             Self::CallIndirectContractMismatch { func, pc, call_sig } => write!(
                 f,
                 "function #{func} at {pc}: callable does not match indirect signature #{call_sig}"
@@ -934,9 +964,17 @@ impl fmt::Display for VerifyError {
                 )
             }
             Self::HostSigMalformed { host_sig } => write!(f, "host_sig {host_sig} malformed"),
+            Self::ControlTagName { tag, name } => write!(
+                f,
+                "control tag #{tag} references absent label symbol #{name}"
+            ),
             Self::CallSigMalformed { call_sig } => {
                 write!(f, "call_sig {call_sig} malformed")
             }
+            Self::ControlTagSignature { tag, signature } => write!(
+                f,
+                "control tag #{tag} references absent signature #{signature}"
+            ),
             Self::HostCallSigMalformed { func, pc, host_sig } => write!(
                 f,
                 "function {func} pc={pc} host_sig {host_sig} malformed (via host_call)"
@@ -1306,6 +1344,21 @@ fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
 }
 
 fn verify_call_sigs(program: &Program) -> Result<(), VerifyError> {
+    for (tag, declaration) in program.control_tags.iter().enumerate() {
+        let tag = u32::try_from(tag).unwrap_or(u32::MAX);
+        if program.symbol_str(declaration.name).is_err() {
+            return Err(VerifyError::ControlTagName {
+                tag,
+                name: declaration.name.index(),
+            });
+        }
+        if program.call_sig(declaration.signature).is_none() {
+            return Err(VerifyError::ControlTagSignature {
+                tag,
+                signature: declaration.signature.0,
+            });
+        }
+    }
     for (i, cs) in program.call_sigs.iter().enumerate() {
         let call_sig = u32::try_from(i).unwrap_or(u32::MAX);
         let _ = program
@@ -1495,7 +1548,19 @@ fn verify_id_operands_in_bounds(
             }
         });
 
-        if let Instr::CallIndirect { call_sig, .. } = &di.instr
+        if let Instr::ConstTag { tag_id, .. } | Instr::TagNew { tag_id, .. } = &di.instr
+            && program.control_tags.get(*tag_id as usize).is_none()
+        {
+            err = Some(VerifyError::ControlTagOutOfBounds {
+                func,
+                pc,
+                tag: crate::program::ControlTagId(*tag_id),
+            });
+        }
+        if let Instr::CallIndirect { call_sig, .. }
+        | Instr::ContNew { call_sig, .. }
+        | Instr::ContResume { call_sig, .. }
+        | Instr::Suspend { call_sig, .. } = &di.instr
             && program.call_sig(CallSigId(*call_sig)).is_none()
         {
             err = Some(VerifyError::CallSigOutOfBounds {
@@ -1736,6 +1801,16 @@ fn verify_function_bytecode(
                 counts.closures += 1;
                 VReg::Closure(r)
             }
+            RegClass::Tag => {
+                let r = TagReg(idx_u32(counts.tags));
+                counts.tags += 1;
+                VReg::Tag(r)
+            }
+            RegClass::Continuation => {
+                let r = ContinuationReg(idx_u32(counts.continuations));
+                counts.continuations += 1;
+                VReg::Continuation(r)
+            }
         };
         reg_map.push(v);
     }
@@ -1748,6 +1823,7 @@ fn verify_function_bytecode(
     let mut reg_layout = RegLayout { counts, arg_regs };
     let mut source_to_exec = Vec::new();
     let mut execution_count = decoded.len();
+    let mut control_bytes = 0;
     if has_blocks {
         source_to_exec.reserve(decoded.len());
         let mut exec_ix = 0_u32;
@@ -1887,6 +1963,18 @@ fn verify_function_bytecode(
                 _ => Err(mismatch(reg, ValueType::Closure)),
             }
         };
+        let map_tag = |reg: u32| -> Result<TagReg, VerifyError> {
+            match map(reg)? {
+                VReg::Tag(reg) => Ok(reg),
+                _ => Err(mismatch(reg, ValueType::Tag)),
+            }
+        };
+        let map_continuation = |reg: u32| -> Result<ContinuationReg, VerifyError> {
+            match map(reg)? {
+                VReg::Continuation(reg) => Ok(reg),
+                _ => Err(mismatch(reg, ValueType::Continuation)),
+            }
+        };
         let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
             let start = operands.len();
             operands.reserve(regs.len());
@@ -1900,6 +1988,71 @@ fn verify_function_bytecode(
         };
 
         let vi = match &di.instr {
+            Instr::ConstTag { dst, tag_id } | Instr::TagNew { dst, tag_id, .. } => {
+                ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Tag {
+                    dst: map_tag(*dst)?,
+                    declaration: crate::program::ControlTagId(*tag_id),
+                    fresh: matches!(di.instr, Instr::TagNew { .. }),
+                }))
+            }
+            Instr::ContNew {
+                dst,
+                callee,
+                call_sig,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::New {
+                dst: map_continuation(*dst)?,
+                callee: map(*callee)?,
+                signature: CallSigId(*call_sig),
+            })),
+            Instr::ContResume {
+                continuation,
+                call_sig,
+                args,
+                rets,
+                handlers,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Resume {
+                continuation: map_continuation(*continuation)?,
+                signature: CallSigId(*call_sig),
+                args: push_vregs(args)?,
+                rets: push_vregs(rets)?,
+                handlers: handlers
+                    .iter()
+                    .map(|arm| match *arm {
+                        crate::asm::HandlerArm::Suspend { tag, handler } => {
+                            Ok(crate::typed::ControlHandler {
+                                tag: map_tag(tag)?,
+                                handler: map(handler)?,
+                            })
+                        }
+                    })
+                    .collect::<Result<Vec<_>, VerifyError>>()?
+                    .into_boxed_slice(),
+            })),
+            Instr::Suspend {
+                tag,
+                call_sig,
+                args,
+                rets,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Suspend {
+                tag: map_tag(*tag)?,
+                signature: CallSigId(*call_sig),
+                args: push_vregs(args)?,
+                rets: push_vregs(rets)?,
+            })),
+            Instr::ContDrop { continuation, .. } => {
+                ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Drop {
+                    continuation: map_continuation(*continuation)?,
+                }))
+            }
+            Instr::TagIsHandled { dst, tag } => {
+                ExecInstr::Control(Box::new(crate::typed::ControlInstruction::IsHandled {
+                    dst: map_bool(*dst)?,
+                    tag: map_tag(*tag)?,
+                }))
+            }
             Instr::Block { .. } => unreachable!("declarations have no execution step"),
             Instr::Nop => ExecInstr::Nop,
             Instr::Trap { code } => ExecInstr::Trap { code: *code },
@@ -1917,6 +2070,10 @@ fn verify_function_bytecode(
                 (VReg::Agg(d), VReg::Agg(s)) => ExecInstr::MovAgg { dst: d, src: s },
                 (VReg::Func(d), VReg::Func(s)) => ExecInstr::MovFunc { dst: d, src: s },
                 (VReg::Closure(d), VReg::Closure(s)) => ExecInstr::MovClosure { dst: d, src: s },
+                (VReg::Tag(d), VReg::Tag(s)) => ExecInstr::MovTag { dst: d, src: s },
+                (VReg::Continuation(d), VReg::Continuation(s)) => {
+                    ExecInstr::MovContinuation { dst: d, src: s }
+                }
                 _ => {
                     return Err(mismatch(
                         *dst,
@@ -2342,6 +2499,20 @@ fn verify_function_bytecode(
                         b: bb,
                     }
                 }
+                (VReg::Tag(d), VReg::Tag(aa), VReg::Tag(bb)) => ExecInstr::SelectTag {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Continuation(d), VReg::Continuation(aa), VReg::Continuation(bb)) => {
+                    ExecInstr::SelectContinuation {
+                        dst: d,
+                        cond: map_bool(*cond)?,
+                        a: aa,
+                        b: bb,
+                    }
+                }
                 _ => {
                     return Err(mismatch(
                         *dst,
@@ -2668,6 +2839,9 @@ fn verify_function_bytecode(
             },
         };
 
+        if let ExecInstr::Control(operation) = &vi {
+            control_bytes += operation.prepared_bytes();
+        }
         execution_instrs.push(ExecDecoded {
             offset: di.offset,
             end: decoded
@@ -2723,6 +2897,7 @@ fn verify_function_bytecode(
             reg_layout,
             operands,
             instrs: execution_instrs,
+            control_bytes,
             span_by_instr_ix,
         },
         lints,
@@ -2880,6 +3055,25 @@ fn validate_instr_reads_writes(
 
     // Instruction-specific invariants that are *not* captured by the generic read/write sets.
     match instr {
+        Instr::TagNew {
+            eff_out, eff_in, ..
+        }
+        | Instr::ContNew {
+            eff_out, eff_in, ..
+        }
+        | Instr::ContResume {
+            eff_out, eff_in, ..
+        }
+        | Instr::Suspend {
+            eff_out, eff_in, ..
+        }
+        | Instr::ContDrop {
+            eff_out, eff_in, ..
+        } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
+        }
+
         Instr::Call {
             eff_out,
             func_id: callee,
@@ -3040,6 +3234,91 @@ fn validate_instr_types(
     let t = |reg: u32| types.get(reg);
 
     match instr {
+        Instr::ConstTag { dst, .. } | Instr::TagNew { dst, .. } => {
+            check_expected(func_id, pc, *dst, t(*dst), ValueType::Tag)?;
+        }
+        Instr::ContNew { dst, callee, .. } => {
+            check_expected(func_id, pc, *dst, t(*dst), ValueType::Continuation)?;
+            if !matches!(t(*callee), Some(ValueType::Func | ValueType::Closure)) {
+                check_expected(func_id, pc, *callee, t(*callee), ValueType::Func)?;
+            }
+        }
+        Instr::ContDrop { continuation, .. } => check_expected(
+            func_id,
+            pc,
+            *continuation,
+            t(*continuation),
+            ValueType::Continuation,
+        )?,
+        Instr::TagIsHandled { dst, tag } => {
+            check_expected(func_id, pc, *dst, t(*dst), ValueType::Bool)?;
+            check_expected(func_id, pc, *tag, t(*tag), ValueType::Tag)?;
+        }
+        Instr::ContResume {
+            call_sig,
+            continuation: _,
+            args,
+            rets,
+            ..
+        }
+        | Instr::Suspend {
+            call_sig,
+            args,
+            rets,
+            ..
+        } => {
+            match instr {
+                Instr::ContResume {
+                    continuation,
+                    handlers,
+                    ..
+                } => {
+                    check_expected(
+                        func_id,
+                        pc,
+                        *continuation,
+                        t(*continuation),
+                        ValueType::Continuation,
+                    )?;
+                    for arm in handlers {
+                        match *arm {
+                            crate::asm::HandlerArm::Suspend { tag, handler } => {
+                                check_expected(func_id, pc, tag, t(tag), ValueType::Tag)?;
+                                if !matches!(t(handler), Some(ValueType::Func | ValueType::Closure))
+                                {
+                                    check_expected(
+                                        func_id,
+                                        pc,
+                                        handler,
+                                        t(handler),
+                                        ValueType::Func,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+                Instr::Suspend { tag, .. } => {
+                    check_expected(func_id, pc, *tag, t(*tag), ValueType::Tag)?;
+                }
+                _ => unreachable!(),
+            }
+            let signature = program
+                .call_sig(CallSigId(*call_sig))
+                .expect("validated signature");
+            let inputs = program.verified_contracts(signature.args);
+            let outputs = program.verified_contracts(signature.rets);
+            if args.len() != inputs.len() || rets.len() != outputs.len() {
+                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+            }
+            for (&reg, kind) in args.iter().zip(program.contracts.kinds(inputs)) {
+                check_expected(func_id, pc, reg, t(reg), *kind)?;
+            }
+            for (&reg, kind) in rets.iter().zip(program.contracts.kinds(outputs)) {
+                check_expected(func_id, pc, reg, t(reg), *kind)?;
+            }
+        }
+
         Instr::Nop
         | Instr::Trap { .. }
         | Instr::Jmp { .. }

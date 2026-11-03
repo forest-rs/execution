@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
+use crate::control::{ContinuationRef, ControlTag};
 use crate::program::{HostSigId, Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
@@ -614,6 +615,10 @@ pub enum ValueRef<'a> {
     Func(&'a FunctionRef),
     /// Closure reference (function + captured environment).
     Closure(&'a Closure),
+    /// Instance-qualified operation identity.
+    Tag(&'a ControlTag),
+    /// Borrowed authority for this execution's suspended computation.
+    Continuation(&'a ContinuationRef),
 }
 
 impl<'a> ValueRef<'a> {
@@ -633,6 +638,8 @@ impl<'a> ValueRef<'a> {
             Value::Agg(v) => Self::Agg(*v),
             Value::Func(v) => Self::Func(v),
             Value::Closure(v) => Self::Closure(v),
+            Value::Tag(v) => Self::Tag(v),
+            Value::Continuation(v) => Self::Continuation(v),
         }
     }
 
@@ -656,6 +663,8 @@ impl<'a> ValueRef<'a> {
             Self::Agg(h) => Value::Agg(h),
             Self::Func(f) => Value::Func(f.clone()),
             Self::Closure(c) => Value::Closure(c.clone()),
+            Self::Tag(tag) => Value::Tag(tag.clone()),
+            Self::Continuation(continuation) => Value::Continuation(continuation.clone()),
         }
     }
 
@@ -675,6 +684,8 @@ impl<'a> ValueRef<'a> {
             Self::Agg(_) => ValueType::Agg,
             Self::Func(_) => ValueType::Func,
             Self::Closure(_) => ValueType::Closure,
+            Self::Tag(_) => ValueType::Tag,
+            Self::Continuation(_) => ValueType::Continuation,
         }
     }
 }
@@ -755,6 +766,8 @@ fn encode_value_type_tag(t: ValueType) -> u8 {
         ValueType::Agg => 9,
         ValueType::Func => 10,
         ValueType::Closure => 11,
+        ValueType::Tag => 12,
+        ValueType::Continuation => 13,
     }
 }
 

@@ -53,9 +53,16 @@ impl Recorder {
         }
     }
 
-    fn dispatch(&mut self, callback: impl FnOnce(&mut SegmentRecorder)) {
+    fn dispatch(
+        &mut self,
+        context: crate::trace::TraceContext<'_>,
+        callback: impl FnOnce(&mut SegmentRecorder),
+    ) {
         if let Some(session) = &mut self.session {
-            session.dispatch(session.current(), callback);
+            let Some(index) = session.select(context) else {
+                return;
+            };
+            session.dispatch(index, callback);
         } else {
             callback(self.root.as_mut().expect("root capture"));
         }
@@ -96,6 +103,7 @@ struct Session {
     slots: Vec<Slot>,
     indices: BTreeMap<u64, usize>,
     stack: Vec<usize>,
+    selected: usize,
     pending: Option<usize>,
     depth: usize,
     instances: Vec<Instance>,
@@ -166,6 +174,7 @@ impl Session {
             indices,
             stack: vec![0],
             pending: None,
+            selected: 0,
             depth: 1,
             instances: Vec::new(),
             instance_indices: BTreeMap::new(),
@@ -180,7 +189,20 @@ impl Session {
         }
     }
     fn current(&self) -> usize {
-        self.stack.last().copied().unwrap_or(0)
+        self.selected
+    }
+    fn index_for(&self, context: crate::trace::TraceContext<'_>) -> Option<usize> {
+        context.stack().map_or(Some(self.current()), |stack| {
+            self.indices.get(&stack.segment_ordinal()).copied()
+        })
+    }
+    fn select(&mut self, context: crate::trace::TraceContext<'_>) -> Option<usize> {
+        let Some(index) = self.index_for(context) else {
+            self.fail(CaptureFault::InvalidSequence, None);
+            return None;
+        };
+        self.selected = index;
+        Some(index)
     }
     fn fail(&mut self, fault: CaptureFault, location: Option<TraceLocation>) {
         if self.fault.is_none() {
@@ -322,7 +344,11 @@ impl Session {
         });
         result
     }
-    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+    fn control(&mut self, context: crate::trace::TraceContext<'_>, event: ControlEvent<'_>) {
+        let Some(_) = self.select(context) else {
+            return;
+        };
+        let program = context.program();
         if self.fault.is_some() {
             return;
         }
@@ -344,6 +370,7 @@ impl Session {
                 source_instance,
                 instance,
                 entry,
+                callee,
                 args,
                 work,
                 created,
@@ -359,9 +386,12 @@ impl Session {
                 if !self.command(location) {
                     return;
                 }
-                let Some((args, constructed)) =
-                    self.capture_values(index, args, created, aggregates)
+                let Some((callee, constructed)) =
+                    self.capture_values(index, core::slice::from_ref(callee), created, aggregates)
                 else {
+                    return;
+                };
+                let Some((args, _)) = self.capture_values(index, args, &(0..0), aggregates) else {
                     return;
                 };
                 let source = self.instance(source_instance);
@@ -395,6 +425,7 @@ impl Session {
                         origin,
                         parent: activation(parent),
                         child: activation(child),
+                        callee,
                         args,
                         work,
                         constructed,
@@ -583,7 +614,7 @@ impl Session {
             }
         }
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, args: usize) {
+    fn run_start(&mut self, context: crate::trace::TraceContext<'_>, entry: FuncId, args: usize) {
         self.depth += 1;
         if self.fault.is_some() {
             return;
@@ -592,18 +623,24 @@ impl Session {
             self.fail(CaptureFault::MultipleRuns, None);
             return;
         };
+        if self.select(context) != Some(index) {
+            self.fail(CaptureFault::InvalidSequence, None);
+            return;
+        }
         self.stack.push(index);
-        self.dispatch(index, |capture| capture.run_start(program, entry, args));
+        self.dispatch(index, |capture| capture.run_start(context, entry, args));
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(&mut self, context: crate::trace::TraceContext<'_>, outcome: TraceOutcome<'_>) {
         self.depth = self.depth.saturating_sub(1);
         if self.fault.is_some() {
             if self.depth == 0 {
-                self.dispatch_even_if_incomplete(0, |capture| capture.run_end(program, outcome));
+                self.dispatch_even_if_incomplete(0, |capture| capture.run_end(context, outcome));
             }
             return;
         }
-        let index = self.current();
+        let Some(index) = self.select(context) else {
+            return;
+        };
         if matches!(outcome, TraceOutcome::Trap(_)) && self.failure.is_none() {
             self.failure = Some(self.slots[index].meta.id);
         }
@@ -630,9 +667,11 @@ impl Session {
                 capture.end = Some(End::Transferred { target, location });
             });
         } else {
-            self.dispatch(index, |capture| capture.run_end(program, outcome));
+            self.dispatch(index, |capture| capture.run_end(context, outcome));
         }
-        self.stack.pop();
+        if self.stack.last() == Some(&index) {
+            self.stack.pop();
+        }
     }
     fn finish(mut self, identity: Arc<()>) -> Recording {
         let failure_definition = self
@@ -692,35 +731,44 @@ impl TraceSink for Recorder {
     fn mask(&self) -> TraceMask {
         self.active().mask()
     }
-    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        event_context: crate::trace::TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
         self.session
             .as_ref()
             .is_none_or(|session| session.fault.is_none())
-            && self.active().wants_registers(location, phase)
+            && self
+                .active()
+                .wants_registers(event_context, location, phase)
     }
-    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
+    fn run_mask(&mut self, context: crate::trace::TraceContext<'_>, mask: TraceMask) {
         if let Some(session) = &mut self.session {
-            let index = session.pending.unwrap_or_else(|| session.current());
-            session.dispatch(index, |capture| capture.run_mask(program, mask));
+            let Some(index) = session.select(context) else {
+                return;
+            };
+            session.dispatch(index, |capture| capture.run_mask(context, mask));
         } else {
-            self.dispatch(|capture| capture.run_mask(program, mask));
+            self.dispatch(context, |capture| capture.run_mask(context, mask));
         }
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, args: usize) {
+    fn run_start(&mut self, context: crate::trace::TraceContext<'_>, entry: FuncId, args: usize) {
         if let Some(session) = &mut self.session {
-            session.run_start(program, entry, args);
+            session.run_start(context, entry, args);
         } else {
-            self.dispatch(|capture| capture.run_start(program, entry, args));
+            self.dispatch(context, |capture| capture.run_start(context, entry, args));
         }
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(&mut self, context: crate::trace::TraceContext<'_>, outcome: TraceOutcome<'_>) {
         if let Some(session) = &mut self.session {
-            session.run_end(program, outcome);
+            session.run_end(context, outcome);
         } else {
-            self.dispatch(|capture| capture.run_end(program, outcome));
+            self.dispatch(context, |capture| capture.run_end(context, outcome));
         }
     }
-    fn control(&mut self, program: &Program, event: ControlEvent<'_>) {
+    fn control(&mut self, context: crate::trace::TraceContext<'_>, event: ControlEvent<'_>) {
         if self.session.is_none() {
             self.session = Some(Session::new(
                 self.root.take().expect("root capture"),
@@ -731,17 +779,17 @@ impl TraceSink for Recorder {
         self.session
             .as_mut()
             .expect("session")
-            .control(program, event);
+            .control(context, event);
     }
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
-        self.dispatch(|capture| capture.values(program, event));
+    fn values(&mut self, context: crate::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        self.dispatch(context, |capture| capture.values(context, event));
     }
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        self.dispatch(|capture| capture.registers(program, event));
+    fn registers(&mut self, context: crate::trace::TraceContext<'_>, event: RegisterEvent<'_>) {
+        self.dispatch(context, |capture| capture.registers(context, event));
     }
     fn instr(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         func: FuncId,
         pc: u32,
         next: u32,
@@ -749,34 +797,42 @@ impl TraceSink for Recorder {
         opcode: u8,
     ) {
         if let Some(session) = &mut self.session {
-            let index = session.current();
+            let Some(index) = session.select(context) else {
+                return;
+            };
             session.slots[index].location = Some(TraceLocation { func, pc });
         }
-        self.dispatch(|capture| capture.instr(program, func, pc, next, span, opcode));
+        self.dispatch(context, |capture| {
+            capture.instr(context, func, pc, next, span, opcode);
+        });
     }
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
-        self.dispatch(|capture| capture.instr_end(program, location, next, outcome));
+        self.dispatch(context, |capture| {
+            capture.instr_end(context, location, next, outcome);
+        });
     }
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         span: Option<u64>,
     ) {
-        self.dispatch(|capture| capture.scope_enter(program, kind, depth, func, pc, span));
+        self.dispatch(context, |capture| {
+            capture.scope_enter(context, kind, depth, func, pc, span);
+        });
     }
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -785,9 +841,13 @@ impl TraceSink for Recorder {
         outcome: TraceOutcome<'_>,
     ) {
         if let Some(session) = &mut self.session {
-            let index = session.current();
+            let Some(index) = session.select(context) else {
+                return;
+            };
             session.slots[index].location = Some(TraceLocation { func, pc });
         }
-        self.dispatch(|capture| capture.scope_exit(program, kind, depth, func, pc, span, outcome));
+        self.dispatch(context, |capture| {
+            capture.scope_exit(context, kind, depth, func, pc, span, outcome);
+        });
     }
 }

@@ -612,14 +612,21 @@ fn freeze(
             }));
         }
         let contract = match view.descriptor {
-            Descriptor::Callable { kind, args } => {
+            Descriptor::Signature { kind, args } => {
                 fields.clear();
                 fields.extend(tuple.iter().map(|id| id.expect("callable kind")));
                 let (args, rets) = fields.split_at(args as usize);
-                if kind == CallableKind::Function {
-                    Contract::Function { args, rets }
-                } else {
-                    Contract::Closure { args, rets }
+                match kind {
+                    SignatureKind::Function => Contract::Function { args, rets },
+                    SignatureKind::Closure => Contract::Closure { args, rets },
+                    SignatureKind::Tag => Contract::Tag {
+                        request: args,
+                        response: rets,
+                    },
+                    SignatureKind::Continuation => Contract::Continuation {
+                        parameters: args,
+                        results: rets,
+                    },
                 }
             }
             Descriptor::Aggregate(AggType::Tuple { .. }) => Contract::Tuple(&tuple),

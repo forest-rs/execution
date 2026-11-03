@@ -79,7 +79,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         self.call_value(callee.into(), args)
     }
 
-    fn call_value(mut self, callee: Value, mut args: Vec<Value>) -> Result<(), ControlError> {
+    fn call_value(mut self, callee: Value, args: Vec<Value>) -> Result<(), ControlError> {
         let target = match &callee {
             Value::Func(function) => Some((function.clone(), None)),
             Value::Closure(closure) => Some((closure.func.clone(), Some(closure.env))),
@@ -90,13 +90,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
                 return Err(ControlError::ForeignStore);
             }
             if self.running.continuation.ctx.instance.as_ref() != Some(target.instance()) {
-                if let Some(environment) = environment {
-                    args.insert(0, Value::Agg(environment));
-                }
                 self.delivering = true;
-                let result = self.running.enter_instance(
-                    target.instance(),
-                    target.id(),
+                let result = self.running.enter_segment(
+                    &target,
+                    environment,
                     args,
                     crate::trace::EntryOrigin::HostRequest,
                 );
@@ -149,7 +146,8 @@ impl<H: Host> Running<'_, '_, H> {
         let pending = self
             .continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .expect("pending host guard");
         let span = self.continuation.ctx.span_at(
             self.continuation.program.program(),
@@ -160,7 +158,7 @@ impl<H: Host> Running<'_, '_, H> {
         match result {
             Ok(()) => Ok(()),
             Err(trap) => {
-                self.continuation.control.pending_host = None;
+                self.continuation.control.waiting = Waiting::Ready;
                 let error = self.continuation.ctx.trap(
                     pending.location.func,
                     pending.location.pc,
@@ -313,7 +311,7 @@ impl<H: Host> Running<'_, '_, H> {
             host: pending,
             instruction: instruction.is_some(),
         });
-        self.continuation.control.pending_host = None;
+        self.continuation.control.waiting = Waiting::Ready;
         self.continuation.trace.call_scope_enter_if_enabled(
             program,
             self.continuation.ctx.frames.len(),
@@ -378,7 +376,7 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     ctx.frames.pop().expect("callback root frame");
     budget.frames -= 1;
     ctx.truncate_to(base);
-    control.pending_host = Some(waiting.host);
+    control.waiting = Waiting::Host(waiting.host);
     P::call_scope_exit(trace, program, depth, location.func, location.pc, span);
     // The guest returns to embedding code. Its parent host instruction is still pending;
     // pointing at that instruction would falsely imply that it executes a second time.

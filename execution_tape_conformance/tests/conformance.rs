@@ -450,7 +450,7 @@ fn verifier_preserves_tuple_shape_through_a_loop_backedge() {
 }
 
 #[test]
-fn golden_program_bytes_v0_5() {
+fn golden_program_bytes_v0_6() {
     let mut p = Program::new(
         vec![],
         vec![],
@@ -501,10 +501,10 @@ fn golden_program_bytes_v0_5() {
         0x45,
         0x00,
         0x00,
-        // version_major=0, version_minor=5
+        // version_major=0, version_minor=6
         0x00,
         0x00,
-        0x05,
+        0x06,
         0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
         0x02,

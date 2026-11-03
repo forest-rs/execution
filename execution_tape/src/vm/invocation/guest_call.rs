@@ -117,11 +117,7 @@ impl<H: Host> Vm<H> {
             .verified(frame.func)
             .expect("calling definition")
             .vregs(transfer.args);
-        let mut values =
-            Vec::with_capacity(args.len() + usize::from(transfer.environment.is_some()));
-        if let Some(environment) = transfer.environment {
-            values.push(Value::Agg(environment));
-        }
+        let mut values = Vec::with_capacity(args.len());
         let sources = ValueSources::new(caller.program(), inputs, self.memory.aggs());
         for &arg in args {
             values.push(
@@ -136,12 +132,13 @@ impl<H: Host> Vm<H> {
                     .map_err(|error| trap(ctx, error))?,
             );
         }
-        control.pending_guest = Some(pending);
+        control.waiting = Waiting::Guest(pending);
         // A guest call completes at dispatch. Its results become initialized when its child
         // actually returns. The qualified control event identifies the foreign successor.
         P::instr_end(trace, caller.program(), None);
         Ok(Progress::GuestCall {
             target: transfer.target,
+            environment: transfer.environment,
             args: values,
         })
     }
@@ -151,19 +148,16 @@ impl<'state, H: Host> Invocation<'state, H> {
     pub(in crate::vm) fn enter_guest(
         &mut self,
         target: FunctionRef,
+        environment: Option<AggHandle>,
         args: Vec<Value>,
     ) -> Result<RunStatus, TrapInfo> {
-        self.running().enter_instance(
-            target.instance(),
-            target.id(),
-            args,
-            EntryOrigin::GuestCall,
-        )?;
+        self.running()
+            .enter_segment(&target, environment, args, EntryOrigin::GuestCall)?;
         let parent = self.parents.last_mut().expect("guest caller retained");
         parent
             .control
-            .pending_guest
-            .as_mut()
+            .waiting
+            .guest_mut()
             .expect("pending guest call")
             .abandoned = false;
         Ok(RunStatus::Suspended)

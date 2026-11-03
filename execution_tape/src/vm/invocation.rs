@@ -5,10 +5,12 @@
 
 use super::*;
 use crate::callable::{Callable, CallableError};
+use crate::control::arena::Resumptions;
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 
 pub(super) mod composition;
+pub(super) mod delimited;
 mod exits;
 pub(super) mod guest_call;
 mod host_request;
@@ -122,6 +124,7 @@ pub struct Invocation<'a, H: Host> {
     checkpoint: Checkpoint,
     budget: Budget,
     next_segment: u64,
+    pub(super) resumptions: Resumptions<delimited::Saved<'a>>,
 }
 
 /// Temporary authority to operate one control stack in its execution transaction.
@@ -129,10 +132,11 @@ pub struct Invocation<'a, H: Host> {
 pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) vm: &'request mut Vm<H>,
     pub(super) continuation: &'request mut continuation::Continuation<'state>,
-    pub(super) parents: Option<&'request mut Vec<continuation::Continuation<'state>>>,
-    checkpoint: Checkpoint,
+    pub(super) parents: &'request mut Vec<continuation::Continuation<'state>>,
+    pub(super) checkpoint: Checkpoint,
     pub(super) budget: &'request mut Budget,
-    pub(super) next_segment: Option<&'request mut u64>,
+    pub(super) next_segment: &'request mut u64,
+    pub(super) resumptions: &'request mut Resumptions<delimited::Saved<'state>>,
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
@@ -164,6 +168,7 @@ impl<'a, H: Host> Invocation<'a, H> {
             parents: Vec::new(),
             checkpoint,
             next_segment: 1,
+            resumptions: Resumptions::default(),
         }
     }
 
@@ -196,33 +201,15 @@ impl<'a, H: Host> Invocation<'a, H> {
     }
 
     pub(super) fn running(&mut self) -> Running<'_, 'a, H> {
-        let mut running = Running::new(
-            &mut self.vm,
-            &mut self.continuation,
-            &mut self.budget,
-            self.checkpoint,
-        );
-        running.parents = Some(&mut self.parents);
-        running.next_segment = Some(&mut self.next_segment);
-        running
-    }
-}
-
-impl<'request, 'state, H: Host> Running<'request, 'state, H> {
-    pub(super) fn new(
-        vm: &'request mut Vm<H>,
-        continuation: &'request mut continuation::Continuation<'state>,
-        budget: &'request mut Budget,
-        checkpoint: Checkpoint,
-    ) -> Self {
-        budget.select(&continuation.control);
-        Self {
-            vm,
-            continuation,
-            parents: None,
-            next_segment: None,
-            budget,
-            checkpoint,
+        self.budget.select(&self.continuation.control);
+        Running {
+            vm: &mut self.vm,
+            continuation: &mut self.continuation,
+            parents: &mut self.parents,
+            next_segment: &mut self.next_segment,
+            resumptions: &mut self.resumptions,
+            budget: &mut self.budget,
+            checkpoint: self.checkpoint,
         }
     }
 }
@@ -312,6 +299,7 @@ impl<'a, H: Host> Invocation<'a, H> {
             continuation: continuation::Continuation::new(program, entry, args, options),
             parents: Vec::new(),
             next_segment: 1,
+            resumptions: Resumptions::default(),
         };
         if let Err(error) =
             invocation
@@ -343,29 +331,24 @@ impl<H: Host> Invocation<'_, H> {
         &mut self,
         quantum: u64,
     ) -> Result<RunStatus, TrapInfo> {
-        if let Some(pending) = self
-            .continuation
-            .control
-            .pending_guest
-            .filter(|pending| pending.abandoned)
-        {
-            let error = self.continuation.ctx.trap(
-                pending.location.func,
-                pending.location.pc,
-                None,
-                Trap::GuestCallAbandoned,
-            );
-            self.running().finish(Err(error.clone()));
-            return Err(error);
-        }
         if let Some(outcome) = &self.continuation.outcome {
             return if outcome.is_ok() && !self.parents.is_empty() {
-                self.restore_parent()
+                self.restore_after_return()
             } else {
                 outcome.clone().map(|()| RunStatus::Complete)
             };
         }
-        if let Some(pending) = self.continuation.control.pending_host {
+        if let Some(location) = self.continuation.control.waiting.interrupted() {
+            let error = self.continuation.ctx.trap(
+                location.func,
+                location.pc,
+                None,
+                Trap::GuestTransferAbandoned,
+            );
+            self.running().finish(Err(error.clone()));
+            return Err(error);
+        }
+        if let Some(pending) = self.continuation.control.waiting.host() {
             if pending.abandoned {
                 return Err(self.running().finish_abandoned_host(pending));
             }
@@ -376,13 +359,22 @@ impl<H: Host> Invocation<'_, H> {
             .advance_mode::<H, COOPERATIVE>(&mut self.vm, &mut self.budget, quantum)
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
+                Progress::Control {
+                    location,
+                    instruction,
+                } => self.running().dispatch_control(location, instruction),
                 Progress::AwaitingHost => Ok(RunStatus::AwaitingHost),
-                Progress::GuestCall { target, args } => self.enter_guest(target, args),
+                Progress::GuestCall {
+                    target,
+                    environment,
+                    args,
+                } => self.enter_guest(target, environment, args),
                 Progress::Returned(site) if !self.parents.is_empty() => {
                     self.finish_segment_return(site)?;
-                    self.restore_parent()
+                    self.restore_after_return()
                 }
                 Progress::Returned(site) => {
+                    self.running().prepare_root_return(site.location);
                     let continuation = &mut self.continuation;
                     if continuation.trace.active() {
                         self.vm.commit_return::<WithTracePolicy>(
@@ -411,7 +403,9 @@ impl<H: Host> Invocation<'_, H> {
         match &result {
             Ok(RunStatus::Suspended | RunStatus::AwaitingHost) => {}
             Ok(RunStatus::Complete) => self.running().finish(Ok(())),
-            Err(error) => self.running().finish(Err(error.clone())),
+            Err(error) => {
+                self.running().finish(Err(error.clone()));
+            }
         }
         result
     }
@@ -568,11 +562,21 @@ impl<H: Host> Invocation<'_, H> {
 }
 
 impl<H: Host> Running<'_, '_, H> {
+    /// Retire all execution-local control state before root publication can compact storage.
+    fn prepare_root_return(&mut self, location: TraceLocation) {
+        self.continuation.control.waiting = Waiting::Transition(location);
+        self.cancel_saved();
+        self.budget.contract_scratch.clear_proofs();
+    }
+
     fn finish(&mut self, result: Result<(), TrapInfo>) {
         self.finish_outcome(result, false);
     }
 
     fn finish_outcome(&mut self, result: Result<(), TrapInfo>, abandoned: bool) {
+        if self.continuation.outcome.is_some() {
+            return;
+        }
         self.continuation.outcome = Some(result);
         let result = self
             .continuation
@@ -580,10 +584,11 @@ impl<H: Host> Running<'_, '_, H> {
             .clone()
             .expect("terminal outcome installed");
         if let Err(error) = &result {
+            let saved = self.retire_saved();
             self.budget.frames -= self.continuation.ctx.frames.len();
             self.budget.contract_scratch.clear_proofs();
-            if let Some(parents) = self.parents.as_deref_mut() {
-                for parent in parents.iter_mut().rev() {
+            {
+                for parent in self.parents.iter_mut().rev() {
                     if parent.outcome.is_none() {
                         self.budget.frames -= parent.ctx.frames.len();
                         parent.outcome = Some(Err(error.clone()));
@@ -594,6 +599,11 @@ impl<H: Host> Running<'_, '_, H> {
             self.continuation
                 .outputs
                 .truncate(self.continuation.output_start);
+            // Essential retirement and rollback precede arbitrary cancellation observers.
+            // A panic cannot leave a terminal invocation retaining uncommitted storage.
+            for stack in saved {
+                stack.cancel();
+            }
         }
         let outcome = match &result {
             Ok(()) => TraceOutcome::Ok,
@@ -601,83 +611,88 @@ impl<H: Host> Running<'_, '_, H> {
             Err(error) => TraceOutcome::Trap(error),
         };
         finish_control_trace(self.continuation, outcome);
-        if result.is_err()
-            && let Some(parents) = self.parents.as_deref_mut()
-        {
-            for parent in parents.iter_mut().rev() {
+        if result.is_err() {
+            for parent in self.parents.iter_mut().rev() {
                 finish_control_trace(parent, outcome);
             }
         }
     }
 
     pub(super) fn cancel(&mut self) {
-        self.cancel_current();
-        if let Some(parents) = self.parents.as_deref_mut() {
-            for parent in parents.iter_mut().rev() {
-                Running::new(self.vm, parent, self.budget, self.checkpoint).cancel_current();
-            }
+        if self.continuation.outcome.is_none()
+            || self.parents.iter().any(|parent| parent.outcome.is_none())
+        {
+            self.vm.memory.rollback(self.checkpoint);
+        }
+        self.cancel_saved();
+        cancel_continuation(self.vm, self.continuation, self.budget, self.checkpoint);
+        for parent in self.parents.iter_mut().rev() {
+            cancel_continuation(self.vm, parent, self.budget, self.checkpoint);
         }
     }
+}
 
-    fn cancel_current(&mut self) {
-        if self.continuation.outcome.is_some() {
-            return;
-        }
-        let location = self
-            .continuation
-            .trace
-            .pending
-            .or_else(|| {
-                self.continuation
-                    .control
-                    .pending_host
-                    .map(|pending| pending.location)
-            })
-            .or_else(|| {
-                self.continuation.ctx.frames.last().map(|frame| {
-                    let pc = if matches!(
-                        self.continuation.trace.scopes.last(),
-                        Some((ScopeKind::HostCall { .. }, _))
-                    ) {
-                        self.continuation
-                            .program
-                            .verified(frame.func)
-                            .and_then(|body| body.pc_at_ix(frame.instr_ix.saturating_sub(1)))
-                            .unwrap_or(frame.pc)
-                    } else {
-                        frame.pc
-                    };
-                    TraceLocation {
-                        func: frame.func,
-                        pc,
-                    }
-                })
-            })
-            .unwrap_or(TraceLocation {
-                func: self.continuation.entry,
-                pc: 0,
-            });
-        let span = self.continuation.ctx.span_at(
-            self.continuation.program.program(),
-            location.func,
-            location.pc,
-        );
-        self.vm.memory.rollback(self.checkpoint);
-        self.budget.frames -= self.continuation.ctx.frames.len();
-        self.continuation.ctx.clear();
-        self.continuation
-            .trace
-            .cancel(self.continuation.program.program(), location, span);
-        callback::finish_instructions(
-            &mut self.continuation.control,
-            &mut self.continuation.trace,
-            self.continuation.program.program(),
-            TraceOutcome::Cancelled,
-        );
-        self.continuation
-            .trace
-            .run_end(self.continuation.program.program(), TraceOutcome::Cancelled);
+fn cancel_continuation<H: Host>(
+    vm: &mut Vm<H>,
+    continuation: &mut continuation::Continuation<'_>,
+    budget: &mut Budget,
+    checkpoint: Checkpoint,
+) {
+    if continuation.outcome.is_some() {
+        return;
     }
+    let location = continuation
+        .trace
+        .pending
+        .or_else(|| {
+            continuation
+                .control
+                .waiting
+                .host()
+                .map(|pending| pending.location)
+        })
+        .or_else(|| {
+            continuation.ctx.frames.last().map(|frame| {
+                let pc = if matches!(
+                    continuation.trace.scopes.last(),
+                    Some((ScopeKind::HostCall { .. }, _))
+                ) {
+                    continuation
+                        .program
+                        .verified(frame.func)
+                        .and_then(|body| body.pc_at_ix(frame.instr_ix.saturating_sub(1)))
+                        .unwrap_or(frame.pc)
+                } else {
+                    frame.pc
+                };
+                TraceLocation {
+                    func: frame.func,
+                    pc,
+                }
+            })
+        })
+        .unwrap_or(TraceLocation {
+            func: continuation.entry,
+            pc: 0,
+        });
+    let span = continuation
+        .ctx
+        .span_at(continuation.program.program(), location.func, location.pc);
+    vm.memory.rollback(checkpoint);
+    budget.frames -= continuation.ctx.frames.len();
+    continuation.ctx.clear();
+    continuation
+        .trace
+        .cancel(continuation.program.program(), location, span);
+    callback::finish_instructions(
+        &mut continuation.control,
+        &mut continuation.trace,
+        continuation.program.program(),
+        TraceOutcome::Cancelled,
+    );
+    continuation
+        .trace
+        .run_end(continuation.program.program(), TraceOutcome::Cancelled);
 }
 
 fn finish_control_trace(
@@ -687,7 +702,8 @@ fn finish_control_trace(
     if !matches!(outcome, TraceOutcome::Ok) {
         let location = continuation
             .control
-            .pending_host
+            .waiting
+            .host()
             .map(|pending| pending.location)
             .or(continuation.trace.pending)
             .or_else(|| {

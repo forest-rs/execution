@@ -25,6 +25,8 @@ impl Instr {
             Self::F64Add { .. } => Opcode::F64Add,
             Self::F64Sub { .. } => Opcode::F64Sub,
             Self::F64Mul { .. } => Opcode::F64Mul,
+            Self::ConstTag { .. } => Opcode::ConstTag,
+            Self::TagNew { .. } => Opcode::TagNew,
             Self::I64Add { .. } => Opcode::I64Add,
             Self::I64Sub { .. } => Opcode::I64Sub,
             Self::I64Mul { .. } => Opcode::I64Mul,
@@ -117,6 +119,11 @@ impl Instr {
             Self::F64Rem { .. } => Opcode::F64Rem,
             Self::F64ToBits { .. } => Opcode::F64ToBits,
             Self::F64FromBits { .. } => Opcode::F64FromBits,
+            Self::ContNew { .. } => Opcode::ContNew,
+            Self::ContResume { .. } => Opcode::ContResume,
+            Self::Suspend { .. } => Opcode::Suspend,
+            Self::ContDrop { .. } => Opcode::ContDrop,
+            Self::TagIsHandled { .. } => Opcode::TagIsHandled,
         }
     }
 

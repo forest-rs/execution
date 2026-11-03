@@ -177,19 +177,20 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
 
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: execution_tape::value::FuncId,
         pc: u32,
         _span_id: Option<u64>,
     ) {
+        let program = context.program();
         self.on_scope_enter(program, kind, depth, TraceLocation { func, pc });
     }
 
     fn scope_exit(
         &mut self,
-        _program: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         _func: execution_tape::value::FuncId,

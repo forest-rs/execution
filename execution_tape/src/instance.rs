@@ -65,6 +65,24 @@ impl Instance {
         }
         Ok(FunctionRef::from_verified(self.clone(), function))
     }
+
+    /// Resolves one locally declared control protocol in this exact namespace.
+    /// Equal signatures in another instance do not establish the same handler identity.
+    pub fn control_tag(
+        &self,
+        tag: crate::program::ControlTagId,
+    ) -> Result<crate::control::ControlTag, InstanceError> {
+        if self
+            .program()
+            .program()
+            .control_tags
+            .get(tag.0 as usize)
+            .is_none()
+        {
+            return Err(InstanceError::MissingControlTag { tag });
+        }
+        Ok(crate::control::ControlTag::from_verified(self.clone(), tag))
+    }
 }
 
 impl PartialEq for Instance {
@@ -90,6 +108,13 @@ impl fmt::Debug for Instance {
 /// Why an instance could not be created or entered.
 #[derive(Clone, Debug)]
 pub enum InstanceError {
+    /// A namespace refers to another verified definition; local identities cannot be rebound.
+    DefinitionMismatch,
+    /// A control protocol is absent from this instance's exact definition.
+    MissingControlTag {
+        /// Local declaration requested by the embedding.
+        tag: crate::program::ControlTagId,
+    },
     /// The selected function is absent from this instance's exact definition.
     MissingFunction {
         /// Program-local target requested by the embedding.
@@ -105,6 +130,10 @@ pub enum InstanceError {
 impl fmt::Display for InstanceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DefinitionMismatch => f.write_str("namespace uses another verified definition"),
+            Self::MissingControlTag { tag } => {
+                write!(f, "control tag #{} is absent from this instance", tag.0)
+            }
             Self::MissingFunction { function } => {
                 write!(f, "function #{} is absent from this instance", function.0)
             }

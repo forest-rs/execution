@@ -613,7 +613,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
     impl TraceSink for Completions {
         fn instr_end(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             location: TraceLocation,
             _: Option<TraceLocation>,
             outcome: TraceOutcome<'_>,
@@ -624,7 +624,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
         }
         fn scope_exit(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             kind: ScopeKind,
             _: usize,
             _: execution_tape::value::FuncId,

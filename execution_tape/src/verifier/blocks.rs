@@ -430,6 +430,22 @@ impl CopyScheduler {
                         counts.closures += 1;
                         r
                     }
+                    VReg::Tag(_) => {
+                        let r = VReg::Tag(TagReg(
+                            u32::try_from(counts.tags)
+                                .expect("source register count bounds scratch index"),
+                        ));
+                        counts.tags += 1;
+                        r
+                    }
+                    VReg::Continuation(_) => {
+                        let r = VReg::Continuation(ContinuationReg(
+                            u32::try_from(counts.continuations)
+                                .expect("source register count bounds scratch index"),
+                        ));
+                        counts.continuations += 1;
+                        r
+                    }
                 };
                 scratch_regs.push(reg);
                 reg

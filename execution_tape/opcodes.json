@@ -3151,6 +3151,278 @@
           "access": "read"
         }
       ]
+    },
+    {
+      "name": "ConstTag",
+      "mnemonic": "const.tag",
+      "byte": "0x1D",
+      "terminator": false,
+      "flags": [],
+      "doc": "Resolve an instance-local typed control operation.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "tag_id"
+        }
+      ]
+    },
+    {
+      "name": "TagNew",
+      "mnemonic": "tag.new",
+      "byte": "0x1E",
+      "terminator": false,
+      "flags": [],
+      "doc": "Create a fresh operation identity with the declared protocol.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "tag_id"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "ContNew",
+      "mnemonic": "cont.new",
+      "byte": "0xA0",
+      "terminator": false,
+      "flags": [],
+      "doc": "Create a one-use, execution-owned computation from a qualified callable.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "func",
+          "encoding": "reg_u32_uleb",
+          "field": "callee",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "ContResume",
+      "mnemonic": "cont.resume",
+      "byte": "0xA1",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Consume a continuation and resume it under the supplied handler arms.",
+      "operands": [
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "continuation",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        },
+        {
+          "kind": "handler_list",
+          "role": "handlers",
+          "encoding": "handler_list",
+          "field": "handlers",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "Suspend",
+      "mnemonic": "suspend",
+      "byte": "0xA2",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Suspend to the nearest matching dynamic handler; resume with response values.",
+      "operands": [
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "tag",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        }
+      ]
+    },
+    {
+      "name": "ContDrop",
+      "mnemonic": "cont.drop",
+      "byte": "0xA3",
+      "terminator": false,
+      "flags": [],
+      "doc": "Consume and hard-cancel a saved computation without guest cleanup.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "continuation",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "TagIsHandled",
+      "mnemonic": "tag.is_handled",
+      "byte": "0xA4",
+      "terminator": false,
+      "flags": [],
+      "doc": "Query whether an active dynamic handler matches an operation.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "tag",
+          "access": "read"
+        }
+      ]
     }
   ]
 }

@@ -172,6 +172,140 @@ fn ordinary_indirect_calls_follow_qualified_functions_and_closures_through_aggre
     }
 }
 
+#[test]
+fn a_closure_keeps_nominal_captures_private_across_code_boundaries() {
+    use execution_tape::{host::HostSig, program::StructTypeDef};
+    for nested in [false, true] {
+        let mut builder = ProgramBuilder::new();
+        builder.set_program_name("nominal capture owner");
+        let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+        let schema = builder.struct_type(StructTypeDef {
+            field_names: vec!["number".into()],
+            field_types: vec![ValueType::I64],
+        });
+        let nominal = builder
+            .contract(Contract::Struct {
+                type_id: schema,
+                fields: &[integer],
+            })
+            .unwrap();
+        let environment = if nested {
+            builder.contract(Contract::Tuple(&[Some(nominal)])).unwrap()
+        } else {
+            nominal
+        };
+        let entry = builder
+            .declare_function(FunctionAbi {
+                args: vec![environment.into(), integer.into()],
+                rets: vec![integer.into()],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(entry).unwrap();
+        let environment = builder.argument(entry, 0).unwrap();
+        let argument = builder.argument(entry, 1).unwrap();
+        let capture = if nested {
+            let capture = body.alloc_register(ValueType::Agg);
+            body.tuple_get(capture, environment, 0);
+            capture
+        } else {
+            environment
+        };
+        let forty = body.alloc_register(ValueType::I64);
+        let answer = body.alloc_register(ValueType::I64);
+        body.struct_get(forty, capture, 0)
+            .i64_add(answer, forty, argument)
+            .ret(0, &[answer]);
+        builder.define_function(entry, body).unwrap();
+        let code = builder.build_verified().unwrap();
+
+        // Both ordinary guest calls and embedding-requested callbacks enter the owner.
+        // Callback evidence must retain the closure, rather than recording its environment
+        // as if it were an explicit argument originating in the caller's definition.
+        for native in [false, true] {
+            let (caller, root) = if native {
+                let mut builder = ProgramBuilder::new();
+                let pause = builder.host_sig_for(
+                    "schedule",
+                    HostSig {
+                        args: vec![],
+                        rets: vec![ValueType::I64],
+                    },
+                );
+                let root = builder
+                    .declare_function(FunctionSig {
+                        arg_types: vec![],
+                        ret_types: vec![ValueType::I64],
+                    })
+                    .unwrap();
+                let mut body = builder.function_asm(root).unwrap();
+                let [answer] = builder.emit_call(&mut body, pause, &[]).unwrap();
+                body.ret(0, &[answer]);
+                builder.define_function(root, body).unwrap();
+                (builder.build_verified().unwrap(), root)
+            } else {
+                caller(true)
+            };
+            let caller = Arc::new(caller);
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let function = vm.function(&code, entry).unwrap();
+            let capture = vm
+                .aggregates_mut()
+                .struct_new(schema, vec![Value::I64(40)])
+                .unwrap();
+            let environment = if nested {
+                vm.aggregates_mut()
+                    .tuple_new(vec![Value::Agg(capture)])
+                    .unwrap()
+            } else {
+                capture
+            };
+            let closure = Value::Closure(Closure {
+                func: function,
+                env: environment,
+            });
+            let mut recorder = Recorder::new(caller.clone(), RecordLimits::default())
+                .with_instructions(InstructionCapture::default());
+            {
+                let args = if native {
+                    vec![]
+                } else {
+                    vec![closure.clone()]
+                };
+                let mut run = vm
+                    .start(
+                        &caller,
+                        root,
+                        &args,
+                        InvocationOptions::default()
+                            .yield_host_calls()
+                            .trace(recorder.mask(), &mut recorder),
+                    )
+                    .unwrap();
+                if native {
+                    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+                    run.pending_host_call()
+                        .unwrap()
+                        .call_guest(closure, vec![Value::I64(2)])
+                        .unwrap();
+                    while run.resume(100).unwrap() != RunStatus::AwaitingHost {}
+                    let mut request = run.pending_host_call().unwrap();
+                    let mut values = request.take_callback_results().unwrap();
+                    assert_eq!(values, [Value::I64(42)]);
+                    request.complete(&mut values, Ok(0)).unwrap();
+                }
+                while run.resume(100).unwrap() != RunStatus::Complete {}
+                assert_eq!(run.take_outputs().unwrap(), [Value::I64(42)]);
+            }
+            let recording = recorder.finish();
+            assert_eq!(recording.status(), Ok(()));
+            assert!(
+                matches!(recording.replay().unwrap(), ReplayOutcome::Returned(values)
+                if values.values() == [Value::I64(42)])
+            );
+        }
+    }
+}
+
 fn replacement_method(add: i64, pause: bool) -> (VerifiedProgram, FuncId) {
     use execution_tape::host::HostSig;
     let mut builder = ProgramBuilder::new();
@@ -512,11 +646,33 @@ fn importing_defaults_from_distinct_stores_preserves_distinct_namespaces() {
         .unwrap();
     assert_ne!(first, second);
     let mut destination = Vm::new(NoHost, Limits::default());
-    let a = destination.bind_function(&first).unwrap();
-    let b = destination.bind_function(&second).unwrap();
+    let a = destination
+        .bind_instance(first.instance())
+        .unwrap()
+        .function(first.id())
+        .unwrap();
+    let b = destination
+        .bind_instance(second.instance())
+        .unwrap()
+        .function(second.id())
+        .unwrap();
     assert_ne!(a, b, "code equality does not merge namespace authority");
-    assert_eq!(destination.bind_function(&first).unwrap(), a);
-    assert_eq!(destination.bind_function(&second).unwrap(), b);
+    assert_eq!(
+        destination
+            .bind_instance(first.instance())
+            .unwrap()
+            .function(first.id())
+            .unwrap(),
+        a
+    );
+    assert_eq!(
+        destination
+            .bind_instance(second.instance())
+            .unwrap()
+            .function(second.id())
+            .unwrap(),
+        b
+    );
     assert!(destination.owns_instance(a.instance()));
     assert!(destination.owns_instance(b.instance()));
 }

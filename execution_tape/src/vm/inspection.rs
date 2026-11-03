@@ -65,13 +65,90 @@ pub(super) struct Activation {
     caller: Option<TraceLocation>,
 }
 
+/// Exactly one boundary can own the next result of a control stack.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) enum Waiting {
+    #[default]
+    Ready,
+    /// Installed owner whose control transition has not completed observer delivery.
+    Transition(TraceLocation),
+    Host(host_call::PendingHost),
+    Guest(PendingGuest),
+    Control(PendingGuest),
+}
+impl Waiting {
+    pub(super) fn host(self) -> Option<host_call::PendingHost> {
+        match self {
+            Self::Host(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn host_mut(&mut self) -> Option<&mut host_call::PendingHost> {
+        match self {
+            Self::Host(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn guest(self) -> Option<PendingGuest> {
+        match self {
+            Self::Guest(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn guest_mut(&mut self) -> Option<&mut PendingGuest> {
+        match self {
+            Self::Guest(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn control(self) -> Option<PendingGuest> {
+        match self {
+            Self::Control(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn control_mut(&mut self) -> Option<&mut PendingGuest> {
+        match self {
+            Self::Control(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn transfer(self) -> Option<PendingGuest> {
+        match self {
+            Self::Guest(site) | Self::Control(site) => Some(site),
+            _ => None,
+        }
+    }
+    pub(super) fn site(self) -> Option<(TraceLocation, usize)> {
+        match self {
+            Self::Host(site) => Some((site.location, site.depth)),
+            Self::Guest(site) | Self::Control(site) => Some((site.location, site.depth)),
+            Self::Transition(location) => Some((location, 0)),
+            Self::Ready => None,
+        }
+    }
+    pub(super) fn poison(&mut self) {
+        match self {
+            Self::Host(site) => site.abandoned = true,
+            Self::Guest(site) | Self::Control(site) => site.abandoned = true,
+            Self::Ready | Self::Transition(_) => {}
+        }
+    }
+    pub(super) fn interrupted(self) -> Option<TraceLocation> {
+        match self {
+            Self::Transition(location) => Some(location),
+            Self::Guest(site) | Self::Control(site) if site.abandoned => Some(site.location),
+            _ => None,
+        }
+    }
+}
+
 /// State touched only by the resumable dispatch specialization.
 #[derive(Default)]
 pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
     pub(super) yield_host_calls: bool,
-    pub(super) pending_host: Option<host_call::PendingHost>,
-    pub(super) pending_guest: Option<PendingGuest>,
+    pub(super) waiting: Waiting,
     pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
     owner: Option<Arc<()>>,
     execution: Option<Arc<()>>,
@@ -79,6 +156,10 @@ pub(super) struct ExecutionControl {
     pub(super) segment: u64,
 }
 impl ExecutionControl {
+    pub(super) fn execution_owner(&self) -> &Arc<()> {
+        self.execution.as_ref().expect("execution identity")
+    }
+
     pub(super) fn owner(&self) -> &Arc<()> {
         self.owner.as_ref().expect("resumable control identity")
     }
@@ -88,8 +169,7 @@ impl ExecutionControl {
         Self {
             remaining: 0,
             yield_host_calls,
-            pending_host: None,
-            pending_guest: None,
+            waiting: Waiting::Ready,
             callbacks: None,
             owner: Some(Arc::clone(&owner)),
             execution: Some(owner),
@@ -131,16 +211,12 @@ impl ExecutionControl {
                 .activation
                 .caller
                 .expect("nested activation has caller")
-        } else if let Some(pending) = self
-            .pending_guest
-            .filter(|pending| pending.depth == ctx.frames.len())
+        } else if let Some((location, _)) = self
+            .waiting
+            .site()
+            .filter(|(_, depth)| *depth == ctx.frames.len())
         {
-            pending.location
-        } else if let Some(pending) = self
-            .pending_host
-            .filter(|pending| pending.depth == ctx.frames.len())
-        {
-            pending.location
+            location
         } else {
             let frame = &ctx.frames[index];
             TraceLocation {
@@ -276,6 +352,61 @@ pub struct ObjectRoot {
     pub origin: ObjectRootOrigin,
 }
 
+/// A computation parked outside the active call chain, still owned by this execution.
+/// Query its exact frames before diagnosing retained values or collecting host objects.
+pub struct SavedContinuation<'a> {
+    id: crate::control::ContinuationId,
+    stacks: Vec<InvocationInspection<'a>>,
+}
+impl SavedContinuation<'_> {
+    /// One-use authority identity; this inspection view cannot resume it.
+    #[must_use]
+    pub fn id(&self) -> &crate::control::ContinuationId {
+        &self.id
+    }
+    /// Whether guest execution has begun. Unstarted computations have no frames.
+    #[must_use]
+    pub fn is_started(&self) -> bool {
+        !self.stacks.is_empty()
+    }
+    /// Parked frames, innermost first, retaining their exact code and activation identity.
+    pub fn frames(&self) -> impl ExactSizeIterator<Item = PausedFrame> + DoubleEndedIterator + '_ {
+        self.stacks
+            .iter()
+            .rev()
+            .flat_map(|stack| stack.frames())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+impl fmt::Debug for SavedContinuation<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SavedContinuation")
+            .field("id", &self.id)
+            .field("started", &self.is_started())
+            .field("stacks", &self.stacks.len())
+            .finish()
+    }
+}
+
+fn saved_inspections<'a>(
+    saved: &'a crate::control::arena::Resumptions<invocation::delimited::Saved<'_>>,
+    heap: &'a AggHeap,
+) -> Vec<SavedContinuation<'a>> {
+    saved
+        .iter()
+        .map(|(id, saved)| SavedContinuation {
+            id,
+            stacks: match saved {
+                invocation::delimited::Saved::New { .. } => Vec::new(),
+                invocation::delimited::Saved::Suspended(stacks) => {
+                    stacks.iter().map(|stack| inspection(stack, heap)).collect()
+                }
+            },
+        })
+        .collect()
+}
+
 struct FunctionInspection<'a> {
     facts: FunctionAnalysis<'a>,
     registers: Vec<VReg>,
@@ -297,6 +428,7 @@ pub struct InvocationInspection<'a> {
     active: bool,
     functions: BTreeMap<u32, FunctionInspection<'a>>,
     ancestors: Vec<Self>,
+    saved: Vec<SavedContinuation<'a>>,
     parent: Option<(ActivationId, TraceLocation)>,
 }
 impl fmt::Debug for InvocationInspection<'_> {
@@ -319,6 +451,7 @@ impl<H: Host> Invocation<'_, H> {
             .rev()
             .map(|parent| inspection(parent, self.vm.memory.aggs()))
             .collect();
+        view.saved = saved_inspections(&self.resumptions, self.vm.memory.aggs());
         view
     }
 
@@ -333,13 +466,13 @@ impl<H: Host> Invocation<'_, H> {
 impl<H: Host> invocation::Running<'_, '_, H> {
     pub(super) fn inspect(&self) -> InvocationInspection<'_> {
         let mut view = inspection(self.continuation, self.vm.memory.aggs());
-        if let Some(parents) = &self.parents {
-            view.ancestors = parents
-                .iter()
-                .rev()
-                .map(|parent| inspection(parent, self.vm.memory.aggs()))
-                .collect();
-        }
+        view.ancestors = self
+            .parents
+            .iter()
+            .rev()
+            .map(|parent| inspection(parent, self.vm.memory.aggs()))
+            .collect();
+        view.saved = saved_inspections(self.resumptions, self.vm.memory.aggs());
         view
     }
 }
@@ -362,24 +495,32 @@ fn inspection<'a>(
         active: continuation.outcome.is_none(),
         functions: BTreeMap::new(),
         ancestors: Vec::new(),
+        saved: Vec::new(),
         parent: continuation.parent.clone(),
     }
 }
 
 impl<'a> InvocationInspection<'a> {
+    /// Computations retained outside the active call chain. These still contribute object roots.
+    pub fn saved_continuations(&self) -> impl ExactSizeIterator<Item = &SavedContinuation<'a>> {
+        self.saved.iter()
+    }
+
     fn frame_at(&self, index: usize) -> PausedFrame {
         let frame = &self.ctx.frames[index];
         let activation = frame.activation;
         let child = index + 1 < self.ctx.frames.len();
         let pending = self
             .control
-            .pending_host
+            .waiting
+            .host()
             .filter(|pending| !child && pending.depth == self.ctx.frames.len());
         let waiting = child
             || pending.is_some()
             || self
                 .control
-                .pending_guest
+                .waiting
+                .transfer()
                 .is_some_and(|pending| pending.depth == self.ctx.frames.len());
         let location = self.control.paused_location(self.ctx, index);
         PausedFrame {
@@ -449,7 +590,8 @@ impl<'a> InvocationInspection<'a> {
             return self
                 .ancestors
                 .iter_mut()
-                .find_map(|ancestor| ancestor.register(id, register));
+                .chain(self.saved.iter_mut().flat_map(|saved| &mut saved.stacks))
+                .find_map(|stack| stack.register(id, register));
         };
         let frame = self.frame_at(index);
         let function = self
@@ -482,6 +624,8 @@ impl<'a> InvocationInspection<'a> {
                 &ctx.aggs,
                 &ctx.funcs,
                 &ctx.closures,
+                &ctx.tags,
+                &ctx.continuations,
                 self.ctx.frames[index].base,
                 *function.registers.get(register as usize)?,
             )
@@ -504,6 +648,7 @@ impl<'a> InvocationInspection<'a> {
     ) -> Option<impl Iterator<Item = RegisterValue<'a>> + '_> {
         let count = self
             .frames()
+            .chain(self.saved.iter().flat_map(|saved| saved.frames()))
             .find(|frame| &frame.activation == id)?
             .register_count;
         let id = id.clone();
@@ -524,8 +669,12 @@ impl<'a> InvocationInspection<'a> {
     }
 
     fn visit_objects_dyn(&mut self, visit: &mut dyn FnMut(ObjectRoot), shared_heap: bool) {
-        for ancestor in &mut self.ancestors {
-            ancestor.visit_objects_dyn(visit, false);
+        for stack in self
+            .ancestors
+            .iter_mut()
+            .chain(self.saved.iter_mut().flat_map(|saved| &mut saved.stacks))
+        {
+            stack.visit_objects_dyn(visit, false);
         }
 
         for index in (0..if self.active {
