@@ -253,6 +253,15 @@ pub enum VerifyError {
         /// Required indirect signature.
         call_sig: u32,
     },
+    /// A terminal transfer would change the enclosing function's final result contracts.
+    TailResultMismatch {
+        /// Containing function.
+        func: u32,
+        /// Tail instruction's source byte offset.
+        pc: u32,
+        /// Declared target protocol.
+        call_sig: CallSigId,
+    },
     /// A statically known operation contradicts a local clause's request/response protocol.
     HandlerProtocolMismatch {
         /// Containing function.
@@ -760,6 +769,11 @@ impl fmt::Display for VerifyError {
             Self::CallIndirectContractMismatch { func, pc, call_sig } => write!(
                 f,
                 "function #{func} at {pc}: callable does not match indirect signature #{call_sig}"
+            ),
+            Self::TailResultMismatch { func, pc, call_sig } => write!(
+                f,
+                "function #{func} at byte {pc}: tail signature #{} must preserve the function's final result contracts",
+                call_sig.0
             ),
             Self::HandlerProtocolMismatch {
                 func,
@@ -1583,6 +1597,8 @@ fn verify_id_operands_in_bounds(
         }
         if let Instr::CallIndirect { call_sig, .. }
         | Instr::ContNew { call_sig, .. }
+        | Instr::TailCall { call_sig, .. }
+        | Instr::TailResume { call_sig, .. }
         | Instr::ContResume { call_sig, .. }
         | Instr::Suspend { call_sig, .. } = &di.instr
             && program.call_sig(CallSigId(*call_sig)).is_none()
@@ -2032,6 +2048,26 @@ fn verify_function_bytecode(
         };
 
         let vi = match &di.instr {
+            Instr::TailCall {
+                call_sig,
+                callee,
+                args,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::TailCall {
+                signature: CallSigId(*call_sig),
+                callee: map(*callee)?,
+                args: push_vregs(args)?,
+            })),
+            Instr::TailResume {
+                call_sig,
+                continuation,
+                args,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::TailResume {
+                signature: CallSigId(*call_sig),
+                continuation: map_continuation(*continuation)?,
+                args: push_vregs(args)?,
+            })),
             Instr::ConstTag { dst, tag_id } | Instr::TagNew { dst, tag_id, .. } => {
                 ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Tag {
                     dst: map_tag(*dst)?,
@@ -3121,6 +3157,12 @@ fn validate_instr_reads_writes(
         | Instr::ContNew {
             eff_out, eff_in, ..
         }
+        | Instr::TailCall {
+            eff_out, eff_in, ..
+        }
+        | Instr::TailResume {
+            eff_out, eff_in, ..
+        }
         | Instr::ContResume {
             eff_out, eff_in, ..
         }
@@ -3294,6 +3336,56 @@ fn validate_instr_types(
     let t = |reg: u32| types.get(reg);
 
     match instr {
+        Instr::TailCall {
+            call_sig,
+            callee,
+            args,
+            ..
+        }
+        | Instr::TailResume {
+            call_sig,
+            continuation: callee,
+            args,
+            ..
+        } => {
+            let signature = program
+                .call_sig(CallSigId(*call_sig))
+                .expect("validated tail signature");
+            let expected = if matches!(instr, Instr::TailCall { .. }) {
+                if t(*callee) == Some(ValueType::Closure) {
+                    ValueType::Closure
+                } else {
+                    ValueType::Func
+                }
+            } else {
+                ValueType::Continuation
+            };
+            check_expected(func_id, pc, *callee, t(*callee), expected)?;
+            let parameters = program
+                .call_sig_args(signature)
+                .expect("validated arguments");
+            if args.len() != parameters.len() {
+                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+            }
+            for (&reg, &kind) in args.iter().zip(parameters) {
+                check_expected(func_id, pc, reg, t(reg), kind)?;
+            }
+            let enclosing = &program.functions[func_id as usize];
+            if !program
+                .contracts
+                .kinds(program.verified_contracts(enclosing.ret_types))
+                .iter()
+                .eq(program
+                    .contracts
+                    .kinds(program.verified_contracts(signature.rets)))
+            {
+                return Err(VerifyError::TailResultMismatch {
+                    func: func_id,
+                    pc,
+                    call_sig: CallSigId(*call_sig),
+                });
+            }
+        }
         Instr::ConstTag { dst, .. } | Instr::TagNew { dst, .. } => {
             check_expected(func_id, pc, *dst, t(*dst), ValueType::Tag)?;
         }

@@ -235,6 +235,8 @@ pub enum CaptureFault {
     MissingCompletion,
     /// One recorder was used for more than one invocation.
     MultipleRuns,
+    /// A control transfer occurred whose complete lifecycle was not retained.
+    UnsupportedControl,
     /// The VM ran a different prepared program from the recorder's source.
     ProgramMismatch,
     /// A configured capture budget was exhausted.
@@ -255,7 +257,12 @@ pub enum CaptureFault {
 
 impl core::fmt::Display for CaptureFault {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "incomplete capture: {self:?}")
+        match self {
+            Self::UnsupportedControl => f.write_str(
+                "incomplete capture: the complete tail-transfer lifecycle was not recorded",
+            ),
+            _ => write!(f, "incomplete capture: {self:?}"),
+        }
     }
 }
 impl core::error::Error for CaptureFault {}

@@ -124,6 +124,8 @@ impl Instr {
             Self::Suspend { .. } => Opcode::Suspend,
             Self::ContDrop { .. } => Opcode::ContDrop,
             Self::TagIsHandled { .. } => Opcode::TagIsHandled,
+            Self::TailCall { .. } => Opcode::TailCall,
+            Self::TailResume { .. } => Opcode::TailResume,
         }
     }
 

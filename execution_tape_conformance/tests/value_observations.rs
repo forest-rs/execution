@@ -114,7 +114,9 @@ impl TraceSink for Observe {
             TraceOutcome::Ok => Ok(()),
             TraceOutcome::Trap(error) => Err(error.clone()),
             TraceOutcome::Cancelled => panic!("run-to-completion cannot cancel"),
-            TraceOutcome::Unwound { .. } => panic!("run outcome cannot be a control transfer"),
+            TraceOutcome::Unwound { .. } | TraceOutcome::TailTransferred { .. } => {
+                panic!("this fixture performs no control transfer")
+            }
         });
     }
 }

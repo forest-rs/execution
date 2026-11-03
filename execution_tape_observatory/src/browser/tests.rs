@@ -863,3 +863,43 @@ fn frontend_snapshot_is_visible_on_compact_screens_and_follows_diagnostics() {
             .any(|line| line.contains("return 42;"))
     );
 }
+
+#[test]
+fn a_rejected_tail_transfer_explains_both_result_contracts() {
+    use execution_tape::{asm::FunctionAbi, contract::Contract};
+    let mut builder = ProgramBuilder::new();
+    let integer = builder.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let boolean = builder.contract(Contract::Kind(ValueType::Bool)).unwrap();
+    let required = builder.contract(Contract::Tuple(&[Some(integer)])).unwrap();
+    let actual = builder.contract(Contract::Tuple(&[Some(boolean)])).unwrap();
+    let signature = builder
+        .call_sig(FunctionAbi {
+            args: vec![],
+            rets: vec![actual.into()],
+        })
+        .unwrap();
+    let root = builder
+        .declare_function(FunctionAbi {
+            args: vec![ValueType::Func.into()],
+            rets: vec![required.into()],
+        })
+        .unwrap();
+    let mut body = builder.function_asm(root).unwrap();
+    let number = body.alloc_register(ValueType::I64);
+    let tuple = body.alloc_register(ValueType::Agg);
+    body.const_i64(number, 42)
+        .tuple_new(tuple, &[number])
+        .ret(0, &[tuple]);
+    builder
+        .emit_tail_call(&mut body, 1, signature, &[])
+        .unwrap();
+    builder.define_function(root, body).unwrap();
+    let program = builder.build();
+    let screen = render_program(&program, 150, 40).unwrap();
+    assert!(
+        screen.contains("Tail transfer retires this frame"),
+        "{screen}"
+    );
+    assert!(screen.contains("tuple(i64)"), "{screen}");
+    assert!(screen.contains("tuple(bool)"), "{screen}");
+}

@@ -1080,6 +1080,14 @@ impl TraceSink for Check<'_> {
             TraceOutcome::Unwound { target } => {
                 crate::recording::InstructionOutcome::Unwound { target }
             }
+            TraceOutcome::TailTransferred { target } => {
+                crate::recording::InstructionOutcome::TailTransferred {
+                    target: crate::recording::RecordedActivation {
+                        segment: target.segment_ordinal(),
+                        activation: target.ordinal(),
+                    },
+                }
+            }
             TraceOutcome::Cancelled => {
                 state.boundary = ReplayBoundary::Instruction { index };
                 state.error = Some(state.mismatch(Divergence::Instruction));

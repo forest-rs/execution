@@ -189,6 +189,7 @@ impl<'a> Context<'a> {
         }
         let actual_location = match event {
             ControlEvent::EnterInstance { location, .. }
+            | ControlEvent::TailTransfer { location, .. }
             | ControlEvent::RejectInstance { location, .. }
             | ControlEvent::ReturnInstance { location, .. }
             | ControlEvent::ReturnAcross { location, .. } => location,

@@ -797,5 +797,23 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *tag);
             Ok(())
         },
+        Instr::TailCall { args, call_sig, callee, eff_in, eff_out } => {
+            out.push(Opcode::TailCall as u8);
+            crate::codec_primitives::write_u32_uleb(out, *call_sig);
+            crate::codec_primitives::write_reg(out, *callee);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            Ok(())
+        },
+        Instr::TailResume { args, call_sig, continuation, eff_in, eff_out } => {
+            out.push(Opcode::TailResume as u8);
+            crate::codec_primitives::write_u32_uleb(out, *call_sig);
+            crate::codec_primitives::write_reg(out, *continuation);
+            crate::codec_primitives::write_reg(out, *eff_out);
+            crate::codec_primitives::write_reg(out, *eff_in);
+            crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
+            Ok(())
+        },
     }
 }

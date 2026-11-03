@@ -665,6 +665,7 @@ impl TraceSink for SegmentRecorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
+            TraceOutcome::TailTransferred { .. } => self.fail(CaptureFault::UnsupportedControl),
             TraceOutcome::Unwound { .. } => self.fail(CaptureFault::InvalidSequence),
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),
             TraceOutcome::Ok => {

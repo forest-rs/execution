@@ -923,6 +923,16 @@ pub(crate) enum ControlInstruction {
         returned: ControlTarget,
         handlers: alloc::boxed::Box<[ControlHandler]>,
     },
+    TailCall {
+        signature: CallSigId,
+        callee: VReg,
+        args: VRegSlice,
+    },
+    TailResume {
+        signature: CallSigId,
+        continuation: ContinuationReg,
+        args: VRegSlice,
+    },
     Suspend {
         signature: CallSigId,
         tag: TagReg,

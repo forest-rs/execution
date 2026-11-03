@@ -368,6 +368,9 @@ impl Session {
             return;
         }
         match event {
+            ControlEvent::TailTransfer { location, .. } => {
+                self.fail(CaptureFault::UnsupportedControl, Some(location));
+            }
             ControlEvent::EnterInstance {
                 origin,
                 location,

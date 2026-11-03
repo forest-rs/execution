@@ -163,6 +163,10 @@ fn step_description(
             }) => format!("abandoned by return from #{segment}:{activation}"),
             _ => format!("abandoned by return from local activation #{target}"),
         },
+        InstructionOutcome::TailTransferred { target } => format!(
+            "replaced by tail transfer to #{}:{}",
+            target.segment, target.activation
+        ),
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
         InstructionOutcome::Completed => match Opcode::from_byte(step.opcode) {
             Some(Opcode::Call | Opcode::CallIndirect) => {

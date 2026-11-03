@@ -56,6 +56,7 @@ impl VerifyError {
             | Self::ConstOutOfBounds { func, .. }
             | Self::HostCallSigMalformed { func, .. }
             | Self::CallIndirectContractMismatch { func, .. }
+            | Self::TailResultMismatch { func, .. }
             | Self::HandlerProtocolMismatch { func, .. }
             | Self::CallIndirectSigMalformed { func, .. }
             | Self::MissingRegisterTypes { func, .. }
@@ -111,6 +112,7 @@ impl VerifyError {
             | Self::ConstOutOfBounds { pc, .. }
             | Self::HostCallSigMalformed { pc, .. }
             | Self::CallIndirectContractMismatch { pc, .. }
+            | Self::TailResultMismatch { pc, .. }
             | Self::HandlerProtocolMismatch { pc, .. }
             | Self::CallIndirectSigMalformed { pc, .. }
             | Self::UnknownAggregateShape { pc, .. }

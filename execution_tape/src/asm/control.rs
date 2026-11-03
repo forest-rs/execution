@@ -305,23 +305,7 @@ impl ProgramBuilder {
                 }
             }
         }
-        let entry = self
-            .call_sigs
-            .get(signature.0 as usize)
-            .ok_or(ControlBuildError::Signature(signature))?;
-        if entry.args.len() != args.len() {
-            return Err(ControlBuildError::Arguments {
-                expected: entry.args.len(),
-                actual: args.len(),
-            });
-        }
-        for (&register, &id) in args.iter().zip(&entry.args) {
-            require(
-                body,
-                register,
-                self.contracts.table().kind(id).expect("declared contract"),
-            )?;
-        }
+        let entry = self.control_inputs(body, signature, args)?;
         let parameters = require_parameters(body, returned, entry.rets.len())?;
         for (&register, &id) in parameters.iter().zip(&entry.rets) {
             require(
@@ -332,6 +316,44 @@ impl ProgramBuilder {
         }
         self.control_capacity(body, 0)?;
         body.cont_resume(continuation, signature, args, returned, handlers);
+        Ok(())
+    }
+
+    /// Replaces this activation with a function or closure, without a result register or successor.
+    ///
+    /// Inputs are checked before emission. Verification also requires `signature`'s final results
+    /// to exactly match the containing function's contracts. Enclosing dynamic delimiters survive;
+    /// the retired activation cannot be targeted by a later lexical return.
+    pub fn emit_tail_call(
+        &self,
+        body: &mut Asm,
+        callee: u32,
+        signature: CallSigId,
+        args: &[u32],
+    ) -> Result<(), ControlBuildError> {
+        require_callable(body, callee)?;
+        self.control_inputs(body, signature, args)?;
+        self.control_capacity(body, 0)?;
+        body.tail_call(signature, callee, args);
+        Ok(())
+    }
+
+    /// Consumes a computation in tail position and inherits this activation's result recipient.
+    ///
+    /// This operation has no local clauses: they require the resumer's lexical frame. Use
+    /// [`Self::emit_resume`] to retain that frame and handle requests in local blocks. Verification
+    /// checks final-result equality with the enclosing function; runtime checks one-use authority.
+    pub fn emit_tail_resume(
+        &self,
+        body: &mut Asm,
+        continuation: u32,
+        signature: CallSigId,
+        args: &[u32],
+    ) -> Result<(), ControlBuildError> {
+        require(body, continuation, ValueType::Continuation)?;
+        self.control_inputs(body, signature, args)?;
+        self.control_capacity(body, 0)?;
+        body.tail_resume(signature, continuation, args);
         Ok(())
     }
 
@@ -368,12 +390,12 @@ impl ProgramBuilder {
         Ok(())
     }
 
-    fn control_results(
+    fn control_inputs(
         &self,
-        body: &mut Asm,
+        body: &Asm,
         signature: CallSigId,
         args: &[u32],
-    ) -> Result<Vec<u32>, ControlBuildError> {
+    ) -> Result<&CallSigDef, ControlBuildError> {
         let entry = self
             .call_sigs
             .get(signature.0 as usize)
@@ -384,7 +406,6 @@ impl ProgramBuilder {
                 actual: args.len(),
             });
         }
-        self.control_capacity(body, entry.rets.len())?;
         for (&reg, &contract) in args.iter().zip(&entry.args) {
             require(
                 body,
@@ -395,6 +416,17 @@ impl ProgramBuilder {
                     .expect("declared contract"),
             )?;
         }
+        Ok(entry)
+    }
+
+    fn control_results(
+        &self,
+        body: &mut Asm,
+        signature: CallSigId,
+        args: &[u32],
+    ) -> Result<Vec<u32>, ControlBuildError> {
+        let entry = self.control_inputs(body, signature, args)?;
+        self.control_capacity(body, entry.rets.len())?;
         Ok(entry
             .rets
             .iter()
@@ -493,6 +525,21 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(body.bytes, bytes);
+        assert_eq!(body.register_types, ledger);
+        for result in [
+            builder.emit_tail_call(&mut body, closure, signature, &[closure]),
+            builder.emit_tail_resume(&mut body, continuation, signature, &[closure]),
+        ] {
+            assert!(matches!(
+                result,
+                Err(ControlBuildError::Kind {
+                    actual: ValueType::Closure,
+                    expected: ValueType::Func,
+                    ..
+                })
+            ));
+        }
         assert_eq!(body.bytes, bytes);
         assert_eq!(body.register_types, ledger);
     }

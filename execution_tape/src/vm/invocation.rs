@@ -14,6 +14,7 @@ pub(super) mod delimited;
 mod exits;
 pub(super) mod guest_call;
 mod host_request;
+mod tail;
 pub use exits::ControlError;
 pub use host_request::PendingHostCall;
 
@@ -182,14 +183,7 @@ impl<'a, H: Host> Invocation<'a, H> {
     }
 
     pub(in crate::vm) fn recover_scratch(&mut self) -> (ExecutionContext, Vec<Value>) {
-        let root = if self.continuation.control.segment == 0 {
-            &mut self.continuation
-        } else {
-            self.parents
-                .iter_mut()
-                .find(|parent| parent.control.segment == 0)
-                .expect("execution root retained")
-        };
+        let root = self.parents.first_mut().unwrap_or(&mut self.continuation);
         (
             ExecutionContext {
                 registers: core::mem::take(&mut root.ctx),
@@ -373,6 +367,7 @@ impl<H: Host> Invocation<'_, H> {
                     self.running().restore_after_return()
                 }
                 Progress::Returned(site) => {
+                    self.running().check_root_tail_result(site)?;
                     self.running().prepare_root_return(site.location);
                     let continuation = &mut self.continuation;
                     if continuation.trace.active() {

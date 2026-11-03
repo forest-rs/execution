@@ -389,114 +389,120 @@ fn handler_edges_cannot_read_values_available_only_on_normal_return() {
 
 #[test]
 fn an_inner_nonmatching_table_survives_capture_and_matching_tables_are_outside_clauses() {
-    let mut program = ProgramBuilder::new();
-    let result = FunctionSig {
-        arg_types: vec![],
-        ret_types: vec![ValueType::I64],
-    };
-    let protocol = FunctionSig {
-        arg_types: vec![ValueType::I64],
-        ret_types: vec![ValueType::I64],
-    };
-    let initial = program.call_sig(result.clone()).unwrap();
-    let exchange = program.call_sig(protocol.clone()).unwrap();
-    let outer = program.control_tag("outer", protocol.clone()).unwrap();
-    let inner = program.control_tag("inner", protocol).unwrap();
-    let root = program.declare_function(result.clone()).unwrap();
-    let middle = program.declare_function(result.clone()).unwrap();
-    let worker = program.declare_function(result).unwrap();
+    for tail_outer in [false, true] {
+        let mut program = ProgramBuilder::new();
+        let result = FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![ValueType::I64],
+        };
+        let protocol = FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        };
+        let initial = program.call_sig(result.clone()).unwrap();
+        let exchange = program.call_sig(protocol.clone()).unwrap();
+        let outer = program.control_tag("outer", protocol.clone()).unwrap();
+        let inner = program.control_tag("inner", protocol).unwrap();
+        let root = program.declare_function(result.clone()).unwrap();
+        let middle = program.declare_function(result.clone()).unwrap();
+        let worker = program.declare_function(result).unwrap();
 
-    let mut body = program.function_asm(worker).unwrap();
-    let a = body.alloc_register(ValueType::Tag);
-    let b = body.alloc_register(ValueType::Tag);
-    let request = body.alloc_register(ValueType::I64);
-    let answer = body.alloc_register(ValueType::I64);
-    body.const_tag(a, outer)
-        .const_tag(b, inner)
-        .const_i64(request, 1);
-    let first = program
-        .emit_suspend(&mut body, a, exchange, &[request])
-        .unwrap()[0];
-    body.const_i64(request, 2);
-    let second = program
-        .emit_suspend(&mut body, b, exchange, &[request])
-        .unwrap()[0];
-    body.i64_add(answer, first, second).ret(0, &[answer]);
-    program.define_function(worker, body).unwrap();
-
-    for (entry, callee, operation, increment) in
-        [(root, middle, outer, 9), (middle, worker, inner, 18)]
-    {
-        let mut body = program.function_asm(entry).unwrap();
-        let tag = body.alloc_register(ValueType::Tag);
-        let target = body.alloc_register(ValueType::Func);
-        let increment_register = body.alloc_register(ValueType::I64);
-        let response = body.alloc_register(ValueType::I64);
-        body.const_tag(tag, operation)
-            .const_func(target, callee)
-            .const_i64(increment_register, increment);
-        let computation = program
-            .emit_continuation(&mut body, target, initial)
-            .unwrap();
-        let returned = program.result_block(&mut body, initial).unwrap();
-        let clause = program.handler_block(&mut body, tag, exchange).unwrap();
-        program
-            .emit_resume(
-                &mut body,
-                computation,
-                initial,
-                &[],
-                returned.label(),
-                &[clause.arm()],
-            )
-            .unwrap();
-        body.place(clause.label()).unwrap();
-
-        // A's whole matching table is outside its clause. B's inner table is parked inside
-        // the captured computation, so A cannot see it either. B becomes available on resume.
+        let mut body = program.function_asm(worker).unwrap();
         let a = body.alloc_register(ValueType::Tag);
         let b = body.alloc_register(ValueType::Tag);
-        let handled = body.alloc_register(ValueType::Bool);
-        let check_inner = body.label();
-        let respond = body.label();
-        let invalid = body.label();
+        let request = body.alloc_register(ValueType::I64);
+        let answer = body.alloc_register(ValueType::I64);
         body.const_tag(a, outer)
             .const_tag(b, inner)
-            .tag_is_handled(handled, a);
-        body.br(handled, invalid, check_inner);
-        body.place(check_inner).unwrap();
-        body.tag_is_handled(handled, b)
-            .br(handled, invalid, respond);
-        body.place(respond).unwrap();
-        body.i64_add(response, clause.request()[0], increment_register);
-        program
-            .emit_resume(
-                &mut body,
-                clause.continuation(),
-                exchange,
-                &[response],
-                returned.label(),
-                &[],
-            )
-            .unwrap();
-        body.place(invalid).unwrap();
-        body.trap(91);
-        body.place(returned.label()).unwrap();
-        body.ret(0, returned.results());
-        program.define_function(entry, body).unwrap();
+            .const_i64(request, 1);
+        let first = program
+            .emit_suspend(&mut body, a, exchange, &[request])
+            .unwrap()[0];
+        body.const_i64(request, 2);
+        let second = program
+            .emit_suspend(&mut body, b, exchange, &[request])
+            .unwrap()[0];
+        body.i64_add(answer, first, second).ret(0, &[answer]);
+        program.define_function(worker, body).unwrap();
+
+        for (entry, callee, operation, increment) in
+            [(root, middle, outer, 9), (middle, worker, inner, 18)]
+        {
+            let mut body = program.function_asm(entry).unwrap();
+            let tag = body.alloc_register(ValueType::Tag);
+            let target = body.alloc_register(ValueType::Func);
+            let increment_register = body.alloc_register(ValueType::I64);
+            let response = body.alloc_register(ValueType::I64);
+            body.const_tag(tag, operation)
+                .const_func(target, callee)
+                .const_i64(increment_register, increment);
+            let computation = program
+                .emit_continuation(&mut body, target, initial)
+                .unwrap();
+            let returned = program.result_block(&mut body, initial).unwrap();
+            let clause = program.handler_block(&mut body, tag, exchange).unwrap();
+            program
+                .emit_resume(
+                    &mut body,
+                    computation,
+                    initial,
+                    &[],
+                    returned.label(),
+                    &[clause.arm()],
+                )
+                .unwrap();
+            body.place(clause.label()).unwrap();
+
+            // A's whole matching table is outside its clause. B's inner table is parked inside
+            // the captured computation, so A cannot see it either. B becomes available on resume.
+            let a = body.alloc_register(ValueType::Tag);
+            let b = body.alloc_register(ValueType::Tag);
+            let handled = body.alloc_register(ValueType::Bool);
+            let check_inner = body.label();
+            let respond = body.label();
+            let invalid = body.label();
+            body.const_tag(a, outer)
+                .const_tag(b, inner)
+                .tag_is_handled(handled, a);
+            body.br(handled, invalid, check_inner);
+            body.place(check_inner).unwrap();
+            body.tag_is_handled(handled, b)
+                .br(handled, invalid, respond);
+            body.place(respond).unwrap();
+            body.i64_add(response, clause.request()[0], increment_register);
+            if tail_outer && entry == root {
+                body.tail_resume(exchange, clause.continuation(), &[response]);
+            } else {
+                program
+                    .emit_resume(
+                        &mut body,
+                        clause.continuation(),
+                        exchange,
+                        &[response],
+                        returned.label(),
+                        &[],
+                    )
+                    .unwrap();
+            }
+            body.place(invalid).unwrap();
+            body.trap(91);
+            body.place(returned.label()).unwrap();
+            body.ret(0, returned.results());
+            program.define_function(entry, body).unwrap();
+        }
+        let program = program.build_verified().unwrap();
+        let mut vm = Vm::new(
+            NoHost,
+            Limits {
+                max_call_depth: 3,
+                ..Limits::default()
+            },
+        );
+        assert_eq!(
+            vm.run(&program, root, &[], TraceMask::NONE, None).unwrap(),
+            [Value::I64(30)]
+        );
     }
-    let program = program.build_verified().unwrap();
-    let mut vm = Vm::new(
-        NoHost,
-        Limits {
-            max_call_depth: 3,
-            ..Limits::default()
-        },
-    );
-    assert_eq!(
-        vm.run(&program, root, &[], TraceMask::NONE, None).unwrap(),
-        [Value::I64(30)]
-    );
 }
 
 #[test]

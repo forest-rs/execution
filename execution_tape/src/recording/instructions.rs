@@ -87,6 +87,11 @@ pub enum InstructionOutcome {
         /// Target activation ordinal within this invocation.
         target: u64,
     },
+    /// The activation was replaced by a terminal transfer.
+    TailTransferred {
+        /// Exact replacement root within the recorded execution.
+        target: crate::recording::RecordedActivation,
+    },
     /// The instruction trapped. The final VM trap is available from the recording outcome.
     Trapped,
 }
@@ -284,6 +289,14 @@ impl History {
             crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
             crate::trace::TraceOutcome::Unwound { target } => {
                 InstructionOutcome::Unwound { target }
+            }
+            crate::trace::TraceOutcome::TailTransferred { target } => {
+                InstructionOutcome::TailTransferred {
+                    target: crate::recording::RecordedActivation {
+                        segment: target.segment_ordinal(),
+                        activation: target.ordinal(),
+                    },
+                }
             }
             crate::trace::TraceOutcome::Cancelled => {
                 self.status = InstructionStatus::Incomplete;

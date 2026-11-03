@@ -13,6 +13,10 @@ use core::fmt;
 /// The control operation whose contracts are being checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlBoundary {
+    /// Callable arguments/results at a proper terminal call.
+    TailCall,
+    /// Resume arguments/results at a proper terminal resumption.
+    TailResume,
     /// Original callable inputs and final results at continuation creation.
     Create,
     /// Inputs at a particular suspension and the computation's final results.
@@ -25,6 +29,8 @@ pub enum ControlBoundary {
 impl fmt::Display for ControlBoundary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::TailCall => "tail call",
+            Self::TailResume => "tail resumption",
             Self::Create => "continuation creation",
             Self::Resume => "resumption",
             Self::Suspend => "suspension",

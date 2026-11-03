@@ -426,7 +426,7 @@ impl TraceCtx<'_> {
             }
         }
     }
-    fn exit_frame(
+    pub(super) fn exit_frame(
         &mut self,
         program: &Program,
         depth: usize,

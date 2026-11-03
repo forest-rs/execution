@@ -459,6 +459,16 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::EffIn, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Src, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::ImmU32, OperandRole::Imm, OperandEncoding::U32Uleb, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Func, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::EffOut, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::EffIn, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::RegList, OperandRole::Args, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::ImmU32, OperandRole::Imm, OperandEncoding::U32Uleb, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Src, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::EffOut, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::EffIn, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::RegList, OperandRole::Args, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Read)),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -659,6 +669,8 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "suspend", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 315, len: 6 } }, // 0xA2 Suspend
     OpcodeInfo { mnemonic: "cont.drop", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 321, len: 3 } }, // 0xA3 ContDrop
     OpcodeInfo { mnemonic: "tag.is_handled", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 324, len: 2 } }, // 0xA4 TagIsHandled
+    OpcodeInfo { mnemonic: "tail.call", is_terminator: true, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 326, len: 5 } }, // 0xA5 TailCall
+    OpcodeInfo { mnemonic: "tail.resume", is_terminator: true, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 331, len: 5 } }, // 0xA6 TailResume
 ];
 
 /// Bytecode opcode byte for the v1 instruction set.
@@ -897,6 +909,10 @@ pub enum Opcode {
     ContDrop = 0xA3,
     /// Query whether an active dynamic handler matches an operation.
     TagIsHandled = 0xA4,
+    /// Replace the current activation and inherit its result recipient.
+    TailCall = 0xA5,
+    /// Replace the current activation and inherit its result recipient.
+    TailResume = 0xA6,
 }
 
 impl Opcode {
@@ -1020,6 +1036,8 @@ impl Opcode {
             0xA2 => Self::Suspend,
             0xA3 => Self::ContDrop,
             0xA4 => Self::TagIsHandled,
+            0xA5 => Self::TailCall,
+            0xA6 => Self::TailResume,
             _ => return None,
         })
     }

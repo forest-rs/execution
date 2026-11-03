@@ -42,7 +42,7 @@ impl Saved<'_> {
 }
 
 impl<'request, 'a, H: Host> Running<'request, 'a, H> {
-    fn control_trap(&self, location: TraceLocation, trap: Trap) -> TrapInfo {
+    pub(super) fn control_trap(&self, location: TraceLocation, trap: Trap) -> TrapInfo {
         let span = self.continuation.ctx.span_at(
             self.continuation.program.program(),
             location.func,
@@ -74,6 +74,12 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         else {
             unreachable!("control dispatch")
         };
+        if matches!(
+            operation.as_ref(),
+            ControlInstruction::TailCall { .. } | ControlInstruction::TailResume { .. }
+        ) {
+            return self.dispatch_tail(location, operation);
+        }
         let base = self
             .continuation
             .ctx
@@ -84,6 +90,9 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         let mut initialize = false;
         let result = (|| -> Result<(), Trap> {
             match operation.as_ref() {
+                ControlInstruction::TailCall { .. } | ControlInstruction::TailResume { .. } => {
+                    unreachable!("terminal control dispatch")
+                }
                 ControlInstruction::Tag {
                     dst,
                     declaration,
@@ -373,7 +382,10 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         }
     }
 
-    fn control_callable(&self, value: &Value) -> Result<(FunctionRef, Option<AggHandle>), Trap> {
+    pub(super) fn control_callable(
+        &self,
+        value: &Value,
+    ) -> Result<(FunctionRef, Option<AggHandle>), Trap> {
         let (target, environment) = match value {
             Value::Func(target) => (target.clone(), None),
             Value::Closure(closure) => (closure.func.clone(), Some(closure.env)),
@@ -409,7 +421,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         Ok((target, environment))
     }
 
-    fn check_signature(
+    pub(super) fn check_signature(
         &mut self,
         expected: &VerifiedProgram,
         signature: CallSigId,
@@ -484,7 +496,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         )
     }
 
-    fn check_control_values(
+    pub(super) fn check_control_values(
         &mut self,
         owner: (&VerifiedProgram, ByteRange),
         values: &[Value],
@@ -525,7 +537,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         Ok(())
     }
 
-    fn control_values(&mut self, registers: VRegSlice) -> Result<Vec<Value>, Trap> {
+    pub(super) fn control_values(&mut self, registers: VRegSlice) -> Result<Vec<Value>, Trap> {
         let stack = &mut self.continuation;
         let frame = stack.ctx.frames.last().expect("running frame");
         let base = frame.base;
@@ -825,7 +837,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         Ok(true)
     }
 
-    fn complete_control(
+    pub(super) fn complete_control(
         stack: &mut continuation::Continuation<'a>,
         values: Vec<Value>,
         heap: &AggHeap,

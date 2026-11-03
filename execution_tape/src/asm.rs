@@ -2101,6 +2101,41 @@ impl Asm {
         self
     }
 
+    /// Replaces this activation with a qualified callable; the signature's final results must
+    /// exactly match this function's results. There are no result registers or fallthrough.
+    pub fn tail_call(&mut self, signature: CallSigId, callee: u32, args: &[u32]) -> &mut Self {
+        self.opcode(Opcode::TailCall);
+        self.uleb(signature.0);
+        self.reg(callee);
+        self.reg(0);
+        self.reg(0);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &arg in args {
+            self.reg(arg);
+        }
+        self
+    }
+
+    /// Consumes a saved computation, replacing this activation and inheriting its result
+    /// recipient. Local clauses require a live resumer; use [`Self::cont_resume`] for those.
+    pub fn tail_resume(
+        &mut self,
+        signature: CallSigId,
+        continuation: u32,
+        args: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::TailResume);
+        self.uleb(signature.0);
+        self.reg(continuation);
+        self.reg(0);
+        self.reg(0);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &arg in args {
+            self.reg(arg);
+        }
+        self
+    }
+
     /// Encodes `ret eff_in, retc, rets...`.
     pub fn ret(&mut self, eff_in: u32, rets: &[u32]) -> &mut Self {
         self.opcode(Opcode::Ret);

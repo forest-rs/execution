@@ -1125,5 +1125,33 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 tag,
             }
         },
+        Opcode::TailCall => {
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let callee = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::TailCall {
+                call_sig,
+                callee,
+                eff_out,
+                eff_in,
+                args,
+            }
+        },
+        Opcode::TailResume => {
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let continuation = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::TailResume {
+                call_sig,
+                continuation,
+                eff_out,
+                eff_in,
+                args,
+            }
+        },
     })
 }

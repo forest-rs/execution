@@ -117,6 +117,22 @@ pub(crate) enum Instr {
         pc_return: u32,
         handlers: Vec<crate::control::HandlerClause>,
     },
+    /// Proper terminal call through a qualified function or closure.
+    TailCall {
+        call_sig: u32,
+        callee: u32,
+        eff_out: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+    },
+    /// Proper terminal resumption without a local clause context.
+    TailResume {
+        call_sig: u32,
+        continuation: u32,
+        eff_out: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+    },
     /// Capture inside a matching dynamic delimiter.
     Suspend {
         call_sig: u32,

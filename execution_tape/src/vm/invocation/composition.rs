@@ -96,10 +96,19 @@ impl<'state, H: Host> Running<'_, 'state, H> {
     }
 
     pub(super) fn check_return_values(&mut self, values: &[Value]) -> Result<(), Trap> {
-        let Some(parent) = self.parents.last() else {
+        if self.parents.is_empty() && !self.continuation.structural_results {
             return Ok(());
-        };
-        check_transfer(
+        }
+        let source = self
+            .continuation
+            .ctx
+            .instance
+            .as_ref()
+            .expect("returning instance");
+        let target = self.parents.last().map_or(source, |parent| {
+            parent.ctx.instance.as_ref().expect("parent instance")
+        });
+        check_transfer_policy(
             self.vm.memory.aggs(),
             values,
             self.continuation
@@ -107,19 +116,29 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 .instance
                 .as_ref()
                 .expect("child instance"),
-            parent.ctx.instance.as_ref().expect("parent instance"),
+            target,
             self.budget,
             &self.vm.limits,
             self.continuation.entry,
             false,
+            self.continuation.structural_results,
         )
     }
 
     fn check_return_transfer(&mut self) -> Result<(), Trap> {
-        let Some(parent) = self.parents.last() else {
+        if self.parents.is_empty() && !self.continuation.structural_results {
             return Ok(());
-        };
-        check_transfer(
+        }
+        let source = self
+            .continuation
+            .ctx
+            .instance
+            .as_ref()
+            .expect("returning instance");
+        let target = self.parents.last().map_or(source, |parent| {
+            parent.ctx.instance.as_ref().expect("parent instance")
+        });
+        check_transfer_policy(
             self.vm.memory.aggs(),
             &self.continuation.outputs,
             self.continuation
@@ -127,11 +146,12 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 .instance
                 .as_ref()
                 .expect("child instance"),
-            parent.ctx.instance.as_ref().expect("parent instance"),
+            target,
             self.budget,
             &self.vm.limits,
             self.continuation.entry,
             false,
+            self.continuation.structural_results,
         )
     }
 
@@ -425,7 +445,24 @@ pub(in crate::vm) fn check_transfer(
     function: FuncId,
     arguments: bool,
 ) -> Result<(), Trap> {
-    let same_definition = source.program().shares_definition_with(target.program());
+    check_transfer_policy(
+        heap, values, source, target, budget, limits, function, arguments, false,
+    )
+}
+
+pub(in crate::vm) fn check_transfer_policy(
+    heap: &AggHeap,
+    values: &[Value],
+    source: &Instance,
+    target: &Instance,
+    budget: &mut Budget,
+    limits: &Limits,
+    function: FuncId,
+    arguments: bool,
+    structural_results: bool,
+) -> Result<(), Trap> {
+    let same_definition =
+        !structural_results && source.program().shares_definition_with(target.program());
     let mut seen = BTreeSet::new();
     for (index, value) in values.iter().enumerate() {
         let mut work = vec![(core::slice::from_ref(value).iter(), false)];

@@ -134,6 +134,23 @@ pub enum ControlEvent<'a> {
         /// Shared execution storage.
         aggregates: &'a AggHeap,
     },
+    /// A terminal transfer replaces an activation instead of retaining it as a caller.
+    TailTransfer {
+        /// Tail instruction in the callback's definition.
+        location: TraceLocation,
+        /// Retired activation; it cannot be targeted by a later lexical return.
+        source: &'a ActivationId,
+        /// Replacement computation's root, independently of its active inner frames.
+        target: &'a ActivationId,
+        /// Surviving result recipient; absent at execution-root completion.
+        recipient: Option<&'a ActivationId>,
+        /// Qualified callable, or the consumed one-use resumption.
+        value: &'a Value,
+        /// Explicit call arguments or suspension responses.
+        args: &'a [Value],
+        /// Shared execution storage before the replacement executes.
+        aggregates: &'a AggHeap,
+    },
     /// A non-local return initiated in one segment and targeting an ancestor segment.
     ReturnAcross {
         /// Initiating pending host instruction, in the callback's `program`.
@@ -319,6 +336,11 @@ pub enum TraceOutcome<'a> {
     Unwound {
         /// Activation whose declared result boundary receives the transfer values.
         target: u64,
+    },
+    /// This activation was replaced by a proper tail transfer, not by cancellation or return.
+    TailTransferred {
+        /// Replacement computation's exact root identity.
+        target: &'a ActivationId,
     },
     /// Trapped.
     Trap(&'a TrapInfo),

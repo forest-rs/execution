@@ -131,6 +131,8 @@ impl Instr {
             Self::Suspend { tag, eff_in, args, .. } => ReadsIter::from_parts_with_handlers([*tag, *eff_in, 0], 2, [args.as_slice()], [&[]]),
             Self::ContDrop { continuation, eff_in, .. } => ReadsIter::from_parts_with_handlers([*continuation, *eff_in, 0], 2, [&[]], [&[]]),
             Self::TagIsHandled { tag, .. } => ReadsIter::from_parts_with_handlers([*tag, 0, 0], 1, [&[]], [&[]]),
+            Self::TailCall { callee, eff_in, args, .. } => ReadsIter::from_parts_with_handlers([*callee, *eff_in, 0], 2, [args.as_slice()], [&[]]),
+            Self::TailResume { continuation, eff_in, args, .. } => ReadsIter::from_parts_with_handlers([*continuation, *eff_in, 0], 2, [args.as_slice()], [&[]]),
         }
     }
     /// Iterates virtual registers write by this instruction without allocation.
@@ -253,6 +255,8 @@ impl Instr {
             Self::Suspend { eff_out, rets, .. } => WritesIter::from_parts([*eff_out, 0], 1, [rets.as_slice()]),
             Self::ContDrop { eff_out, .. } => WritesIter::from_parts([*eff_out, 0], 1, [&[]]),
             Self::TagIsHandled { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
+            Self::TailCall { eff_out, .. } => WritesIter::from_parts([*eff_out, 0], 1, [&[]]),
+            Self::TailResume { eff_out, .. } => WritesIter::from_parts([*eff_out, 0], 1, [&[]]),
         }
     }
 }

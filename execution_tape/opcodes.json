@@ -3422,6 +3422,98 @@
           "access": "read"
         }
       ]
+    },
+    {
+      "name": "TailCall",
+      "mnemonic": "tail.call",
+      "byte": "0xA5",
+      "terminator": true,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Replace the current activation and inherit its result recipient.",
+      "operands": [
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "func",
+          "encoding": "reg_u32_uleb",
+          "field": "callee",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "TailResume",
+      "mnemonic": "tail.resume",
+      "byte": "0xA6",
+      "terminator": true,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Replace the current activation and inherit its result recipient.",
+      "operands": [
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "continuation",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        }
+      ]
     }
   ]
 }

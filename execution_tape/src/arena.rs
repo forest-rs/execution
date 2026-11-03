@@ -95,6 +95,25 @@ pub(crate) struct ValueArena {
 }
 
 impl ValueArena {
+    #[cfg(test)]
+    pub(crate) fn owned_payload_bytes(&self) -> usize {
+        self.bytes
+            .iter()
+            .map(|value| match value {
+                Stored::Owned(bytes) => bytes.len(),
+                Stored::Source(_) => 0,
+            })
+            .sum::<usize>()
+            + self
+                .strs
+                .iter()
+                .map(|value| match value {
+                    Stored::Owned(text) => text.len(),
+                    Stored::Source(_) => 0,
+                })
+                .sum::<usize>()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.bytes.clear();
         self.strs.clear();

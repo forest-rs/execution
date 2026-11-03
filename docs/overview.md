@@ -122,6 +122,28 @@ and caps saved computations with `Limits::max_continuations`. Completing the roo
 saved capability before heap compaction. Explicit discard and hard cancellation execute no guest
 cleanup. Checked replay of delimited continuation lifecycles remains unfinished.
 
+### Tail positions
+
+`emit_tail_call` replaces the current activation with a qualified function or closure.
+`emit_tail_resume` consumes a computation and replaces the activation with its saved control.
+Both inherit the actual result recipient: a guest caller, pending native request, enclosing
+resumption or root completion. Their final-result contracts must exactly match the containing
+function. They have no result registers or fallthrough. A tail resumption has no local clauses;
+use `emit_resume` when those clauses need the resumer's lexical frame.
+
+Enclosing delimiters and inner saved handlers survive the transfer. A fresh callee has a new
+activation identity; resuming saved frames preserves their identities. The retired activation
+expires. Tail chains retain no forwarding frames, and root replacement releases the old
+register and temporary payload storage. Shared aggregate garbage still awaits root publication;
+this is not a constant-heap guarantee. All existing hard work limits remain shared.
+
+Eliminated cross-definition return edges retain their restriction on exposed nominal values;
+code-qualified closures can still carry private nominal captures. Tail transfer executes no
+implicit cleanup. A language must discharge or explicitly preserve its protected obligations.
+`ControlEvent::TailTransfer` and `TraceOutcome::TailTransferred` describe replacement separately
+from a return or cancellation. Complete tail lifecycle recording remains unfinished;
+recordings encountering it report `CaptureFault::UnsupportedControl` and reject checked replay.
+
 ## Authoring register declarations
 
 Unit/effect registers have no runtime payload bank. Their declarations and initialization

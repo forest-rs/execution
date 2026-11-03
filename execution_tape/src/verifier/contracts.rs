@@ -1095,7 +1095,19 @@ fn validate(
                 });
             }
         }
-        Instr::CallIndirect {
+        Instr::TailCall {
+            call_sig,
+            callee,
+            args,
+            ..
+        }
+        | Instr::TailResume {
+            call_sig,
+            continuation: callee,
+            args,
+            ..
+        }
+        | Instr::CallIndirect {
             call_sig,
             callee,
             args,
@@ -1205,6 +1217,36 @@ pub(super) fn verify_flow(
     }
     let (mut arena, inputs, outputs) =
         solve_flow(program, func_id, blocks, reachable, types, decoded);
+    // Tail result obligations are declarations, including on unreachable transfers. Comparing
+    // canonical facts accepts separately encoded but structurally equal contract graphs.
+    let empty = ByteRange { offset: 0, len: 0 };
+    let mut expected = None;
+    for di in decoded {
+        if let Instr::TailCall { call_sig, .. } | Instr::TailResume { call_sig, .. } = di.instr {
+            let expected = *expected.get_or_insert_with(|| {
+                arena.signature_ranges(
+                    empty,
+                    program.functions[func_id as usize].ret_types,
+                    SignatureKind::Continuation,
+                )
+            });
+            let actual = arena.signature_ranges(
+                empty,
+                program
+                    .call_sig(CallSigId(call_sig))
+                    .expect("validated tail signature")
+                    .rets,
+                SignatureKind::Continuation,
+            );
+            if actual != expected {
+                return Err(VerifyError::TailResultMismatch {
+                    func: func_id,
+                    pc: di.offset,
+                    call_sig: CallSigId(call_sig),
+                });
+            }
+        }
+    }
     for (index, (block, mut state)) in blocks.iter().zip(inputs).enumerate() {
         if !reachable[index] {
             continue;

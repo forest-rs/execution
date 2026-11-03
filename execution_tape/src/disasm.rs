@@ -250,6 +250,19 @@ pub enum CallTarget<'a> {
 /// Disassembled instruction operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operands<'a> {
+    /// A terminal call or resumption. The opcode distinguishes the target's value kind.
+    Tail {
+        /// Function/closure register for `tail.call`, or one-use capability for `tail.resume`.
+        target: u32,
+        /// Resume/call arguments and final-result contracts.
+        signature: CallSigId,
+        /// Explicit argument or response registers.
+        args: &'a [u32],
+        /// Effect input register.
+        eff_in: u32,
+        /// Effect output register.
+        eff_out: u32,
+    },
     /// Consume a computation under a dynamically installed handler context.
     Resume {
         /// One-use continuation register.
@@ -424,6 +437,8 @@ impl<'a> InstrView<'a> {
                 return Some(InputIndex::ControlTag(crate::program::ControlTagId(tag_id)));
             }
             Instr::ContNew { call_sig, .. }
+            | Instr::TailCall { call_sig, .. }
+            | Instr::TailResume { call_sig, .. }
             | Instr::ContResume { call_sig, .. }
             | Instr::Suspend { call_sig, .. } => {
                 return Some(InputIndex::CallSig(CallSigId(call_sig)));
@@ -536,6 +551,28 @@ impl<'a> InstrView<'a> {
     #[must_use]
     pub fn operands(&self) -> Operands<'a> {
         match &self.decoded.instr {
+            Instr::TailCall {
+                call_sig,
+                callee: target,
+                args,
+                eff_in,
+                eff_out,
+            }
+            | Instr::TailResume {
+                call_sig,
+                continuation: target,
+                args,
+                eff_in,
+                eff_out,
+            } => {
+                return Operands::Tail {
+                    target: *target,
+                    signature: CallSigId(*call_sig),
+                    args,
+                    eff_in: *eff_in,
+                    eff_out: *eff_out,
+                };
+            }
             Instr::ContResume {
                 continuation,
                 call_sig,
@@ -998,7 +1035,7 @@ fn fmt_instr_with_labels(
 ) -> fmt::Result {
     write!(f, "  {:06}: {}", iv.pc(), iv.opcode().mnemonic())?;
     match iv.operands() {
-        op @ (Operands::Resume { .. } | Operands::Suspend { .. }) => {
+        op @ (Operands::Tail { .. } | Operands::Resume { .. } | Operands::Suspend { .. }) => {
             fmt_control(f, op, iv.program)?;
         }
         Operands::Block { params } => fmt_block(f, params, iv)?,
@@ -1116,6 +1153,17 @@ fn fmt_instr_with_labels(
 
 fn fmt_control(f: &mut fmt::Formatter<'_>, op: Operands<'_>, program: &Program) -> fmt::Result {
     let (signature, eff_in, eff_out) = match op {
+        Operands::Tail {
+            target,
+            signature,
+            args,
+            eff_in,
+            eff_out,
+        } => {
+            write!(f, " r{target}, args=")?;
+            fmt_reg_list(f, args)?;
+            (signature, eff_in, eff_out)
+        }
         Operands::Resume {
             continuation,
             signature,
@@ -1209,7 +1257,7 @@ impl fmt::Display for InstrView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:06}: {}", self.pc(), self.opcode().mnemonic())?;
         match self.operands() {
-            op @ (Operands::Resume { .. } | Operands::Suspend { .. }) => {
+            op @ (Operands::Tail { .. } | Operands::Resume { .. } | Operands::Suspend { .. }) => {
                 fmt_control(f, op, self.program)?;
             }
             Operands::Block { params } => fmt_block(f, params, self)?,

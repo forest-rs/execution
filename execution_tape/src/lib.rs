@@ -121,6 +121,16 @@
 //! above these primitives. See `examples/tape/src/bin/local_handlers.rs` for a source-linked
 //! example and `docs/overview.md` for the current lifetime and replay limits.
 //!
+//! [`emit_tail_call`](asm::ProgramBuilder::emit_tail_call) and
+//! [`emit_tail_resume`](asm::ProgramBuilder::emit_tail_resume) replace the current activation
+//! and inherit its result recipient. They preserve enclosing control context and require the
+//! containing function's exact final-result contracts. Tail resumption consumes one-use authority;
+//! its target has no local clauses. Retired activations expire and forwarding frames do not
+//! accumulate. Register and temporary payload storage is released on segment replacement;
+//! shared aggregate reclamation still follows the execution's publication policy. Tail transfer
+//! runs no implicit protected cleanup. Its complete recording lifecycle remains unfinished;
+//! capture reports [`recording::CaptureFault::UnsupportedControl`] rather than claiming replayability.
+//!
 //! ## Source connections
 //!
 //! [`source::SourceMap`] owns optional frontend snapshots and exact instruction-to-source ranges.

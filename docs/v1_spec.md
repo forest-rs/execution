@@ -189,6 +189,28 @@ checks every outcome edge's parameter kinds, propagates its rich contracts and r
 protocol contradictions. Runtime installation checks opaque tag protocols before consuming the
 computation's authority or entering it. Local handler loops need no extra call frames.
 
+### Terminal transfer
+
+`tail.call` and `tail.resume` replace exactly the current activation and inherit its result
+recipient. Their operands are a call-signature ID, target register, effect output/input registers,
+and argument register list. They are terminators with no destination registers or local successor.
+The target is a qualified function/closure for `tail.call`, or a one-use capability for
+`tail.resume`. Final-result contracts must equal the enclosing function's contracts, including
+rich structure. Equivalent contract encodings are compared canonically.
+
+Arguments, environments, ownership and authority are checked before retirement. A saved
+computation's frames remain charged; only the replaced active frame is removed. No resource
+budget resets. Enclosing delimiters and inner saved handlers survive. `tail.resume` installs no
+new local clauses. Callee activations have fresh identities; saved activations retain theirs.
+The replaced activation expires. Storage needed only by a replaced segment is released;
+surviving callers retain their own storage. There are no empty result-forwarding segments.
+
+Cross-definition result obligations cannot be bypassed by returning to an earlier definition
+later in a tail chain. Under the current provenance rule, eliminated foreign return edges add a
+sticky restriction against exposed nominal aggregates. Private code-qualified closure captures
+remain encapsulated. This restriction applies only to the new result, including when execution
+appends to an existing output buffer. Tail transfer does not run protected guest cleanup.
+
 ### Control flow invariants
 - All jump targets must point to instruction boundaries.
 - Structured blocks are not required, but all target pcs must be within the current function.

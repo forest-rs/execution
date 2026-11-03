@@ -54,6 +54,7 @@ static SCOPE_END: EventDesc = EventDesc::new("execution_tape.scope_end");
 static RUN_END: EventDesc = EventDesc::new("execution_tape.run_end");
 static ENTER_INSTANCE: EventDesc = EventDesc::new("execution_tape.enter_instance");
 static RETURN_INSTANCE: EventDesc = EventDesc::new("execution_tape.return_instance");
+static TAIL_TRANSFER: EventDesc = EventDesc::new("execution_tape.tail_transfer");
 static RETURN_ACROSS: EventDesc = EventDesc::new("execution_tape.return_across");
 static REJECT_INSTANCE: EventDesc = EventDesc::new("execution_tape.reject_instance");
 
@@ -138,6 +139,9 @@ impl FootfallSink {
             TraceOutcome::Unwound { .. } => {
                 footfall::message_with(ok_desc, context, "unwound", args);
             }
+            TraceOutcome::TailTransferred { .. } => {
+                footfall::message_with(ok_desc, context, "tail-transferred", args);
+            }
             TraceOutcome::Cancelled => {
                 footfall::message_with(ok_desc, context, "cancelled", args);
             }
@@ -204,6 +208,7 @@ impl TraceSink for FootfallSink {
             ControlEvent::RejectInstance { parent, child, .. } => (&REJECT_INSTANCE, parent, child),
             ControlEvent::ReturnInstance { child, parent, .. } => (&RETURN_INSTANCE, child, parent),
             ControlEvent::ReturnAcross { source, target, .. } => (&RETURN_ACROSS, source, target),
+            ControlEvent::TailTransfer { source, target, .. } => (&TAIL_TRANSFER, source, target),
         };
         let args = Args::none()
             .with("from_segment", source.segment_ordinal())

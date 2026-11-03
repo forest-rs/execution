@@ -753,6 +753,7 @@ impl<H: Host> fmt::Debug for Vm<H> {
 /// Keeping this out of [`ExecutionContext`] avoids storing borrowed trace state in the long-lived
 /// per-run context while still flattening VM hot-loop tracing code.
 struct TraceCtx<'a> {
+    run_open: bool,
     stack: Option<ActivationId>,
     mask: TraceMask,
     sink: Option<Observer<'a, dyn TraceSink + 'a>>,
@@ -766,6 +767,7 @@ impl<'a> TraceCtx<'a> {
         sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
     ) -> Self {
         Self {
+            run_open: false,
             stack: None,
             mask,
             sink: sink.map(Observer::Unique),
@@ -801,12 +803,16 @@ impl<'a> TraceCtx<'a> {
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
         {
             let t: &mut dyn TraceSink = &mut *t;
+            self.run_open = true;
             t.run_start(context, entry, arg_count);
         }
     }
 
     #[inline]
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+        if !core::mem::take(&mut self.run_open) {
+            return;
+        }
         let context = TraceContext::new(program, self.stack.as_ref());
         if self.enabled(TraceMask::RUN)
             && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)

@@ -47,6 +47,7 @@ pub(super) struct Continuation<'a> {
     pub(super) entry: FuncId,
     pub(super) parent: Option<(ActivationId, TraceLocation)>,
     pub(super) delimiter: Option<invocation::delimited::Delimiter>,
+    pub(super) structural_results: bool,
     pub(super) returned_at: Option<TraceLocation>,
     pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: Registers,
@@ -84,6 +85,7 @@ impl<'a> Continuation<'a> {
             parent: None,
             delimiter: None,
             returned_at: None,
+            structural_results: false,
             args,
             ctx: Registers::default(),
             control,
@@ -111,7 +113,7 @@ impl<'a> Continuation<'a> {
             func: self.entry,
             pc: 0,
         });
-        if self.trace.active() {
+        if self.trace.mask != TraceMask::NONE && self.trace.sink.is_some() {
             self.control.enable_identity();
             self.trace.stack = Some(self.control.root_activation());
         }

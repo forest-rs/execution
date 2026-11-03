@@ -351,6 +351,7 @@ impl TraceSink for Audit {
             ControlEvent::RejectInstance { parent, child, .. } => ("reject", parent, child),
             ControlEvent::ReturnInstance { child, parent, .. } => ("return", child, parent),
             ControlEvent::ReturnAcross { source, target, .. } => ("exit", source, target),
+            ControlEvent::TailTransfer { source, target, .. } => ("tail", source, target),
         };
         self.transfers.push((kind, source.clone(), target.clone()));
     }

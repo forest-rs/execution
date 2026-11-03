@@ -17,6 +17,17 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add proper terminal transfer through `emit_tail_call` and `emit_tail_resume`. The current
+  activation is retired, its result recipient and enclosing control context survive, and long
+  chains retain no forwarding frames. Verification requires the same final-result contracts;
+  cross-definition provenance checks survive elimination. Root replacement releases retired
+  registers and temporary payloads, while aggregate reclamation keeps its existing policy.
+  Migration: handle `ControlBoundary::{TailCall,TailResume}`, `VerifyError::TailResultMismatch`,
+  `Operands::Tail`, `ControlEvent::TailTransfer`, and `TraceOutcome::TailTransferred` in exhaustive
+  matches. Instruction history has a distinct `TailTransferred` outcome. Complete tail lifecycle
+  recording is still unfinished: `CaptureFault::UnsupportedControl` rejects checked replay.
+  The new opcodes belong to the unreleased wire 0.6; regenerate compiled programs as needed.
+
 - Use one owned guest-entry path for every embedding `call_guest`, including same-instance
   calls. Entry keeps the exact namespace and shares budgets, heap and pending host request;
   a typed exit to its root restores that request immediately. Replay uses one execution-wide
@@ -193,6 +204,9 @@ This release has an [MSRV][] of 1.88.
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
 ### Fixed
+
+- Qualify run-only trace observations with their exact stack identity and pair run endings
+  only with actual observed starts, including interrupted tail entry.
 
 - Make captured control's live ancestry follow attachment: a parked suffix has no outside
   resumer frame, and resumption reports its actual new parent and resume instruction.

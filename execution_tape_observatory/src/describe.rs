@@ -21,6 +21,22 @@ pub(super) fn verification(
 ) -> VerificationDiagnostic {
     use execution_tape::contract::{Contract, ContractPath, ContractPosition};
     use execution_tape::verifier::VerifyError;
+    if let VerifyError::TailResultMismatch { func, call_sig, .. } = error
+        && let Some(function) = program.functions.get(*func as usize)
+        && let Ok(required) = function.ret_contracts(program)
+        && let Some(signature) = program.call_sig(*call_sig)
+        && let Ok(actual) = program.call_sig_ret_contracts(signature)
+    {
+        return VerificationDiagnostic {
+            summary: format!(
+                "Tail transfer retires this frame, so its result contract must be preserved.\nRequired results: {}\nTail signature #{} results: {}",
+                contracts(program, required),
+                call_sig.0,
+                contracts(program, actual)
+            ),
+            path: None,
+        };
+    }
     let VerifyError::ContractMismatch {
         func,
         pc,
@@ -498,6 +514,12 @@ fn assignment(registers: &[u32], expression: String) -> String {
 
 pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> String {
     match instruction.operands() {
+        Operands::Tail { target, args, .. } => format!(
+            "{} r{} ({})",
+            instruction.opcode().mnemonic(),
+            target,
+            registers(args.iter().copied())
+        ),
         Operands::Resume {
             continuation,
             args,
