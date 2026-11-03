@@ -390,7 +390,7 @@ impl fmt::Debug for SavedContinuation<'_> {
 }
 
 fn saved_inspections<'a>(
-    saved: &'a crate::control::arena::Resumptions<invocation::delimited::Saved<'_>>,
+    saved: &'a crate::control::arena::Resumptions<invocation::delimited::Saved>,
     heap: &'a AggHeap,
 ) -> Vec<SavedContinuation<'a>> {
     saved

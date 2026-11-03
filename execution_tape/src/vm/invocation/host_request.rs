@@ -239,10 +239,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             inv.vm.memory.aggs(),
             inv.continuation.host_results.get_or_insert_default(),
             &mut inv.budget.data,
-            inv.continuation
+            inv.observers
                 .access
                 .as_mut()
-                .map(|sink| sink as &mut dyn AccessSink),
+                .map(|sink| &mut **sink as &mut dyn AccessSink),
         )
     }
     /// Completes this instruction with return slots and extra host fuel, or a host error.
@@ -386,10 +386,10 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             vm.memory.aggs(),
             self.continuation.host_results.get_or_insert_default(),
             &mut self.budget.data,
-            self.continuation
+            self.observers
                 .access
                 .as_mut()
-                .map(|sink| sink as &mut dyn AccessSink),
+                .map(|sink| &mut **sink as &mut dyn AccessSink),
         );
         let outcome = vm
             .host
@@ -423,7 +423,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 outcome,
                 work,
                 created.clone(),
-                &mut self.continuation.trace,
+                &mut self.continuation.trace.observe(self.observers),
                 &mut self.continuation.register_state,
             )
         } else {
@@ -442,7 +442,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 outcome,
                 work,
                 created.clone(),
-                &mut self.continuation.trace,
+                &mut self.continuation.trace.observe(self.observers),
                 &mut (),
             )
         };

@@ -33,16 +33,13 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         if let Some(environment) = environment {
             args.insert(0, Value::Agg(environment));
         }
-        let mut child = continuation::Continuation::with_control(
+        let mut child = continuation::Continuation::new(
             CodeOwner::Instance(target.instance().clone()),
             target.id(),
             Cow::Owned(args),
-            InvocationOptions::default(),
+            self.continuation.trace.mask,
             control,
         );
-        child.trace.mask = self.continuation.trace.mask;
-        child.trace.sink = Observer::share(&mut self.continuation.trace.sink);
-        child.access = Observer::share(&mut self.continuation.access);
         child.parent = Some((
             self.continuation.control.activation(
                 &self.continuation.ctx,
@@ -194,18 +191,17 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 .promote(self.vm.memory.aggs_mut())
                 .map_err(Trap::AggError)?;
             if origin == EntryOrigin::HostRequest {
-                self.continuation
-                    .trace
-                    .values(self.continuation.program.program(), || {
-                        ValueEvent::GuestCall {
-                            location,
-                            callee: &callee,
-                            args: &args,
-                            work,
-                            created: &created,
-                            aggregates: self.vm.memory.aggs(),
-                        }
-                    });
+                self.continuation.trace.observe(self.observers).values(
+                    self.continuation.program.program(),
+                    || ValueEvent::GuestCall {
+                        location,
+                        callee: &callee,
+                        args: &args,
+                        work,
+                        created: &created,
+                        aggregates: self.vm.memory.aggs(),
+                    },
+                );
             }
             let (target, environment) = match &callee {
                 Value::Func(function) => (function.clone(), None),
@@ -237,29 +233,28 @@ impl<'state, H: Host> Running<'_, 'state, H> {
         let parent_id = child.parent.as_ref().expect("source activation").0.clone();
         let child_id = child.control.root_activation();
         let result = (|| {
-            self.continuation
-                .trace
-                .control(self.continuation.program.program(), || {
-                    ControlEvent::EnterInstance {
-                        origin,
-                        location,
-                        parent: &parent_id,
-                        child: &child_id,
-                        source_instance: self
-                            .continuation
-                            .ctx
-                            .instance
-                            .as_ref()
-                            .expect("source instance"),
-                        instance,
-                        entry,
-                        callee: &callee,
-                        args: &child.args[usize::from(environment.is_some())..],
-                        work,
-                        created: &created,
-                        aggregates: self.vm.memory.aggs(),
-                    }
-                });
+            self.continuation.trace.observe(self.observers).control(
+                self.continuation.program.program(),
+                || ControlEvent::EnterInstance {
+                    origin,
+                    location,
+                    parent: &parent_id,
+                    child: &child_id,
+                    source_instance: self
+                        .continuation
+                        .ctx
+                        .instance
+                        .as_ref()
+                        .expect("source instance"),
+                    instance,
+                    entry,
+                    callee: &callee,
+                    args: &child.args[usize::from(environment.is_some())..],
+                    work,
+                    created: &created,
+                    aggregates: self.vm.memory.aggs(),
+                },
+            );
             if origin == EntryOrigin::HostRequest {
                 self.charge_guest_entry(&child.args)?;
             }
@@ -272,25 +267,24 @@ impl<'state, H: Host> Running<'_, 'state, H> {
                 .continuation
                 .ctx
                 .trap(location.func, location.pc, span, trap);
-            self.continuation
-                .trace
-                .control(self.continuation.program.program(), || {
-                    ControlEvent::RejectInstance {
-                        location,
-                        parent: &parent_id,
-                        child: &child_id,
-                        error: &error,
-                    }
-                });
+            self.continuation.trace.observe(self.observers).control(
+                self.continuation.program.program(),
+                || ControlEvent::RejectInstance {
+                    location,
+                    parent: &parent_id,
+                    child: &child_id,
+                    error: &error,
+                },
+            );
             self.finish(Err(error.clone()));
             return Err(error);
         }
         // Install both owners before initialization can notify arbitrary observers.
         let parent = core::mem::replace(self.continuation, child);
         self.parents.push(parent);
-        let result = self
-            .continuation
-            .initialize(self.vm, self.budget, DataWork::default());
+        let result =
+            self.continuation
+                .initialize(self.vm, self.budget, DataWork::default(), self.observers);
         if let Err(error) = result {
             self.finish(Err(error.clone()));
             return Err(error);
@@ -308,16 +302,21 @@ impl<H: Host> Running<'_, '_, H> {
         })?;
         let continuation = &mut *self.continuation;
         continuation.returned_at = Some(site.location);
-        continuation.trace.call_scope_exit_if_enabled(
-            continuation.program.program(),
-            continuation.ctx.frames.len(),
-            site.location.func,
-            site.location.pc,
-            site.span,
-        );
         continuation
             .trace
-            .instr_end(continuation.program.program(), None, TraceOutcome::Ok);
+            .observe(self.observers)
+            .call_scope_exit_if_enabled(
+                continuation.program.program(),
+                continuation.ctx.frames.len(),
+                site.location.func,
+                site.location.pc,
+                site.span,
+            );
+        continuation.trace.observe(self.observers).instr_end(
+            continuation.program.program(),
+            None,
+            TraceOutcome::Ok,
+        );
         self.budget.frames -= 1;
         self.finish(Ok(()));
         Ok(())
@@ -349,6 +348,7 @@ impl<H: Host> Running<'_, '_, H> {
                 .abandoned = true;
             parent
                 .trace
+                .observe(self.observers)
                 .control(parent.program.program(), || ControlEvent::ReturnInstance {
                     location,
                     child: &child_id,
@@ -412,6 +412,7 @@ impl<H: Host> Running<'_, '_, H> {
         let parent = &mut *self.continuation;
         parent
             .trace
+            .observe(self.observers)
             .control(parent.program.program(), || ControlEvent::ReturnInstance {
                 location,
                 child: &child_id,

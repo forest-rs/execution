@@ -18,24 +18,24 @@ enum HandlerTable {
     Guest,
     Native(Vec<Handler>),
 }
-pub(in crate::vm) enum Saved<'a> {
+pub(in crate::vm) enum Saved {
     New {
         callable: Value,
         control: ExecutionControl,
     },
-    Suspended(Vec<continuation::Continuation<'a>>),
+    Suspended(Vec<continuation::Continuation<'static>>),
 }
-impl Saved<'_> {
+impl Saved {
     fn frames(&self) -> usize {
         match self {
             Self::New { .. } => 0,
             Self::Suspended(stacks) => stacks.iter().map(|stack| stack.ctx.frames.len()).sum(),
         }
     }
-    pub(super) fn cancel(self) {
+    pub(super) fn cancel(self, observers: &mut Observers<'_>) {
         if let Self::Suspended(mut stacks) = self {
             for stack in stacks.iter_mut().rev() {
-                finish_control_trace(stack, TraceOutcome::Cancelled);
+                finish_control_trace(stack, TraceOutcome::Cancelled, observers);
             }
         }
     }
@@ -327,7 +327,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             let stack = &mut *self.continuation;
             observations::emit(
                 &mut stack.register_state,
-                &mut stack.trace,
+                &mut stack.trace.observe(self.observers),
                 stack.program.program(),
                 &stack.ctx,
                 location.func,
@@ -345,22 +345,28 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 func: frame.func,
                 pc: frame.pc,
             };
-            stack
-                .trace
-                .instr_end(stack.program.program(), Some(next), TraceOutcome::Ok);
+            stack.trace.observe(self.observers).instr_end(
+                stack.program.program(),
+                Some(next),
+                TraceOutcome::Ok,
+            );
             Ok(())
         })();
         result.map_err(|trap| self.control_trap(location, trap))?;
         if initialize {
-            self.continuation
-                .initialize(self.vm, self.budget, DataWork::default())?;
+            self.continuation.initialize(
+                self.vm,
+                self.budget,
+                DataWork::default(),
+                self.observers,
+            )?;
         }
         Ok(RunStatus::Suspended)
     }
 
     fn save(
         &mut self,
-        mut saved: Saved<'a>,
+        mut saved: Saved,
         parameters: ContractOwner,
         results: ContractOwner,
     ) -> Result<ContinuationRef, Trap> {
@@ -387,7 +393,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                         self.continuation.control.waiting.poison();
                     }
                     for stack in stacks.iter_mut().rev() {
-                        stack.trace.stack_activity(
+                        stack.trace.observe(self.observers).stack_activity(
                             stack.program.program(),
                             crate::trace::StackActivity::Parked,
                         );
@@ -674,7 +680,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
 
     fn attach_saved(
         &mut self,
-        saved: Saved<'a>,
+        saved: Saved,
         args: Vec<Value>,
         delimiter: Delimiter,
         location: TraceLocation,
@@ -706,10 +712,15 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 self.continuation.control.waiting.poison();
                 let first = self.parents.len() - stack_count;
                 for stack in &mut self.parents[first..] {
-                    attach_trace(stack);
+                    attach_trace(stack, self.observers);
                 }
-                attach_trace(self.continuation);
-                Self::complete_control(self.continuation, args, self.vm.memory.aggs())?;
+                attach_trace(self.continuation, self.observers);
+                Self::complete_control(
+                    self.continuation,
+                    args,
+                    self.vm.memory.aggs(),
+                    self.observers,
+                )?;
                 self.budget.select(&self.continuation.control);
             }
         }
@@ -818,7 +829,16 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                 let mut captured = self.parents.split_off(index);
                 let resumer = self.parents.pop().expect("matching resumer");
                 captured.push(core::mem::replace(self.continuation, resumer));
-                let reference = self.save(Saved::Suspended(captured), parameters, results)?;
+                let reference = self.save(
+                    Saved::Suspended(
+                        captured
+                            .into_iter()
+                            .map(continuation::Continuation::into_owned)
+                            .collect(),
+                    ),
+                    parameters,
+                    results,
+                )?;
                 let mut values = request;
                 values.push(Value::Continuation(reference));
                 let site = self
@@ -829,7 +849,12 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
                     .expect("waiting guest resume");
                 site.rets = target.parameters;
                 site.successor = Some((target.pc, target.instruction));
-                Self::complete_control(self.continuation, values, self.vm.memory.aggs())?;
+                Self::complete_control(
+                    self.continuation,
+                    values,
+                    self.vm.memory.aggs(),
+                    self.observers,
+                )?;
                 self.budget.select(&self.continuation.control);
                 return Ok(false);
             }
@@ -857,7 +882,16 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         let leaf = core::mem::replace(self.continuation, handler);
         let mut captured = self.parents.split_off(index);
         captured.push(leaf);
-        let reference = self.save(Saved::Suspended(captured), parameters, results)?;
+        let reference = self.save(
+            Saved::Suspended(
+                captured
+                    .into_iter()
+                    .map(continuation::Continuation::into_owned)
+                    .collect(),
+            ),
+            parameters,
+            results,
+        )?;
         self.continuation
             .args
             .to_mut()
@@ -869,6 +903,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         stack: &mut continuation::Continuation<'a>,
         values: Vec<Value>,
         heap: &AggHeap,
+        observers: &mut Observers<'_>,
     ) -> Result<(), Trap> {
         let pending = stack
             .control
@@ -905,7 +940,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         if let Some((target, _)) = pending.successor {
             observations::emit_edge(
                 &mut stack.register_state,
-                &mut stack.trace,
+                &mut stack.trace.observe(observers),
                 stack.program.program(),
                 &stack.ctx,
                 pending.location,
@@ -916,7 +951,7 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
         } else {
             observations::emit(
                 &mut stack.register_state,
-                &mut stack.trace,
+                &mut stack.trace.observe(observers),
                 stack.program.program(),
                 &stack.ctx,
                 pending.location.func,
@@ -931,25 +966,27 @@ impl<'request, 'a, H: Host> Running<'request, 'a, H> {
             func: frame.func,
             pc: frame.pc,
         };
-        stack
-            .trace
-            .instr_end(stack.program.program(), Some(next), TraceOutcome::Ok);
+        stack.trace.observe(observers).instr_end(
+            stack.program.program(),
+            Some(next),
+            TraceOutcome::Ok,
+        );
         stack.control.waiting = Waiting::Ready;
         Ok(())
     }
 
-    fn cancel_stack(&mut self, saved: Saved<'a>) {
-        cancel_stack(saved, self.budget);
+    fn cancel_stack(&mut self, saved: Saved) {
+        cancel_stack(saved, self.budget, self.observers);
     }
 }
 
-fn cancel_stack(saved: Saved<'_>, budget: &mut Budget) {
+fn cancel_stack(saved: Saved, budget: &mut Budget, observers: &mut Observers<'_>) {
     budget.frames -= saved.frames();
-    saved.cancel();
+    saved.cancel(observers);
 }
 
 impl<'state, H: Host> Running<'_, 'state, H> {
-    pub(super) fn retire_saved(&mut self) -> impl Iterator<Item = Saved<'state>> + use<'state, H> {
+    pub(super) fn retire_saved(&mut self) -> impl Iterator<Item = Saved> + use<'state, H> {
         self.budget.frames -= self
             .resumptions
             .iter()
@@ -961,7 +998,7 @@ impl<'state, H: Host> Running<'_, 'state, H> {
     pub(super) fn cancel_saved(&mut self) {
         // Invalidate all aliases and retire every frame charge before observing any sibling.
         for stack in self.retire_saved() {
-            stack.cancel();
+            stack.cancel(self.observers);
         }
     }
 }
@@ -979,9 +1016,12 @@ impl<H: Host> Running<'_, '_, H> {
         self.budget.select(&self.continuation.control);
         // The returning root's ordinary boundary has already checked final contracts.
         let status = if self.continuation.control.waiting.control().is_some() {
-            if let Err(trap) =
-                Self::complete_control(self.continuation, values, self.vm.memory.aggs())
-            {
+            if let Err(trap) = Self::complete_control(
+                self.continuation,
+                values,
+                self.vm.memory.aggs(),
+                self.observers,
+            ) {
                 return Err(self.control_trap(location, trap));
             }
             RunStatus::Suspended
@@ -1145,7 +1185,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             Ok(true) => self
                 .running
                 .continuation
-                .initialize(self.running.vm, self.running.budget, DataWork::default())
+                .initialize(
+                    self.running.vm,
+                    self.running.budget,
+                    DataWork::default(),
+                    self.running.observers,
+                )
                 .map_err(|error| {
                     self.running.finish(Err(error.clone()));
                     ControlError::Trapped(error)
@@ -1204,8 +1249,11 @@ impl<H: Host> Running<'_, '_, H> {
 }
 
 /// The owner is installed before this observer runs; the waiting operation stays poisoned.
-pub(super) fn attach_trace(stack: &mut continuation::Continuation<'_>) {
-    stack.trace.stack_activity(
+pub(super) fn attach_trace(
+    stack: &mut continuation::Continuation<'_>,
+    observers: &mut Observers<'_>,
+) {
+    stack.trace.observe(observers).stack_activity(
         stack.program.program(),
         crate::trace::StackActivity::Attached {
             parent: stack.parent.as_ref().map(|(id, _)| id),

@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Suspended control and its exact code/observer owners, independent of host and heap ownership.
+//! Suspended control and its exact code owners, independent of host and heap ownership.
 //!
 //! The execution lease still owns the heap checkpoint. Moving a control stack cannot grant it
 //! permission to truncate shared storage: other suspended stacks may retain those values.
@@ -52,8 +52,7 @@ pub(super) struct Continuation<'a> {
     pub(super) args: Cow<'a, [Value]>,
     pub(super) ctx: Registers,
     pub(super) control: ExecutionControl,
-    pub(super) trace: TraceCtx<'a>,
-    pub(super) access: Option<Observer<'a, dyn AccessSink + 'a>>,
+    pub(super) trace: TraceState,
     pub(super) host_results: Option<crate::host::HostResults>,
     pub(super) register_state: observations::RegisterState,
     pub(super) outputs: Vec<Value>,
@@ -66,17 +65,7 @@ impl<'a> Continuation<'a> {
         program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
-    ) -> Self {
-        let control = ExecutionControl::start(options.yield_host_calls);
-        Self::with_control(program, entry, args, options, control)
-    }
-
-    pub(super) fn with_control(
-        program: CodeOwner,
-        entry: FuncId,
-        args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
+        mask: TraceMask,
         control: ExecutionControl,
     ) -> Self {
         Self {
@@ -89,8 +78,7 @@ impl<'a> Continuation<'a> {
             args,
             ctx: Registers::default(),
             control,
-            trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
-            access: options.access.map(Observer::Unique),
+            trace: TraceState::new(mask),
             host_results: None,
             register_state: observations::RegisterState::default(),
             outputs: Vec::new(),
@@ -99,11 +87,34 @@ impl<'a> Continuation<'a> {
         }
     }
 
+    /// Detaching state never detaches a borrowed observer. Entry inputs become owned only
+    /// when needed; already owned segment arguments move without copying payloads.
+    pub(super) fn into_owned(self) -> Continuation<'static> {
+        Continuation {
+            args: Cow::Owned(self.args.into_owned()),
+            program: self.program,
+            entry: self.entry,
+            parent: self.parent,
+            delimiter: self.delimiter,
+            structural_results: self.structural_results,
+            returned_at: self.returned_at,
+            ctx: self.ctx,
+            control: self.control,
+            trace: self.trace,
+            host_results: self.host_results,
+            register_state: self.register_state,
+            outputs: self.outputs,
+            output_start: self.output_start,
+            outcome: self.outcome,
+        }
+    }
+
     pub(super) fn initialize<H: Host>(
         &mut self,
         vm: &mut Vm<H>,
         budget: &mut Budget,
         work: DataWork,
+        observers: &mut Observers<'_>,
     ) -> Result<(), TrapInfo> {
         budget.select(&self.control);
         // Every entry path installs ownership before it calls this method. Leave an
@@ -113,31 +124,31 @@ impl<'a> Continuation<'a> {
             func: self.entry,
             pc: 0,
         });
-        if self.trace.mask != TraceMask::NONE && self.trace.sink.is_some() {
+        if self.trace.mask != TraceMask::NONE && observers.trace.is_some() {
             self.control.enable_identity();
             self.trace.stack = Some(self.control.root_activation());
         }
-        self.trace
-            .run_start(self.program.program(), self.entry, self.args.len());
-        self.trace
-            .values(self.program.program(), || ValueEvent::Entry {
-                entry: self.entry,
-                args: &self.args,
-                aggregates: vm.memory.aggs(),
-                limits: &vm.limits,
-                work,
-            });
+        let tracing = self.trace.active();
+        let mut trace = self.trace.observe(observers);
+        trace.run_start(self.program.program(), self.entry, self.args.len());
+        trace.values(self.program.program(), || ValueEvent::Entry {
+            entry: self.entry,
+            args: &self.args,
+            aggregates: vm.memory.aggs(),
+            limits: &vm.limits,
+            work,
+        });
         budget
             .charge_import(work)
             .map_err(|trap| self.ctx.trap(self.entry, 0, None, trap))?;
-        if self.trace.active() {
+        if tracing {
             vm.initialize_run::<WithTracePolicy>(
                 &mut self.ctx,
                 budget,
                 &self.program,
                 self.entry,
                 &self.args,
-                &mut self.trace,
+                &mut trace,
                 self.program.instance(),
             )?;
         } else {
@@ -147,7 +158,7 @@ impl<'a> Continuation<'a> {
                 &self.program,
                 self.entry,
                 &self.args,
-                &mut self.trace,
+                &mut trace,
                 self.program.instance(),
             )?;
         }
@@ -166,7 +177,7 @@ impl Continuation<'_> {
         budget: &mut Budget,
         quantum: u64,
     ) -> Result<Progress, TrapInfo> {
-        self.advance_mode::<H, true>(vm, budget, quantum)
+        self.advance_mode::<H, true>(vm, budget, quantum, &mut Observers::default())
     }
 
     pub(super) fn advance_mode<H: Host, const COOPERATIVE: bool>(
@@ -174,11 +185,23 @@ impl Continuation<'_> {
         vm: &mut Vm<H>,
         budget: &mut Budget,
         quantum: u64,
+        observers: &mut Observers<'_>,
     ) -> Result<Progress, TrapInfo> {
         budget.select(&self.control);
         self.control.remaining = quantum;
-        let access = self.access.as_mut().map(|sink| sink as &mut dyn AccessSink);
-        if self.trace.active() {
+        let tracing = self.trace.active();
+        let Observers {
+            trace: sink,
+            access,
+        } = observers;
+        let mut trace = TraceCtx {
+            state: &mut self.trace,
+            sink: sink.as_mut().map(|sink| &mut **sink as &mut dyn TraceSink),
+        };
+        let access = access
+            .as_mut()
+            .map(|sink| &mut **sink as &mut dyn AccessSink);
+        if tracing {
             vm.execute_loop::<WithTracePolicy, COOPERATIVE>(
                 &mut self.ctx,
                 budget,
@@ -186,7 +209,7 @@ impl Continuation<'_> {
                 self.entry,
                 &self.args,
                 &mut self.outputs,
-                &mut self.trace,
+                &mut trace,
                 access,
                 &mut self.register_state,
                 &mut self.control,
@@ -199,7 +222,7 @@ impl Continuation<'_> {
                 self.entry,
                 &self.args,
                 &mut self.outputs,
-                &mut self.trace,
+                &mut trace,
                 access,
                 &mut (),
                 &mut self.control,
@@ -226,6 +249,81 @@ mod tests {
             _: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
             panic!("these programs contain no host instructions")
+        }
+    }
+
+    #[test]
+    fn detached_state_owns_inputs_and_does_not_retain_a_borrowed_observer() {
+        use core::cell::Cell;
+        struct BorrowedObserver<'a>(&'a Cell<usize>);
+        impl TraceSink for BorrowedObserver<'_> {}
+        impl Drop for BorrowedObserver<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let mut builder = ProgramBuilder::new();
+        let entry = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::Str],
+                ret_types: vec![ValueType::Str],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(entry).unwrap();
+        body.ret(0, &[1]);
+        builder.define_function(entry, body).unwrap();
+        let program = builder.build_verified().unwrap();
+        for already_owned in [false, true] {
+            let dropped = Cell::new(0);
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let mut budget = Budget::new(&vm.limits);
+            let mut detached: Continuation<'static> = {
+                let inputs = vec![Value::Str("retained input".into())];
+                let Value::Str(text) = &inputs[0] else {
+                    unreachable!()
+                };
+                let pointer = text.as_ptr();
+                let args = if already_owned {
+                    Cow::Owned(inputs)
+                } else {
+                    Cow::Borrowed(inputs.as_slice())
+                };
+                let mut observer = BorrowedObserver(&dropped);
+                let mut observers = Observers {
+                    trace: Some(BorrowedOrOwned::Borrowed(&mut observer)),
+                    access: None,
+                };
+                let mut stack = Continuation::new(
+                    CodeOwner::Definition(program.clone()),
+                    entry,
+                    args,
+                    TraceMask::RUN,
+                    ExecutionControl::start(false),
+                );
+                stack
+                    .initialize(&mut vm, &mut budget, DataWork::default(), &mut observers)
+                    .unwrap();
+                let detached = stack.into_owned();
+                let Value::Str(text) = &detached.args[0] else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    text.as_ptr() == pointer,
+                    already_owned,
+                    "owned inputs move; borrowed inputs become independently owned"
+                );
+                detached
+            };
+            assert_eq!(
+                dropped.get(),
+                1,
+                "saved state cannot extend the observer lease"
+            );
+            assert!(matches!(
+                detached.advance(&mut vm, &mut budget, 1),
+                Ok(Progress::Returned(_))
+            ));
+            assert_eq!(detached.outputs, [Value::Str("retained input".into())]);
         }
     }
 
@@ -259,10 +357,11 @@ mod tests {
             CodeOwner::Original(program),
             FuncId(0),
             Cow::Owned(vec![]),
-            InvocationOptions::default().yield_host_calls(),
+            TraceMask::NONE,
+            ExecutionControl::start(true),
         );
         continuation
-            .initialize(vm, budget, DataWork::default())
+            .initialize(vm, budget, DataWork::default(), &mut Observers::default())
             .unwrap();
         continuation
     }
@@ -387,6 +486,7 @@ mod tests {
         let child_output = child.outputs[0].clone();
         Running {
             vm: &mut vm,
+            observers: &mut Observers::default(),
             continuation: &mut parent,
             budget: &mut budget,
             checkpoint,
@@ -493,10 +593,16 @@ mod tests {
             CodeOwner::Original(program("second")),
             FuncId(0),
             Cow::Owned(vec![]),
-            InvocationOptions::default(),
+            TraceMask::NONE,
+            ExecutionControl::start(false),
         );
         let error = second
-            .initialize(&mut vm, &mut budget, DataWork::default())
+            .initialize(
+                &mut vm,
+                &mut budget,
+                DataWork::default(),
+                &mut Observers::default(),
+            )
             .unwrap_err();
         assert!(matches!(error.trap, Trap::CallDepthExceeded));
         assert_eq!(budget.frames, 1);
@@ -539,10 +645,16 @@ mod tests {
                 CodeOwner::Original(checked_identity(ValueType::I64)),
                 FuncId(0),
                 Cow::Owned(vec![Value::Agg(tuple)]),
-                InvocationOptions::default(),
+                TraceMask::NONE,
+                ExecutionControl::start(false),
             );
             first
-                .initialize(&mut vm, &mut budget, DataWork::default())
+                .initialize(
+                    &mut vm,
+                    &mut budget,
+                    DataWork::default(),
+                    &mut Observers::default(),
+                )
                 .unwrap();
             let before = budget.contract_scratch.work_used();
             assert_eq!(before, 3);
@@ -551,10 +663,16 @@ mod tests {
                 CodeOwner::Original(checked_identity(ValueType::Bool)),
                 FuncId(0),
                 Cow::Owned(vec![Value::Agg(tuple)]),
-                InvocationOptions::default(),
+                TraceMask::NONE,
+                ExecutionControl::start(false),
             );
             let error = second
-                .initialize(&mut vm, &mut budget, DataWork::default())
+                .initialize(
+                    &mut vm,
+                    &mut budget,
+                    DataWork::default(),
+                    &mut Observers::default(),
+                )
                 .unwrap_err();
             if limit == 3 {
                 assert!(matches!(error.trap, Trap::ContractWorkExceeded { .. }));
@@ -658,6 +776,7 @@ mod tests {
             }
             Running {
                 vm: &mut vm,
+                observers: &mut Observers::default(),
                 continuation: &mut first,
                 budget: &mut budget,
                 checkpoint,
@@ -672,6 +791,7 @@ mod tests {
             .unwrap();
             let error = Running {
                 vm: &mut vm,
+                observers: &mut Observers::default(),
                 continuation: &mut second,
                 budget: &mut budget,
                 checkpoint,

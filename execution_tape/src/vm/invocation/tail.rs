@@ -333,6 +333,7 @@ impl<'a, H: Host> Running<'_, 'a, H> {
                     .unwrap_or(&self.continuation.args[replacement.argument_start..]),
                 self.vm.memory.aggs(),
                 false,
+                self.observers,
             );
         } else {
             self.parents.extend(replacement.stacks);
@@ -350,26 +351,36 @@ impl<'a, H: Host> Running<'_, 'a, H> {
                     .unwrap_or(&self.continuation.args[replacement.argument_start..]),
                 self.vm.memory.aggs(),
                 true,
+                self.observers,
             );
         }
         if let Some(response) = replacement.response {
             let first = self.parents.len() - replacement_parent_count;
             for stack in &mut self.parents[first..] {
-                delimited::attach_trace(stack);
+                delimited::attach_trace(stack, self.observers);
             }
-            delimited::attach_trace(self.continuation);
+            delimited::attach_trace(self.continuation, self.observers);
             let pending = self
                 .continuation
                 .control
                 .waiting
                 .control()
                 .expect("saved suspension");
-            Self::complete_control(self.continuation, response, self.vm.memory.aggs())
-                .map_err(|error| self.control_trap(pending.location, error))?;
+            Self::complete_control(
+                self.continuation,
+                response,
+                self.vm.memory.aggs(),
+                self.observers,
+            )
+            .map_err(|error| self.control_trap(pending.location, error))?;
             self.budget.select(&self.continuation.control);
         } else {
-            self.continuation
-                .initialize(self.vm, self.budget, DataWork::default())?;
+            self.continuation.initialize(
+                self.vm,
+                self.budget,
+                DataWork::default(),
+                self.observers,
+            )?;
         }
         Ok(())
     }
@@ -385,9 +396,11 @@ impl<'a, H: Host> Running<'_, 'a, H> {
         args: &[Value],
         heap: &AggHeap,
         root: bool,
+        observers: &mut Observers<'_>,
     ) {
         stack
             .trace
+            .observe(observers)
             .control(stack.program.program(), || ControlEvent::TailTransfer {
                 location,
                 source,
@@ -400,8 +413,9 @@ impl<'a, H: Host> Running<'_, 'a, H> {
         let outcome = TraceOutcome::TailTransferred { target };
         stack
             .trace
+            .observe(observers)
             .instr_end(stack.program.program(), None, outcome);
-        stack.trace.exit_frame(
+        stack.trace.observe(observers).exit_frame(
             stack.program.program(),
             stack.ctx.frames.len() + 1,
             location,
@@ -409,7 +423,10 @@ impl<'a, H: Host> Running<'_, 'a, H> {
             outcome,
         );
         if root {
-            stack.trace.run_end(stack.program.program(), outcome);
+            stack
+                .trace
+                .observe(observers)
+                .run_end(stack.program.program(), outcome);
         }
     }
 

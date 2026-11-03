@@ -219,6 +219,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Saved stacks own their inputs and exact code without retaining borrowed trace or access
+  observers. One invocation observer lease drives every segment; the VM no longer shares it
+  through reference-counted runtime borrows. Owned inputs move during detachment, while ordinary
+  raw entry can continue borrowing inputs until ownership is needed.
+
 - Use one native-to-guest entry point for qualified functions and closures. Resolve an explicit
   target with `instance.function(entry)?` and pass it directly to `request.call_guest(target, args)`.
   Calls inherit the root execution's yielding policy, observer and access sink. Migration:

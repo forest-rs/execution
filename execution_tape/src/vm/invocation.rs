@@ -121,24 +121,26 @@ impl<'a> InvocationOptions<'a> {
 /// every retained segment; host effects remain outside the transaction.
 pub struct Invocation<'a, H: Host> {
     pub(super) vm: BorrowedOrOwned<'a, Vm<H>>,
+    observers: Observers<'a>,
     pub(super) continuation: continuation::Continuation<'a>,
     pub(super) parents: Vec<continuation::Continuation<'a>>,
     checkpoint: Checkpoint,
     budget: Budget,
     next_segment: u64,
-    pub(super) resumptions: Resumptions<delimited::Saved<'a>>,
+    pub(super) resumptions: Resumptions<delimited::Saved>,
 }
 
 /// Temporary authority to operate one control stack in its execution transaction.
 /// This is deliberately separate from both the public owning facade and suspended state.
 pub(super) struct Running<'request, 'state, H: Host> {
     pub(super) vm: &'request mut Vm<H>,
+    pub(super) observers: &'request mut Observers<'state>,
     pub(super) continuation: &'request mut continuation::Continuation<'state>,
     pub(super) parents: &'request mut Vec<continuation::Continuation<'state>>,
     pub(super) checkpoint: Checkpoint,
     pub(super) budget: &'request mut Budget,
     pub(super) next_segment: &'request mut u64,
-    pub(super) resumptions: &'request mut Resumptions<delimited::Saved<'state>>,
+    pub(super) resumptions: &'request mut Resumptions<delimited::Saved>,
 }
 
 impl<'a, H: Host> Invocation<'a, H> {
@@ -147,17 +149,21 @@ impl<'a, H: Host> Invocation<'a, H> {
         program: &VerifiedProgram,
         entry: FuncId,
         args: &'a [Value],
-        options: InvocationOptions<'a>,
+        mut options: InvocationOptions<'a>,
         mut scratch: ExecutionContext,
         outputs: Vec<Value>,
     ) -> Self {
         scratch.budget.reset(&vm.limits);
         let checkpoint = vm.memory.checkpoint();
-        let mut continuation = continuation::Continuation::with_control(
+        let observers = Observers::take(&mut options);
+        if observers.trace.is_none() {
+            options.mask = Some(TraceMask::NONE);
+        }
+        let mut continuation = continuation::Continuation::new(
             CodeOwner::Definition(program.clone()),
             entry,
             Cow::Borrowed(args),
-            options,
+            options.mask.unwrap_or(TraceMask::NONE),
             ExecutionControl::default(),
         );
         continuation.ctx = scratch.registers;
@@ -165,6 +171,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         continuation.outputs = outputs;
         Self {
             vm: BorrowedOrOwned::Borrowed(vm),
+            observers,
             continuation,
             budget: scratch.budget,
             parents: Vec::new(),
@@ -175,9 +182,12 @@ impl<'a, H: Host> Invocation<'a, H> {
     }
 
     pub(in crate::vm) fn initialize_scratch(&mut self) -> Result<(), TrapInfo> {
-        let result =
-            self.continuation
-                .initialize(&mut self.vm, &mut self.budget, DataWork::default());
+        let result = self.continuation.initialize(
+            &mut self.vm,
+            &mut self.budget,
+            DataWork::default(),
+            &mut self.observers,
+        );
         if let Err(error) = &result {
             self.running().finish(Err(error.clone()));
         }
@@ -199,6 +209,7 @@ impl<'a, H: Host> Invocation<'a, H> {
         self.budget.select(&self.continuation.control);
         Running {
             vm: &mut self.vm,
+            observers: &mut self.observers,
             continuation: &mut self.continuation,
             parents: &mut self.parents,
             next_segment: &mut self.next_segment,
@@ -282,25 +293,37 @@ impl<'a, H: Host> Invocation<'a, H> {
         program: CodeOwner,
         entry: FuncId,
         args: Cow<'a, [Value]>,
-        options: InvocationOptions<'a>,
+        mut options: InvocationOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
         let budget = Budget::new(&vm.limits);
+        let observers = Observers::take(&mut options);
+        if observers.trace.is_none() {
+            options.mask = Some(TraceMask::NONE);
+        }
         let mut invocation = Invocation {
             vm,
+            observers,
             budget,
             checkpoint,
-            continuation: continuation::Continuation::new(program, entry, args, options),
+            continuation: continuation::Continuation::new(
+                program,
+                entry,
+                args,
+                options.mask.unwrap_or(TraceMask::NONE),
+                ExecutionControl::start(options.yield_host_calls),
+            ),
             parents: Vec::new(),
             next_segment: 1,
             resumptions: Resumptions::default(),
         };
-        if let Err(error) =
-            invocation
-                .continuation
-                .initialize(&mut invocation.vm, &mut invocation.budget, work)
-        {
+        if let Err(error) = invocation.continuation.initialize(
+            &mut invocation.vm,
+            &mut invocation.budget,
+            work,
+            &mut invocation.observers,
+        ) {
             invocation.running().finish(Err(error.clone()));
             return Err(error);
         }
@@ -351,7 +374,12 @@ impl<H: Host> Invocation<'_, H> {
         }
         let result = self
             .continuation
-            .advance_mode::<H, COOPERATIVE>(&mut self.vm, &mut self.budget, quantum)
+            .advance_mode::<H, COOPERATIVE>(
+                &mut self.vm,
+                &mut self.budget,
+                quantum,
+                &mut self.observers,
+            )
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
                 Progress::Control {
@@ -379,7 +407,7 @@ impl<H: Host> Invocation<'_, H> {
                             continuation.program.program(),
                             self.checkpoint,
                             &mut continuation.outputs[continuation.output_start..],
-                            &mut continuation.trace,
+                            &mut continuation.trace.observe(&mut self.observers),
                             site,
                         )?;
                     } else {
@@ -389,7 +417,7 @@ impl<H: Host> Invocation<'_, H> {
                             continuation.program.program(),
                             self.checkpoint,
                             &mut continuation.outputs[continuation.output_start..],
-                            &mut continuation.trace,
+                            &mut continuation.trace.observe(&mut self.observers),
                             site,
                         )?;
                     }
@@ -598,7 +626,7 @@ impl<H: Host> Running<'_, '_, H> {
             // Essential retirement and rollback precede arbitrary cancellation observers.
             // A panic cannot leave a terminal invocation retaining uncommitted storage.
             for stack in saved {
-                stack.cancel();
+                stack.cancel(self.observers);
             }
         }
         let outcome = match &result {
@@ -606,10 +634,10 @@ impl<H: Host> Running<'_, '_, H> {
             Err(_) if abandoned => TraceOutcome::Cancelled,
             Err(error) => TraceOutcome::Trap(error),
         };
-        finish_control_trace(self.continuation, outcome);
+        finish_control_trace(self.continuation, outcome, self.observers);
         if result.is_err() {
             for parent in self.parents.iter_mut().rev() {
-                finish_control_trace(parent, outcome);
+                finish_control_trace(parent, outcome, self.observers);
             }
         }
     }
@@ -621,9 +649,21 @@ impl<H: Host> Running<'_, '_, H> {
             self.vm.memory.rollback(self.checkpoint);
         }
         self.cancel_saved();
-        cancel_continuation(self.vm, self.continuation, self.budget, self.checkpoint);
+        cancel_continuation(
+            self.vm,
+            self.continuation,
+            self.budget,
+            self.checkpoint,
+            self.observers,
+        );
         for parent in self.parents.iter_mut().rev() {
-            cancel_continuation(self.vm, parent, self.budget, self.checkpoint);
+            cancel_continuation(
+                self.vm,
+                parent,
+                self.budget,
+                self.checkpoint,
+                self.observers,
+            );
         }
     }
 }
@@ -633,6 +673,7 @@ fn cancel_continuation<H: Host>(
     continuation: &mut continuation::Continuation<'_>,
     budget: &mut Budget,
     checkpoint: Checkpoint,
+    observers: &mut Observers<'_>,
 ) {
     if continuation.outcome.is_some() {
         return;
@@ -679,15 +720,18 @@ fn cancel_continuation<H: Host>(
     continuation.ctx.clear();
     continuation
         .trace
+        .observe(observers)
         .cancel(continuation.program.program(), location, span);
     continuation
         .trace
+        .observe(observers)
         .run_end(continuation.program.program(), TraceOutcome::Cancelled);
 }
 
 fn finish_control_trace(
     continuation: &mut continuation::Continuation<'_>,
     outcome: TraceOutcome<'_>,
+    observers: &mut Observers<'_>,
 ) {
     if !matches!(outcome, TraceOutcome::Ok) {
         let location = continuation
@@ -710,16 +754,21 @@ fn finish_control_trace(
             continuation
                 .ctx
                 .span_at(continuation.program.program(), location.func, location.pc);
-        continuation
-            .trace
-            .unwind(continuation.program.program(), location, span, outcome);
+        continuation.trace.observe(observers).unwind(
+            continuation.program.program(),
+            location,
+            span,
+            outcome,
+        );
     }
     continuation
         .trace
+        .observe(observers)
         .finish(continuation.program.program(), outcome);
 
     continuation
         .trace
+        .observe(observers)
         .run_end(continuation.program.program(), outcome);
 }
 

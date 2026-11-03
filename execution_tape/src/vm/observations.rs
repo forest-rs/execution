@@ -94,11 +94,11 @@ fn emit_selected(
         return;
     }
     let location = TraceLocation { func, pc };
-    let Some(mut sink) = trace.sink.as_mut().map(Observer::borrow_mut) else {
+    let Some(sink) = trace.sink.as_deref_mut() else {
         return;
     };
     if !sink.wants_registers(
-        TraceContext::new(program, trace.stack.as_ref()),
+        TraceContext::new(program, trace.state.stack.as_ref()),
         location,
         phase,
     ) {
@@ -166,7 +166,7 @@ fn emit_selected(
         .ok()
     };
     sink.registers(
-        TraceContext::new(program, trace.stack.as_ref()),
+        TraceContext::new(program, trace.state.stack.as_ref()),
         RegisterEvent {
             location,
             phase,

@@ -50,7 +50,7 @@ pub use inspection::{
 use inspection::{ExecutionControl, Waiting};
 mod observations;
 mod observer;
-use observer::Observer;
+use observer::Observers;
 mod ownership;
 mod work;
 pub use invocation::{ControlError, Invocation, InvocationOptions, PendingHostCall, RunStatus};
@@ -752,89 +752,102 @@ impl<H: Host> fmt::Debug for Vm<H> {
 ///
 /// Keeping this out of [`ExecutionContext`] avoids storing borrowed trace state in the long-lived
 /// per-run context while still flattening VM hot-loop tracing code.
-struct TraceCtx<'a> {
+struct TraceState {
     run_open: bool,
     stack: Option<ActivationId>,
     mask: TraceMask,
-    sink: Option<Observer<'a, dyn TraceSink + 'a>>,
     scopes: Vec<(ScopeKind, usize)>,
     pending: Option<TraceLocation>,
 }
 
-impl<'a> TraceCtx<'a> {
-    fn with_observer(
-        mask: TraceMask,
-        sink: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
-    ) -> Self {
+impl TraceState {
+    fn new(mask: TraceMask) -> Self {
         Self {
             run_open: false,
             stack: None,
             mask,
-            sink: sink.map(Observer::Unique),
             scopes: Vec::new(),
             pending: None,
         }
     }
 
-    #[inline(always)]
-    fn enabled(&self, mask: TraceMask) -> bool {
-        self.mask.contains(mask) && self.sink.is_some()
+    fn observe<'view>(&'view mut self, observers: &'view mut Observers<'_>) -> TraceCtx<'view> {
+        TraceCtx {
+            state: self,
+            sink: observers
+                .trace
+                .as_mut()
+                .map(|sink| &mut **sink as &mut dyn TraceSink),
+        }
     }
 
-    #[inline]
     fn active(&self) -> bool {
-        self.enabled(TraceMask::INSTR)
-            || self.enabled(TraceMask::CALL)
-            || self.enabled(TraceMask::HOST)
-            || self.enabled(TraceMask::VALUES)
-            || self.enabled(TraceMask::REGISTERS)
-            || self.enabled(TraceMask::CONTROL)
+        self.mask.contains(TraceMask::INSTR)
+            || self.mask.contains(TraceMask::CALL)
+            || self.mask.contains(TraceMask::HOST)
+            || self.mask.contains(TraceMask::VALUES)
+            || self.mask.contains(TraceMask::REGISTERS)
+            || self.mask.contains(TraceMask::CONTROL)
+    }
+}
+
+/// A borrowed observation view exists only while the execution owner drives an operation.
+struct TraceCtx<'a> {
+    state: &'a mut TraceState,
+    sink: Option<&'a mut dyn TraceSink>,
+}
+
+impl TraceCtx<'_> {
+    #[inline(always)]
+    fn enabled(&self, mask: TraceMask) -> bool {
+        self.state.mask.contains(mask) && self.sink.is_some()
     }
 
     #[inline]
     fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
-        let context = TraceContext::new(program, self.stack.as_ref());
-        if self.mask != TraceMask::NONE
-            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+        let context = TraceContext::new(program, self.state.stack.as_ref());
+        if self.state.mask != TraceMask::NONE
+            && let Some(sink) = self.sink.as_deref_mut()
         {
-            sink.run_mask(context, self.mask);
+            sink.run_mask(context, self.state.mask);
         }
         if self.enabled(TraceMask::RUN)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
-            self.run_open = true;
+            self.state.run_open = true;
             t.run_start(context, entry, arg_count);
         }
     }
 
     #[inline]
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
-        if !core::mem::take(&mut self.run_open) {
+        if !core::mem::take(&mut self.state.run_open) {
             return;
         }
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::RUN)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
             t.run_end(context, outcome);
         }
     }
 
     fn stack_activity(&mut self, program: &Program, activity: crate::trace::StackActivity<'_>) {
-        if self.mask != TraceMask::NONE
-            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+        if self.state.mask != TraceMask::NONE
+            && let Some(sink) = self.sink.as_deref_mut()
         {
-            sink.stack_activity(TraceContext::new(program, self.stack.as_ref()), activity);
+            sink.stack_activity(
+                TraceContext::new(program, self.state.stack.as_ref()),
+                activity,
+            );
         }
     }
 
     #[inline]
     fn values<'event>(&mut self, program: &Program, event: impl FnOnce() -> ValueEvent<'event>) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::VALUES)
-            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(sink) = self.sink.as_deref_mut()
         {
             sink.values(context, event());
         }
@@ -845,9 +858,9 @@ impl<'a> TraceCtx<'a> {
         program: &Program,
         event: impl FnOnce() -> crate::trace::ControlEvent<'event>,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if (self.enabled(TraceMask::CONTROL) || self.enabled(TraceMask::VALUES))
-            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(sink) = self.sink.as_deref_mut()
         {
             sink.control(context, event());
         }
@@ -863,12 +876,11 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         opcode: u8,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::INSTR)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
-            self.pending = Some(TraceLocation { func, pc });
+            self.state.pending = Some(TraceLocation { func, pc });
             t.instr(context, func, pc, next_pc, span_id, opcode);
         }
     }
@@ -883,12 +895,12 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         caller: Option<TraceLocation>,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::CALL)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
-            self.scopes
+            self.state
+                .scopes
                 .push((ScopeKind::CallFrame { func, caller }, depth));
             t.scope_enter(
                 context,
@@ -910,12 +922,11 @@ impl<'a> TraceCtx<'a> {
         pc: u32,
         span_id: Option<u64>,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::CALL)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
-            let (kind, _) = self.scopes.pop().expect("entered call frame");
+            let (kind, _) = self.state.scopes.pop().expect("entered call frame");
             t.scope_exit(context, kind, depth, func, pc, span_id, TraceOutcome::Ok);
         }
     }
@@ -932,12 +943,11 @@ impl<'a> TraceCtx<'a> {
         pc: u32,
         span_id: Option<u64>,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::HOST)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
-            self.scopes.push((
+            self.state.scopes.push((
                 ScopeKind::HostCall {
                     host_sig,
                     symbol,
@@ -972,12 +982,11 @@ impl<'a> TraceCtx<'a> {
         pc: u32,
         span_id: Option<u64>,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
+        let context = TraceContext::new(program, self.state.stack.as_ref());
         if self.enabled(TraceMask::HOST)
-            && let Some(mut t) = self.sink.as_mut().map(Observer::borrow_mut)
+            && let Some(t) = self.sink.as_deref_mut()
         {
-            let t: &mut dyn TraceSink = &mut *t;
-            self.scopes.pop();
+            self.state.scopes.pop();
             t.scope_exit(
                 context,
                 ScopeKind::HostCall {
@@ -999,9 +1008,9 @@ impl<'a> TraceCtx<'a> {
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
-        let context = TraceContext::new(program, self.stack.as_ref());
-        if let Some(location) = self.pending.take()
-            && let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut)
+        let context = TraceContext::new(program, self.state.stack.as_ref());
+        if let Some(location) = self.state.pending.take()
+            && let Some(sink) = self.sink.as_deref_mut()
         {
             sink.instr_end(context, location, next, outcome);
         }
@@ -1014,12 +1023,15 @@ impl<'a> TraceCtx<'a> {
         span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
-        let stack = self.stack.clone();
+        let stack = self.state.stack.clone();
         let context = TraceContext::new(program, stack.as_ref());
         // A host failure/cancellation closes the host scope before its instruction attempt.
-        if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
-            let (kind, depth) = self.scopes.pop().expect("open host scope");
-            if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
+        if matches!(
+            self.state.scopes.last(),
+            Some((ScopeKind::HostCall { .. }, _))
+        ) {
+            let (kind, depth) = self.state.scopes.pop().expect("open host scope");
+            if let Some(sink) = self.sink.as_deref_mut() {
                 sink.scope_exit(
                     context,
                     kind,
@@ -1032,8 +1044,8 @@ impl<'a> TraceCtx<'a> {
             }
         }
         self.instr_end(program, None, outcome);
-        while let Some((kind, depth)) = self.scopes.pop() {
-            if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
+        while let Some((kind, depth)) = self.state.scopes.pop() {
+            if let Some(sink) = self.sink.as_deref_mut() {
                 sink.scope_exit(
                     context,
                     kind,
@@ -1064,10 +1076,13 @@ impl<'a> TraceCtx<'a> {
             );
         }
         debug_assert!(
-            self.pending.is_none(),
+            self.state.pending.is_none(),
             "every instruction attempt must complete"
         );
-        debug_assert!(self.scopes.is_empty(), "every entered scope must close");
+        debug_assert!(
+            self.state.scopes.is_empty(),
+            "every entered scope must close"
+        );
     }
 }
 

@@ -170,6 +170,7 @@ impl<H: Host> Running<'_, '_, H> {
         let program = self.continuation.program.program();
         self.continuation
             .trace
+            .observe(self.observers)
             .values(program, || ValueEvent::ReturnFrom {
                 location: pending.location,
                 target: ordinal,
@@ -219,23 +220,20 @@ impl<H: Host> Running<'_, '_, H> {
                 .control
                 .activation(&self.continuation.ctx, pending.depth - 1);
             let destination = &self.parents[segment];
-            self.continuation
-                .trace
-                .control(self.continuation.program.program(), || {
-                    ControlEvent::ReturnAcross {
-                        location,
-                        source: &source,
-                        target: target_id,
-                        instance: destination.ctx.instance.as_ref().expect("target instance"),
-                        target_location: destination
-                            .control
-                            .paused_location(&destination.ctx, index),
-                        values: &values,
-                        work,
-                        created: &created,
-                        aggregates: self.vm.memory.aggs(),
-                    }
-                });
+            self.continuation.trace.observe(self.observers).control(
+                self.continuation.program.program(),
+                || ControlEvent::ReturnAcross {
+                    location,
+                    source: &source,
+                    target: target_id,
+                    instance: destination.ctx.instance.as_ref().expect("target instance"),
+                    target_location: destination.control.paused_location(&destination.ctx, index),
+                    values: &values,
+                    work,
+                    created: &created,
+                    aggregates: self.vm.memory.aggs(),
+                },
+            );
             if self.budget.fuel == 0 {
                 return Err(Trap::FuelExceeded);
             }
@@ -297,7 +295,7 @@ impl<H: Host> Running<'_, '_, H> {
 
     fn unwind_segment(&mut self, target: u64) {
         let outcome = TraceOutcome::Unwound { target };
-        finish_control_trace(self.continuation, outcome);
+        finish_control_trace(self.continuation, outcome, self.observers);
         self.budget.frames -= self.continuation.ctx.frames.len();
         self.continuation.ctx.clear();
     }
@@ -323,6 +321,7 @@ impl<H: Host> Running<'_, '_, H> {
         if index == 0 {
             self.continuation
                 .trace
+                .observe(self.observers)
                 .values(program, || ValueEvent::ReturnCandidate {
                     location,
                     values: &values,
@@ -340,7 +339,7 @@ impl<H: Host> Running<'_, '_, H> {
         // never the uninitialized result banks of a prematurely popped child.
         self.close_exited_host(location, outcome);
         for depth in (index + 1..=self.continuation.ctx.frames.len()).rev() {
-            self.continuation.trace.exit_frame(
+            self.continuation.trace.observe(self.observers).exit_frame(
                 self.continuation.program.program(),
                 depth,
                 location,
@@ -387,7 +386,7 @@ impl<H: Host> Running<'_, '_, H> {
     }
 
     fn close_exited_host(&mut self, location: TraceLocation, outcome: TraceOutcome<'_>) {
-        self.continuation.trace.exit_host(
+        self.continuation.trace.observe(self.observers).exit_host(
             self.continuation.program.program(),
             location,
             self.continuation.ctx.span_at(
@@ -397,9 +396,11 @@ impl<H: Host> Running<'_, '_, H> {
             ),
             outcome,
         );
-        self.continuation
-            .trace
-            .instr_end(self.continuation.program.program(), None, outcome);
+        self.continuation.trace.observe(self.observers).instr_end(
+            self.continuation.program.program(),
+            None,
+            outcome,
+        );
     }
 }
 
@@ -411,11 +412,14 @@ impl TraceCtx<'_> {
         span: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
-        if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
-            let (kind, depth) = self.scopes.pop().expect("entered host scope");
-            if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
+        if matches!(
+            self.state.scopes.last(),
+            Some((ScopeKind::HostCall { .. }, _))
+        ) {
+            let (kind, depth) = self.state.scopes.pop().expect("entered host scope");
+            if let Some(sink) = self.sink.as_deref_mut() {
                 sink.scope_exit(
-                    TraceContext::new(program, self.stack.as_ref()),
+                    TraceContext::new(program, self.state.stack.as_ref()),
                     kind,
                     depth,
                     location.func,
@@ -434,15 +438,18 @@ impl TraceCtx<'_> {
         span: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
-        if matches!(self.scopes.last(), Some((ScopeKind::CallFrame { .. }, _))) {
-            let (kind, entered_depth) = self.scopes.pop().expect("entered guest scope");
+        if matches!(
+            self.state.scopes.last(),
+            Some((ScopeKind::CallFrame { .. }, _))
+        ) {
+            let (kind, entered_depth) = self.state.scopes.pop().expect("entered guest scope");
             debug_assert_eq!(
                 depth, entered_depth,
                 "exit scopes follow actual guest activations"
             );
-            if let Some(mut sink) = self.sink.as_mut().map(Observer::borrow_mut) {
+            if let Some(sink) = self.sink.as_deref_mut() {
                 sink.scope_exit(
-                    TraceContext::new(program, self.stack.as_ref()),
+                    TraceContext::new(program, self.state.stack.as_ref()),
                     kind,
                     depth,
                     location.func,
