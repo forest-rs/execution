@@ -257,14 +257,12 @@ impl<'a> FunctionAnalysis<'a> {
             if !reachable[source] {
                 continue;
             }
-            for (arm, target) in block.succs.iter().enumerate() {
-                if let Some(target) = *target {
-                    incoming.push(Incoming {
-                        target,
-                        source,
-                        arm,
-                    });
-                }
+            for (arm, &target) in block.succs.iter().enumerate() {
+                incoming.push(Incoming {
+                    target,
+                    source,
+                    arm,
+                });
             }
         }
         incoming.sort_unstable_by_key(|e| (e.target, e.source, e.arm));

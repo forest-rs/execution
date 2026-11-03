@@ -83,7 +83,6 @@ where
 
         // Re-propagate this block's OUT to its successors.
         for (arm, succ) in blocks[b_idx].succs.iter().copied().enumerate() {
-            let Some(succ) = succ else { continue };
             if !reachable.get(succ).copied().unwrap_or(false) {
                 continue;
             }
@@ -145,7 +144,7 @@ where
     // Precompute preds from succs.
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, b) in blocks.iter().enumerate() {
-        for succ in b.succs.iter().copied().flatten() {
+        for succ in b.succs.iter().copied() {
             if succ < n {
                 preds[succ].push(i);
             }
@@ -166,7 +165,7 @@ where
 
         // OUT[b] = meet over IN[succ].
         let mut new_out = bottom.clone();
-        for succ in blocks[b_idx].succs.iter().copied().flatten() {
+        for succ in blocks[b_idx].succs.iter().copied() {
             if !reachable.get(succ).copied().unwrap_or(false) {
                 continue;
             }
@@ -201,6 +200,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn multiway_edges_preserve_arm_identity_and_reach_every_successor() {
+        let blocks: Vec<_> = [vec![1, 2, 1, 3, 4], vec![], vec![], vec![], vec![]]
+            .into_iter()
+            .map(|targets| BasicBlock {
+                start_pc: 0,
+                end_pc: 0,
+                instr_start: 0,
+                instr_end: 0,
+                succs: targets.into_iter().collect(),
+            })
+            .collect();
+        let reachable = crate::analysis::cfg::compute_reachable(&blocks);
+        assert_eq!(reachable, [true; 5]);
+        let (inputs, _) = solve_forward(
+            &blocks,
+            &reachable,
+            1_u8,
+            0,
+            |_, arm, _, acc, incoming| {
+                let previous = *acc;
+                *acc |= *incoming | (1 << (arm + 1));
+                *acc != previous
+            },
+            |_, _, _| {},
+        );
+        assert_eq!(inputs, [1, 0b1011, 0b101, 0b10001, 0b100001]);
+    }
+
+    #[test]
     fn forward_meets_branches_and_backedges_and_ignores_unreachable_blocks() {
         let successors = [
             [Some(1), Some(2)],
@@ -217,7 +245,7 @@ mod tests {
                 end_pc: 0,
                 instr_start: 0,
                 instr_end: 0,
-                succs,
+                succs: succs.into_iter().flatten().collect(),
             })
             .collect();
         let (inputs, outputs) = solve_forward(
