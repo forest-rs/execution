@@ -6,7 +6,7 @@
 use execution_tape::aggregates::{AggError, ValueSnapshot};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::{HostSigId, Program, ValueType};
+use execution_tape::program::{HostSigId, ValueType};
 use execution_tape::trace::{
     HostCallOutcome, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
@@ -32,15 +32,19 @@ impl TraceSink for Observe {
         TraceMask::VALUES | TraceMask::RUN
     }
 
-    fn run_start(&mut self, _: &Program, _: FuncId, _: usize) {
+    fn run_start(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _: FuncId,
+        _: usize,
+    ) {
         self.order.push("run_start");
     }
 
-    fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let _ = _context.program();
         match event {
-            ValueEvent::ReturnFrom { .. }
-            | ValueEvent::CallbackEnter { .. }
-            | ValueEvent::CallbackReturn { .. } => {
+            ValueEvent::ReturnFrom { .. } | ValueEvent::GuestCall { .. } => {
                 panic!("fixture does not request callbacks")
             }
             ValueEvent::Entry {
@@ -100,13 +104,19 @@ impl TraceSink for Observe {
         }
     }
 
-    fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        outcome: TraceOutcome<'_>,
+    ) {
         self.order.push("run_end");
         self.outcome = Some(match outcome {
             TraceOutcome::Ok => Ok(()),
             TraceOutcome::Trap(error) => Err(error.clone()),
             TraceOutcome::Cancelled => panic!("run-to-completion cannot cancel"),
-            TraceOutcome::Unwound { .. } => panic!("run outcome cannot be a control transfer"),
+            TraceOutcome::Unwound { .. } | TraceOutcome::TailTransferred { .. } => {
+                panic!("this fixture performs no control transfer")
+            }
         });
     }
 }
@@ -430,7 +440,11 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
         seen: usize,
     }
     impl TraceSink for Borrowed {
-        fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
+        fn values(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            event: ValueEvent<'_>,
+        ) {
             let pointer = match event {
                 ValueEvent::Entry { args, .. } => {
                     let Value::Str(s) = &args[0] else {
@@ -445,9 +459,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                     s.as_ptr() as usize
                 }
                 ValueEvent::ReturnCandidate { .. } => return,
-                ValueEvent::ReturnFrom { .. }
-                | ValueEvent::CallbackEnter { .. }
-                | ValueEvent::CallbackReturn { .. } => {
+                ValueEvent::ReturnFrom { .. } | ValueEvent::GuestCall { .. } => {
                     panic!("fixture does not request callbacks")
                 }
             };
@@ -607,11 +619,11 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         },
         Limits::default(),
     );
-    live.aggregates_mut()
+    live.aggregate_builder()
         .tuple_new(vec![Value::I64(123)])
         .unwrap();
     let root = live
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![
             Value::Str("durable host value".into()),
             Value::F64(f64::from_bits(0x7ff8_0000_0000_0042)),
@@ -635,7 +647,7 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         },
         Limits::default(),
     );
-    replay.host_mut().values = replay.aggregates_mut().import(&snapshot).unwrap();
+    replay.host_mut().values = replay.aggregate_builder().import(&snapshot).unwrap();
     let outputs = replay
         .run(&program, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();

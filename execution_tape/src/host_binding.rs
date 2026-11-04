@@ -470,9 +470,14 @@ mod tests {
     }
 
     #[test]
-    fn program_identity_is_checked_before_a_callback_can_run() {
+    fn bindings_accept_shared_definitions_and_reject_other_programs() {
         let p = program("increment");
         let clone = p.clone();
+        let independent = crate::verifier::verify_program_owned(
+            p.program().clone(),
+            &crate::verifier::VerifyConfig::default(),
+        )
+        .unwrap();
         let other = program("different");
         let mut functions = HostFunctions::new();
         functions
@@ -480,7 +485,7 @@ mod tests {
             .unwrap();
         let bindings = functions.bind(&p).unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
-        for wrong in [&clone, &other] {
+        for wrong in [&independent, &other] {
             let error = vm
                 .run(wrong, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap_err();
@@ -497,6 +502,11 @@ mod tests {
             vm.run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
                 .unwrap(),
             [Value::I64(2)]
+        );
+        assert_eq!(
+            vm.run(&clone, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+                .unwrap(),
+            [Value::I64(3)]
         );
     }
 

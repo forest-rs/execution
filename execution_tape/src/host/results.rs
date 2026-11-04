@@ -5,25 +5,15 @@
 
 use super::*;
 use crate::aggregates::AggDelta;
-use crate::vm::{DataWork, Trap};
+use crate::vm::{DataWork, Trap, budget::DataBudget};
 use core::ops::Range;
 
+#[derive(Default)]
 pub(crate) struct HostResults {
     pub(crate) delta: Option<AggDelta>,
     pub(crate) work: DataWork,
-    used: DataWork,
-    limits: DataWork,
 }
 impl HostResults {
-    #[inline]
-    pub(crate) fn new(used: DataWork, limits: DataWork) -> Self {
-        Self {
-            delta: None,
-            work: DataWork::default(),
-            used,
-            limits,
-        }
-    }
     pub(crate) fn resolve<'a>(
         &'a self,
         base: &'a AggHeap,
@@ -33,27 +23,8 @@ impl HostResults {
             .as_ref()
             .map_or((base, handle), |delta| delta.resolve(base, handle))
     }
-    fn check(&self, work: DataWork) -> Result<(), Trap> {
-        let used = self.used.aggregate + self.work.aggregate;
-        if work.aggregate > self.limits.aggregate - used {
-            return Err(Trap::AggregateWorkExceeded {
-                limit: self.limits.aggregate,
-                used,
-                requested: work.aggregate,
-            });
-        }
-        let used = self.used.payload + self.work.payload;
-        if work.payload > self.limits.payload - used {
-            return Err(Trap::PayloadWorkExceeded {
-                limit: self.limits.payload,
-                used,
-                requested: work.payload,
-            });
-        }
-        Ok(())
-    }
-    pub(crate) fn prepaid(&mut self, work: DataWork) -> Result<(), Trap> {
-        self.check(work)?;
+    pub(crate) fn prepaid(&mut self, work: DataWork, budget: &mut DataBudget) -> Result<(), Trap> {
+        budget.charge(work)?;
         self.work.aggregate += work.aggregate;
         self.work.payload += work.payload;
         Ok(())
@@ -64,17 +35,19 @@ impl HostResults {
         program: &Program,
         kind: AggType,
         values: Vec<Value>,
+        budget: &mut DataBudget,
     ) -> Result<AggHandle, HostError> {
         let aggregate = u64::try_from(values.len())
             .ok()
             .and_then(|n| n.checked_add(1))
             .ok_or_else(|| HostError::custom(Trap::AggregateSizeOverflow))?;
         // Reject oversized field vectors before inspecting every payload or schema member.
-        self.check(DataWork {
-            aggregate,
-            payload: 0,
-        })
-        .map_err(HostError::custom)?;
+        budget
+            .check(DataWork {
+                aggregate,
+                payload: 0,
+            })
+            .map_err(HostError::custom)?;
         let payload = values
             .iter()
             .try_fold(0_u64, |sum, value| {
@@ -87,7 +60,7 @@ impl HostResults {
             })
             .ok_or_else(|| HostError::custom(Trap::PayloadSizeOverflow))?;
         let work = DataWork { aggregate, payload };
-        self.check(work).map_err(HostError::custom)?;
+        budget.check(work).map_err(HostError::custom)?;
         match kind {
             AggType::Tuple { .. } => {}
             AggType::Struct { type_id } => {
@@ -120,7 +93,7 @@ impl HostResults {
         let handle = self
             .restore_node(base, kind, values)
             .map_err(HostError::custom)?;
-        self.prepaid(work)
+        self.prepaid(work, budget)
             .expect("construction work checked before allocation");
         Ok(handle)
     }
@@ -186,18 +159,20 @@ impl HostContext<'_, '_> {
     /// its earlier staged results. Successful completion adopts only reachable results; failure
     /// or cancellation discards staging. Guest reentry through a yielded request first promotes
     /// all staging with unchanged handles; unused promoted nodes live until root commit/rollback.
-    /// One node plus each field and immediate payload bytes
-    /// share the invocation's aggregate/payload work limits. Native allocations before this call
+    /// One node plus each field and immediate payload bytes are charged immediately against
+    /// the execution's aggregate/payload allowance, including while results remain staged.
+    /// Native allocations before this call
     /// are outside those limits. A denial allocates no node and can be handled by the host.
     /// Errors preserve an `AggError` or VM `Trap` as the typed `HostError` source.
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, HostError> {
         self.results.allocate(
             self.aggregates,
-            self.program,
+            self.instance.program().program(),
             AggType::Tuple {
                 arity: u32::try_from(values.len()).unwrap_or(u32::MAX),
             },
             values,
+            self.budget,
         )
     }
     /// Constructs a struct using a nominal type from this call's program.
@@ -210,9 +185,10 @@ impl HostContext<'_, '_> {
     ) -> Result<AggHandle, HostError> {
         self.results.allocate(
             self.aggregates,
-            self.program,
+            self.instance.program().program(),
             AggType::Struct { type_id },
             values,
+            self.budget,
         )
     }
     /// Constructs an array using an element type from this call's program.
@@ -224,9 +200,10 @@ impl HostContext<'_, '_> {
     ) -> Result<AggHandle, HostError> {
         self.results.allocate(
             self.aggregates,
-            self.program,
+            self.instance.program().program(),
             AggType::Array { elem_type_id },
             values,
+            self.budget,
         )
     }
     pub(super) fn resolve(&self, handle: AggHandle) -> (&AggHeap, AggHandle) {

@@ -16,10 +16,180 @@ use crate::vm::Vm;
 
 use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
+use crate::instance::Instance;
 use crate::program::Program;
 use crate::program::{HostSigId, SymbolId};
 use crate::value::{FuncId, Value};
+use crate::vm::ActivationId;
 use crate::vm::{DataWork, Limits, TrapInfo};
+
+/// Exact code and logical guest stack producing a trace callback.
+///
+/// Parked stacks can resume in a different caller context. A program pointer or a nesting
+/// counter cannot identify that computation. VM-produced callbacks always carry a stack identity;
+/// manually synthesized observations can explicitly use [`Self::unscoped`].
+#[derive(Clone, Copy)]
+pub struct TraceContext<'a> {
+    program: &'a Program,
+    stack: Option<&'a ActivationId>,
+}
+impl<'a> TraceContext<'a> {
+    pub(crate) fn new(program: &'a Program, stack: Option<&'a ActivationId>) -> Self {
+        Self { program, stack }
+    }
+    /// Constructs an observation with no claim about a live VM stack identity.
+    #[must_use]
+    pub fn unscoped(program: &'a Program) -> Self {
+        Self {
+            program,
+            stack: None,
+        }
+    }
+    /// Exact definition interpreting local function, instruction and value identities.
+    #[must_use]
+    pub fn program(self) -> &'a Program {
+        self.program
+    }
+    /// Root identity of the logical stack producing this event, independent of its current caller.
+    #[must_use]
+    pub fn stack(self) -> Option<&'a ActivationId> {
+        self.stack
+    }
+}
+
+impl core::fmt::Debug for TraceContext<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TraceContext")
+            .field("program", &self.program.name())
+            .field("stack", &self.stack)
+            .finish()
+    }
+}
+
+/// Membership of a logical stack in the currently attached guest call chain.
+///
+/// This is distinct from logical run/scope lifetime and from scheduler waiting time. Parking
+/// preserves the computation and its open scopes; attachment resumes those same identities.
+#[derive(Clone, Copy, Debug)]
+pub enum StackActivity<'a> {
+    /// A captured stack leaves the active chain. Physical profiling guards must close, but
+    /// logical scope descriptors remain available for attachment or terminal cancellation.
+    Parked,
+    /// A previously parked stack rejoins the chain under its actual current resumer.
+    Attached {
+        /// Live parent activation, or `None` when replacing the root.
+        parent: Option<&'a ActivationId>,
+    },
+}
+
+/// What caused entry into another code instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryOrigin {
+    /// An embedding command issued while a host operation remains pending.
+    HostRequest,
+    /// An indirect guest call; the instruction itself performs the transfer.
+    GuestCall,
+}
+
+/// A real transfer between code-qualified segments of one execution.
+///
+/// Enabled by [`TraceMask::CONTROL`] or [`TraceMask::VALUES`]. Activation identities are opaque live capabilities;
+/// numeric function and instruction locations are interpreted by the accompanying code owners.
+#[derive(Clone, Copy, Debug)]
+pub enum ControlEvent<'a> {
+    /// An admitted command to enter another instance while the parent host call waits.
+    EnterInstance {
+        /// Whether this is an embedding command or an automatically executed guest call.
+        origin: EntryOrigin,
+        /// Parent's pending host instruction, in the callback's `program`.
+        location: TraceLocation,
+        /// Exact waiting parent activation.
+        parent: &'a ActivationId,
+        /// Identity allocated for the requested child root, including a rejected entry.
+        child: &'a ActivationId,
+        /// Source store namespace, interpreting the parent's local value identities.
+        source_instance: &'a Instance,
+        /// Child's code and store namespace.
+        instance: &'a Instance,
+        /// Program-local entry in the child definition.
+        entry: FuncId,
+        /// Actual qualified function or closure, including its hidden environment ownership.
+        callee: &'a Value,
+        /// Explicit arguments in the shared store, excluding a closure's hidden environment.
+        args: &'a [Value],
+        /// Staged host construction already charged before promotion.
+        work: DataWork,
+        /// Promoted handles in their actual construction order.
+        created: &'a core::ops::Range<u32>,
+        /// Shared storage after staging promotion and before entry validation.
+        aggregates: &'a AggHeap,
+    },
+    /// A requested child was rejected before entry or child observations began.
+    RejectInstance {
+        /// Initiating instruction in the callback's program.
+        location: TraceLocation,
+        /// Exact pending caller.
+        parent: &'a ActivationId,
+        /// Requested child root, which never entered.
+        child: &'a ActivationId,
+        /// Original admission failure; the execution subsequently terminates with this trap.
+        error: &'a TrapInfo,
+    },
+    /// A child's checked result returned to its original pending host instruction.
+    ReturnInstance {
+        /// Actual child return/exit instruction, in `instance`'s definition.
+        location: TraceLocation,
+        /// Returning segment's exact root identity.
+        child: &'a ActivationId,
+        /// Resumed waiting activation, in the callback's `program`.
+        parent: &'a ActivationId,
+        /// Exact code instance that produced the result.
+        instance: &'a Instance,
+        /// Result slots; no heap compaction occurred.
+        values: &'a [Value],
+        /// Shared execution storage.
+        aggregates: &'a AggHeap,
+    },
+    /// A terminal transfer replaces an activation instead of retaining it as a caller.
+    TailTransfer {
+        /// Tail instruction in the callback's definition.
+        location: TraceLocation,
+        /// Retired activation; it cannot be targeted by a later lexical return.
+        source: &'a ActivationId,
+        /// Replacement computation's root, independently of its active inner frames.
+        target: &'a ActivationId,
+        /// Surviving result recipient; absent at execution-root completion.
+        recipient: Option<&'a ActivationId>,
+        /// Qualified callable, or the consumed one-use resumption.
+        value: &'a Value,
+        /// Explicit call arguments or suspension responses.
+        args: &'a [Value],
+        /// Shared execution storage before the replacement executes.
+        aggregates: &'a AggHeap,
+    },
+    /// A non-local return initiated in one segment and targeting an ancestor segment.
+    ReturnAcross {
+        /// Initiating pending host instruction, in the callback's `program`.
+        location: TraceLocation,
+        /// Initiating activation.
+        source: &'a ActivationId,
+        /// Exact target activation; unrelated equal local ordinals do not identify it.
+        target: &'a ActivationId,
+        /// Code instance that interprets the target's result contracts.
+        instance: &'a Instance,
+        /// Actual suspended instruction in the target's definition.
+        target_location: TraceLocation,
+
+        /// Raw proposed results, before boundary validation.
+        values: &'a [Value],
+        /// Staged host work admitted before the command.
+        work: DataWork,
+        /// Promoted nodes, before the transfer changes control.
+        created: &'a core::ops::Range<u32>,
+        /// Shared execution storage.
+        aggregates: &'a AggHeap,
+    },
+}
 
 /// A set of trace events requested by a [`TraceSink`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -78,6 +248,11 @@ impl TraceMask {
     /// executed function for this run; ordinary prepared artifacts do not retain them.
     /// Use [`TraceSink::wants_registers`] to select locations before this work is performed.
     pub const REGISTERS: Self = Self(1 << 5);
+
+    /// Observe execution-owned cross-instance control through [`TraceSink::control`], without
+    /// requesting entry, host or return values. [`Self::VALUES`] also enables these events so
+    /// value recorders cannot silently omit a control transfer.
+    pub const CONTROL: Self = Self(1 << 6);
 
     /// Returns `true` if this mask includes all bits in `other`.
     #[must_use]
@@ -178,6 +353,11 @@ pub enum TraceOutcome<'a> {
         /// Activation whose declared result boundary receives the transfer values.
         target: u64,
     },
+    /// This activation was replaced by a proper tail transfer, not by cancellation or return.
+    TailTransferred {
+        /// Replacement computation's exact root identity.
+        target: &'a ActivationId,
+    },
     /// Trapped.
     Trap(&'a TrapInfo),
 }
@@ -227,8 +407,7 @@ pub enum ValueEvent<'a> {
         target: u64,
         /// Target frame's actual suspended instruction, using the same rule as live inspection.
         target_location: TraceLocation,
-        /// Callback bodies abandoned by this transfer, including a callback-root target.
-        unwound_callbacks: usize,
+
         /// Raw supplied results, checked against the target function's result contracts.
         values: &'a [Value],
         /// Host construction work promoted before admitting the transfer.
@@ -238,10 +417,10 @@ pub enum ValueEvent<'a> {
         /// Shared invocation heap after promotion.
         aggregates: &'a AggHeap,
     },
-    /// Embedding-requested guest reentry while a host instruction remains pending.
+    /// Embedding-requested guest entry while a host instruction remains pending.
     /// Observed before callback target, argument or fuel validation. IDs and handles use this
-    /// invocation's original code/heap. Promoted staging keeps its original handle identities.
-    CallbackEnter {
+    /// execution's shared heap; callables retain their exact code. Promoted staging keeps its original handle identities.
+    GuestCall {
         /// Host instruction whose embedding requested the callback.
         location: TraceLocation,
         /// Requested same-program function or closure.
@@ -253,17 +432,6 @@ pub enum ValueEvent<'a> {
         /// Promoted aggregate handles, including values still held by the embedding.
         created: &'a core::ops::Range<u32>,
         /// Shared invocation storage after promotion.
-        aggregates: &'a AggHeap,
-    },
-    /// A callback returned successfully to the embedding, without completing its host call.
-    CallbackReturn {
-        /// The callback root's actual return instruction.
-        location: TraceLocation,
-        /// Original pending host instruction.
-        caller: TraceLocation,
-        /// Contract-checked result slots. Handles still belong to this invocation.
-        values: &'a [Value],
-        /// Shared invocation storage; no root commit or handle compaction occurred.
         aggregates: &'a AggHeap,
     },
     /// Invocation inputs, before entry, argument, shape or execution-limit validation.
@@ -323,7 +491,6 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 location,
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 created,
@@ -333,13 +500,12 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("location", location)
                 .field("target", target)
                 .field("target_location", target_location)
-                .field("unwound_callbacks", unwound_callbacks)
                 .field("values", values)
                 .field("work", work)
                 .field("created", created)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
-            Self::CallbackEnter {
+            Self::GuestCall {
                 location,
                 callee,
                 args,
@@ -347,24 +513,12 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 created,
                 aggregates,
             } => f
-                .debug_struct("CallbackEnter")
+                .debug_struct("GuestCall")
                 .field("location", location)
                 .field("callee", callee)
                 .field("args", args)
                 .field("work", work)
                 .field("created", created)
-                .field("aggregate_count", &aggregates.len_u32())
-                .finish(),
-            Self::CallbackReturn {
-                location,
-                caller,
-                values,
-                aggregates,
-            } => f
-                .debug_struct("CallbackReturn")
-                .field("location", location)
-                .field("caller", caller)
-                .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::Entry {
@@ -422,18 +576,23 @@ pub trait TraceSink {
     /// Reports the actual event subscription once before any events for a traced invocation.
     /// This is independent of [`TraceMask::RUN`]; [`TraceMask::NONE`] emits no callbacks.
     /// The recommended [`Self::mask`] does not prove which mask the caller passed to the VM.
-    fn run_mask(&mut self, _program: &Program, _mask: TraceMask) {}
+    fn run_mask(&mut self, _context: TraceContext<'_>, _mask: TraceMask) {}
 
     /// Selects register observations before decoding/mapping a function. Called only with
     /// [`TraceMask::REGISTERS`]. Returning false avoids constructing the event.
-    fn wants_registers(&self, _location: TraceLocation, _phase: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: TraceContext<'_>,
+        _location: TraceLocation,
+        _phase: RegisterPhase,
+    ) -> bool {
         true
     }
 
     /// Borrows the selected instruction's inputs or successful local writes. Enabled by
     /// [`TraceMask::REGISTERS`] independently of instruction/boundary tracing.
     /// No outputs are emitted for a trapping instruction, call dispatch or guest return.
-    fn registers(&mut self, _program: &Program, _event: RegisterEvent<'_>) {}
+    fn registers(&mut self, _context: TraceContext<'_>, _event: RegisterEvent<'_>) {}
 
     /// Returns the recommended event mask for callers to pass to the VM.
     /// The explicit mask passed to the run controls delivery.
@@ -448,7 +607,16 @@ pub trait TraceSink {
     /// - `program`: program being executed (unverified container data)
     /// - `entry`: entry function id
     /// - `arg_count`: number of value arguments passed (not including the effect token)
-    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {}
+    fn run_start(&mut self, _context: TraceContext<'_>, _entry: FuncId, _arg_count: usize) {}
+
+    /// Observes parking or attachment of an existing logical guest stack.
+    ///
+    /// Delivered for every nonempty trace mask, including RUN-only, before observations from
+    /// the resumed instruction. Capture parks a suffix from leaf to root; attachment restores
+    /// it from root to leaf. Neither transition fabricates run or scope starts/ends. Use
+    /// [`TraceContext::stack`] to retain scope descriptors separately from physical guards.
+    /// Scheduler quantum expiry and waiting for a host do not themselves park a stack.
+    fn stack_activity(&mut self, _context: TraceContext<'_>, _activity: StackActivity<'_>) {}
 
     /// Borrows values at an execution boundary without changing execution or retaining data.
     ///
@@ -460,7 +628,12 @@ pub trait TraceSink {
     /// These events supply recording primitives, not a replay guarantee. A recorder owns program
     /// identity, exact values, run-local aggregate sharing, host outcomes and its completeness
     /// policy. Invalid graphs and opaque host state/errors require explicit handling.
-    fn values(&mut self, _program: &Program, _event: ValueEvent<'_>) {}
+    fn values(&mut self, _context: TraceContext<'_>, _event: ValueEvent<'_>) {}
+
+    /// Observes execution-owned cross-instance control, separately from a host outcome.
+    /// Enabled by [`TraceMask::CONTROL`] or [`TraceMask::VALUES`]. These commands never imply
+    /// native host completion.
+    fn control(&mut self, _context: TraceContext<'_>, _event: ControlEvent<'_>) {}
 
     /// Called before each attempted instruction, before any of its effects.
     ///
@@ -474,7 +647,7 @@ pub trait TraceSink {
     /// - `opcode`: opcode byte
     fn instr(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _func: FuncId,
         _pc: u32,
         _next_pc: u32,
@@ -496,7 +669,7 @@ pub trait TraceSink {
     /// reports whether that invocation eventually returned or trapped.
     fn instr_end(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _location: TraceLocation,
         _next: Option<TraceLocation>,
         _outcome: TraceOutcome<'_>,
@@ -517,7 +690,7 @@ pub trait TraceSink {
     /// - `span_id`: best-effort span id at the scope boundary
     fn scope_enter(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -545,7 +718,7 @@ pub trait TraceSink {
     /// - `span_id`: best-effort span id at the scope boundary
     fn scope_exit(
         &mut self,
-        _program: &Program,
+        _context: TraceContext<'_>,
         _kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -561,35 +734,128 @@ pub trait TraceSink {
     ///
     /// - `program`: program being executed (unverified container data)
     /// - `outcome`: whether the run ended successfully or trapped
-    fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {}
+    fn run_end(&mut self, _context: TraceContext<'_>, _outcome: TraceOutcome<'_>) {}
 }
 
 // Shared ownership keeps observations available after an owned invocation is dropped.
 // Borrow only between execution calls: reentrant RefCell borrows intentionally panic.
+// Borrowed observers can be lent for a shorter execution without changing the
+// lifetime of the underlying trait object or allocating an owned adapter.
+impl<S: TraceSink + ?Sized> TraceSink for &mut S {
+    fn run_mask(&mut self, context: TraceContext<'_>, mask: TraceMask) {
+        (**self).run_mask(context, mask);
+    }
+    fn wants_registers(
+        &self,
+        event_context: TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
+        (**self).wants_registers(event_context, location, phase)
+    }
+    fn registers(&mut self, context: TraceContext<'_>, event: RegisterEvent<'_>) {
+        (**self).registers(context, event);
+    }
+    fn mask(&self) -> TraceMask {
+        (**self).mask()
+    }
+    fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, arg_count: usize) {
+        (**self).run_start(context, entry, arg_count);
+    }
+    fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
+        (**self).stack_activity(context, activity);
+    }
+    fn values(&mut self, context: TraceContext<'_>, event: ValueEvent<'_>) {
+        (**self).values(context, event);
+    }
+    fn control(&mut self, context: TraceContext<'_>, event: ControlEvent<'_>) {
+        (**self).control(context, event);
+    }
+    fn instr(
+        &mut self,
+        context: TraceContext<'_>,
+        func: FuncId,
+        pc: u32,
+        next_pc: u32,
+        span_id: Option<u64>,
+        opcode: u8,
+    ) {
+        (**self).instr(context, func, pc, next_pc, span_id, opcode);
+    }
+    fn instr_end(
+        &mut self,
+        context: TraceContext<'_>,
+        location: TraceLocation,
+        next: Option<TraceLocation>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        (**self).instr_end(context, location, next, outcome);
+    }
+    fn scope_enter(
+        &mut self,
+        context: TraceContext<'_>,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+    ) {
+        (**self).scope_enter(context, kind, depth, func, pc, span_id);
+    }
+    fn scope_exit(
+        &mut self,
+        context: TraceContext<'_>,
+        kind: ScopeKind,
+        depth: usize,
+        func: FuncId,
+        pc: u32,
+        span_id: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        (**self).scope_exit(context, kind, depth, func, pc, span_id, outcome);
+    }
+    fn run_end(&mut self, context: TraceContext<'_>, outcome: TraceOutcome<'_>) {
+        (**self).run_end(context, outcome);
+    }
+}
+
 impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> {
-    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
-        self.as_ref().borrow_mut().run_mask(program, mask);
+    fn run_mask(&mut self, context: TraceContext<'_>, mask: TraceMask) {
+        self.as_ref().borrow_mut().run_mask(context, mask);
     }
-    fn wants_registers(&self, location: TraceLocation, phase: RegisterPhase) -> bool {
-        self.as_ref().borrow().wants_registers(location, phase)
+    fn wants_registers(
+        &self,
+        event_context: TraceContext<'_>,
+        location: TraceLocation,
+        phase: RegisterPhase,
+    ) -> bool {
+        self.as_ref()
+            .borrow()
+            .wants_registers(event_context, location, phase)
     }
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        self.as_ref().borrow_mut().registers(program, event);
+    fn registers(&mut self, context: TraceContext<'_>, event: RegisterEvent<'_>) {
+        self.as_ref().borrow_mut().registers(context, event);
     }
     fn mask(&self) -> TraceMask {
         self.as_ref().borrow().mask()
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+    fn run_start(&mut self, context: TraceContext<'_>, entry: FuncId, arg_count: usize) {
         self.as_ref()
             .borrow_mut()
-            .run_start(program, entry, arg_count);
+            .run_start(context, entry, arg_count);
     }
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
-        self.as_ref().borrow_mut().values(program, event);
+    fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
+        self.as_ref().borrow_mut().stack_activity(context, activity);
+    }
+    fn values(&mut self, context: TraceContext<'_>, event: ValueEvent<'_>) {
+        self.as_ref().borrow_mut().values(context, event);
+    }
+    fn control(&mut self, context: TraceContext<'_>, event: ControlEvent<'_>) {
+        self.as_ref().borrow_mut().control(context, event);
     }
     fn instr(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         func: FuncId,
         pc: u32,
         next_pc: u32,
@@ -598,22 +864,22 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     ) {
         self.as_ref()
             .borrow_mut()
-            .instr(program, func, pc, next_pc, span_id, opcode);
+            .instr(context, func, pc, next_pc, span_id, opcode);
     }
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
         self.as_ref()
             .borrow_mut()
-            .instr_end(program, location, next, outcome);
+            .instr_end(context, location, next, outcome);
     }
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -622,11 +888,11 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     ) {
         self.as_ref()
             .borrow_mut()
-            .scope_enter(program, kind, depth, func, pc, span_id);
+            .scope_enter(context, kind, depth, func, pc, span_id);
     }
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -636,9 +902,9 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     ) {
         self.as_ref()
             .borrow_mut()
-            .scope_exit(program, kind, depth, func, pc, span_id, outcome);
+            .scope_exit(context, kind, depth, func, pc, span_id, outcome);
     }
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
-        self.as_ref().borrow_mut().run_end(program, outcome);
+    fn run_end(&mut self, context: TraceContext<'_>, outcome: TraceOutcome<'_>) {
+        self.as_ref().borrow_mut().run_end(context, outcome);
     }
 }

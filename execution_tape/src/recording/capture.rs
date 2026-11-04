@@ -1,12 +1,15 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+mod session;
+pub use session::Recorder;
+
 use crate::host::ValueRef;
 use crate::program::Program;
 use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, InstructionCapture,
     InstructionOutcome, InstructionStatus, RecordLimits, Recording,
-    control::{Action, Command, Returned},
+    control::{Action, Command},
     frames::{Frame, FrameId},
     instructions::History,
     values::Builder,
@@ -28,7 +31,7 @@ use core::ops::Range;
 /// Capture failure stops value/graph retention; guest execution and live host effects continue.
 /// The final VM trap is still retained when its payload budget permits. Create a new
 /// recorder for each invocation. The recorder never changes the VM, host or supplied values.
-pub struct Recorder {
+pub(super) struct SegmentRecorder {
     history: Option<alloc::boxed::Box<History>>,
     program: Arc<VerifiedProgram>,
     builder: Builder,
@@ -36,7 +39,6 @@ pub struct Recorder {
     calls: Vec<Call>,
     commands: Vec<Command>,
     sequence: usize,
-    active_commands: Vec<usize>,
     frames: Vec<Frame>,
     top: Option<FrameId>,
     outcome_frame: Option<FrameId>,
@@ -45,11 +47,12 @@ pub struct Recorder {
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
     started: bool,
+    external_root_exit: bool,
 }
 
-impl Recorder {
+impl SegmentRecorder {
     /// Creates a recorder sharing `program`; execution must use this same prepared instance.
-    pub fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
+    pub(super) fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
         Self {
             history: None,
             program,
@@ -58,7 +61,6 @@ impl Recorder {
             calls: Vec::new(),
             commands: Vec::new(),
             sequence: 0,
-            active_commands: Vec::new(),
             frames: Vec::new(),
             top: None,
             outcome_frame: None,
@@ -67,6 +69,7 @@ impl Recorder {
             fault: None,
             fault_location: None,
             started: false,
+            external_root_exit: false,
         }
     }
 
@@ -75,7 +78,7 @@ impl Recorder {
     /// Requests instruction callbacks in [`Self::mask`]. Reaching `max_steps` preserves a
     /// labelled prefix; boundary recording and guest execution continue normally.
     #[must_use]
-    pub fn with_instructions(mut self, config: InstructionCapture) -> Self {
+    pub(super) fn with_instructions(mut self, config: InstructionCapture) -> Self {
         self.history = Some(alloc::boxed::Box::new(History::new(config)));
         if self.started {
             self.history.as_mut().expect("installed history").status =
@@ -87,7 +90,7 @@ impl Recorder {
     /// Freezes retained observations and discards construction lookup indexes.
     ///
     /// Inspect [`Recording::status`] before relying on the record; replay enforces it as well.
-    pub fn finish(mut self) -> Recording {
+    pub(super) fn finish(mut self, identity: Arc<()>) -> Recording {
         if let Some(history) = &mut self.history {
             history.finish();
             if self.fault.is_some() {
@@ -102,13 +105,14 @@ impl Recorder {
                     .is_some_and(|step| {
                         (step.outcome == InstructionOutcome::Completed
                             || (step.outcome == InstructionOutcome::Unwound { target: 0 }
-                                && self.commands.last().is_some_and(|command| {
-                                    command.location == step.location
-                                        && matches!(
-                                            command.action,
-                                            Action::ReturnFrom { target: 0, .. }
-                                        )
-                                })))
+                                && (self.external_root_exit
+                                    || self.commands.last().is_some_and(|command| {
+                                        command.location == step.location
+                                            && matches!(
+                                                command.action,
+                                                Action::ReturnFrom { target: 0, .. }
+                                            )
+                                    }))))
                             && step.next.is_none()
                             && self
                                 .candidate
@@ -125,8 +129,16 @@ impl Recorder {
         if self.end.is_none() {
             self.fail(CaptureFault::MissingCompletion);
         }
+        let heap_base = self.builder.initial_count;
         let (arena, initial) = self.builder.finish();
         Recording {
+            execution: None,
+            context_required: false,
+            identity,
+            local_outcome: None,
+            outcome_definition: None,
+            fault_definition: None,
+            heap_base,
             history: self.history,
             program: self.program,
             arena,
@@ -182,7 +194,6 @@ impl Recorder {
                 location,
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 created,
@@ -208,12 +219,6 @@ impl Recorder {
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
-                let active = self
-                    .active_commands
-                    .len()
-                    .checked_sub(unwound_callbacks)
-                    .ok_or(CaptureFault::InvalidSequence)?;
-                self.active_commands.truncate(active);
                 self.commands.push(Command {
                     sequence: self.sequence,
                     location,
@@ -221,7 +226,6 @@ impl Recorder {
                     action: Action::ReturnFrom {
                         target,
                         target_location,
-                        unwound_callbacks,
                         values,
                         work,
                         constructed,
@@ -232,7 +236,7 @@ impl Recorder {
                     history.begin_transfer(target);
                 }
             }
-            ValueEvent::CallbackEnter {
+            ValueEvent::GuestCall {
                 location,
                 callee,
                 args,
@@ -264,7 +268,6 @@ impl Recorder {
                 let args = self
                     .builder
                     .roots(args.iter().map(ValueRef::from_value), aggregates)?;
-                self.active_commands.push(self.commands.len());
                 self.commands.push(Command {
                     sequence: self.sequence,
                     location,
@@ -274,47 +277,9 @@ impl Recorder {
                         args,
                         work,
                         constructed,
-                        returned: None,
                     },
                 });
                 self.sequence += 1;
-                if let Some(history) = &mut self.history {
-                    history.begin_callback(location);
-                }
-            }
-            ValueEvent::CallbackReturn {
-                location,
-                caller,
-                values,
-                aggregates,
-            } => {
-                let index = self
-                    .active_commands
-                    .pop()
-                    .ok_or(CaptureFault::InvalidSequence)?;
-                if self.commands[index].location != caller {
-                    return Err(CaptureFault::InvalidSequence);
-                }
-                self.check_location(location)?;
-                let values = self
-                    .builder
-                    .roots(values.iter().map(ValueRef::from_value), aggregates)?;
-                let Action::CallGuest { returned, .. } = &mut self.commands[index].action else {
-                    return Err(CaptureFault::InvalidSequence);
-                };
-                if returned.is_some() {
-                    return Err(CaptureFault::InvalidSequence);
-                }
-                *returned = Some(Returned {
-                    sequence: self.sequence,
-                    location,
-                    values,
-                    frame: self.top,
-                });
-                self.sequence += 1;
-                if let Some(history) = &mut self.history {
-                    history.end_callback();
-                }
             }
             ValueEvent::Entry {
                 entry,
@@ -399,17 +364,18 @@ impl Recorder {
     }
 }
 
-impl core::fmt::Debug for Recorder {
+impl core::fmt::Debug for SegmentRecorder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Recorder")
+        f.debug_struct("SegmentRecorder")
             .field("fault", &self.fault)
             .field("host_calls", &self.calls.len())
             .finish_non_exhaustive()
     }
 }
 
-impl TraceSink for Recorder {
-    fn run_mask(&mut self, program: &Program, mask: TraceMask) {
+impl TraceSink for SegmentRecorder {
+    fn run_mask(&mut self, context: crate::trace::TraceContext<'_>, mask: TraceMask) {
+        let program = context.program();
         if !self.check(program) {
             return;
         }
@@ -422,7 +388,12 @@ impl TraceSink for Recorder {
             }
         }
     }
-    fn wants_registers(&self, location: TraceLocation, _: RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: crate::trace::TraceContext<'_>,
+        location: TraceLocation,
+        _: RegisterPhase,
+    ) -> bool {
         self.fault.is_none()
             && self.history.as_ref().is_some_and(|h| {
                 h.status != InstructionStatus::Incomplete
@@ -432,8 +403,9 @@ impl TraceSink for Recorder {
             })
     }
 
-    fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        if !self.check(program) || !self.wants_registers(event.location, event.phase) {
+    fn registers(&mut self, context: crate::trace::TraceContext<'_>, event: RegisterEvent<'_>) {
+        let program = context.program();
+        if !self.check(program) || !self.wants_registers(context, event.location, event.phase) {
             return;
         }
         let history = self.history.as_mut().expect("enabled history");
@@ -497,7 +469,8 @@ impl TraceSink for Recorder {
             }
     }
 
-    fn run_start(&mut self, program: &Program, _: FuncId, _: usize) {
+    fn run_start(&mut self, context: crate::trace::TraceContext<'_>, _: FuncId, _: usize) {
+        let program = context.program();
         if self.started || self.entry.is_some() {
             self.fail(CaptureFault::MultipleRuns);
         }
@@ -513,13 +486,14 @@ impl TraceSink for Recorder {
 
     fn instr(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         func: FuncId,
         pc: u32,
         _: u32,
         _: Option<u64>,
         opcode: u8,
     ) {
+        let program = context.program();
         if !self.check(program) {
             return;
         }
@@ -531,11 +505,12 @@ impl TraceSink for Recorder {
 
     fn instr_end(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = context.program();
         if !self.check(program) {
             return;
         }
@@ -545,12 +520,12 @@ impl TraceSink for Recorder {
         history.complete_instruction(location, next, outcome);
     }
 
-    fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, context: crate::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let program = context.program();
         let location = match event {
             ValueEvent::Entry { .. } => None,
             ValueEvent::HostCall { location, .. }
-            | ValueEvent::CallbackEnter { location, .. }
-            | ValueEvent::CallbackReturn { location, .. }
+            | ValueEvent::GuestCall { location, .. }
             | ValueEvent::ReturnFrom { location, .. }
             | ValueEvent::ReturnCandidate { location, .. } => Some(location),
         };
@@ -563,13 +538,14 @@ impl TraceSink for Recorder {
 
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
         pc: u32,
         _: Option<u64>,
     ) {
+        let program = context.program();
         let ScopeKind::CallFrame {
             func: callee,
             caller,
@@ -624,7 +600,7 @@ impl TraceSink for Recorder {
 
     fn scope_exit(
         &mut self,
-        program: &Program,
+        context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -632,6 +608,7 @@ impl TraceSink for Recorder {
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let program = context.program();
         let ScopeKind::CallFrame {
             func: callee,
             caller,
@@ -657,14 +634,19 @@ impl TraceSink for Recorder {
             );
             return;
         }
-        if matches!(outcome, TraceOutcome::Trap(_)) && self.outcome_frame.is_none() {
+        if matches!(
+            outcome,
+            TraceOutcome::Trap(_) | TraceOutcome::Unwound { .. }
+        ) && self.outcome_frame.is_none()
+        {
             // The first exit still has the entire leaf-to-root ancestry. Later exits are unwind.
             self.outcome_frame = Some(top);
         }
         self.top = frame.parent;
     }
 
-    fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
+    fn run_end(&mut self, context: crate::trace::TraceContext<'_>, outcome: TraceOutcome<'_>) {
+        let program = context.program();
         if let Some(history) = &mut self.history {
             history.finished = true;
             if history.has_pending() {
@@ -683,12 +665,10 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
+            TraceOutcome::TailTransferred { .. } => self.fail(CaptureFault::UnsupportedControl),
             TraceOutcome::Unwound { .. } => self.fail(CaptureFault::InvalidSequence),
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),
             TraceOutcome::Ok => {
-                if !self.active_commands.is_empty() {
-                    self.fail(CaptureFault::InvalidSequence);
-                }
                 if self.entry.is_none() && self.fault.is_none() {
                     self.fail(CaptureFault::MissingEntry);
                 } else if self.candidate.is_none() && self.fault.is_none() {

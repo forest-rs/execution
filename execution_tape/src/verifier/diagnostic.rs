@@ -12,7 +12,8 @@ impl VerifyError {
     #[must_use]
     pub fn function(&self) -> Option<FuncId> {
         match self {
-            Self::BlockDeclaration { func, .. }
+            Self::ControlTagOutOfBounds { func, .. }
+            | Self::BlockDeclaration { func, .. }
             | Self::BlockEdge { func, .. }
             | Self::InternalOpcodeSchemaMismatch { func, .. }
             | Self::UnsupportedInstruction { func, .. }
@@ -55,6 +56,8 @@ impl VerifyError {
             | Self::ConstOutOfBounds { func, .. }
             | Self::HostCallSigMalformed { func, .. }
             | Self::CallIndirectContractMismatch { func, .. }
+            | Self::TailResultMismatch { func, .. }
+            | Self::HandlerProtocolMismatch { func, .. }
             | Self::CallIndirectSigMalformed { func, .. }
             | Self::MissingRegisterTypes { func, .. }
             | Self::RegisterTypeMismatch { func, .. }
@@ -69,6 +72,8 @@ impl VerifyError {
             | Self::Decode(..)
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
+            | Self::ControlTagSignature { .. }
+            | Self::ControlTagName { .. }
             | Self::HostSigHashMismatch { .. } => None,
         }
     }
@@ -80,7 +85,8 @@ impl VerifyError {
     #[must_use]
     pub fn pc(&self) -> Option<u32> {
         match self {
-            Self::BlockDeclaration { pc, .. }
+            Self::ControlTagOutOfBounds { pc, .. }
+            | Self::BlockDeclaration { pc, .. }
             | Self::BlockEdge { pc, .. }
             | Self::InternalOpcodeSchemaMismatch { pc, .. }
             | Self::UnsupportedInstruction { pc, .. }
@@ -106,6 +112,8 @@ impl VerifyError {
             | Self::ConstOutOfBounds { pc, .. }
             | Self::HostCallSigMalformed { pc, .. }
             | Self::CallIndirectContractMismatch { pc, .. }
+            | Self::TailResultMismatch { pc, .. }
+            | Self::HandlerProtocolMismatch { pc, .. }
             | Self::CallIndirectSigMalformed { pc, .. }
             | Self::UnknownAggregateShape { pc, .. }
             | Self::CallCalleeArgTypesOutOfBounds { pc, .. }
@@ -135,6 +143,8 @@ impl VerifyError {
             | Self::ArgCountExceedsRegs { .. }
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
+            | Self::ControlTagSignature { .. }
+            | Self::ControlTagName { .. }
             | Self::HostSigHashMismatch { .. }
             | Self::MissingRegisterTypes { .. }
             | Self::BytecodeDecode { .. } => None,

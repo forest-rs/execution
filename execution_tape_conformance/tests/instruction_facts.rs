@@ -7,7 +7,9 @@ use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
 use execution_tape::contract::{Contract, ContractId, ContractTable};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::value::FuncId;
-use execution_tape::verifier::{FactOrigin, ProgramAnalysis, ValueFact, VerifyConfig};
+use execution_tape::verifier::{
+    EdgeValueSource, FactOrigin, ProgramAnalysis, ValueFact, VerifyConfig,
+};
 
 fn asm(types: &[ValueType]) -> Asm {
     let mut a = Asm::new();
@@ -315,7 +317,10 @@ fn same_target_typed_edges_keep_their_simultaneous_bindings_and_common_join_fact
         assert_eq!(edge.target_pc(), header);
         let bindings: Vec<_> = edge.bindings().collect();
         assert_eq!(bindings[0].parameter, 6);
-        assert_eq!(bindings[0].argument, if arm == 0 { 4 } else { 5 });
+        assert_eq!(
+            bindings[0].source,
+            EdgeValueSource::Register(if arm == 0 { 4 } else { 5 })
+        );
         assert_eq!(bindings[1].parameter, 7);
         kind(
             view.contracts(),
@@ -393,8 +398,8 @@ fn loop_queries_preserve_parallel_swaps_and_share_deep_contract_graphs() {
             .find(|edge| edge.arm() == 0 && edge.source_pc() != 0)
             .unwrap();
         let bindings: Vec<_> = back.bindings().collect();
-        assert_eq!(bindings[0].argument, 2);
-        assert_eq!(bindings[1].argument, 1);
+        assert_eq!(bindings[0].source, EdgeValueSource::Register(2));
+        assert_eq!(bindings[1].source, EdgeValueSource::Register(1));
     }
 }
 

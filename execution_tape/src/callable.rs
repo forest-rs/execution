@@ -37,9 +37,9 @@ pub enum CallableError {
         /// Number of successful result values.
         count: usize,
     },
-    /// The value has no retained prepared-program owner. Obtain an owned result from a
-    /// callable invocation or tape graph node, or explicitly retain its original program.
-    MissingCodeOwner,
+    /// A closure handle has no owned storage for its captured environment. Obtain an owned
+    /// result from a tape graph node or adopt a retained snapshot before exporting it.
+    MissingCaptureStorage,
     /// The selected value is neither a function nor a closure.
     NotCallable {
         /// Observed storage kind.
@@ -72,7 +72,7 @@ impl fmt::Display for CallableError {
         match self {
             Self::NoSuccessfulResult => f.write_str("callable retention requires a successful invocation result"),
             Self::OutputIndex { index, count } => write!(f, "cannot retain callable output {index}: invocation returned {count} values"),
-            Self::MissingCodeOwner => f.write_str("callable value has no retained code owner; retain its original prepared program before exporting it"),
+            Self::MissingCaptureStorage => f.write_str("closure has no owned capture storage; adopt its retained snapshot before exporting it"),
             Self::NotCallable { actual } => {
                 write!(f, "expected a function or closure, got {actual:?}")
             }
@@ -132,8 +132,9 @@ pub(crate) struct Capture {
 /// This does not implement cross-program guest calls or transfer program-local IDs between code
 /// revisions. Host objects, mutable cells and their collection remain embedding responsibilities.
 ///
-/// Equality compares code-owner/target identity for functions and shared retained-capture identity
-/// for closures. Clones compare equal; independently retained closure snapshots remain distinct.
+/// Equality requires the same verified definition. Functions also compare their target;
+/// closures compare their retained capture identity. Cloned definition handles identify the same code;
+/// independently verified definitions and independently retained closure snapshots remain distinct.
 #[derive(Clone)]
 pub struct Callable {
     program: Arc<VerifiedProgram>,
@@ -156,7 +157,7 @@ impl fmt::Debug for Callable {
 }
 impl PartialEq for Callable {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.program, &other.program)
+        self.program.shares_definition_with(&other.program)
             && match (&self.target, &other.target) {
                 (Target::Function(a), Target::Function(b)) => a == b,
                 (Target::Closure(a), Target::Closure(b)) => Arc::ptr_eq(a, b),
@@ -227,23 +228,21 @@ impl Callable {
         })
     }
 
-    /// Retains a raw function or closure using its declared original program and source heap.
+    /// Retains a function or closure using its own code identity and the source heap.
     ///
     /// This copies a closure's reachable immutable environment, preserving sharing and distinct
-    /// nodes within it. It never retains other heap nodes. The caller must supply the actual
-    /// original program: attaching a different program does not translate local function/type IDs.
+    /// nodes within it. It never retains other heap nodes. The value retains the exact code
+    /// instance that interprets its body and captured callable references.
     /// Retention is explicit preparation outside guest fuel/work limits; start-time copies are
     /// separately charged before import. Concrete environment contracts are checked on start.
-    pub fn retain(
-        program: Arc<VerifiedProgram>,
-        heap: &AggHeap,
-        value: ValueRef<'_>,
-    ) -> Result<Self, CallableError> {
+    pub fn retain(heap: &AggHeap, value: ValueRef<'_>) -> Result<Self, CallableError> {
         match value {
-            ValueRef::Func(function) => Self::function(program, function),
+            ValueRef::Func(function) => Self::function(
+                Arc::new(function.instance().program().clone()),
+                function.id(),
+            ),
             ValueRef::Closure(closure) => Self::from_snapshot(
-                program,
-                heap.snapshot(&[Value::Closure(closure)])
+                heap.snapshot(&[Value::Closure(closure.clone())])
                     .map_err(CallableError::Aggregate)?,
             ),
             other => Err(CallableError::NotCallable {
@@ -254,37 +253,39 @@ impl Callable {
 
     /// Adopts exactly one retained function/closure root, without recopying its environment.
     ///
-    /// Supply its actual prepared program. This declares the identity domain of all captured
-    /// function/nominal type IDs; it does not relocate them to another program. Invalid target
-    /// IDs and bodies without an environment argument are rejected. Value contracts are checked
+    /// The callable root retains its actual prepared program. Bodies without an environment
+    /// argument are rejected. Value contracts are checked
     /// when execution starts, with that invocation's normal contract-work budget.
-    pub fn from_snapshot(
-        program: Arc<VerifiedProgram>,
-        snapshot: ValueSnapshot,
-    ) -> Result<Self, CallableError> {
+    pub fn from_snapshot(snapshot: ValueSnapshot) -> Result<Self, CallableError> {
         let [value] = snapshot.values() else {
             return Err(CallableError::RootCount {
                 actual: snapshot.values().len(),
             });
         };
         let closure = match value {
-            Value::Func(function) => return Self::function(program, *function),
-            Value::Closure(closure) => *closure,
+            Value::Func(function) => {
+                return Self::function(
+                    Arc::new(function.instance().program().clone()),
+                    function.id(),
+                );
+            }
+            Value::Closure(closure) => closure.clone(),
             other => {
                 return Err(CallableError::NotCallable {
                     actual: other.value_type(),
                 });
             }
         };
+        let program = Arc::new(closure.func.instance().program().clone());
         let body = program
-            .function(closure.func)
+            .function(closure.func.id())
             .ok_or(CallableError::MissingFunction {
-                function: closure.func,
+                function: closure.func.id(),
             })?;
         let actual = body.arg_types().get(0).copied();
         if actual != Some(ValueType::Agg) {
             return Err(CallableError::EnvironmentArgument {
-                function: closure.func,
+                function: closure.func.id(),
                 actual,
             });
         }
@@ -312,7 +313,7 @@ impl Callable {
             program,
             target: Target::Closure(Arc::new(Capture {
                 snapshot,
-                function: closure.func,
+                function: closure.func.id(),
                 environment: closure.env,
                 aggregate_work,
                 payload_work,

@@ -28,13 +28,14 @@ mod tests;
 /// aggregate outputs from one invocation form a bundle: retaining one keeps that bundle alive.
 /// Dropping its last owner releases it without an executor callback or collection pass.
 ///
-/// Program-local function and nominal type IDs retain their exact prepared program. Portable
-/// scalar and tuple-only values can cross programs; scoped IDs cannot be reinterpreted by a
-/// different program. Host object tokens remain host-owned and do not retain external objects.
+/// Function values retain their exact code instance. The executor binds retained callable
+/// namespaces to its host store; the receiving program never reinterprets their local IDs.
+/// Nominal struct/array IDs require their defining program. Host object tokens remain host-owned
+/// and do not retain external objects.
 ///
-/// Convert plain inputs with `Value::I64(42).into()`. Raw aggregate, function and closure values
-/// have no owner and are rejected at execution ingress. Use [`Self::from_snapshot`] to import
-/// retained values with an explicit program domain.
+/// Convert plain inputs with `Value::I64(42).into()`. Functions carry their own code owner. Raw
+/// aggregates and closure environments require a snapshot; use [`Self::from_snapshot`] to adopt
+/// their storage, supplying a program only when nominal aggregates are exposed.
 #[derive(Clone)]
 pub struct TapeValue {
     repr: Repr,
@@ -43,13 +44,16 @@ pub struct TapeValue {
 /// Ownership domain needed to interpret a [`TapeValue`].
 #[derive(Clone, Copy)]
 pub enum TapeValueDomain<'a> {
-    /// No program-local IDs occur in this value or its reachable aggregate graph.
+    /// No exposed nominal aggregate IDs require a particular receiving program. Callable
+    /// targets carry their own code owners and are bound to the executor's host store.
     Portable,
     /// Scoped IDs belong to this exact prepared program. Equivalent names, signatures and
     /// numeric IDs in another preparation do not establish identity.
     Program(&'a Arc<VerifiedProgram>),
-    /// A raw aggregate or callable was converted without an owner; execution rejects it.
+    /// A raw aggregate or closure was converted without its storage owner; execution rejects it.
     Unowned,
+    /// A control capability belongs to one execution and cannot become a durable graph edge.
+    ExecutionLocal,
 }
 
 impl fmt::Debug for TapeValueDomain<'_> {
@@ -57,6 +61,7 @@ impl fmt::Debug for TapeValueDomain<'_> {
         match self {
             Self::Portable => f.write_str("Portable"),
             Self::Unowned => f.write_str("Unowned"),
+            Self::ExecutionLocal => f.write_str("ExecutionLocal"),
             Self::Program(program) => f
                 .debug_tuple("Program")
                 .field(&program.program().name())
@@ -69,14 +74,7 @@ impl fmt::Debug for TapeValueDomain<'_> {
 enum Repr {
     Inline(Value),
     Payload(Arc<Value>),
-    Program {
-        value: Value,
-        program: Arc<VerifiedProgram>,
-    },
-    Shared {
-        bundle: Arc<Bundle>,
-        index: usize,
-    },
+    Shared { bundle: Arc<Bundle>, index: usize },
 }
 
 struct Bundle {
@@ -159,8 +157,8 @@ impl Origins {
 impl TapeValue {
     /// Adopts a retained snapshot and returns one owned value per root.
     ///
-    /// Supply the exact original prepared program for values containing function, closure,
-    /// struct or array IDs, including IDs nested inside tuples. `None` admits portable roots
+    /// Supply the exact original prepared program for exposed struct or array IDs, including
+    /// IDs nested inside tuples. Functions and closure targets carry their own code. `None` admits portable roots
     /// only. Supplying a program declares how the snapshot's scoped IDs are interpreted; it
     /// does not translate IDs from another program. Sharing within the snapshot is preserved.
     /// Shared roots retain the whole snapshot bundle, so choose retention groups deliberately.
@@ -209,14 +207,6 @@ impl TapeValue {
                         index,
                     },
                 },
-                Value::Func(_) => Self {
-                    repr: Repr::Program {
-                        value: bundle.snapshot.values()[index].clone(),
-                        program: Arc::clone(
-                            bundle.program.as_ref().expect("scoped value has program"),
-                        ),
-                    },
-                },
                 value => Self {
                     repr: Repr::Inline(value.clone()),
                 },
@@ -228,7 +218,7 @@ impl TapeValue {
     #[must_use]
     pub fn value(&self) -> &Value {
         match &self.repr {
-            Repr::Inline(value) | Repr::Program { value, .. } => value,
+            Repr::Inline(value) => value,
             Repr::Payload(value) => value,
             Repr::Shared { bundle, index } => &bundle.snapshot.values()[*index],
         }
@@ -251,19 +241,19 @@ impl TapeValue {
     /// preparation is outside guest execution limits. Host object tokens still need the
     /// embedding's retention policy; they do not retain external objects.
     ///
-    /// Plain values return [`CallableError::NotCallable`]. Raw function/closure values without
-    /// a prepared-program owner return [`CallableError::MissingCodeOwner`]; obtain them from
-    /// a tape node or [`Self::from_snapshot`] with their actual original program instead.
+    /// Plain values return [`CallableError::NotCallable`]. A raw closure without owned aggregate
+    /// storage returns [`CallableError::MissingCaptureStorage`]; obtain it from a tape node or adopt
+    /// its retained storage with [`Self::from_snapshot`]. Functions already retain their code.
     pub fn retain_callable(&self) -> Result<Callable, CallableError> {
         match self.value() {
             Value::Func(function) => Callable::function(
-                Arc::clone(self.program().ok_or(CallableError::MissingCodeOwner)?),
-                *function,
+                Arc::new(function.instance().program().clone()),
+                function.id(),
             ),
             Value::Closure(closure) => Callable::retain(
-                Arc::clone(self.program().ok_or(CallableError::MissingCodeOwner)?),
-                self.aggregates().ok_or(CallableError::MissingCodeOwner)?,
-                execution_tape::host::ValueRef::Closure(*closure),
+                self.aggregates()
+                    .ok_or(CallableError::MissingCaptureStorage)?,
+                execution_tape::host::ValueRef::Closure(closure),
             ),
             other => Err(CallableError::NotCallable {
                 actual: other.value_type(),
@@ -275,10 +265,8 @@ impl TapeValue {
     #[must_use]
     pub fn domain(&self) -> TapeValueDomain<'_> {
         match &self.repr {
-            Repr::Inline(Value::Agg(_) | Value::Func(_) | Value::Closure(_)) => {
-                TapeValueDomain::Unowned
-            }
-            Repr::Program { program, .. } => TapeValueDomain::Program(program),
+            Repr::Inline(Value::Agg(_) | Value::Closure(_)) => TapeValueDomain::Unowned,
+            Repr::Inline(Value::Continuation(_)) => TapeValueDomain::ExecutionLocal,
             Repr::Shared { bundle, index } if bundle.local[*index] => {
                 TapeValueDomain::Program(bundle.program.as_ref().expect("scoped value has program"))
             }
@@ -298,28 +286,23 @@ impl TapeValue {
         index: usize,
         program: &Arc<VerifiedProgram>,
     ) -> Result<(), TapeError> {
+        if matches!(self.domain(), TapeValueDomain::ExecutionLocal) {
+            return Err(TapeError::ExecutionLocalInput { input: index });
+        }
         if matches!(self.domain(), TapeValueDomain::Unowned) {
             return Err(TapeError::UnownedInput { input: index });
         }
         if self
             .program()
-            .is_some_and(|owner| !Arc::ptr_eq(owner, program))
+            .is_some_and(|owner| !owner.shares_definition_with(program))
         {
             return Err(TapeError::ProgramMismatch { input: index });
         }
         Ok(())
     }
 
-    pub(crate) fn plain_result(value: Value, program: &Arc<VerifiedProgram>) -> Self {
-        match value {
-            Value::Func(_) => Self {
-                repr: Repr::Program {
-                    value,
-                    program: Arc::clone(program),
-                },
-            },
-            value => value.into(),
-        }
+    pub(crate) fn plain_result(value: Value, _program: &Arc<VerifiedProgram>) -> Self {
+        value.into()
     }
 
     pub(crate) fn publish(
@@ -394,10 +377,7 @@ impl PartialEq for TapeValue {
                 ) => a_owner.origins.key(*a) == b_owner.origins.key(*b),
                 _ => false,
             },
-            (Value::Func(a), Value::Func(b)) => {
-                a == b
-                    && matches!((self.program(), other.program()), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
-            }
+            (Value::Func(a), Value::Func(b)) => a == b,
             (Value::Closure(a), Value::Closure(b)) => {
                 a.func == b.func
                     && match (&self.repr, &other.repr) {
@@ -408,10 +388,7 @@ impl PartialEq for TapeValue {
                             Repr::Shared {
                                 bundle: b_owner, ..
                             },
-                        ) => {
-                            a_owner.origins.key(a.env) == b_owner.origins.key(b.env)
-                                && matches!((self.program(), other.program()), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
-                        }
+                        ) => a_owner.origins.key(a.env) == b_owner.origins.key(b.env),
                         _ => false,
                     }
             }
@@ -463,7 +440,7 @@ fn is_local(
     memo: &mut BTreeMap<u32, bool>,
 ) -> Result<bool, AggError> {
     match value {
-        Value::Func(_) | Value::Closure(_) => return Ok(true),
+        Value::Func(_) | Value::Closure(_) => return Ok(false),
         Value::Agg(_) => {}
         _ => return Ok(false),
     }
@@ -492,7 +469,7 @@ fn is_local(
             let mut local = false;
             for index in 0..shape.len() {
                 local |= match shape.element(heap, handle, index)? {
-                    Value::Func(_) | Value::Closure(_) => true,
+                    Value::Func(_) | Value::Closure(_) => false,
                     Value::Agg(child) => memo[&child.0],
                     _ => false,
                 };
@@ -519,20 +496,22 @@ impl Importer {
         self.handles.clear();
     }
 
-    pub(crate) fn import(
+    pub(crate) fn import<H: execution_tape::host::Host>(
         &mut self,
         value: &TapeValue,
-        target: &mut AggHeap,
-    ) -> Result<Value, AggError> {
+        vm: &mut execution_tape::vm::Vm<H>,
+    ) -> Result<Value, TapeError> {
         let Some(root) = aggregate(value.value()) else {
-            return Ok(value.value().clone());
+            let mut value = value.value().clone();
+            bind_value(vm, &mut value)?;
+            return Ok(value);
         };
         let Repr::Shared { bundle, .. } = &value.repr else {
-            return Err(AggError::BadHandle);
+            return Err(TapeError::Aggregate(AggError::BadHandle));
         };
         let source = bundle.snapshot.aggregates();
         if self.handles.contains_key(&bundle.origins.key(root)) {
-            return Ok(self.remap(value.value(), &bundle.origins));
+            return self.remap(vm, value.value(), &bundle.origins);
         }
         let mut pending = vec![(root, false)];
         while let Some((handle, visited)) = pending.pop() {
@@ -540,11 +519,15 @@ impl Importer {
             if self.handles.contains_key(&key) {
                 continue;
             }
-            let shape = Shape::read(source, handle)?;
+            let shape = Shape::read(source, handle).map_err(TapeError::Aggregate)?;
             if !visited {
                 pending.push((handle, true));
                 for index in 0..shape.len() {
-                    if let Some(child) = aggregate(shape.element(source, handle, index)?) {
+                    if let Some(child) = aggregate(
+                        shape
+                            .element(source, handle, index)
+                            .map_err(TapeError::Aggregate)?,
+                    ) {
                         pending.push((child, false));
                     }
                 }
@@ -552,13 +535,22 @@ impl Importer {
             }
             let mut values = Vec::with_capacity(shape.len());
             for index in 0..shape.len() {
-                values.push(self.remap(shape.element(source, handle, index)?, &bundle.origins));
+                values.push(
+                    self.remap(
+                        vm,
+                        shape
+                            .element(source, handle, index)
+                            .map_err(TapeError::Aggregate)?,
+                        &bundle.origins,
+                    )?,
+                );
             }
             let imported = match shape {
-                Shape::Tuple(_) => target.tuple_new(values)?,
-                Shape::Struct(id, _) => target.struct_new(id, values)?,
-                Shape::Array(id, _) => target.array_new(id, values)?,
-            };
+                Shape::Tuple(_) => vm.aggregate_builder().tuple_new(values),
+                Shape::Struct(id, _) => vm.aggregate_builder().struct_new(id, values),
+                Shape::Array(id, _) => vm.aggregate_builder().array_new(id, values),
+            }
+            .map_err(TapeError::Aggregate)?;
             let original = bundle.origins.nodes[handle.0 as usize];
             let domain = *self.domains.entry(key.0).or_insert_with(|| {
                 let id = u32::try_from(self.origins.domains.len())
@@ -579,18 +571,50 @@ impl Importer {
             });
             self.handles.insert(key, imported);
         }
-        Ok(self.remap(value.value(), &bundle.origins))
+        self.remap(vm, value.value(), &bundle.origins)
     }
 
-    fn remap(&self, value: &Value, origins: &Origins) -> Value {
-        match value {
+    fn remap<H: execution_tape::host::Host>(
+        &self,
+        vm: &mut execution_tape::vm::Vm<H>,
+        value: &Value,
+        origins: &Origins,
+    ) -> Result<Value, TapeError> {
+        let mut value = match value {
             Value::Agg(handle) => Value::Agg(self.handles[&origins.key(*handle)]),
             Value::Closure(closure) => {
-                let mut closure = *closure;
+                let mut closure = closure.clone();
                 closure.env = self.handles[&origins.key(closure.env)];
                 Value::Closure(closure)
             }
             value => value.clone(),
-        }
+        };
+        bind_value(vm, &mut value)?;
+        Ok(value)
     }
+}
+
+fn bind_value<H: execution_tape::host::Host>(
+    vm: &mut execution_tape::vm::Vm<H>,
+    value: &mut Value,
+) -> Result<(), TapeError> {
+    let function = match value {
+        Value::Tag(tag) => {
+            let instance = vm
+                .bind_instance(tag.instance())
+                .map_err(TapeError::Instance)?;
+            *tag = tag.in_instance(&instance).map_err(TapeError::Instance)?;
+            return Ok(());
+        }
+        Value::Func(function) => function,
+        Value::Closure(closure) => &mut closure.func,
+        _ => return Ok(()),
+    };
+    let instance = vm
+        .bind_instance(function.instance())
+        .map_err(TapeError::Instance)?;
+    *function = instance
+        .function(function.id())
+        .map_err(TapeError::Instance)?;
+    Ok(())
 }

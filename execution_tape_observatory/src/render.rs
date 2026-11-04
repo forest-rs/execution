@@ -9,7 +9,7 @@ use super::{
 };
 use super::{palette::*, syntax};
 use execution_tape::recording::{
-    Divergence, HostOutcome, Outcome, RecordedValue, ReplayBoundary, ReplayError,
+    Divergence, HostOutcome, Outcome, RecordedValue, ReplayBoundary, ReplayError, TransferAction,
 };
 use execution_tape::vm::Trap;
 use ratatui::Frame;
@@ -20,6 +20,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 
 pub(super) fn trap_text(trap: &Trap) -> String {
     match trap {
+        Trap::ContractBoundary(boundary) => preview(&boundary.to_string(), 240),
         Trap::HostCallFailed { symbol, error, .. } => {
             format!("{}: {}", preview(symbol, 40), host_error(error))
         }
@@ -29,6 +30,12 @@ pub(super) fn trap_text(trap: &Trap) -> String {
 
 pub(super) fn replay_error(error: &ReplayError) -> String {
     match error {
+        ReplayError::ExecutionContextRequired => {
+            "REPLAY FAILED · replay the owning execution".into()
+        }
+        ReplayError::InSegment { segment, error } => {
+            format!("segment {segment} · {}", replay_error(error))
+        }
         ReplayError::Incomplete(fault) => format!("REPLAY FAILED · {fault}"),
         ReplayError::Aggregate(error) => format!("REPLAY FAILED · aggregate {error}"),
         ReplayError::Diverged {
@@ -37,19 +44,25 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
             reason,
         } => {
             let boundary = match boundary {
+                ReplayBoundary::Transfer { index } => format!("cross-instance transfer #{index}"),
                 ReplayBoundary::Instruction { index } => format!("instruction #{index}"),
                 ReplayBoundary::InitialState => "initial state".into(),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
                 ReplayBoundary::ControlCommand { index } => format!("control command {index}"),
-                ReplayBoundary::ControlReturn { index } => {
-                    format!("guest return for command {index}")
-                }
                 ReplayBoundary::Completion => "completion".into(),
             };
             let location =
                 location.map_or_else(String::new, |loc| format!(" f{}:{:06}", loc.func.0, loc.pc));
             let reason = match reason {
+                Divergence::ControlTag { expected } => {
+                    format!("control tag identity mismatch for {}", expected.name())
+                }
+                Divergence::Continuation { expected } => format!(
+                    "continuation identity or contract mismatch for #{}:{}",
+                    expected.id().ordinal(),
+                    expected.id().revision()
+                ),
                 Divergence::Value { aggregate, index } => aggregate.map_or_else(
                     || format!("value mismatch root[{index}]"),
                     |id| format!("value mismatch @{} field[{index}]", id.get()),
@@ -100,6 +113,26 @@ fn import_name(view: &View<'_>, index: usize) -> String {
     describe::host(view.record.program().program(), view.calls[index].import)
 }
 
+fn transfer_title(transfer: &execution_tape::recording::RecordedTransfer<'_>) -> String {
+    let endpoint = |id: execution_tape::recording::RecordedActivation| {
+        format!("#{}:{}", id.segment, id.activation)
+    };
+    match &transfer.action {
+        TransferAction::Enter { parent, child, .. } => {
+            format!("Enter {} → {}", endpoint(*parent), endpoint(*child))
+        }
+        TransferAction::Returned { child, parent, .. } => {
+            format!("Return {} → {}", endpoint(*child), endpoint(*parent))
+        }
+        TransferAction::Rejected { child, .. } => format!("REJECTED entry {}", endpoint(*child)),
+        TransferAction::ReturnFrom { source, target, .. } => format!(
+            "Non-local return {} → {}",
+            endpoint(*source),
+            endpoint(*target)
+        ),
+    }
+}
+
 fn history_status(view: &View<'_>) -> String {
     match view.record.instruction_status() {
         None => "not captured".into(),
@@ -123,9 +156,17 @@ fn step_description(
     use execution_tape::recording::InstructionOutcome;
     match step.outcome {
         InstructionOutcome::Pending => "completion not observed".into(),
-        InstructionOutcome::Unwound { target } => {
-            format!("abandoned by return from activation #{target}")
-        }
+        InstructionOutcome::Unwound { target } => match view.record.outcome() {
+            Some(Outcome::Transferred {
+                segment,
+                activation,
+            }) => format!("abandoned by return from #{segment}:{activation}"),
+            _ => format!("abandoned by return from local activation #{target}"),
+        },
+        InstructionOutcome::TailTransferred { target } => format!(
+            "replaced by tail transfer to #{}:{}",
+            target.segment, target.activation
+        ),
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
         InstructionOutcome::Completed => match Opcode::from_byte(step.opcode) {
             Some(Opcode::Call | Opcode::CallIndirect) => {
@@ -133,8 +174,8 @@ fn step_description(
             }
             Some(Opcode::Ret) => if step.next.is_some() {
                 "returned to caller"
-            } else if step.parent_attempt.is_some() {
-                "callback returned to embedding; original host request still pending"
+            } else if view.segment != 0 {
+                "segment returned; its original result recipient remains outside this frame"
             } else {
                 "root return"
             }
@@ -189,7 +230,15 @@ fn title(view: &View<'_>, index: usize) -> String {
             || "Invocation · missing".into(),
             |entry| {
                 format!(
-                    "App → {}",
+                    "{} → {}",
+                    view.execution
+                        .segments()
+                        .find(|segment| segment.id == view.segment)
+                        .and_then(|segment| segment.parent)
+                        .map_or_else(
+                            || "App".into(),
+                            |parent| format!("Caller #{}:{}", parent.segment, parent.activation)
+                        ),
                     describe::function(view.record.program().program(), entry.entry)
                 )
             },
@@ -198,6 +247,7 @@ fn title(view: &View<'_>, index: usize) -> String {
     if let Some(boundary) = view.boundary(index) {
         return match boundary {
             Boundary::Host(i) => format!("#{:04}  {}", i, import_name(view, i)),
+            Boundary::Transfer(i) => transfer_title(&view.transfers[i]),
             Boundary::Command(i) => match &view.commands[i].action {
                 execution_tape::recording::ControlAction::CallGuest { callee, .. } => {
                     format!("Callback #{i} → {}", describe::value(view.record, callee))
@@ -211,7 +261,6 @@ fn title(view: &View<'_>, index: usize) -> String {
                     describe::function(view.record.program().program(), target_location.func)
                 ),
             },
-            Boundary::CallbackReturn(i) => format!("Callback #{i} returned → embedding"),
         };
     }
     match view.record.outcome() {
@@ -219,6 +268,7 @@ fn title(view: &View<'_>, index: usize) -> String {
             format!("Result: {}", describe::values(view.record, values))
         }
         Some(Outcome::Trapped(_)) => "TRAP".into(),
+        Some(Outcome::Transferred { .. }) => "TRANSFERRED TO ANCESTOR".into(),
         None => "OUTCOME · missing".into(),
     }
 }
@@ -274,14 +324,15 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
     if too_small(frame) {
         return;
     }
+    let composed = view.execution.segments().len() > 1;
     let rows = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(if composed { 6 } else { 4 }),
         Constraint::Min(10),
         Constraint::Length(3),
     ])
     .split(area);
     let complete = view.record.status().is_ok();
-    let header = vec![
+    let mut header = vec![
         Line::from(vec![
             Span::styled(
                 " EXECUTION / OBSERVATORY ",
@@ -315,6 +366,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 Some(Outcome::Returned(values)) =>
                     format!("returned {}", describe::values(view.record, values)),
                 Some(Outcome::Trapped(_)) => "run trapped".into(),
+                Some(Outcome::Transferred { .. }) => "segment transferred control".into(),
                 None => "outcome not captured".into(),
             }
         )),
@@ -329,6 +381,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 },
                 match view.record.outcome() {
                     Some(Outcome::Trapped(_)) => "trap",
+                    Some(Outcome::Transferred { .. }) => "transferred",
                     Some(Outcome::Returned(_)) => "result",
                     None => "unknown outcome",
                 },
@@ -341,7 +394,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 || " Invocation inputs unavailable".into(),
                 |entry| {
                     format!(
-                        " Application → {}({}) · VM invocation",
+                        " {} → {}({}) · VM invocation",
+                        if view.segment == 0 {
+                            "Application"
+                        } else {
+                            "Suspended parent (see ancestry above)"
+                        },
                         describe::function(view.record.program().program(), entry.entry),
                         describe::arguments(view.record, entry.args),
                     )
@@ -350,6 +408,38 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             Style::default().fg(BLUE),
         ),
     ];
+    if composed {
+        let mut ancestry = Vec::new();
+        let mut current = Some(view.segment);
+        while let Some(id) = current {
+            let Some(segment) = view.execution.segments().find(|segment| segment.id == id) else {
+                break;
+            };
+            ancestry.push(format!(
+                "#{} {}",
+                id,
+                preview(segment.program.program().name().unwrap_or("unnamed"), 28)
+            ));
+            current = segment.parent.map(|parent| parent.segment);
+        }
+        header.insert(
+            1,
+            Line::styled(
+                format!(
+                    " Segment {} · [ previous / ] next · r replays the whole execution",
+                    view.segment
+                ),
+                Style::default().fg(GOLD),
+            ),
+        );
+        header.insert(
+            2,
+            Line::styled(
+                format!(" Actual ancestry: {}", ancestry.join(" ← ")),
+                Style::default().fg(BLUE),
+            ),
+        );
+    }
     frame.render_widget(Paragraph::new(header), rows[0]);
     let columns =
         Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(rows[1]);
@@ -396,12 +486,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             || "No attempts retained; check instruction history status.".into(),
             |step| {
                 format!(
-                    "Attempt #{index}: {}{}\nActual successor: {} · history {}",
+                    "Attempt #{index}: {}\nActual successor: {} · history {}",
                     step_description(view, &step),
-                    step.parent_attempt
-                        .map_or_else(String::new, |parent| format!(
-                            " · parent host attempt #{parent}"
-                        )),
                     step.next.map_or_else(
                         || "none".into(),
                         |loc| format!(
@@ -442,7 +528,16 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         .outcome()
         .filter(|_| view.selected > view.boundaries.len())
     {
-        trap_text(&trap.trap)
+        format!(
+            "Failure in {} · f{}:{:06}\n{}",
+            view.record.outcome_program().map_or_else(
+                || "unavailable code identity".into(),
+                |program| preview(program.program().name().unwrap_or("unnamed"), 48)
+            ),
+            trap.func.0,
+            trap.pc,
+            trap_text(&trap.trap)
+        )
     } else {
         format!(
             "{}\n{}",
@@ -467,8 +562,13 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             view.record
                 .fault_location()
                 .map_or_else(String::new, |loc| format!(
-                    " at f{}:{:06}",
-                    loc.func.0, loc.pc
+                    " in {} at f{}:{:06}",
+                    view.record.fault_program().map_or_else(
+                        || "unavailable code".into(),
+                        |program| preview(program.program().name().unwrap_or("unnamed"), 32)
+                    ),
+                    loc.func.0,
+                    loc.pc
                 ))
         ),
     };
@@ -533,12 +633,23 @@ fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
         || " STACK ".into(),
         |stack| format!(" STACK · {} ", stack.len()),
     );
+    let parent = view
+        .execution
+        .segments()
+        .find(|segment| segment.id == view.source_segment())
+        .and_then(|segment| segment.parent);
+    let origin = if let Some(parent) = parent {
+        format!(
+            "segment ← #{}:{} · [ ] navigate",
+            parent.segment, parent.activation
+        )
+    } else if view.stack().is_some() {
+        "root ← Application".into()
+    } else {
+        "guest frames".into()
+    };
     let block = panel(title, view.focus == Focus::Stack).title_bottom(Span::styled(
-        if view.stack().is_some() {
-            "root ← Application"
-        } else {
-            "guest frames"
-        },
+        origin,
         Style::default().fg(GOLD).add_modifier(Modifier::BOLD),
     ));
     let Some(stack) = view.stack() else {
@@ -560,7 +671,7 @@ fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             ListItem::new(Line::styled(
                 format!(
                     "#{index} {}",
-                    describe::function(view.record.program().program(), location.func)
+                    describe::function(view.source_program().program(), location.func)
                 ),
                 Style::default().fg(if index == 0 { GREEN } else { BLUE }),
             ))
@@ -734,23 +845,40 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
     } else if let Some(boundary) = view.boundary(view.selected) {
         match boundary {
             Boundary::Host(i) => call_values(frame, view, area, &view.calls[i]),
+            Boundary::Transfer(i) => value_section(
+                frame,
+                view,
+                area,
+                ValueSection {
+                    title: format!(" {} ", transfer_title(&view.transfers[i])),
+                    note: format!(
+                        "Observed control · source code {} · values in segment #{}",
+                        preview(
+                            view.transfers[i]
+                                .program
+                                .program()
+                                .name()
+                                .unwrap_or("unnamed"),
+                            40
+                        ),
+                        view.segment
+                    ),
+                    label: "Transfer",
+                    values: view.transfer_values(i),
+                    base: 0,
+                    empty: "No value payload at this transfer.".into(),
+                },
+            ),
             Boundary::Command(i) => {
                 let section = match &view.commands[i].action {
                     execution_tape::recording::ControlAction::CallGuest {
-                        callee,
-                        args,
-                        returned,
-                        ..
+                        callee, args, ..
                     } => ValueSection {
                         title: format!(" CALLBACK #{i} INPUTS "),
                         note: format!(
                             "Target: {} · {}",
                             describe::value(view.record, callee),
-                            if returned.is_some() {
-                                "normal guest return observed separately"
-                            } else {
-                                "no normal return; inspect transfers/outcome"
-                            }
+                            "entry and return are in the execution transfers"
                         ),
                         label: "Input",
                         values: args,
@@ -761,12 +889,11 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                         target,
                         target_location,
                         values,
-                        unwound_callbacks,
                         ..
                     } => ValueSection {
                         title: format!(" EXIT VALUES · activation #{target} "),
                         note: format!(
-                            "To {}:{:06} · {unwound_callbacks} callbacks abandoned · embedding inputs",
+                            "To {}:{:06} · embedding inputs",
                             describe::function(
                                 view.record.program().program(),
                                 target_location.func
@@ -781,19 +908,6 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 };
                 value_section(frame, view, area, section);
             }
-            Boundary::CallbackReturn(i) => value_section(
-                frame,
-                view,
-                area,
-                ValueSection {
-                    title: format!(" CALLBACK #{i} RESULT "),
-                    note: "Returned to embedding; original host request remains pending".into(),
-                    label: "Output",
-                    values: view.callback_return(i).map_or(&[], |r| r.values),
-                    base: 0,
-                    empty: "Callback returned successfully without values.".into(),
-                },
-            ),
         }
     } else {
         let returned = match view.record.outcome() {
@@ -813,6 +927,9 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                 empty: match view.record.outcome() {
                     Some(Outcome::Returned(_)) => "Execution returned successfully without values.",
                     Some(Outcome::Trapped(_)) => "Execution trapped; no successful return values.",
+                    Some(Outcome::Transferred { .. }) => {
+                        "Segment abandoned by a typed transfer to an ancestor."
+                    }
                     None => "Final outcome not captured.",
                 }
                 .into(),
@@ -981,7 +1098,7 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
             spans.push(Span::raw(" "));
             spans.extend(
                 syntax::source(&describe::instruction(
-                    view.record.program().program(),
+                    view.source_program().program(),
                     instruction,
                 ))
                 .spans,
@@ -1000,7 +1117,7 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
             panel(
                 format!(
                     " SOURCE · {} · {} ",
-                    describe::function(view.record.program().program(), source.func()),
+                    describe::function(view.source_program().program(), source.func()),
                     if view.frame_selected > 0 {
                         "suspended caller"
                     } else if view.instruction.is_some() {

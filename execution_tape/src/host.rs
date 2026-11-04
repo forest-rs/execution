@@ -14,12 +14,13 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
+use crate::control::{ContinuationRef, ControlTag};
 use crate::program::{HostSigId, Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
 use crate::value::Decimal;
-use crate::value::FuncId;
+use crate::value::FunctionRef;
 use crate::value::Obj;
 use crate::value::Value;
 
@@ -230,6 +231,15 @@ pub trait AccessSink {
     fn write(&mut self, key: ResourceKeyRef<'_>);
 }
 
+impl<S: AccessSink + ?Sized> AccessSink for &mut S {
+    fn read(&mut self, key: ResourceKeyRef<'_>) {
+        (**self).read(key);
+    }
+    fn write(&mut self, key: ResourceKeyRef<'_>) {
+        (**self).write(key);
+    }
+}
+
 // Shared collectors can be owned by an invocation and drained between graph task polls.
 impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>> {
     fn read(&mut self, key: ResourceKeyRef<'_>) {
@@ -240,7 +250,7 @@ impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>
     }
 }
 
-/// Read-only VM context available during one host call.
+/// Borrowed VM data, staged results and work admission for one host call.
 ///
 /// A host context gives embedders access to VM-owned immutable data that cannot be represented by
 /// [`ValueRef`] alone. In particular, aggregate arguments are passed as [`AggHandle`]s in
@@ -250,17 +260,18 @@ impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>
 /// The context also carries the optional incremental-execution access sink for hosts whose results
 /// depend on external state.
 pub struct HostContext<'vm, 'access> {
-    program: &'vm Program,
+    instance: &'vm crate::instance::Instance,
     host_sig_id: HostSigId,
     aggregates: &'vm AggHeap,
     results: &'access mut HostResults,
+    budget: &'access mut crate::vm::budget::DataBudget,
     access: Option<&'access mut dyn AccessSink>,
 }
 
 impl fmt::Debug for HostContext<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostContext")
-            .field("program_name", &self.program.name())
+            .field("program_name", &self.instance.program().program().name())
             .field("host_sig_id", &self.host_sig_id)
             .field("aggregate_count", &self.aggregates.len_u32())
             .field("construction_work", &self.results.work)
@@ -272,17 +283,19 @@ impl fmt::Debug for HostContext<'_, '_> {
 impl<'vm, 'access> HostContext<'vm, 'access> {
     /// Creates a host context for one VM host call.
     pub(crate) fn new(
-        program: &'vm Program,
+        instance: &'vm crate::instance::Instance,
         host_sig_id: HostSigId,
         aggregates: &'vm AggHeap,
         results: &'access mut HostResults,
+        budget: &'access mut crate::vm::budget::DataBudget,
         access: Option<&'access mut dyn AccessSink>,
     ) -> Self {
         Self {
-            program,
+            instance,
             host_sig_id,
             aggregates,
             results,
+            budget,
             access,
         }
     }
@@ -301,10 +314,17 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         }
     }
 
+    /// The exact code instance whose host import is being dispatched.
+    /// The handle is a store-bound namespace key; mutable host state stays with the VM.
+    #[must_use]
+    pub fn instance(&self) -> &crate::instance::Instance {
+        self.instance
+    }
+
     /// Returns the verified program being executed.
     #[must_use]
     pub fn program(&self) -> &Program {
-        self.program
+        self.instance.program().program()
     }
 
     /// Returns the declared host import being called in [`Self::program`].
@@ -592,9 +612,13 @@ pub enum ValueRef<'a> {
     /// Aggregate handle (tuple/struct/array).
     Agg(AggHandle),
     /// Function reference.
-    Func(FuncId),
+    Func(&'a FunctionRef),
     /// Closure reference (function + captured environment).
-    Closure(Closure),
+    Closure(&'a Closure),
+    /// Instance-qualified operation identity.
+    Tag(&'a ControlTag),
+    /// Borrowed authority for this execution's suspended computation.
+    Continuation(&'a ContinuationRef),
 }
 
 impl<'a> ValueRef<'a> {
@@ -612,8 +636,10 @@ impl<'a> ValueRef<'a> {
             Value::Str(v) => Self::Str(v.as_str()),
             Value::Obj(v) => Self::Obj(*v),
             Value::Agg(v) => Self::Agg(*v),
-            Value::Func(v) => Self::Func(*v),
-            Value::Closure(v) => Self::Closure(*v),
+            Value::Func(v) => Self::Func(v),
+            Value::Closure(v) => Self::Closure(v),
+            Value::Tag(v) => Self::Tag(v),
+            Value::Continuation(v) => Self::Continuation(v),
         }
     }
 
@@ -635,8 +661,10 @@ impl<'a> ValueRef<'a> {
             Self::Str(s) => Value::Str(s.into()),
             Self::Obj(o) => Value::Obj(o),
             Self::Agg(h) => Value::Agg(h),
-            Self::Func(f) => Value::Func(f),
-            Self::Closure(c) => Value::Closure(c),
+            Self::Func(f) => Value::Func(f.clone()),
+            Self::Closure(c) => Value::Closure(c.clone()),
+            Self::Tag(tag) => Value::Tag(tag.clone()),
+            Self::Continuation(continuation) => Value::Continuation(continuation.clone()),
         }
     }
 
@@ -656,6 +684,8 @@ impl<'a> ValueRef<'a> {
             Self::Agg(_) => ValueType::Agg,
             Self::Func(_) => ValueType::Func,
             Self::Closure(_) => ValueType::Closure,
+            Self::Tag(_) => ValueType::Tag,
+            Self::Continuation(_) => ValueType::Continuation,
         }
     }
 }
@@ -736,6 +766,8 @@ fn encode_value_type_tag(t: ValueType) -> u8 {
         ValueType::Agg => 9,
         ValueType::Func => 10,
         ValueType::Closure => 11,
+        ValueType::Tag => 12,
+        ValueType::Continuation => 13,
     }
 }
 
@@ -753,18 +785,24 @@ mod tests {
 
     #[test]
     fn retained_arguments_are_independent_of_the_source_heap() {
-        let program = crate::asm::ProgramBuilder::new().build();
+        let definition = crate::asm::ProgramBuilder::new().build_verified().unwrap();
+        let instance = crate::instance::Instance::new(definition, Arc::new(()), 0, false);
         let mut heap = AggHeap::new();
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
             .unwrap();
-        let mut results = HostResults::new(
-            crate::vm::DataWork::default(),
-            crate::vm::DataWork::default(),
-        );
-        let snapshot = HostContext::new(&program, HostSigId(0), &heap, &mut results, None)
-            .retain(&[ValueRef::Agg(root)])
-            .unwrap();
+        let mut results = HostResults::default();
+        let mut budget = crate::vm::budget::DataBudget::default();
+        let snapshot = HostContext::new(
+            &instance,
+            HostSigId(0),
+            &heap,
+            &mut results,
+            &mut budget,
+            None,
+        )
+        .retain(&[ValueRef::Agg(root)])
+        .unwrap();
         heap.clear();
         let Value::Agg(root) = snapshot.values()[0] else {
             unreachable!()

@@ -6,13 +6,17 @@ use crate::resolver::{
 };
 use execution_tape::program::Program;
 use execution_tape::source::{BoundSources, SourceError, SourceMap, SourceRange};
-use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceSink};
+use execution_tape::trace::{ScopeKind, StackActivity, TraceLocation, TraceMask, TraceSink};
+use execution_tape::vm::ActivationId;
 use std::string::String;
 use std::vec::Vec;
 
 type BackendGuard = tracy_client::Span;
 
 struct ScopeEntry {
+    stack: Option<ActivationId>,
+    file: Option<String>,
+    line: u32,
     kind: ScopeKind,
     depth: usize,
     // Keep the label alive for backends that may borrow it.
@@ -24,6 +28,8 @@ struct ScopeEntry {
 pub struct ProfilingTraceSink<'a, R = DefaultLabelResolver> {
     resolver: R,
     stack: Vec<ScopeEntry>,
+    parked: Vec<(ActivationId, Vec<ScopeEntry>)>,
+    consistent: bool,
     sources: Option<ProgramSources<'a>>,
 }
 
@@ -47,6 +53,8 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
         Self {
             resolver,
             stack: Vec::new(),
+            parked: Vec::new(),
+            consistent: true,
             sources: None,
         }
     }
@@ -89,13 +97,26 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
     fn on_scope_enter(
         &mut self,
         program: &Program,
+        stack: Option<&ActivationId>,
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
     ) {
+        if !self.consistent {
+            return;
+        }
         let label = self.resolve_label(program, kind);
-        let guard = self.start_scope(program, kind, &label, location);
+        let (file, line) = self.scope_source(program, location);
+        let guard = Self::open_scope(
+            kind,
+            &label,
+            file.as_deref().unwrap_or("execution_tape.bytecode"),
+            line,
+        );
         self.stack.push(ScopeEntry {
+            stack: stack.cloned(),
+            file,
+            line,
             kind,
             depth,
             label,
@@ -103,23 +124,101 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
         });
     }
 
-    fn on_scope_exit(&mut self, kind: ScopeKind, depth: usize) {
-        if let Some(top) = self.stack.last()
-            && top.kind == kind
-            && top.depth == depth
-        {
-            if let Some(entry) = self.stack.pop() {
-                let ScopeEntry {
-                    label: _label,
-                    guard: _guard,
-                    ..
-                } = entry;
-                let _ = (_label, _guard);
-            }
+    fn on_scope_exit(&mut self, stack: Option<&ActivationId>, kind: ScopeKind, depth: usize) {
+        if !self.consistent {
             return;
         }
-        // If the stack got out of sync, drop any active scopes to avoid leaking.
+        if let Some(index) = self.parked.iter().position(|(id, _)| Some(id) == stack) {
+            let scopes = &mut self.parked[index].1;
+            if scopes
+                .last()
+                .is_some_and(|scope| scope.kind == kind && scope.depth == depth)
+            {
+                scopes.pop();
+                if scopes.is_empty() {
+                    self.parked.swap_remove(index);
+                }
+                return;
+            }
+        } else if self.stack.last().is_some_and(|scope| {
+            scope.stack.as_ref() == stack && scope.kind == kind && scope.depth == depth
+        }) {
+            self.stack.pop();
+            return;
+        }
+        self.fail();
+    }
+
+    /// Whether delivered scope and stack transitions have remained structurally consistent.
+    /// Inconsistent evidence closes physical guards and stops opening new scopes; recreate
+    /// the sink before another execution rather than interpreting the profile as complete.
+    #[must_use]
+    pub fn is_consistent(&self) -> bool {
+        self.consistent
+    }
+
+    fn fail(&mut self) {
         self.drop_active_scopes();
+        self.parked.clear();
+        self.consistent = false;
+    }
+
+    fn park(&mut self, id: &ActivationId) {
+        if !self.consistent {
+            return;
+        }
+        if self.parked.iter().any(|(saved, _)| saved == id) {
+            self.fail();
+            return;
+        }
+        let mut scopes = Vec::new();
+        while self
+            .stack
+            .last()
+            .is_some_and(|scope| scope.stack.as_ref() == Some(id))
+        {
+            let mut scope = self.stack.pop().expect("active scope");
+            scope.guard.take();
+            scopes.push(scope);
+        }
+        if self
+            .stack
+            .iter()
+            .any(|scope| scope.stack.as_ref() == Some(id))
+        {
+            self.fail();
+            return;
+        }
+        if !scopes.is_empty() {
+            scopes.reverse();
+            self.parked.push((id.clone(), scopes));
+        }
+    }
+
+    fn attach(&mut self, id: &ActivationId) {
+        if !self.consistent {
+            return;
+        }
+        if self
+            .stack
+            .iter()
+            .any(|scope| scope.stack.as_ref() == Some(id))
+        {
+            self.fail();
+            return;
+        }
+        if let Some(index) = self.parked.iter().position(|(saved, _)| saved == id) {
+            let (_, scopes) = self.parked.swap_remove(index);
+            for mut scope in scopes {
+                scope.guard = Self::open_scope(
+                    scope.kind,
+                    &scope.label,
+                    scope.file.as_deref().unwrap_or("execution_tape.bytecode"),
+                    scope.line,
+                );
+                self.stack.push(scope);
+            }
+        }
     }
 
     fn resolve_label(&mut self, program: &Program, kind: ScopeKind) -> String {
@@ -135,25 +234,24 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
         }
     }
 
-    fn start_scope(
-        &self,
-        program: &Program,
-        kind: ScopeKind,
-        label: &str,
-        location: TraceLocation,
-    ) -> Option<BackendGuard> {
+    fn scope_source(&self, program: &Program, location: TraceLocation) -> (Option<String>, u32) {
+        if tracy_client::Client::running().is_none() {
+            return (None, location.pc);
+        }
+        let mapped = self.source_location(program, location).and_then(|source| {
+            u32::try_from(source.start().line)
+                .ok()
+                .map(|line| (Some(source.document().name.clone()), line))
+        });
+        mapped.unwrap_or((None, location.pc))
+    }
+
+    fn open_scope(kind: ScopeKind, label: &str, file: &str, line: u32) -> Option<BackendGuard> {
         let function_name = match kind {
             ScopeKind::CallFrame { .. } => "execution_tape.call_frame",
             ScopeKind::HostCall { .. } => "execution_tape.host_call",
         };
         let client = tracy_client::Client::running()?;
-        let source = self.source_location(program, location);
-        let mapped = source.as_ref().and_then(|source| {
-            u32::try_from(source.start().line)
-                .ok()
-                .map(|line| (source.document().name.as_str(), line))
-        });
-        let (file, line) = mapped.unwrap_or(("execution_tape.bytecode", location.pc));
         Some(client.span_alloc(Some(label), function_name, file, line, 0))
     }
 
@@ -175,21 +273,41 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         TraceMask::CALL | TraceMask::HOST
     }
 
+    fn stack_activity(
+        &mut self,
+        context: execution_tape::trace::TraceContext<'_>,
+        activity: StackActivity<'_>,
+    ) {
+        if let Some(id) = context.stack() {
+            match activity {
+                StackActivity::Parked => self.park(id),
+                StackActivity::Attached { .. } => self.attach(id),
+            }
+        }
+    }
+
     fn scope_enter(
         &mut self,
-        program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: execution_tape::value::FuncId,
         pc: u32,
         _span_id: Option<u64>,
     ) {
-        self.on_scope_enter(program, kind, depth, TraceLocation { func, pc });
+        let program = context.program();
+        self.on_scope_enter(
+            program,
+            context.stack(),
+            kind,
+            depth,
+            TraceLocation { func, pc },
+        );
     }
 
     fn scope_exit(
         &mut self,
-        _program: &Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         _func: execution_tape::value::FuncId,
@@ -197,7 +315,7 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         _span_id: Option<u64>,
         _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
-        self.on_scope_exit(kind, depth);
+        self.on_scope_exit(context.stack(), kind, depth);
     }
 }
 
@@ -214,6 +332,8 @@ impl<R> std::fmt::Debug for ProfilingTraceSink<'_, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProfilingTraceSink")
             .field("stack_depth", &self.stack.len())
+            .field("parked_stacks", &self.parked.len())
+            .field("consistent", &self.consistent)
             .field("sources_attached", &self.sources.is_some())
             .finish_non_exhaustive()
     }
@@ -236,19 +356,14 @@ mod tests {
 
     #[test]
     fn start_scope_without_tracy_client_does_not_panic() {
-        let sink = ProfilingTraceSink::new();
-        let program = execution_tape::asm::ProgramBuilder::new().build();
-        let _guard = sink.start_scope(
-            &program,
+        let _guard = ProfilingTraceSink::<super::DefaultLabelResolver>::open_scope(
             ScopeKind::CallFrame {
                 func: FuncId(0),
                 caller: None,
             },
             "test",
-            execution_tape::trace::TraceLocation {
-                func: FuncId(0),
-                pc: 0,
-            },
+            "execution_tape.bytecode",
+            0,
         );
     }
 }

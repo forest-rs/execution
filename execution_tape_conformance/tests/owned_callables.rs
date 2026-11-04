@@ -89,6 +89,43 @@ fn escaped() -> Callable {
     invocation.retain_callable(0).unwrap()
 }
 
+#[test]
+fn raw_entries_keep_code_after_the_compiler_handle_is_dropped() {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let args = [Value::I64(40)];
+    let (mut invocation, original_owner) = {
+        let (program, factory) = maker();
+        let original_owner = Arc::downgrade(&program);
+        let invocation = vm
+            .start(&program, factory, &args, InvocationOptions::default())
+            .unwrap();
+        (invocation, original_owner)
+    };
+    assert!(
+        original_owner.upgrade().is_none(),
+        "the compiler's outer Arc is gone"
+    );
+    invocation.resume(u64::MAX).unwrap();
+    let block = invocation.retain_callable(0).unwrap();
+    assert!(block.program().shares_definition_with(invocation.program()));
+    drop(invocation);
+    drop(vm);
+    assert_eq!(finish(&block, &[Value::I64(2)]), [Value::I64(42)]);
+}
+
+#[test]
+fn function_identity_follows_the_verified_definition_across_outer_handles() {
+    use execution_tape::verifier::{VerifyConfig, verify_program_owned};
+    let (program, factory) = maker();
+    let first = Callable::function(Arc::clone(&program), factory).unwrap();
+    let alias = Callable::function(Arc::new(program.as_ref().clone()), factory).unwrap();
+    assert_eq!(first, alias);
+    let independent =
+        verify_program_owned(program.program().clone(), &VerifyConfig::default()).unwrap();
+    let independent = Callable::function(Arc::new(independent), factory).unwrap();
+    assert_ne!(first, independent);
+}
+
 fn finish(callable: &Callable, args: &[Value]) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut invocation = callable
@@ -136,7 +173,10 @@ fn escaped_closure_owns_code_and_captures_after_creator_vm_and_frames_disappear(
 fn invocation_imports_are_transactional_and_do_not_accumulate_in_a_long_lived_vm() {
     let callable = escaped();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+    let retained = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(99)])
+        .unwrap();
     for cancel in [true, false, false, true] {
         let args = [Value::I64(2)];
         let mut invocation = callable
@@ -220,12 +260,17 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
     a.tuple_new(result, &[1]).ret(0, &[result]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::I64(7)]).unwrap();
     let callable = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     for limit in [3, 4] {
@@ -276,12 +321,13 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
 #[test]
 fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocations() {
     let (p, _) = maker();
+    let source_instance = Vm::new(NoHost, Limits::default()).instantiate(&p).unwrap();
     assert!(matches!(
         Callable::function(Arc::clone(&p), FuncId(u32::MAX)),
         Err(CallableError::MissingFunction { .. })
     ));
     assert!(matches!(
-        Callable::retain(Arc::clone(&p), &AggHeap::new(), ValueRef::I64(4)),
+        Callable::retain(&AggHeap::new(), ValueRef::I64(4)),
         Err(CallableError::NotCallable {
             actual: ValueType::I64
         })
@@ -289,10 +335,9 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::Bool(true)]).unwrap();
     let bad = Callable::retain(
-        p,
         &heap,
-        ValueRef::Closure(Closure {
-            func: FuncId(0),
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(FuncId(0)).unwrap(),
             env,
         }),
     )
@@ -319,12 +364,17 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
     a.ret(0, &[2]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::Str("xy".into())]).unwrap();
     let callable = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -410,6 +460,9 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
         .ret(0, &[answer]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let first = heap.tuple_new(vec![Value::I64(42)]).unwrap();
     let equal = heap.tuple_new(vec![Value::I64(42)]).unwrap();
@@ -421,9 +474,11 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
         ])
         .unwrap();
     let callable = Callable::retain(
-        program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -476,12 +531,17 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
         .ret(0, &[result]);
     b.define_function(outer, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::I64(40)]).unwrap();
     let outer = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: outer, env }),
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(outer).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -533,30 +593,43 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
         .start(&program, factory, &args, InvocationOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
-    assert_eq!(
-        run.retain_callable(0).unwrap_err(),
-        CallableError::MissingCodeOwner
-    );
+    let retained = run.retain_callable(0).unwrap();
+    assert!(retained.program().shares_definition_with(&program));
+    drop(run);
+    let mut run = retained
+        .start(&mut vm, vec![Value::I64(40)], InvocationOptions::default())
+        .unwrap();
+    run.resume(u64::MAX).unwrap();
+    assert_eq!(run.result().unwrap().unwrap(), [Value::I64(42)]);
 }
 
 #[test]
 fn snapshot_adoption_rejects_ambiguous_roots_and_non_environment_bodies() {
     let (program, factory) = maker();
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
+    let factory_ref = source_instance.function(factory).unwrap();
     let heap = AggHeap::new();
     let snapshot = heap
-        .snapshot(&[Value::Func(factory), Value::Func(factory)])
+        .snapshot(&[
+            Value::Func(factory_ref.clone()),
+            Value::Func(factory_ref.clone()),
+        ])
         .unwrap();
     assert!(matches!(
-        Callable::from_snapshot(Arc::clone(&program), snapshot),
+        Callable::from_snapshot(snapshot),
         Err(CallableError::RootCount { actual: 2 })
     ));
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![]).unwrap();
     assert!(matches!(
         Callable::retain(
-            program,
             &heap,
-            ValueRef::Closure(Closure { func: factory, env })
+            ValueRef::Closure(&Closure {
+                func: factory_ref.clone(),
+                env
+            })
         ),
         Err(CallableError::EnvironmentArgument {
             actual: Some(ValueType::I64),
@@ -602,7 +675,7 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
     impl TraceSink for InputProbe {
         fn values(
             &mut self,
-            _: &execution_tape::program::Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             event: execution_tape::trace::ValueEvent<'_>,
         ) {
             if let execution_tape::trace::ValueEvent::Entry { args, work, .. } = event {
@@ -625,12 +698,17 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
     a.ret(0, &[2]);
     b.define_function(body, a).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let env = heap.tuple_new(vec![Value::Str("xy".into())]).unwrap();
     let callable = Callable::retain(
-        program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(body).unwrap(),
+            env,
+        }),
     )
     .unwrap();
     let payload = String::from("abcde");

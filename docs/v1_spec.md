@@ -1,6 +1,6 @@
 # `execution_tape` bytecode and execution specification
 
-This document describes wire format 0.5 and the execution contract of the Rust 0.1 API.
+This document describes wire format 0.6 and the unreleased execution contract.
 The filename is historical: it does not name a 1.0 format or promise durable interchange.
 Decoding requires an exact wire-version match; regenerate compiled programs when upgrading
 from an older format. The core remains `no_std + alloc`.
@@ -67,6 +67,8 @@ The VM defines a closed set of value kinds:
 - `Agg` (aggregate handle: tuple/struct/array heap node)
 - `Func` (function reference)
 - `Closure` (function reference + captured environment aggregate)
+- `Tag` (an operation identity qualified by its defining instance)
+- `Continuation` (one-use authority for a computation owned by the current execution)
 
 The VM stores payload-bearing registers in per-kind banks (`RegClass`), rather than as tagged
 `Value`s. The producer declares each register's kind, and verification enforces it before preparing
@@ -148,10 +150,66 @@ Preparation translates virtual register IDs into class-local operands. Runtime a
 the corresponding bank base and class-local index, not `base + virtual_register_id`. Unit needs
 no payload address. Arguments and results are explicit register lists in bytecode.
 
-Recursion is allowed, subject to `Limits::max_call_depth`. Function references and nominal type
-IDs are program-local; aggregate handles are heap-local. Raw `Value`s carry no ownership domain.
-The graph adapter's owned `TapeValue` snapshots preserve that domain and reject incompatible
-program-local transfers; they do not enable cross-program guest invocation.
+Recursion is allowed, subject to `Limits::max_call_depth`. A runtime `FunctionRef` retains its exact
+`Instance`; local function IDs are interpreted by that instance's verified definition. Independently
+compiled functions can call each other in one store and execution. Explicit raw nominal aggregates
+retain their definition's interpretation and cannot cross incompatible definitions. A closure's
+hidden environment retains its callable's interpretation, including private nominal captures.
+Aggregate handles remain heap-local. Execution-local continuation capabilities cannot be exported
+through owned snapshots or graph edges.
+
+### Delimited computation
+
+`cont.new` creates an unstarted computation from a qualified function or closure. `cont.resume`
+consumes its current capability and attaches it beneath a new dynamic handler table. `suspend`
+finds the nearest active handler for the exact tag and captures the owned stack suffix inside that
+delimiter. `cont.resume` is a terminator: its normal edge targets a typed block receiving the
+computation's final results; each suspension edge targets a local typed block receiving the
+tag's request values followed by a new continuation capability. Only the selected edge's
+parameters are initialized. Clause bodies keep the resumer's frame and lexical registers.
+
+The matched handler table is outside the captured suffix and inactive while its clause executes.
+Inner nonmatching delimiters stay captured. A later resumption supplies a replacement table, so the
+saved computation is independent of its original resumer. `cont.drop` consumes a saved capability
+without executing guest code. `tag.is_handled` queries active dynamic handlers. `const.tag` resolves
+an instance-local declaration; `tag.new` creates a fresh lexical identity from that declaration.
+Equal protocol signatures or local tag IDs do not establish operation identity.
+
+Each suspension has separate resume-input and final-result contracts, potentially owned by different
+definitions. Resuming or discarding one alias invalidates every alias of that capability. Completing
+or cancelling the root invalidates all remaining capabilities before storage publication or rollback.
+Saved frames continue to consume the shared frame limit; resumption resets no resource budgets.
+Only the root owns the aggregate transaction. Native Rust stacks are never captured: embedding
+control commands operate on an explicit `PendingHostCall` and leave that host operation pending.
+
+`ProgramBuilder::handler_block` and `result_block` declare typed outcome blocks;
+`emit_continuation`, `emit_resume` and `emit_suspend` validate authoring inputs before changing the
+assembler. `emit_suspend` allocates response registers from the declared protocol. The verifier
+checks every outcome edge's parameter kinds, propagates its rich contracts and rejects known tag
+protocol contradictions. Runtime installation checks opaque tag protocols before consuming the
+computation's authority or entering it. Local handler loops need no extra call frames.
+
+### Terminal transfer
+
+`tail.call` and `tail.resume` replace exactly the current activation and inherit its result
+recipient. Their operands are a call-signature ID, target register, effect output/input registers,
+and argument register list. They are terminators with no destination registers or local successor.
+The target is a qualified function/closure for `tail.call`, or a one-use capability for
+`tail.resume`. Final-result contracts must equal the enclosing function's contracts, including
+rich structure. Equivalent contract encodings are compared canonically.
+
+Arguments, environments, ownership and authority are checked before retirement. A saved
+computation's frames remain charged; only the replaced active frame is removed. No resource
+budget resets. Enclosing delimiters and inner saved handlers survive. `tail.resume` installs no
+new local clauses. Callee activations have fresh identities; saved activations retain theirs.
+The replaced activation expires. Storage needed only by a replaced segment is released;
+surviving callers retain their own storage. There are no empty result-forwarding segments.
+
+Cross-definition result obligations cannot be bypassed by returning to an earlier definition
+later in a tail chain. Under the current provenance rule, eliminated foreign return edges add a
+sticky restriction against exposed nominal aggregates. Private code-qualified closure captures
+remain encapsulated. This restriction applies only to the new result, including when execution
+appends to an existing output buffer. Tail transfer does not run protected guest cleanup.
 
 ### Control flow invariants
 - All jump targets must point to instruction boundaries.
@@ -187,6 +245,7 @@ Traversals are iterative; sharing does not cause repeated expansion of proven su
 
 - `fuel`: each executable instruction costs one; successful host calls may charge additional fuel.
 - `max_call_depth`: caps guest frames.
+- `max_continuations`: caps simultaneously saved computations, including unstarted ones (1,024 by default).
 - `max_host_calls`: caps executed host calls.
 - `max_contract_work`: bounds boundary-contract traversal as described above.
 - `max_payload_work`: bounds logical byte/string copying and comparison work (64 MiB by default).
@@ -267,7 +326,7 @@ The serialized program is:
   - `len: ULEB128`
   - `payload[len]`
 
-The header must match version 0.5 exactly. Within that version, unknown section tags are skipped;
+The header must match version 0.6 exactly. Within that version, unknown section tags are skipped;
 this does not imply compatibility with future wire versions. Known sections are rejected if duplicated.
 
 ## Tracing (hooks)
@@ -299,8 +358,9 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `10 = call_sigs` (optional)
 - `11` is retired
 - `12 = contracts`
+- `13 = control_tags` (optional)
 
-Sections `1..=8` and `12` are required; `9 = names` and `10 = call_sigs` are optional (each omitted
+Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs` and `13 = control_tags` are optional (each omitted
 entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
@@ -341,6 +401,8 @@ Tags:
 - `9 Agg`
 - `10 Func`
 - `11 Closure`
+- `12 Tag`
+- `13 Continuation`
 
 ### Struct types
 Field names are interned once per Types payload; each struct field references that table by id.
@@ -388,7 +450,7 @@ Stores per-function metadata and references into blob sections:
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
 
-The current wire version is 0.5. Older versions are rejected; rebuild serialized programs
+The current wire version is 0.6. Older versions are rejected; rebuild serialized programs
 from their producer. Each declaration is authoritative for the register's entire function lifetime.
 Every instruction definition and operand must match, including inactive instructions and unused
 results. A declaration does not initialize a register or supply a projection's aggregate shape proof.
@@ -426,7 +488,9 @@ ULEB128 definition count followed by that many nodes:
 - tag `2`: nominal struct `TypeId` (ULEB128), field count (ULEB128), then field contract IDs;
 - tag `3`: nominal `ElemTypeId` (ULEB128), then one element contract ID;
 - tag `4`: function argument count/IDs, then result count/IDs (all ULEB128);
-- tag `5`: closure user argument count/IDs, then result count/IDs (all ULEB128).
+- tag `5`: closure user argument count/IDs, then result count/IDs (all ULEB128);
+- tag `6`: tag request count/IDs, then response count/IDs (all ULEB128);
+- tag `7`: continuation resume-input count/IDs, then final-result count/IDs (all ULEB128).
 
 Callable contracts describe exact exposed signatures. A closure's captured environment is hidden
 from this signature and checked against its concrete body's first argument. `Kind(Func)` and
@@ -483,6 +547,20 @@ function signatures. Exact prepared signature keys provide collision-safe dispat
 hash alone does not prove contract equality. Known contradictions fail verification. Otherwise,
 matching occurs before callee entry, and the callee enforces the same result obligations before
 caller installation.
+
+## Control tag declarations (optional)
+
+Section `13` contains a ULEB128 declaration count, followed by a nonzero symbol ID and call-signature
+ID for each declaration (both ULEB128). The call signature describes request inputs and response
+outputs. Declaration order determines the local `ControlTagId`; repeated names and signatures
+remain distinct declarations. Omit the section when there are no declarations.
+
+The `cont.resume` normal target is a ULEB128 function-relative byte PC. Its handler-list operand
+contains a ULEB128 arm count followed by each arm's `u8` kind and ULEB128 operands. Kind `0` is a
+suspension clause: tag register, call-signature ID describing the operation's request/response
+protocol, then target byte PC. Both normal and clause targets must be typed block headers.
+Decoding rejects unknown arm kinds; verification checks all arms, including unreachable
+instructions. The opcode schema in `execution_tape/opcodes.json` is authoritative for operand order.
 
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.

@@ -11,10 +11,10 @@ use core::ops::Range;
 /// One embedding command issued while a guest host instruction was pending.
 ///
 /// Commands are ordered by admission. Sequence numbers interleave them with host outcomes and
-/// callback returns; a parent host outcome can follow child callbacks.
+/// transfers; a parent host outcome can follow child guest computations.
 #[derive(Debug)]
 pub struct ControlCommand<'a> {
-    /// Zero-based observation order shared with host outcomes and callback returns.
+    /// Zero-based observation order shared with host outcomes and control transfers.
     pub sequence: usize,
     /// Pending host instruction whose embedding issued the command.
     pub location: TraceLocation,
@@ -33,8 +33,7 @@ pub enum ControlAction<'a> {
         target: u64,
         /// Target frame's actual suspended call/host instruction, independent of the initiator.
         target_location: TraceLocation,
-        /// Callback bodies abandoned by the transfer, including a callback-root target.
-        unwound_callbacks: usize,
+
         /// Raw supplied values, validated by the VM against the target's result contracts.
         values: &'a [RecordedValue],
         /// Host construction work promoted before admission.
@@ -42,7 +41,8 @@ pub enum ControlAction<'a> {
         /// All promoted nodes in construction order, including unused staging.
         constructed: &'a [AggregateId],
     },
-    /// Run a same-program guest function or closure without completing the pending host call.
+    /// Request a qualified guest function or closure without completing the pending host call.
+    /// Actual code entry and checked return are reported by the execution transfer journal.
     CallGuest {
         /// Requested target, observed before admission/contract validation.
         callee: &'a RecordedValue,
@@ -52,23 +52,7 @@ pub enum ControlAction<'a> {
         work: DataWork,
         /// Promoted nodes in original construction order, including otherwise unused staging.
         constructed: &'a [AggregateId],
-        /// Actual normal guest return. `None` also occurs after rejection, trap, cancellation
-        /// or a subsequent non-local transfer; inspect commands and the invocation outcome separately.
-        returned: Option<GuestReturn<'a>>,
     },
-}
-
-/// A guest callback's actual return to embedding code, without root heap commit.
-#[derive(Debug)]
-pub struct GuestReturn<'a> {
-    /// Zero-based observation order shared with host outcomes and control commands.
-    pub sequence: usize,
-    /// Callback root's return instruction.
-    pub location: TraceLocation,
-    /// Checked guest result slots, independent of the pending host's result signature.
-    pub values: &'a [RecordedValue],
-    /// Actual returning guest ancestry, when captured.
-    pub stack: Option<CallStack<'a>>,
 }
 
 #[derive(Debug)]
@@ -83,7 +67,6 @@ pub(super) enum Action {
     ReturnFrom {
         target: u64,
         target_location: TraceLocation,
-        unwound_callbacks: usize,
         values: Range<usize>,
         work: DataWork,
         constructed: Vec<AggregateId>,
@@ -93,15 +76,7 @@ pub(super) enum Action {
         args: Range<usize>,
         work: DataWork,
         constructed: Vec<AggregateId>,
-        returned: Option<Returned>,
     },
-}
-#[derive(Debug)]
-pub(super) struct Returned {
-    pub(super) sequence: usize,
-    pub(super) location: TraceLocation,
-    pub(super) values: Range<usize>,
-    pub(super) frame: Option<FrameId>,
 }
 impl Command {
     pub(super) fn view<'a>(&'a self, recording: &'a Recording) -> ControlCommand<'a> {
@@ -109,14 +84,12 @@ impl Command {
             Action::ReturnFrom {
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 constructed,
             } => ControlAction::ReturnFrom {
                 target: *target,
                 target_location: *target_location,
-                unwound_callbacks: *unwound_callbacks,
                 values: recording.arena.slice(values),
                 work: *work,
                 constructed,
@@ -126,20 +99,11 @@ impl Command {
                 args,
                 work,
                 constructed,
-                returned,
             } => ControlAction::CallGuest {
                 callee: &recording.arena.values[*callee],
                 args: recording.arena.slice(args),
                 work: *work,
                 constructed,
-                returned: returned.as_ref().map(|returned| GuestReturn {
-                    sequence: returned.sequence,
-                    location: returned.location,
-                    values: recording.arena.slice(&returned.values),
-                    stack: returned
-                        .frame
-                        .map(|frame| CallStack::new(&recording.frames, frame, returned.location)),
-                }),
             },
         };
         ControlCommand {

@@ -12,9 +12,128 @@ Changes for Execution Tape [0.1.0](#010-2026-10-27), dated 2026-10-27, are docum
 
 ## [Unreleased][]
 
+
 This release has an [MSRV][] of 1.88.
 
 ### Added
+
+- Retain successful invocation results with `retain_outputs`, or explicitly register raw
+  values with `Vm::retain_values`. Cloneable `RootedValues` handles share a registration;
+  `Vm::resolve` borrows its current values, heap and actual code owner. Last-drop makes the
+  group reclaimable at the next explicit `Vm::collect`, whose statistics report node counts.
+  `Limits::max_value_roots` bounds registered groups. Retaining/resolving never collects.
+
+- Migration: replace `Vm::aggregates_mut()` construction with `aggregate_builder()`. Its
+  append-only authority can construct aggregates and import snapshots, without clearing or
+  replacing storage behind registered values. Replace unrooted heap clearing with `collect`;
+  use `take_aggregates` to transfer the heap only when no registered groups remain live.
+  Raw `run`/`take_outputs` handles are valid until explicit collection or transfer. Use
+  registered values for durability across collection and snapshots for independent export.
+
+- `TraceSink::stack_activity` separates capture parking and attachment from logical run/scope
+  lifetime. Trace forwarding adapters must forward this callback for every nonempty mask,
+  including run-only and call-only subscriptions. Attachment retains logical stack identity
+  and identifies its actual parent; it does not emit another run or scope start.
+
+- Add proper terminal transfer through `emit_tail_call` and `emit_tail_resume`. The current
+  activation is retired, its result recipient and enclosing control context survive, and long
+  chains retain no forwarding frames. Verification requires the same final-result contracts;
+  cross-definition provenance checks survive elimination. Root replacement releases retired
+  registers and temporary payloads, while aggregate reclamation keeps its existing policy.
+  Migration: handle `ControlBoundary::{TailCall,TailResume}`, `VerifyError::TailResultMismatch`,
+  `Operands::Tail`, `ControlEvent::TailTransfer`, and `TraceOutcome::TailTransferred` in exhaustive
+  matches. Instruction history has a distinct `TailTransferred` outcome. Complete tail lifecycle
+  recording is still unfinished: `CaptureFault::UnsupportedControl` rejects checked replay.
+  The new opcodes belong to the unreleased wire 0.6; regenerate compiled programs as needed.
+
+- Use one owned guest-entry path for every embedding `call_guest`, including same-instance
+  calls. Entry keeps the exact namespace and shares budgets, heap and pending host request;
+  a typed exit to its root restores that request immediately. Replay uses one execution-wide
+  allocation baseline for guest values first observed after a later segment's entry, checking
+  their contents and sharing before use. Root instruction completeness includes child captures.
+  Migration: `ValueEvent::GuestCall` replaces `CallbackEnter`; actual checked returns use
+  `ControlEvent::ReturnInstance` and `Recording::transfers`, replacing `CallbackReturn`,
+  `ControlAction::CallGuest::returned`, `GuestReturn` and `ReplayBoundary::ControlReturn`.
+  Callback bodies have their own segment and local frame ordinals. Use opaque activation IDs
+  and segment parents; `InstructionStep::parent_attempt` and `unwound_callbacks` are removed.
+
+
+- Resume guest computations into local typed outcome blocks. Suspension clauses share the
+  resumer's lexical registers; reinstalling a clause keeps repeated handling at constant frame
+  depth. Verifier analysis exposes exact request, continuation and result bindings for every arm,
+  and register observations report only the selected outcome's parameters.
+  Migration within the unreleased wire 0.6: replace callable `HandlerArm` targets with
+  `handler_block` clauses and declare the normal successor with `result_block`. Pass that label
+  to the terminating `emit_resume`; it no longer returns result registers. `emit_suspend` now
+  returns a `Vec` sized from the protocol instead of requiring a const result count. Regenerate
+  tapes. `Operands::Resume` exposes `returned` in place of `rets`; incoming `EdgeBinding` uses
+  `source: EdgeValueSource` in place of a register-only `argument`. Handle
+  `VerifyError::HandlerProtocolMismatch` and the new `ControlBuildError` target errors.
+
+- Qualify trace callbacks with `TraceContext`, carrying the exact definition and logical stack
+  identity independently of dynamic call nesting. Migration: trace sinks accept a context in
+  place of `&Program`; use `context.program()` for local IDs and `context.stack()` for live
+  stack identity. Forward the complete context through adapters. Synthetic observations can
+  explicitly use `TraceContext::unscoped` without claiming a live execution identity.
+
+- Add typed control protocols and execution-owned one-use continuations. Guest code can create
+  computations, suspend to a matching dynamic handler, and resume captured stacks under new
+  handlers. `ProgramBuilder::emit_continuation`, `emit_suspend`, and `emit_resume` validate
+  authoring inputs and allocate typed destinations. `InvocationInspection::saved_continuations`
+  distinguishes parked frames from active callers; object-root enumeration includes both.
+  Migration: regenerate bytecode for wire version 0.6. Handle the new `Tag` and `Continuation`
+  value kinds and signature contracts in exhaustive matches. Full `Limits` literals need
+  `max_continuations`; parked frames still count against `max_call_depth`. Owned snapshots and
+  graph inputs reject execution-local continuation capabilities.
+  Native control uses `PendingHostCall::{create_continuation,resume_continuation,discard_continuation}`;
+  each consumes its request view. Staged host aggregates are admitted before heap-dependent
+  validation. Handle `Trap::{GuestTransferAbandoned,ControlSignatureMismatch,ControlArityMismatch}`
+  and `ContractPosition::Control` in exhaustive diagnostic matches.
+
+- Bind retained code through `Vm::bind_instance`, then resolve functions through that instance
+  or preserve a control tag's fresh token with `ControlTag::in_instance`. Migration:
+  replace `vm.bind_function(&function)` with
+  `vm.bind_instance(function.instance())?.function(function.id())?`. Namespace binding transfers
+  code identity independently of mutable host state and aggregate storage.
+
+- Keep independently compiled guest calls in one execution through `PendingHostCall::call_guest`.
+  Suspended parents share the store and all resource budgets; only the root commits or rolls back
+  aggregate storage. `return_from` can target a live activation across those code boundaries.
+  Inspection exposes the real parent chain and each frame's exact code and instance. Control
+  transfers are observable separately from host completion. Callables retain their exact instances;
+  nominal aggregates require their original definition across boundaries. Host objects share the VM's host.
+  Migration: handle `ControlError::ForeignStore`, `Trap::CrossInstanceValue`, and
+  `Trap::ContractBoundary` in exhaustive matches. Cross-code contract errors retain the
+  boundary's definition independently of the initiating trap location. `PausedFrame` has code, namespace
+  and parent fields; activation display ordinals are local to a segment, so compare opaque IDs.
+
+- Record the actual cross-code execution tree through one root `Recorder`. `segments` retains
+  exact definitions, requested entries and parent activations; `transfers` distinguishes admitted
+  entry, rejected entry, checked return and typed non-local return. Capture quotas cover all
+  segments, and `aggregate_identity` compares sharing across their owned value arenas. Checked
+  replay drives one fresh VM and invocation, executes child code again under shared limits, and
+  checks namespace ownership, cross-segment identity and actual target activation. Missing child
+  observations make capture incomplete. Migration: handle `Outcome::Transferred`,
+  `ReplayError::{InSegment,ExecutionContextRequired}`, and `ReplayBoundary::Transfer` in exhaustive
+  matches. Child evidence is inspectable but must be replayed through its owning root recording.
+  `outcome_program` qualifies the final trap's numeric IDs and returns `None` if partial evidence
+  cannot establish their owner. Trace-forwarding wrappers must forward `TraceSink::control`;
+  `TraceMask::CONTROL` subscribes without requesting guest values, while `VALUES` includes control.
+
+- Instantiate shared verified code in a VM store with `Vm::instantiate`. `Instance::start`
+  rejects foreign stores before observing or entering guest code. Hosts and pending requests
+  expose the exact instance namespace; default entries create it lazily at their first host
+  boundary. Instance handles retain code and identity without retaining the VM or host state.
+  Migration: handle `Trap::InstanceLimitExceeded` in exhaustive matches. Raw function, aggregate
+  and nominal IDs still require their original domains; this does not make them portable.
+
+- Keep verified code alive across suspended raw entries. `VerifiedProgram::clone` shares its
+  immutable program, prepared instructions and signature cache; every `Vm::start` retains that
+  definition. `retain_callable` now supports successful raw-entry function/closure results.
+  `shares_definition_with` distinguishes shared definitions from independently verified equal
+  contents. Function `Callable` identity follows the shared definition. Migration: verify again
+  when a distinct definition is required; cloning retains code identity. `program_owner` remains
+  the optional original outer `Arc`; `program().clone()` retains code for every entry.
 
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
@@ -102,7 +221,50 @@ This release has an [MSRV][] of 1.88.
   budgets and ordinary host/value/recording semantics. Dropping an unfinished
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
+### Fixed
+
+- Qualify run-only trace observations with their exact stack identity and pair run endings
+  only with actual observed starts, including interrupted tail entry.
+
+- Make captured control's live ancestry follow attachment: a parked suffix has no outside
+  resumer frame, and resumption reports its actual new parent and resume instruction.
+  Creation ancestry remains separate from the current call chain.
+
 ### Changed
+
+- Saved stacks own their inputs and exact code without retaining borrowed trace or access
+  observers. One invocation observer lease drives every segment; the VM no longer shares it
+  through reference-counted runtime borrows. Owned inputs move during detachment, while ordinary
+  raw entry can continue borrowing inputs until ownership is needed.
+
+- Use one native-to-guest entry point for qualified functions and closures. Resolve an explicit
+  target with `instance.function(entry)?` and pass it directly to `request.call_guest(target, args)`.
+  Calls inherit the root execution's yielding policy, observer and access sink. Migration:
+  replace the provisional `call_instance(instance, entry, args, options)` with this path and move
+  observer/yield/access selection to root `InvocationOptions`. Resolve explicit targets on
+  `Instance` rather than constructing a `FunctionRef`; its local target accessor is `id()`.
+  `CallableError::MissingCaptureStorage` describes an unowned closure environment. Runtime target
+  lookup reports `InstanceError::MissingFunction`; callable export errors stay separate.
+
+- Qualify runtime function and closure targets with their exact code instance. Ordinary indirect
+  calls follow that owner across definitions in one VM, under one resource budget and transaction.
+  Owned closure imports bind captured callable namespaces to the destination host store. Loading
+  replacement code through a paused invocation does not patch existing values or activations.
+  Migration: `Value::Func` and `Closure::func` now hold `FunctionRef`; resolve default targets with
+  `Vm::function` or explicit targets with `Instance::function`. `Closure` is `Clone` rather than
+  `Copy`, and `ValueRef::{Func,Closure}` borrow their target. `Callable::{retain,from_snapshot}`
+  obtain code ownership from the value and no longer take a program argument.
+
+- Unify synchronous and cooperative calls on the execution-owned control path, retaining reusable
+  scalar scratch storage. Native-requested child entries charge immediate string/byte ingress;
+  indirect guest calls charge actual argument materialization. `PendingHostCall::call_guest`
+  returns `ControlError`, allowing foreign-store denial before admission. Trace entry events carry
+  `EntryOrigin`, and recording's control quota also bounds automatic cross-code entries. Migration:
+  handle `Trap::{ForeignStoreValue,GuestTransferAbandoned}` and the new origin field in exhaustive
+  matches. `Trap::CallableSignatureMismatch` and recorded callable values retain qualified targets.
+  `Trap::ContractMismatch::error` is boxed; `ContractViolation::contract_program` identifies a
+  foreign captured environment's expected contract table. Checked replay reconstructs these
+  namespaces and restores snapshot dependencies independently of their source handle order.
 
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include

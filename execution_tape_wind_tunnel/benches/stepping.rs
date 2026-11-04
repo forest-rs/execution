@@ -127,7 +127,9 @@ fn stepping(c: &mut Criterion) {
     group.finish();
 
     // These retained nodes make object inventory cost visible without growing the heap per sample.
-    vm.aggregates_mut().tuple_new(vec![object; 1024]).unwrap();
+    vm.aggregate_builder()
+        .tuple_new(vec![object; 1024])
+        .unwrap();
     let mut run = vm
         .start(&p, entry, &args, InvocationOptions::default())
         .unwrap();

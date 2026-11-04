@@ -9,7 +9,7 @@ use execution_tape::{
     asm::{BuildError, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     opcode::Opcode,
-    program::{Const, Program, ValueType},
+    program::{Const, ValueType},
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{RegisterEvent, RegisterPhase, TraceMask, TraceSink},
     value::{FuncId, Value},
@@ -52,10 +52,22 @@ struct Observe {
     writes: Vec<(u32, Value)>,
 }
 impl TraceSink for Observe {
-    fn instr(&mut self, _: &Program, _: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
+    fn instr(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _: FuncId,
+        pc: u32,
+        _: u32,
+        _: Option<u64>,
+        opcode: u8,
+    ) {
         self.instructions.push((pc, opcode));
     }
-    fn registers(&mut self, _: &Program, event: RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        event: RegisterEvent<'_>,
+    ) {
         if event.phase == RegisterPhase::Outputs {
             self.writes.extend(
                 event

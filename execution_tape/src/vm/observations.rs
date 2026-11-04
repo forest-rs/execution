@@ -39,14 +39,69 @@ pub(super) fn emit(
     sources: ValueSources<'_>,
     phase: RegisterPhase,
 ) {
+    emit_selected(
+        register_state,
+        trace,
+        program,
+        ctx,
+        func,
+        pc,
+        base,
+        sources,
+        phase,
+        None,
+    );
+}
+
+/// An actual resume outcome binds the selected block's parameters, rather than all arms.
+pub(super) fn emit_edge(
+    register_state: &mut RegisterState,
+    trace: &mut TraceCtx<'_>,
+    program: &Program,
+    ctx: &Registers,
+    location: TraceLocation,
+    base: RegBase,
+    sources: ValueSources<'_>,
+    target: u32,
+) {
+    emit_selected(
+        register_state,
+        trace,
+        program,
+        ctx,
+        location.func,
+        location.pc,
+        base,
+        sources,
+        RegisterPhase::Outputs,
+        Some(target),
+    );
+}
+
+fn emit_selected(
+    register_state: &mut RegisterState,
+    trace: &mut TraceCtx<'_>,
+    program: &Program,
+    ctx: &Registers,
+    func: FuncId,
+    pc: u32,
+    base: RegBase,
+    sources: ValueSources<'_>,
+    phase: RegisterPhase,
+    target: Option<u32>,
+) {
     if !trace.enabled(TraceMask::REGISTERS) {
         return;
     }
     let location = TraceLocation { func, pc };
-    let Some(sink) = &mut trace.sink else {
+    let Some(sink) = trace.sink.as_deref_mut() else {
         return;
     };
-    if !sink.wants_registers(location, phase) {
+    if !sink.wants_registers(
+        TraceContext::new(program, trace.state.stack.as_ref()),
+        location,
+        phase,
+    ) {
         return;
     }
     let map = match register_state.entry(func.0) {
@@ -72,9 +127,20 @@ pub(super) fn emit(
     {
         return;
     }
-    let registers = match phase {
-        RegisterPhase::Inputs => RegIter::from_operands(instruction.reads()),
-        RegisterPhase::Outputs => RegIter::from_operands(instruction.writes()),
+    let registers = match target {
+        Some(target) => {
+            let Ok(index) = map.instructions.binary_search_by_key(&target, |i| i.offset) else {
+                return;
+            };
+            let Instr::Block { params } = &map.instructions[index].instr else {
+                return;
+            };
+            RegIter::slice(params)
+        }
+        None => match phase {
+            RegisterPhase::Inputs => RegIter::from_operands(instruction.reads()),
+            RegisterPhase::Outputs => RegIter::from_operands(instruction.writes()),
+        },
     };
     let read = |reg: u32| {
         let reg = *map.registers.get(reg as usize)?;
@@ -92,13 +158,15 @@ pub(super) fn emit(
             &ctx.aggs,
             &ctx.funcs,
             &ctx.closures,
+            &ctx.tags,
+            &ctx.continuations,
             base,
             reg,
         )
         .ok()
     };
     sink.registers(
-        program,
+        TraceContext::new(program, trace.state.stack.as_ref()),
         RegisterEvent {
             location,
             phase,
@@ -114,7 +182,7 @@ pub(super) fn emit(
 /// Source-to-bank mapping requested by optional tracing or paused inspection.
 pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>> {
     let function = program.functions.get(func.0 as usize)?;
-    let mut counts = [0_u32; 12];
+    let mut counts = [0_u32; 14];
     let mut registers = Vec::with_capacity(function.reg_count as usize);
     for kind in function.register_types(program).ok()?.iter() {
         let class = crate::typed::RegClass::of(kind);
@@ -134,6 +202,8 @@ pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>>
             ValueType::Agg => VReg::Agg(AggReg(n)),
             ValueType::Func => VReg::Func(FuncReg(n)),
             ValueType::Closure => VReg::Closure(ClosureReg(n)),
+            ValueType::Tag => VReg::Tag(TagReg(n)),
+            ValueType::Continuation => VReg::Continuation(ContinuationReg(n)),
         });
     }
     Some(registers)

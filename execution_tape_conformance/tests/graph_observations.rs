@@ -267,22 +267,27 @@ impl TraceSink for RunOnly {
             TraceMask::RUN
         }
     }
-    fn run_mask(&mut self, _: &execution_tape::program::Program, mask: TraceMask) {
+    fn run_mask(&mut self, _context: execution_tape::trace::TraceContext<'_>, mask: TraceMask) {
         self.masks.push(mask);
     }
-    fn run_start(&mut self, _: &execution_tape::program::Program, _: FuncId, _: usize) {
+    fn run_start(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _: FuncId,
+        _: usize,
+    ) {
         self.starts += 1;
     }
     fn run_end(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: execution_tape::trace::TraceOutcome<'_>,
     ) {
         self.ends += 1;
     }
     fn scope_enter(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: execution_tape::trace::ScopeKind,
         _: usize,
         _: FuncId,
@@ -394,11 +399,12 @@ fn ownership_rejection_precedes_observer_admission() {
             ..Observe::default()
         }),
     );
+    let input = execution_tape::value::AggHandle(u32::MAX);
     let node = graph
         .add_tape_node(program, entry, vec!["input".into()])
         .unwrap();
     graph
-        .set_input_value(node, "input", Value::Func(entry).into())
+        .set_input_value(node, "input", Value::Agg(input).into())
         .unwrap();
     assert!(matches!(
         graph.run_all(),
@@ -409,4 +415,124 @@ fn ownership_rejection_precedes_observer_admission() {
     ));
     assert_eq!(graph.executor().observer().begun, 0);
     assert!(graph.executor().observer().captures.is_empty());
+}
+
+#[test]
+fn graph_observers_receive_stack_changes_and_selected_control_transfers() {
+    use execution_tape::trace::{ControlEvent, StackActivity, TraceContext};
+    struct Events {
+        mask: TraceMask,
+        parks: usize,
+        attaches: usize,
+        tails: usize,
+    }
+    impl TraceSink for Events {
+        fn mask(&self) -> TraceMask {
+            self.mask
+        }
+        fn stack_activity(&mut self, context: TraceContext<'_>, activity: StackActivity<'_>) {
+            assert!(context.stack().is_some());
+            match activity {
+                StackActivity::Parked => self.parks += 1,
+                StackActivity::Attached { .. } => self.attaches += 1,
+            }
+        }
+        fn control(&mut self, _: TraceContext<'_>, event: ControlEvent<'_>) {
+            self.tails += usize::from(matches!(event, ControlEvent::TailTransfer { .. }));
+        }
+    }
+    struct ObserveEvents {
+        mask: TraceMask,
+        result: Option<Events>,
+    }
+    impl TapeObserver for ObserveEvents {
+        type Sink = Events;
+        fn begin(&mut self, _: TapeInvocation<'_>) -> Option<Events> {
+            Some(Events {
+                mask: self.mask,
+                parks: 0,
+                attaches: 0,
+                tails: 0,
+            })
+        }
+        fn finish(&mut self, _: TapeInvocation<'_>, sink: Events, result: Result<(), &TapeError>) {
+            assert!(result.is_ok());
+            self.result = Some(sink);
+        }
+    }
+    let mut builder = ProgramBuilder::new();
+    let abi = FunctionSig {
+        arg_types: vec![],
+        ret_types: vec![ValueType::I64],
+    };
+    let initial = builder.call_sig(abi.clone()).unwrap();
+    let response = builder
+        .call_sig(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let operation = builder.control_tag("answer", abi.clone()).unwrap();
+    let root = builder.declare_function(abi.clone()).unwrap();
+    let worker = builder.declare_function(abi).unwrap();
+    let mut body = builder.function_asm(worker).unwrap();
+    let tag = body.alloc_register(ValueType::Tag);
+    body.const_tag(tag, operation);
+    let answer = builder.emit_suspend(&mut body, tag, initial, &[]).unwrap();
+    body.ret(0, &answer);
+    builder.define_function(worker, body).unwrap();
+    let mut body = builder.function_asm(root).unwrap();
+    let target = body.alloc_register(ValueType::Func);
+    let tag = body.alloc_register(ValueType::Tag);
+    let answer = body.alloc_register(ValueType::I64);
+    body.const_func(target, worker)
+        .const_tag(tag, operation)
+        .const_i64(answer, 42);
+    let computation = builder
+        .emit_continuation(&mut body, target, initial)
+        .unwrap();
+    let returned = builder.result_block(&mut body, initial).unwrap();
+    let clause = builder.handler_block(&mut body, tag, initial).unwrap();
+    builder
+        .emit_resume(
+            &mut body,
+            computation,
+            initial,
+            &[],
+            returned.label(),
+            &[clause.arm()],
+        )
+        .unwrap();
+    body.place(clause.label()).unwrap();
+    builder
+        .emit_tail_resume(&mut body, clause.continuation(), response, &[answer])
+        .unwrap();
+    body.place(returned.label()).unwrap();
+    body.ret(0, returned.results());
+    builder.define_function(root, body).unwrap();
+    let program = Arc::new(builder.build_verified().unwrap());
+    for mask in [
+        TraceMask::NONE,
+        TraceMask::RUN,
+        TraceMask::CALL,
+        TraceMask::CONTROL,
+        TraceMask::VALUES,
+    ] {
+        for strict in [false, true] {
+            let observer = ObserveEvents { mask, result: None };
+            let mut executor =
+                TapeExecutor::new(state(), Limits::default()).with_observer(observer);
+            executor.set_strict_deps(strict);
+            let mut graph = ExecutionGraph::new(executor);
+            graph.add_tape_node(program.clone(), root, vec![]).unwrap();
+            graph.run_all().unwrap();
+            let events = graph.executor().observer().result.as_ref().unwrap();
+            let observed = usize::from(mask != TraceMask::NONE);
+            assert_eq!((events.parks, events.attaches), (observed, observed));
+            assert_eq!(
+                events.tails,
+                usize::from(mask.contains(TraceMask::CONTROL) || mask.contains(TraceMask::VALUES))
+            );
+        }
+    }
 }

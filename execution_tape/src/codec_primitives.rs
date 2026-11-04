@@ -106,3 +106,49 @@ pub(crate) fn write_reg_list(out: &mut Vec<u8>, regs: &[u32]) -> Result<(), OutO
     }
     Ok(())
 }
+
+pub(crate) fn read_handlers(
+    r: &mut Reader<'_>,
+) -> Result<Vec<crate::control::HandlerClause>, DecodeError> {
+    let count = read_u32_uleb(r)? as usize;
+    if count > r.remaining() / 4 {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let mut arms = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mode = r.read_u8()?;
+        let tag = read_reg(r)?;
+        let signature = crate::program::CallSigId(read_u32_uleb(r)?);
+        let target = read_u32_uleb(r)?;
+        arms.push(match mode {
+            0 => crate::control::HandlerClause::Suspend {
+                tag,
+                signature,
+                target,
+            },
+            _ => return Err(DecodeError::OutOfBounds),
+        });
+    }
+    Ok(arms)
+}
+pub(crate) fn write_handlers(
+    out: &mut Vec<u8>,
+    arms: &[crate::control::HandlerClause],
+) -> Result<(), OutOfBounds> {
+    write_u32_uleb(out, u32::try_from(arms.len()).map_err(|_| OutOfBounds)?);
+    for &arm in arms {
+        match arm {
+            crate::control::HandlerClause::Suspend {
+                tag,
+                signature,
+                target,
+            } => {
+                out.push(0);
+                write_reg(out, tag);
+                write_u32_uleb(out, signature.0);
+                write_u32_uleb(out, target);
+            }
+        }
+    }
+    Ok(())
+}

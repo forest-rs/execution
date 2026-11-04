@@ -9,6 +9,8 @@
 //! The encoding matches the "Draft encoding for minimal implemented opcodes" section in
 //! `docs/v1_spec.md`.
 
+mod control;
+pub use control::{ControlBuildError, HandlerArm, HandlerBlock, ResultBlock};
 mod calls;
 pub use calls::{CallBuildError, CallTarget};
 mod closures;
@@ -25,9 +27,9 @@ use crate::format::{write_sleb128_i64, write_sleb128_i128, write_uleb128_u64};
 use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
-    ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
-    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry,
-    SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
+    ByteRange, CallSigEntry, CallSigId, Const, ConstId, ControlTagEntry, ControlTagId, ElemTypeId,
+    FunctionNameEntry, GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry,
+    Program, SpanEntry, SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::Decimal;
 use crate::value::FuncId;
@@ -164,6 +166,8 @@ impl From<VerifyError> for AsmError {
 /// A [`ProgramBuilder`] error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildError {
+    /// A signature-aware control instruction could not be emitted.
+    Control(ControlBuildError),
     /// A signature references an absent compositional contract.
     Contract(ContractBuildError),
     /// Signature-aware call emission was denied before mutation.
@@ -210,6 +214,7 @@ impl fmt::Display for BuildError {
             Self::Contract(error) => error.fmt(f),
             Self::Call(error) => error.fmt(f),
             Self::Closure(error) => error.fmt(f),
+            Self::Control(error) => error.fmt(f),
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
             Self::BadArgIndex {
                 func,
@@ -261,6 +266,7 @@ impl core::error::Error for BuildError {
             Self::Contract(error) => Some(error),
             Self::Call(error) => Some(error),
             Self::Closure(error) => Some(error),
+            Self::Control(error) => Some(error),
             _ => None,
         }
     }
@@ -280,6 +286,12 @@ impl From<ContractBuildError> for BuildError {
 impl From<CallBuildError> for BuildError {
     fn from(error: CallBuildError) -> Self {
         Self::Call(error)
+    }
+}
+
+impl From<ControlBuildError> for BuildError {
+    fn from(error: ControlBuildError) -> Self {
+        Self::Control(error)
     }
 }
 
@@ -445,6 +457,7 @@ pub struct ProgramBuilder {
     symbols: Vec<HostSymbol>,
     const_pool: Vec<Const>,
     call_sigs: Vec<CallSigDef>,
+    control_tags: Vec<ControlTagEntry>,
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
     functions: Vec<GuestFunctionDef>,
@@ -710,6 +723,24 @@ impl ProgramBuilder {
         Ok(id)
     }
 
+    /// Declares a distinct control tag with request arguments and resume responses.
+    ///
+    /// Equal signatures do not merge tag identities. Each instantiated definition receives its
+    /// own local tags; share a runtime tag explicitly when independent code handles one protocol.
+    pub fn control_tag(
+        &mut self,
+        name: &str,
+        abi: impl Into<FunctionAbi>,
+    ) -> Result<ControlTagId, ContractBuildError> {
+        let id = ControlTagId(
+            u32::try_from(self.control_tags.len()).map_err(|_| ContractBuildError::Capacity)?,
+        );
+        let signature = self.call_sig(abi)?;
+        let name = self.symbol(name);
+        self.control_tags.push(ControlTagEntry { name, signature });
+        Ok(id)
+    }
+
     /// Interns a compositional contract. Create child contracts before their parents.
     ///
     /// IDs belong to this builder. Struct and array refinements are checked against the nominal
@@ -893,6 +924,7 @@ impl ProgramBuilder {
             });
         }
         p.program_name = self.program_name;
+        p.control_tags = self.control_tags;
         p.function_names = self.function_names;
         p.labels = self.labels;
 
@@ -1902,6 +1934,117 @@ impl Asm {
         self
     }
 
+    /// Resolves an instance-local control operation declared by [`ProgramBuilder::control_tag`].
+    pub fn const_tag(&mut self, dst: u32, tag: ControlTagId) -> &mut Self {
+        self.opcode(Opcode::ConstTag);
+        self.reg(dst);
+        self.uleb(tag.0);
+        self
+    }
+
+    /// Creates a fresh lexical operation with the declared request/response contracts.
+    pub fn tag_new(&mut self, dst: u32, tag: ControlTagId) -> &mut Self {
+        self.opcode(Opcode::TagNew);
+        self.reg(dst);
+        self.uleb(tag.0);
+        self.reg(0);
+        self.reg(0);
+        self
+    }
+
+    /// Creates an unstarted, one-use computation. `signature` excludes a closure's environment.
+    pub fn cont_new(&mut self, dst: u32, callee: u32, signature: CallSigId) -> &mut Self {
+        self.opcode(Opcode::ContNew);
+        self.reg(dst);
+        self.uleb(signature.0);
+        self.reg(callee);
+        self.reg(0);
+        self.reg(0);
+        self
+    }
+
+    /// Consumes a continuation and attaches it under these dynamic handlers.
+    ///
+    /// `signature` describes this suspension's resume inputs and eventual final results.
+    /// Handler targets are local typed blocks receiving request values followed by the captured
+    /// continuation. The target runs outside the captured delimiter in this same frame.
+    pub fn cont_resume(
+        &mut self,
+        continuation: u32,
+        signature: CallSigId,
+        args: &[u32],
+        returned: Label,
+        handlers: &[HandlerArm],
+    ) -> &mut Self {
+        self.opcode(Opcode::ContResume);
+        self.uleb(signature.0);
+        self.reg(continuation);
+        self.reg(0);
+        self.reg(0);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &reg in args {
+            self.reg(reg);
+        }
+        self.pc_label(returned);
+        self.uleb(u32::try_from(handlers.len()).unwrap_or(u32::MAX));
+        for &arm in handlers {
+            match arm {
+                HandlerArm::Suspend {
+                    tag,
+                    signature,
+                    target,
+                } => {
+                    self.bytes.push(0);
+                    self.reg(tag);
+                    self.uleb(signature.0);
+                    self.pc_label(target);
+                }
+            }
+        }
+        self
+    }
+
+    /// Suspends to the nearest matching handler and waits for typed response values.
+    pub fn suspend(
+        &mut self,
+        tag: u32,
+        signature: CallSigId,
+        request: &[u32],
+        response: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::Suspend);
+        self.uleb(signature.0);
+        self.reg(tag);
+        self.reg(0);
+        self.reg(0);
+        self.uleb(u32::try_from(request.len()).unwrap_or(u32::MAX));
+        for &reg in request {
+            self.reg(reg);
+        }
+        self.uleb(u32::try_from(response.len()).unwrap_or(u32::MAX));
+        for &reg in response {
+            self.reg(reg);
+        }
+        self
+    }
+
+    /// Consumes and hard-cancels a saved computation without running guest cleanup.
+    pub fn cont_drop(&mut self, continuation: u32) -> &mut Self {
+        self.opcode(Opcode::ContDrop);
+        self.reg(continuation);
+        self.reg(0);
+        self.reg(0);
+        self
+    }
+
+    /// Reports whether an active resume delimiter handles this exact operation.
+    pub fn tag_is_handled(&mut self, dst: u32, tag: u32) -> &mut Self {
+        self.opcode(Opcode::TagIsHandled);
+        self.reg(dst);
+        self.reg(tag);
+        self
+    }
+
     /// Encodes `call eff_out, func_id, eff_in, argc, args..., retc, rets...`.
     pub fn call(
         &mut self,
@@ -1954,6 +2097,41 @@ impl Asm {
         self.uleb(u32::try_from(rets.len()).unwrap_or(u32::MAX));
         for &r in rets {
             self.reg(r);
+        }
+        self
+    }
+
+    /// Replaces this activation with a qualified callable; the signature's final results must
+    /// exactly match this function's results. There are no result registers or fallthrough.
+    pub fn tail_call(&mut self, signature: CallSigId, callee: u32, args: &[u32]) -> &mut Self {
+        self.opcode(Opcode::TailCall);
+        self.uleb(signature.0);
+        self.reg(callee);
+        self.reg(0);
+        self.reg(0);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &arg in args {
+            self.reg(arg);
+        }
+        self
+    }
+
+    /// Consumes a saved computation, replacing this activation and inheriting its result
+    /// recipient. Local clauses require a live resumer; use [`Self::cont_resume`] for those.
+    pub fn tail_resume(
+        &mut self,
+        signature: CallSigId,
+        continuation: u32,
+        args: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::TailResume);
+        self.uleb(signature.0);
+        self.reg(continuation);
+        self.reg(0);
+        self.reg(0);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &arg in args {
+            self.reg(arg);
         }
         self
     }

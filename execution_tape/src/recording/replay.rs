@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
+use crate::control::{ContinuationRef, ControlTag};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, Program};
 use crate::recording::control::Action;
@@ -15,9 +16,21 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+mod execution;
+
 /// Difference between the replay and the captured boundary contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Divergence {
+    /// An operation's declaration, namespace, freshness or sharing differs.
+    ControlTag {
+        /// Original operation identity and request/response contracts.
+        expected: ControlTag,
+    },
+    /// Recorded continuation authority has no corresponding computation in this replay.
+    Continuation {
+        /// Original logical capability and its separate parameter/result contracts.
+        expected: ContinuationRef,
+    },
     /// Host invocation occurred at another guest instruction.
     Location {
         /// Recorded instruction.
@@ -93,6 +106,11 @@ pub enum Divergence {
 /// Boundary being checked when replay diverged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReplayBoundary {
+    /// Checking one execution-wide cross-instance transfer observation.
+    Transfer {
+        /// Ordinal in [`Recording::transfers`].
+        index: usize,
+    },
     /// Checking one retained instruction attempt or completion.
     Instruction {
         /// Zero-based attempt ordinal.
@@ -111,11 +129,6 @@ pub enum ReplayBoundary {
         /// Zero-based command ordinal.
         index: usize,
     },
-    /// Checking a command's actual guest return.
-    ControlReturn {
-        /// Zero-based command ordinal.
-        index: usize,
-    },
     /// Checking the top-level return candidate before heap commit.
     ReturnCandidate,
     /// Comparing final call counts and run outcomes.
@@ -125,6 +138,16 @@ pub enum ReplayBoundary {
 /// Replay could not establish the captured invocation's result.
 #[derive(Clone, Debug)]
 pub enum ReplayError {
+    /// A child segment shares control, storage and budgets with its owning execution.
+    /// Replay the root recording to check this segment in its actual context.
+    ExecutionContextRequired,
+    /// A divergence or incomplete segment inside a composed execution.
+    InSegment {
+        /// Execution-local segment whose exact definition interprets the source location.
+        segment: u64,
+        /// Underlying boundary diagnostic.
+        error: alloc::boxed::Box<Self>,
+    },
     /// A partial capture cannot be replayed as complete.
     Incomplete(CaptureFault),
     /// Guest execution diverged from recorded boundary values or outcomes.
@@ -142,12 +165,20 @@ pub enum ReplayError {
 
 impl core::fmt::Display for ReplayError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "replay failed: {self:?}")
+        match self {
+            Self::ExecutionContextRequired => f.write_str(
+                "child evidence requires its execution context; replay the owning root recording",
+            ),
+            Self::InSegment { segment, error } => write!(f, "segment #{segment}: {error}"),
+            _ => write!(f, "replay failed: {self:?}"),
+        }
     }
 }
 impl core::error::Error for ReplayError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            Self::InSegment { error, .. } => Some(error.as_ref()),
+            Self::ExecutionContextRequired => None,
             Self::Incomplete(error) => Some(error),
             Self::Aggregate(error) => Some(error),
             Self::Diverged { .. } => None,
@@ -166,11 +197,12 @@ pub enum ReplayOutcome {
 
 #[derive(Default)]
 struct State {
+    controls: ControlBindings,
+    instances: Option<Rc<BTreeMap<usize, crate::instance::Instance>>>,
     instructions: usize,
     pending: Vec<usize>,
     commands: usize,
     sequence: usize,
-    active_commands: Vec<usize>,
     boundary: ReplayBoundary,
     bindings: BTreeMap<AggregateId, AggHandle>,
     inverse: BTreeMap<u32, AggregateId>,
@@ -182,9 +214,170 @@ struct State {
     top: Option<crate::recording::frames::FrameId>,
     final_top: Option<crate::recording::frames::FrameId>,
     error: Option<ReplayError>,
+    global: Option<Rc<RefCell<execution::Identities>>>,
+    origins: Vec<u32>,
+}
+
+type ControlIdentity = (usize, u32, u64);
+
+#[derive(Default)]
+struct ControlBindings {
+    forward: BTreeMap<ControlIdentity, ContinuationRef>,
+    inverse: BTreeMap<ControlIdentity, ControlIdentity>,
+    tags: BTreeMap<(usize, u32, usize), ControlTag>,
+    tag_inverse: BTreeMap<(usize, u32, usize), (usize, u32, usize)>,
+}
+impl ControlBindings {
+    fn bind_tag(&mut self, expected: &ControlTag, actual: &ControlTag) -> bool {
+        let source = expected.identity();
+        let target = actual.identity();
+        if let Some(prior) = self.tags.get(&source) {
+            return prior == actual;
+        }
+        if self
+            .tag_inverse
+            .get(&target)
+            .is_some_and(|prior| *prior != source)
+        {
+            return false;
+        }
+        self.tags.insert(source, actual.clone());
+        self.tag_inverse.insert(target, source);
+        true
+    }
+    fn get_tag(&self, expected: &ControlTag) -> Option<ControlTag> {
+        self.tags.get(&expected.identity()).cloned()
+    }
+    fn bind(&mut self, expected: &ContinuationRef, actual: &ContinuationRef) -> bool {
+        if !expected.has_signature(actual) {
+            return false;
+        }
+        let source = expected.identity();
+        let target = actual.identity();
+        if let Some(prior) = self.forward.get(&source) {
+            return prior == actual;
+        }
+        if self
+            .inverse
+            .get(&target)
+            .is_some_and(|prior| *prior != source)
+        {
+            return false;
+        }
+        self.forward.insert(source, actual.clone());
+        self.inverse.insert(target, source);
+        true
+    }
+    fn get(&self, expected: &ContinuationRef) -> Option<ContinuationRef> {
+        self.forward.get(&expected.identity()).cloned()
+    }
 }
 
 impl State {
+    fn bound_tag(&self, expected: &ControlTag) -> Option<ControlTag> {
+        if let Some(global) = &self.global {
+            global.borrow().controls.get_tag(expected)
+        } else {
+            self.controls.get_tag(expected)
+        }
+    }
+
+    fn bind_tag(&mut self, expected: &ControlTag, actual: &ControlTag) -> Result<(), ReplayError> {
+        let instance = self
+            .instances
+            .as_ref()
+            .and_then(|instances| instances.get(&(Arc::as_ptr(&expected.instance().0) as usize)));
+        let compatible = instance == Some(actual.instance())
+            && expected.id() == actual.id()
+            && expected.is_fresh() == actual.is_fresh();
+        let bound = compatible
+            && if let Some(global) = &self.global {
+                global.borrow_mut().controls.bind_tag(expected, actual)
+            } else {
+                self.controls.bind_tag(expected, actual)
+            };
+        if bound {
+            Ok(())
+        } else {
+            Err(self.mismatch(Divergence::ControlTag {
+                expected: expected.clone(),
+            }))
+        }
+    }
+
+    fn tag(&mut self, source: &ControlTag) -> Result<ControlTag, ReplayError> {
+        if let Some(actual) = self.bound_tag(source) {
+            return Ok(actual);
+        }
+        let key = Arc::as_ptr(&source.instance().0) as usize;
+        let prototype = self
+            .instances
+            .as_ref()
+            .and_then(|instances| instances.get(&key))
+            .and_then(|instance| instance.control_tag(source.id()).ok())
+            .ok_or_else(|| {
+                self.mismatch(Divergence::ControlTag {
+                    expected: source.clone(),
+                })
+            })?;
+        let actual = if source.is_fresh() {
+            prototype.fresh()
+        } else {
+            prototype
+        };
+        self.bind_tag(source, &actual)?;
+        Ok(actual)
+    }
+
+    fn bind_continuation(
+        &mut self,
+        expected: &ContinuationRef,
+        actual: &ContinuationRef,
+    ) -> Result<(), ReplayError> {
+        let bound = if let Some(global) = &self.global {
+            global.borrow_mut().controls.bind(expected, actual)
+        } else {
+            self.controls.bind(expected, actual)
+        };
+        if bound {
+            Ok(())
+        } else {
+            Err(self.mismatch(Divergence::Continuation {
+                expected: expected.clone(),
+            }))
+        }
+    }
+
+    fn continuation(&self, expected: &ContinuationRef) -> Result<ContinuationRef, ReplayError> {
+        let actual = if let Some(global) = &self.global {
+            global.borrow().controls.get(expected)
+        } else {
+            self.controls.get(expected)
+        };
+        actual.ok_or_else(|| {
+            self.mismatch(Divergence::Continuation {
+                expected: expected.clone(),
+            })
+        })
+    }
+    fn same_trap(&self, expected: &TrapInfo, actual: &TrapInfo) -> bool {
+        same_trap(expected, actual, self.instances.as_deref())
+    }
+    fn function(
+        &self,
+        source: &crate::value::FunctionRef,
+    ) -> Result<crate::value::FunctionRef, ReplayError> {
+        let key = Arc::as_ptr(&source.instance().0) as usize;
+        let instance = self
+            .instances
+            .as_ref()
+            .and_then(|instances| instances.get(&key))
+            .ok_or_else(|| self.mismatch(Divergence::Outcome))?;
+        instance
+            .function(source.id())
+            .map_err(|_| self.mismatch(Divergence::Outcome))
+    }
+
     fn mismatch(&self, reason: Divergence) -> ReplayError {
         ReplayError::Diverged {
             boundary: self.boundary,
@@ -203,6 +396,15 @@ impl State {
         }
         if self.inverse.contains_key(&handle.0) {
             return Err(self.mismatch(Divergence::Identity { aggregate: id }));
+        }
+        if let Some(global) = &self.global {
+            let origin = *self
+                .origins
+                .get(id.0 as usize)
+                .ok_or_else(|| self.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
+            if !global.borrow_mut().bind(origin, handle) {
+                return Err(self.mismatch(Divergence::Identity { aggregate: id }));
+            }
         }
         self.bindings.insert(id, handle);
         self.inverse.insert(handle.0, id);
@@ -228,10 +430,28 @@ impl State {
             (RecordedValue::Bytes(a), ValueRef::Bytes(b)) if a.as_ref() == b => None,
             (RecordedValue::Str(a), ValueRef::Str(b)) if a.as_ref() == b => None,
             (RecordedValue::Obj(a), ValueRef::Obj(b)) if *a == b => None,
-            (RecordedValue::Func(a), ValueRef::Func(b)) if *a == b => None,
+            (RecordedValue::Func(a), ValueRef::Func(b))
+                if self
+                    .function(a)
+                    .as_ref()
+                    .is_ok_and(|expected| expected == b) =>
+            {
+                None
+            }
+            (RecordedValue::Tag(a), ValueRef::Tag(b)) => {
+                self.bind_tag(a, b)?;
+                None
+            }
+            (RecordedValue::Continuation(expected), ValueRef::Continuation(actual)) => {
+                self.bind_continuation(expected, actual)?;
+                None
+            }
             (RecordedValue::Agg(id), ValueRef::Agg(handle)) => Some((*id, handle)),
             (RecordedValue::Closure { func, env }, ValueRef::Closure(value))
-                if *func == value.func =>
+                if self
+                    .function(func)
+                    .as_ref()
+                    .is_ok_and(|expected| expected == &value.func) =>
             {
                 Some((*env, value.env))
             }
@@ -342,22 +562,32 @@ impl State {
             // even when only observed initial nodes were restored. Check contents/aliasing
             // before using this mapping; no host mutation or guessed persistent ID needed.
             let node = &record.arena.nodes[id.0 as usize];
-            let handle = node
-                .created_offset
-                .and_then(|offset| self.initial_count.checked_add(offset))
-                .map(AggHandle)
+            // Segment-local creation offsets do not cover values created by an older caller.
+            // The execution baseline is valid only while the shared heap remains append-only
+            // until root commit. Intermediate turn compaction must replace this relocation rule.
+            let shared = self
+                .global
+                .as_ref()
+                .and_then(|global| global.borrow().candidate(node.origin));
+            let handle = shared
+                .or_else(|| {
+                    node.created_offset
+                        .and_then(|offset| self.initial_count.checked_add(offset))
+                        .map(AggHandle)
+                })
                 .ok_or_else(|| self.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
+            let actual = match value {
+                RecordedValue::Agg(_) => Value::Agg(handle),
+                RecordedValue::Closure { func, .. } => Value::Closure(Closure {
+                    func: self.function(func)?,
+                    env: handle,
+                }),
+                _ => unreachable!(),
+            };
             self.matches(
                 record,
                 core::slice::from_ref(value),
-                [match value {
-                    RecordedValue::Agg(_) => ValueRef::Agg(handle),
-                    RecordedValue::Closure { func, .. } => ValueRef::Closure(Closure {
-                        func: *func,
-                        env: handle,
-                    }),
-                    _ => unreachable!(),
-                }],
+                [ValueRef::from_value(&actual)],
                 heap,
             )?;
         }
@@ -371,14 +601,53 @@ impl State {
             RecordedValue::Bytes(value) => Value::Bytes(value.to_vec()),
             RecordedValue::Str(value) => Value::Str(value.as_ref().into()),
             RecordedValue::Obj(value) => Value::Obj(*value),
-            RecordedValue::Func(value) => Value::Func(*value),
+            RecordedValue::Func(value) => Value::Func(self.function(value)?),
+            RecordedValue::Tag(value) => Value::Tag(self.tag(value)?),
+            RecordedValue::Continuation(value) => Value::Continuation(self.continuation(value)?),
             RecordedValue::Agg(id) => Value::Agg(self.bindings[id]),
             RecordedValue::Closure { func, env } => Value::Closure(Closure {
-                func: *func,
+                func: self.function(func)?,
                 env: self.bindings[env],
             }),
         })
     }
+}
+
+fn prepare_instances<'a, H: Host>(
+    vm: &mut Vm<H>,
+    records: impl IntoIterator<Item = &'a Recording>,
+    roots: &[crate::instance::Instance],
+) -> Result<Rc<BTreeMap<usize, crate::instance::Instance>>, ReplayError> {
+    let mut instances = BTreeMap::new();
+    let mut add = |source: &crate::instance::Instance| -> Result<(), ReplayError> {
+        let key = Arc::as_ptr(&source.0) as usize;
+        if let alloc::collections::btree_map::Entry::Vacant(entry) = instances.entry(key) {
+            entry.insert(
+                vm.instantiate_recorded(source)
+                    .map_err(|_| ReplayError::Diverged {
+                        boundary: ReplayBoundary::InitialState,
+                        location: None,
+                        reason: Divergence::Outcome,
+                    })?,
+            );
+        }
+        Ok(())
+    };
+    for instance in roots {
+        add(instance)?;
+    }
+    for record in records {
+        for value in &record.arena.values {
+            match value {
+                RecordedValue::Func(function) | RecordedValue::Closure { func: function, .. } => {
+                    add(function.instance())?;
+                }
+                RecordedValue::Tag(tag) => add(tag.instance())?,
+                _ => {}
+            }
+        }
+    }
+    Ok(Rc::new(instances))
 }
 
 enum Delivery {
@@ -614,7 +883,12 @@ struct Check<'a> {
     state: Rc<RefCell<State>>,
 }
 impl TraceSink for Check<'_> {
-    fn wants_registers(&self, location: TraceLocation, phase: crate::trace::RegisterPhase) -> bool {
+    fn wants_registers(
+        &self,
+        _context: crate::trace::TraceContext<'_>,
+        location: TraceLocation,
+        phase: crate::trace::RegisterPhase,
+    ) -> bool {
         let state = self.state.borrow();
         let Some(step) = state
             .pending
@@ -631,7 +905,12 @@ impl TraceSink for Check<'_> {
             }
     }
 
-    fn registers(&mut self, _: &Program, event: crate::trace::RegisterEvent<'_>) {
+    fn registers(
+        &mut self,
+        _context: crate::trace::TraceContext<'_>,
+        event: crate::trace::RegisterEvent<'_>,
+    ) {
+        let _ = _context.program();
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -676,7 +955,7 @@ impl TraceSink for Check<'_> {
     }
     fn scope_enter(
         &mut self,
-        _: &Program,
+        _context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -710,7 +989,7 @@ impl TraceSink for Check<'_> {
 
     fn scope_exit(
         &mut self,
-        _: &Program,
+        _context: crate::trace::TraceContext<'_>,
         kind: ScopeKind,
         _: usize,
         _: FuncId,
@@ -718,6 +997,7 @@ impl TraceSink for Check<'_> {
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let _ = _context.program();
         if !matches!(kind, ScopeKind::CallFrame { .. }) {
             return;
         }
@@ -725,7 +1005,11 @@ impl TraceSink for Check<'_> {
         if state.error.is_some() {
             return;
         }
-        if matches!(outcome, TraceOutcome::Trap(_)) && state.final_top.is_none() {
+        if matches!(
+            outcome,
+            TraceOutcome::Trap(_) | TraceOutcome::Unwound { .. }
+        ) && state.final_top.is_none()
+        {
             state.final_top = state.top;
         }
         state.top = state
@@ -733,7 +1017,15 @@ impl TraceSink for Check<'_> {
             .and_then(|top| self.record.frames[top.index()].parent);
     }
 
-    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
+    fn instr(
+        &mut self,
+        _context: crate::trace::TraceContext<'_>,
+        func: FuncId,
+        pc: u32,
+        _: u32,
+        _: Option<u64>,
+        opcode: u8,
+    ) {
         let mut state = self.state.borrow_mut();
         state.location = Some(TraceLocation { func, pc });
         let index = state.instructions;
@@ -747,12 +1039,6 @@ impl TraceSink for Check<'_> {
                 if step.location != (TraceLocation { func, pc })
                     || step.opcode != opcode
                     || step.frame.is_some_and(|frame| Some(frame) != state.top)
-                    || step.parent
-                        != state
-                            .pending
-                            .last()
-                            .copied()
-                            .filter(|&parent| parent < history.steps.len())
                 {
                     state.error = Some(state.mismatch(Divergence::Instruction));
                 }
@@ -767,11 +1053,12 @@ impl TraceSink for Check<'_> {
 
     fn instr_end(
         &mut self,
-        _: &Program,
+        _context: crate::trace::TraceContext<'_>,
         location: TraceLocation,
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
+        let _ = _context.program();
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -793,6 +1080,14 @@ impl TraceSink for Check<'_> {
             TraceOutcome::Unwound { target } => {
                 crate::recording::InstructionOutcome::Unwound { target }
             }
+            TraceOutcome::TailTransferred { target } => {
+                crate::recording::InstructionOutcome::TailTransferred {
+                    target: crate::recording::RecordedActivation {
+                        segment: target.segment_ordinal(),
+                        activation: target.ordinal(),
+                    },
+                }
+            }
             TraceOutcome::Cancelled => {
                 state.boundary = ReplayBoundary::Instruction { index };
                 state.error = Some(state.mismatch(Divergence::Instruction));
@@ -806,7 +1101,8 @@ impl TraceSink for Check<'_> {
             state.error = Some(state.mismatch(Divergence::Instruction));
         }
     }
-    fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: crate::trace::TraceContext<'_>, event: ValueEvent<'_>) {
+        let _ = _context.program();
         let mut state = self.state.borrow_mut();
         if state.error.is_some() {
             return;
@@ -817,7 +1113,7 @@ impl TraceSink for Check<'_> {
                     location,
                     target,
                     target_location,
-                    unwound_callbacks,
+
                     values,
                     work,
                     created,
@@ -845,7 +1141,6 @@ impl TraceSink for Check<'_> {
                     let Action::ReturnFrom {
                         target: expected_target,
                         target_location: expected_location,
-                        unwound_callbacks: expected_callbacks,
                         values: expected_values,
                         work: expected_work,
                         constructed,
@@ -859,10 +1154,7 @@ impl TraceSink for Check<'_> {
                             actual: Some(target_location),
                         }));
                     }
-                    if target != *expected_target
-                        || unwound_callbacks != *expected_callbacks
-                        || work != *expected_work
-                    {
+                    if target != *expected_target || work != *expected_work {
                         return Err(state.mismatch(Divergence::Outcome));
                     }
                     check_created(self.record, &mut state, constructed, created)?;
@@ -872,12 +1164,6 @@ impl TraceSink for Check<'_> {
                         values.iter().map(ValueRef::from_value),
                         aggregates,
                     )?;
-                    let active = state
-                        .active_commands
-                        .len()
-                        .checked_sub(unwound_callbacks)
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    state.active_commands.truncate(active);
                     state.commands += 1;
                     state.sequence += 1;
                 }
@@ -926,7 +1212,7 @@ impl TraceSink for Check<'_> {
                     state.calls += 1;
                     state.sequence += 1;
                 }
-                ValueEvent::CallbackEnter {
+                ValueEvent::GuestCall {
                     location,
                     callee,
                     args,
@@ -979,45 +1265,7 @@ impl TraceSink for Check<'_> {
                         args.iter().map(ValueRef::from_value),
                         aggregates,
                     )?;
-                    state.active_commands.push(index);
                     state.commands += 1;
-                    state.sequence += 1;
-                }
-                ValueEvent::CallbackReturn {
-                    location,
-                    caller,
-                    values,
-                    aggregates,
-                } => {
-                    let index = state
-                        .active_commands
-                        .pop()
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    state.boundary = ReplayBoundary::ControlReturn { index };
-                    state.location = Some(location);
-                    let command = &self.record.commands[index];
-                    let Action::CallGuest { returned, .. } = &command.action else {
-                        return Err(state.mismatch(Divergence::Outcome));
-                    };
-                    let returned = returned
-                        .as_ref()
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    check_sequence(&state, returned.sequence)?;
-                    if caller != command.location || location != returned.location {
-                        return Err(state.mismatch(Divergence::Location {
-                            expected: returned.location,
-                            actual: Some(location),
-                        }));
-                    }
-                    if !self.record.frames.is_empty() && returned.frame != state.top {
-                        return Err(state.mismatch(Divergence::CallStack));
-                    }
-                    state.matches(
-                        self.record,
-                        self.record.arena.slice(&returned.values),
-                        values.iter().map(ValueRef::from_value),
-                        aggregates,
-                    )?;
                     state.sequence += 1;
                 }
                 ValueEvent::ReturnCandidate {
@@ -1059,6 +1307,12 @@ impl Recording {
     pub fn replay(&self) -> Result<ReplayOutcome, ReplayError> {
         self.status()
             .map_err(|fault| ReplayError::Incomplete(fault.clone()))?;
+        if self.context_required {
+            return Err(ReplayError::ExecutionContextRequired);
+        }
+        if self.execution.is_some() {
+            return execution::replay(self);
+        }
         let entry = self.entry.as_ref().expect("complete recording entry");
         let state = Rc::new(RefCell::new(State::default()));
         let mut recorded_host = RecordedHost {
@@ -1066,16 +1320,22 @@ impl Recording {
             state: Rc::clone(&state),
         };
         let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
-        for &id in &self.initial {
+        state.borrow_mut().instances = Some(prepare_instances(&mut vm, [self], &[])?);
+        let initial = self
+            .initial
+            .iter()
+            .map(|&id| (self.arena.nodes[id.0 as usize].origin, (0, id)))
+            .collect();
+        for (_, id) in initial_order(initial, |_| self)? {
             let node = self.aggregate(id).expect("complete initial node");
             let values = state
                 .borrow_mut()
                 .materialize(self, node.values, vm.aggregates())?;
             let handle = match node.kind {
-                AggType::Tuple { .. } => vm.aggregates_mut().tuple_new(values),
-                AggType::Struct { type_id } => vm.aggregates_mut().struct_new(type_id, values),
+                AggType::Tuple { .. } => vm.aggregate_builder().tuple_new(values),
+                AggType::Struct { type_id } => vm.aggregate_builder().struct_new(type_id, values),
                 AggType::Array { elem_type_id } => {
-                    vm.aggregates_mut().array_new(elem_type_id, values)
+                    vm.aggregate_builder().array_new(elem_type_id, values)
                 }
             }
             .map_err(ReplayError::Aggregate)?;
@@ -1127,8 +1387,14 @@ impl Recording {
                         let outcome = recorded_host.invoke(&mut request)?;
                         let outcome = match outcome {
                             Delivery::CallGuest { callee, args } => {
-                                if let Err(error) = request.call_guest(callee, args) {
-                                    break Err(error);
+                                match request.call_guest(callee, args) {
+                                    Ok(()) => {}
+                                    Err(crate::vm::ControlError::Trapped(error)) => {
+                                        break Err(error);
+                                    }
+                                    Err(_) => {
+                                        return Err(state.borrow().mismatch(Divergence::Outcome));
+                                    }
                                 }
                                 continue;
                             }
@@ -1165,44 +1431,7 @@ impl Recording {
             return Err(error.clone());
         }
         state.boundary = ReplayBoundary::Completion;
-        if let Some(history) = &self.history
-            && (state.instructions < history.steps.len()
-                || (history.status == crate::recording::InstructionStatus::Complete
-                    && state.instructions != history.steps.len()))
-        {
-            return Err(state.mismatch(Divergence::Instruction));
-        }
-        if state.calls != self.calls.len() {
-            return Err(state.mismatch(Divergence::HostCalls {
-                expected: self.calls.len(),
-                actual: state.calls,
-            }));
-        }
-        if state.commands != self.commands.len() {
-            return Err(state.mismatch(Divergence::ControlCommands {
-                expected: self.commands.len(),
-                actual: state.commands,
-            }));
-        }
-        if !state.pending.is_empty()
-            || state.active_commands.iter().any(|&index| {
-                matches!(
-                    &self.commands[index].action,
-                    Action::CallGuest {
-                        returned: Some(_),
-                        ..
-                    }
-                )
-            })
-            || (matches!(self.end, Some(End::Returned)) && !state.active_commands.is_empty())
-        {
-            return Err(state.mismatch(Divergence::Outcome));
-        }
-        if state.frames != self.frames.len()
-            || (!self.frames.is_empty() && self.outcome_frame != state.final_top)
-        {
-            return Err(state.mismatch(Divergence::CallStack));
-        }
+        check_finished(self, &mut state)?;
         match (
             self.end.as_ref().expect("complete recording outcome"),
             result,
@@ -1212,12 +1441,96 @@ impl Recording {
                     .snapshot(&values)
                     .map_err(ReplayError::Aggregate)?,
             )),
-            (End::Trapped(expected), Err(actual)) if same_trap(expected, &actual) => {
+            (End::Trapped(expected), Err(actual)) if state.same_trap(expected, &actual) => {
                 Ok(ReplayOutcome::Trapped(actual))
             }
             _ => Err(state.mismatch(Divergence::Outcome)),
         }
     }
+}
+
+// A snapshot may allocate a parent before its children. Source handles are identities, not
+// a topological order: restore dependencies first without recursion or merging equal nodes.
+fn initial_order<'a>(
+    nodes: BTreeMap<u32, (usize, AggregateId)>,
+    record: impl Fn(usize) -> &'a Recording,
+) -> Result<Vec<(usize, AggregateId)>, ReplayError> {
+    let mut complete = alloc::collections::BTreeSet::new();
+    let mut active = alloc::collections::BTreeSet::new();
+    let mut order = Vec::with_capacity(nodes.len());
+    for &root in nodes.keys() {
+        let mut pending = alloc::vec![(root, false)];
+        while let Some((origin, visited)) = pending.pop() {
+            if complete.contains(&origin) {
+                continue;
+            }
+            let &(index, id) = nodes
+                .get(&origin)
+                .ok_or(ReplayError::Aggregate(AggError::BadHandle))?;
+            if visited {
+                active.remove(&origin);
+                complete.insert(origin);
+                order.push((index, id));
+                continue;
+            }
+            if !active.insert(origin) {
+                return Err(ReplayError::Aggregate(AggError::UnresolvedStagedHandle));
+            }
+            pending.push((origin, true));
+            let record = record(index);
+            let node = record
+                .aggregate(id)
+                .ok_or(ReplayError::Aggregate(AggError::BadHandle))?;
+            for value in node.values {
+                let child = match value {
+                    RecordedValue::Agg(id) | RecordedValue::Closure { env: id, .. } => *id,
+                    _ => continue,
+                };
+                let child = record
+                    .arena
+                    .nodes
+                    .get(child.0 as usize)
+                    .ok_or(ReplayError::Aggregate(AggError::BadHandle))?;
+                pending.push((child.origin, false));
+            }
+        }
+    }
+    Ok(order)
+}
+
+fn check_finished(record: &Recording, state: &mut State) -> Result<(), ReplayError> {
+    if let Some(error) = &state.error {
+        return Err(error.clone());
+    }
+    state.boundary = ReplayBoundary::Completion;
+    if let Some(history) = &record.history
+        && (state.instructions < history.steps.len()
+            || (history.status == crate::recording::InstructionStatus::Complete
+                && state.instructions != history.steps.len()))
+    {
+        return Err(state.mismatch(Divergence::Instruction));
+    }
+    if state.calls != record.calls.len() {
+        return Err(state.mismatch(Divergence::HostCalls {
+            expected: record.calls.len(),
+            actual: state.calls,
+        }));
+    }
+    if state.commands != record.commands.len() {
+        return Err(state.mismatch(Divergence::ControlCommands {
+            expected: record.commands.len(),
+            actual: state.commands,
+        }));
+    }
+    if !state.pending.is_empty() {
+        return Err(state.mismatch(Divergence::Outcome));
+    }
+    if state.frames != record.frames.len()
+        || (!record.frames.is_empty() && record.outcome_frame != state.final_top)
+    {
+        return Err(state.mismatch(Divergence::CallStack));
+    }
+    Ok(())
 }
 
 fn same_host_error(a: &HostError, b: &HostError) -> bool {
@@ -1231,14 +1544,68 @@ fn same_host_error(a: &HostError, b: &HostError) -> bool {
     }
 }
 
-fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
+fn same_trap(
+    a: &TrapInfo,
+    b: &TrapInfo,
+    instances: Option<&BTreeMap<usize, crate::instance::Instance>>,
+) -> bool {
+    let function = |source: &crate::value::FunctionRef| {
+        instances
+            .and_then(|instances| instances.get(&(Arc::as_ptr(&source.instance().0) as usize)))
+            .map(|instance| crate::value::FunctionRef::from_verified(instance.clone(), source.id()))
+    };
+    let violation = |expected: &crate::contract::ContractViolation,
+                     actual: &crate::contract::ContractViolation| {
+        let mut expected = expected.clone();
+        if let crate::contract::ContractMismatch::Callable {
+            function: Some(source),
+        } = &mut expected.mismatch
+        {
+            let Some(mapped) = function(source) else {
+                return false;
+            };
+            *source = mapped;
+        }
+        expected == *actual
+    };
     if a.func != b.func || a.pc != b.pc || a.span_id != b.span_id {
         return false;
     }
     match (&a.trap, &b.trap) {
+        (Trap::ControlSignatureMismatch(a), Trap::ControlSignatureMismatch(b)) => a == b,
+        (
+            Trap::ControlArityMismatch {
+                boundary: a,
+                expected: ae,
+                actual: actual_a,
+            },
+            Trap::ControlArityMismatch {
+                boundary: b,
+                expected: be,
+                actual: actual_b,
+            },
+        ) => a == b && ae == be && actual_a == actual_b,
+        (Trap::Continuation(a), Trap::Continuation(b)) => a == b,
+        (Trap::ContinuationLimitExceeded, Trap::ContinuationLimitExceeded) => true,
+        (Trap::ContractBoundary(a), Trap::ContractBoundary(b)) => {
+            a.program.shares_definition_with(&b.program)
+                && a.function == b.function
+                && a.position == b.position
+                && match (&a.error, &b.error) {
+                    (
+                        crate::vm::ContractBoundaryFailure::Mismatch(a),
+                        crate::vm::ContractBoundaryFailure::Mismatch(b),
+                    ) => violation(a, b),
+                    (a, b) => a == b,
+                }
+        }
+        (Trap::CrossInstanceValue { kind: a }, Trap::CrossInstanceValue { kind: b }) => a == b,
+        (Trap::ForeignStoreValue { kind: a }, Trap::ForeignStoreValue { kind: b }) => a == b,
         (Trap::FuelExceeded, Trap::FuelExceeded)
+        | (Trap::GuestTransferAbandoned, Trap::GuestTransferAbandoned)
         | (Trap::CallDepthExceeded, Trap::CallDepthExceeded)
         | (Trap::HostCallLimitExceeded, Trap::HostCallLimitExceeded)
+        | (Trap::InstanceLimitExceeded, Trap::InstanceLimitExceeded)
         | (Trap::AggregateSizeOverflow, Trap::AggregateSizeOverflow)
         | (Trap::PayloadSizeOverflow, Trap::PayloadSizeOverflow)
         | (Trap::InvalidPc, Trap::InvalidPc)
@@ -1300,7 +1667,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 signature: b,
                 function: bf,
             },
-        ) => a == b && af == bf,
+        ) => a == b && function(af).as_ref() == Some(bf),
         (
             Trap::ContractWorkExceeded {
                 function: af,
@@ -1325,7 +1692,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 position: right_arg,
                 error: be,
             },
-        ) => ac == bc && aa == right_arg && ae == be,
+        ) => ac == bc && aa == right_arg && violation(ae, be),
         (
             Trap::HostCallFailed {
                 symbol: as_,
@@ -1413,10 +1780,16 @@ mod tests {
         let program = Arc::new(builder.build_verified().unwrap());
         let mut vm = Vm::new(Echo, Limits::default());
         let arg = if aggregate {
-            let first = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
-            let second = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
+            let first = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(7)])
+                .unwrap();
+            let second = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(7)])
+                .unwrap();
             Value::Agg(
-                vm.aggregates_mut()
+                vm.aggregate_builder()
                     .tuple_new(vec![Value::Agg(first), Value::Agg(second)])
                     .unwrap(),
             )
@@ -1486,10 +1859,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(handler), args.to_vec())
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(request.instance().function(handler).unwrap()),
+                args.to_vec(),
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
@@ -1528,7 +1906,6 @@ mod tests {
             let Action::ReturnFrom {
                 target,
                 target_location,
-                unwound_callbacks,
                 values,
                 work,
                 ..
@@ -1541,7 +1918,7 @@ mod tests {
                 1 => command.sequence += 1,
                 2 => command.location.pc += 1,
                 3 => record.arena.values[values.start] = RecordedValue::I64(99),
-                4 => *unwound_callbacks += 1,
+                4 => command.frame = None,
                 5 => work.aggregate = 0,
                 6 => work.payload = 0,
                 7 => target_location.pc += 1,
@@ -1557,21 +1934,23 @@ mod tests {
     #[test]
     fn corrupted_callback_return_is_checked_against_reexecuted_guest() {
         let mut record = callback_recording();
-        let Action::CallGuest {
-            returned: Some(returned),
-            ..
-        } = &record.commands[0].action
-        else {
-            panic!("return")
-        };
-        record.arena.values[returned.values.start] = RecordedValue::I64(99);
-        assert!(matches!(
-            record.replay(),
-            Err(ReplayError::Diverged {
-                boundary: ReplayBoundary::ControlReturn { index: 0 },
-                ..
+        let data = record.execution.as_ref().expect("guest execution");
+        let crate::recording::execution::Action::Returned { values, .. } = &data
+            .transfers
+            .iter()
+            .find(|transfer| {
+                matches!(
+                    transfer.action,
+                    crate::recording::execution::Action::Returned { .. }
+                )
             })
-        ));
+            .expect("actual return")
+            .action
+        else {
+            unreachable!()
+        };
+        record.arena.values[values.start] = RecordedValue::I64(99);
+        assert!(record.replay().is_err());
     }
 
     #[test]
@@ -1585,7 +1964,14 @@ mod tests {
                     let Action::CallGuest { callee, .. } = record.commands[0].action else {
                         panic!("callback fixture");
                     };
-                    record.arena.values[callee] = RecordedValue::Func(FuncId(99));
+                    let RecordedValue::Func(function) = &record.arena.values[callee] else {
+                        panic!("function command");
+                    };
+                    record.arena.values[callee] =
+                        RecordedValue::Func(crate::value::FunctionRef::from_verified(
+                            function.instance().clone(),
+                            FuncId(99),
+                        ));
                 }
                 3 => {
                     let Action::CallGuest { ref args, .. } = record.commands[0].action else {
@@ -1594,23 +1980,21 @@ mod tests {
                     record.arena.values[args.start] = RecordedValue::I64(99);
                 }
                 4 => {
-                    let Action::CallGuest {
-                        ref mut returned, ..
-                    } = record.commands[0].action
-                    else {
-                        panic!("callback fixture");
-                    };
-                    *returned = None;
+                    record
+                        .execution
+                        .as_mut()
+                        .unwrap()
+                        .transfers
+                        .retain(|transfer| {
+                            !matches!(
+                                transfer.action,
+                                crate::recording::execution::Action::Returned { .. }
+                            )
+                        });
                 }
                 5 => record.calls[0].sequence += 1,
                 6 => {
-                    let history = record.history.as_mut().unwrap();
-                    let child = history
-                        .steps
-                        .iter_mut()
-                        .find(|step| step.parent.is_some())
-                        .unwrap();
-                    child.parent = None;
+                    record.execution.as_mut().unwrap().segments[1].parent = None;
                 }
                 7 => record.commands.clear(),
                 _ => unreachable!(),
@@ -1868,6 +2252,7 @@ mod tests {
         let node = &record.arena.nodes[original.0 as usize];
         let duplicate = AggregateId(u32::try_from(record.arena.nodes.len()).unwrap());
         record.arena.nodes.push(crate::recording::values::Node {
+            origin: u32::MAX,
             kind: node.kind,
             fields: node.fields.clone(),
             initial: true,

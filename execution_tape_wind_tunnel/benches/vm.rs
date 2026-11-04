@@ -8,7 +8,6 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn,
 };
-use execution_tape::program::Program;
 use execution_tape::program::{Const, SpanId, ValueType};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::{FuncId, Value};
@@ -91,7 +90,10 @@ fn bench_run_memory(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let mut vm = Vm::new(NopHost, wide_open_limits());
-                        let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+                        let root = vm
+                            .aggregate_builder()
+                            .tuple_new(vec![Value::I64(1)])
+                            .unwrap();
                         (
                             vm,
                             ExecutionContext::new(),
@@ -233,7 +235,7 @@ fn bench_payloads(c: &mut Criterion) {
                                 .unwrap();
                                 black_box(&outputs);
                                 // These fixtures return owned payloads/scalars, never heap handles.
-                                vm.aggregates_mut().clear();
+                                vm.collect().unwrap();
                             })
                         },
                     );
@@ -1040,6 +1042,8 @@ fn wide_open_limits() -> Limits {
     Limits {
         fuel: u64::MAX,
         max_call_depth: 1024,
+        max_continuations: 1024,
+        max_value_roots: 4096,
         max_host_calls: u64::MAX,
         max_contract_work: u64::MAX,
         max_aggregate_work: u64::MAX,
@@ -1103,12 +1107,21 @@ impl TraceSink for CountingTrace {
         TraceMask::RUN
     }
 
-    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {
+    fn run_start(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _entry: FuncId,
+        _arg_count: usize,
+    ) {
         // Intentionally minimal: we want to measure VM overhead, not sink work.
         self._count = self._count.wrapping_add(1);
     }
 
-    fn run_end(&mut self, _program: &Program, _outcome: TraceOutcome<'_>) {
+    fn run_end(
+        &mut self,
+        _context: execution_tape::trace::TraceContext<'_>,
+        _outcome: TraceOutcome<'_>,
+    ) {
         self._count = self._count.wrapping_add(1);
     }
 }
@@ -1125,7 +1138,7 @@ impl TraceSink for CountingHostScopes {
 
     fn scope_enter(
         &mut self,
-        _program: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -1137,7 +1150,7 @@ impl TraceSink for CountingHostScopes {
 
     fn scope_exit(
         &mut self,
-        _program: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -1161,7 +1174,7 @@ impl TraceSink for CountingInstr {
 
     fn instr(
         &mut self,
-        _program: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _func: FuncId,
         _pc: u32,
         _next_pc: u32,

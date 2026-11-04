@@ -299,23 +299,24 @@ fn exposed_signature_compatibility_hides_each_closures_concrete_environment_layo
         functions.push(body);
     }
     let program = Arc::new(b.build_verified().unwrap());
+    let source_instance = Vm::new(NoHost, Limits::default())
+        .instantiate(&program)
+        .unwrap();
     let mut heap = AggHeap::new();
     let first = heap.tuple_new(vec![Value::I64(4)]).unwrap();
     let second = heap.tuple_new(vec![Value::Bool(true)]).unwrap();
     let old = Callable::retain(
-        Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure {
-            func: functions[0],
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(functions[0]).unwrap(),
             env: first,
         }),
     )
     .unwrap();
     let new = Callable::retain(
-        program,
         &heap,
-        ValueRef::Closure(Closure {
-            func: functions[1],
+        ValueRef::Closure(&Closure {
+            func: source_instance.function(functions[1]).unwrap(),
             env: second,
         }),
     )

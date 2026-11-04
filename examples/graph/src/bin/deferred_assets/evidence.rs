@@ -282,6 +282,7 @@ impl Evidence {
             let outcome = match recording.outcome() {
                 Some(Outcome::Returned(_)) => "returned metadata".into(),
                 Some(Outcome::Trapped(error)) => format!("trapped: {error}"),
+                Some(Outcome::Transferred { .. }) => "transferred to an ancestor".into(),
                 None => "no final outcome".into(),
             };
             writeln!(
@@ -359,6 +360,7 @@ impl Evidence {
             let outcome = match record.outcome() {
                 Some(Outcome::Returned(_)) => "returned",
                 Some(Outcome::Trapped(_)) => "trapped",
+                Some(Outcome::Transferred { .. }) => "transferred",
                 None => "missing",
             };
             attempts.push(format!(

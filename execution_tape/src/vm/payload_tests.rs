@@ -57,7 +57,7 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
     for limit in [required.saturating_sub(1), required] {
         let mut vm = vm(limit);
         let retained = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::Str("retained".into())])
             .unwrap();
         let mut ctx = ExecutionContext::new();
@@ -74,7 +74,7 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
         );
         if limit == required {
             result.unwrap();
-            assert_eq!(ctx.budget.payload_work, required);
+            assert_eq!(ctx.budget.data.used.payload, required);
         } else {
             let error = result.unwrap_err();
             let Trap::PayloadWorkExceeded {
@@ -87,7 +87,7 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
             };
             assert_eq!(actual, limit);
             assert_eq!(used + requested, required);
-            assert_eq!(ctx.budget.payload_work, used);
+            assert_eq!(ctx.budget.data.used.payload, used);
             assert_eq!(outputs, [Value::I64(99)]);
             assert_eq!(vm.aggregates().len_u32(), 1);
             assert_eq!(
@@ -154,7 +154,7 @@ fn doubling_traps_before_next_copy_and_context_resets() {
                 requested: 128
             }
         ));
-        assert_eq!(ctx.budget.payload_work, 126);
+        assert_eq!(ctx.budget.data.used.payload, 126);
         assert_eq!(outputs, [Value::I64(99)]);
         vm.limits.max_payload_work = 254;
         for _ in 0..2 {
@@ -171,10 +171,13 @@ fn doubling_traps_before_next_copy_and_context_resets() {
             )
             .unwrap();
             assert_eq!(outputs, [Value::U64(128)]);
-            assert_eq!(ctx.budget.payload_work, 254);
+            assert_eq!(ctx.budget.data.used.payload, 254);
         }
         ctx.clear();
-        assert_eq!((ctx.budget.payload_work, ctx.budget.payload_limit), (0, 0));
+        assert_eq!(
+            (ctx.budget.data.used.payload, ctx.budget.data.limits.payload),
+            (0, 0)
+        );
     }
 }
 
@@ -535,7 +538,7 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
             Trap::HostCallFailed { .. } if fail => {}
             other => panic!("{other:?}"),
         }
-        assert_eq!(ctx.budget.payload_work, 0);
+        assert_eq!(ctx.budget.data.used.payload, 0);
     }
     let mut vm = Vm::new(
         Returning {
@@ -561,9 +564,9 @@ fn overflow_is_explicit_and_rejected_debits_do_not_change_usage() {
         max_payload_work: u64::MAX,
         ..Limits::default()
     });
-    ctx.budget.charge_payload_bytes(1, u64::MAX).unwrap();
+    ctx.budget.data.charge_payload_bytes(1, u64::MAX).unwrap();
     assert!(matches!(
-        ctx.budget.charge_payload_bytes(1, 1),
+        ctx.budget.data.charge_payload_bytes(1, 1),
         Err(Trap::PayloadWorkExceeded {
             limit: u64::MAX,
             used: u64::MAX,
@@ -571,10 +574,10 @@ fn overflow_is_explicit_and_rejected_debits_do_not_change_usage() {
         })
     ));
     assert!(matches!(
-        ctx.budget.charge_payload_bytes(2, u64::MAX),
+        ctx.budget.data.charge_payload_bytes(2, u64::MAX),
         Err(Trap::PayloadSizeOverflow)
     ));
-    assert_eq!(ctx.budget.payload_work, u64::MAX);
+    assert_eq!(ctx.budget.data.used.payload, u64::MAX);
 }
 
 #[test]
@@ -632,7 +635,7 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         },
     );
     let root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bytes(vec![1; 4])])
         .unwrap();
     vm.host_mut().0 = root;

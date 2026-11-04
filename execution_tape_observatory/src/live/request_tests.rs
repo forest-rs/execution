@@ -96,7 +96,10 @@ fn program(parent: bool) -> (VerifiedProgram, FuncId, SourceMap) {
 fn awaiting_host_is_explicit_stepping_waits_and_only_explicit_host_dispatch_has_effects() {
     let (p, entry, sources) = program(true);
     let mut vm = Vm::new(Counter::default(), Limits::default());
-    let root = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
+    let root = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(7)])
+        .unwrap();
     let args = [Value::Agg(root)];
     let call = vm
         .start(
@@ -145,7 +148,7 @@ fn awaiting_host_is_explicit_stepping_waits_and_only_explicit_host_dispatch_has_
 fn leaving_presentation_preserves_a_pending_invocation_for_external_completion() {
     let (p, entry, _) = program(true);
     let mut vm = Vm::new(Counter::default(), Limits::default());
-    let root = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+    let root = vm.aggregate_builder().tuple_new(vec![]).unwrap();
     let args = [Value::Agg(root)];
     let call = vm
         .start(
@@ -174,7 +177,7 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     assert_eq!(caller_entry, callee_entry);
     let mut parent_vm = Vm::new(Counter::default(), Limits::default());
     let arg = parent_vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::I64(7)])
         .unwrap();
     let args = [Value::Agg(arg)];
@@ -189,7 +192,7 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     assert_eq!(parent.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let request = parent.pending_host_call().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
-    vm.aggregates_mut()
+    vm.aggregate_builder()
         .tuple_new(vec![Value::I64(999)])
         .unwrap();
     let call = vm
@@ -276,7 +279,7 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
     let (caller, entry, _) = program(true);
     let (callee, target, wrong_sources) = program(false);
     let mut parent_vm = Vm::new(Counter::default(), Limits::default());
-    let root = parent_vm.aggregates_mut().tuple_new(vec![]).unwrap();
+    let root = parent_vm.aggregate_builder().tuple_new(vec![]).unwrap();
     let args = [Value::Agg(root)];
     let mut parent = parent_vm
         .start(

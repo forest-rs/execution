@@ -22,6 +22,9 @@ use crate::value::{AggHandle, AggType, Value};
 /// An aggregate heap error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AggError {
+    /// An execution-local control capability cannot be retained in a durable snapshot.
+    ExecutionLocalValue,
+
     /// Handle was out of bounds.
     BadHandle,
     /// Type mismatch (e.g. non-array passed to `array_get`).
@@ -39,6 +42,9 @@ pub enum AggError {
 impl fmt::Display for AggError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ExecutionLocalValue => f.write_str(
+                "execution-local control capability cannot be retained in an owned snapshot",
+            ),
             Self::BadHandle => write!(f, "aggregate handle out of bounds"),
             Self::WrongKind => write!(f, "aggregate kind mismatch"),
             Self::OutOfBounds => write!(f, "index out of bounds"),
@@ -106,7 +112,7 @@ pub struct AggHeap {
 /// Owned values and their reachable aggregate graph, independent of the source heap.
 ///
 /// Snapshots retain exact byte/string contents and sharing between aggregate references.
-/// Host objects remain host-owned handles; function IDs still refer to their original program.
+/// Host objects remain host-owned handles; functions retain their exact originating instance.
 /// Import into a destination heap before passing snapshot aggregate handles to that VM.
 #[derive(Clone, Debug)]
 pub struct ValueSnapshot {
@@ -542,6 +548,59 @@ impl<'a> AggOverlay<'a> {
     }
 }
 
+/// Append-only authority for aggregate construction and snapshot import.
+///
+/// Obtained from [`crate::vm::Vm::aggregate_builder`]. Existing nodes cannot be cleared or
+/// replaced through this view, so registered VM roots remain valid. Standalone [`AggHeap`]
+/// owners retain their ordinary mutable operations.
+///
+/// ```compile_fail
+/// use execution_tape::{host::Host, vm::Vm};
+/// fn cannot_clear<H: Host>(vm: &mut Vm<H>) {
+///     vm.aggregate_builder().clear();
+/// }
+/// ```
+#[derive(Debug)]
+pub struct AggBuilder<'a> {
+    heap: &'a mut AggHeap,
+}
+impl<'a> AggBuilder<'a> {
+    pub(crate) fn new(heap: &'a mut AggHeap) -> Self {
+        Self { heap }
+    }
+    /// Allocates a tuple, rejecting dangling aggregate or closure children before mutation.
+    pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, AggError> {
+        self.heap.tuple_new(values)
+    }
+    /// Allocates a nominal struct whose schema belongs to the caller's code definition.
+    pub fn struct_new(
+        &mut self,
+        type_id: TypeId,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        self.heap.struct_new(type_id, values)
+    }
+    /// Allocates a nominal array whose element schema belongs to the caller's definition.
+    pub fn array_new(
+        &mut self,
+        elem_type_id: ElemTypeId,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        self.heap.array_new(elem_type_id, values)
+    }
+    /// Copies a snapshot into this store, preserving sharing and leaving it unchanged on error.
+    /// Code-qualified values still require explicit destination-instance binding.
+    pub fn import(&mut self, snapshot: &ValueSnapshot) -> Result<Vec<Value>, AggError> {
+        self.heap.import(snapshot)
+    }
+}
+impl core::ops::Deref for AggBuilder<'_> {
+    type Target = AggHeap;
+    fn deref(&self) -> &AggHeap {
+        self.heap
+    }
+}
+
 impl AggHeap {
     pub(crate) fn node_values(&self) -> impl Iterator<Item = &[Value]> {
         self.nodes.iter().map(AggNode::values)
@@ -577,7 +636,8 @@ impl AggHeap {
     /// Copies roots and their reachable aggregate graph into an independent owned snapshot.
     ///
     /// Visits only reachable nodes, preserves sharing and distinct node identity, and rejects
-    /// dangling handles. Plain byte/string roots are copied. Unreachable heap data is not copied.
+    /// dangling handles and execution-local control capabilities. Plain byte/string roots are
+    /// copied. Unreachable heap data is not copied.
     pub fn snapshot(&self, values: &[Value]) -> Result<ValueSnapshot, AggError> {
         self.snapshot_owned(values.to_vec())
     }
@@ -604,6 +664,13 @@ impl AggHeap {
                 }
             })?
             .expect("requested remapping");
+        if values
+            .iter()
+            .chain(self.nodes.iter().flat_map(AggNode::values))
+            .any(|value| matches!(value, Value::Continuation(_)))
+        {
+            return Err(AggError::ExecutionLocalValue);
+        }
         self.nodes.shrink_to_fit();
         Ok((
             ValueSnapshot {
@@ -627,6 +694,19 @@ impl AggHeap {
         let mut values = snapshot.values.clone();
         snapshot.aggregates.copy_roots_into(self, &mut values)?;
         Ok(values)
+    }
+
+    pub(crate) fn visit_values_mut_from<E>(
+        &mut self,
+        first: u32,
+        mut visit: impl FnMut(&mut Value) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for node in &mut self.nodes[first as usize..] {
+            for value in node.values_mut() {
+                visit(value)?;
+            }
+        }
+        Ok(())
     }
 
     fn copy_roots_into(&self, target: &mut Self, roots: &mut [Value]) -> Result<(), AggError> {
@@ -659,7 +739,7 @@ impl AggHeap {
         self.compact_since(base_len, roots, false).map(|_| ())
     }
 
-    fn compact_since(
+    pub(crate) fn compact_since(
         &mut self,
         base_len: u32,
         roots: &mut [Value],
@@ -850,6 +930,10 @@ impl AggHeap {
             .ok_or(AggError::OutOfBounds)
     }
 
+    pub(crate) fn fields(&self, handle: AggHandle) -> Result<&[Value], AggError> {
+        Ok(self.node(handle)?.values())
+    }
+
     fn node(&self, handle: AggHandle) -> Result<&AggNode, AggError> {
         self.nodes.get(handle.0 as usize).ok_or(AggError::BadHandle)
     }
@@ -868,6 +952,7 @@ fn copy_roots_into<'a>(
                  pending: &mut Vec<u32>|
      -> Result<(), AggError> {
         let handle = match value {
+            Value::Continuation(_) => return Err(AggError::ExecutionLocalValue),
             Value::Agg(h) => h,
             Value::Closure(c) => &mut c.env,
             _ => return Ok(()),
@@ -913,10 +998,19 @@ fn copy_roots_into<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::{Closure, FuncId};
+    use crate::value::{Closure, FuncId, FunctionRef};
 
     #[test]
     fn staging_promotion_keeps_handles_sharing_and_payload_allocations() {
+        let function_8 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(8),
+        );
         let mut base = AggHeap::new();
         let original = base.tuple_new(vec![Value::I64(1)]).unwrap();
         let bytes = vec![42; 4096];
@@ -930,7 +1024,7 @@ mod tests {
             .tuple_new(vec![
                 Value::Agg(child),
                 Value::Closure(Closure {
-                    func: FuncId(8),
+                    func: function_8.clone(),
                     env: child,
                 }),
             ])
@@ -941,7 +1035,7 @@ mod tests {
         assert_eq!(
             base.tuple_get(root, 1),
             Ok(Value::Closure(Closure {
-                func: FuncId(8),
+                func: function_8.clone(),
                 env: child
             }))
         );
@@ -972,6 +1066,15 @@ mod tests {
 
     #[test]
     fn consuming_snapshot_moves_payloads_and_preserves_aliases() {
+        let function_7 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(7),
+        );
         let mut heap = AggHeap::new();
         let discarded = heap.tuple_new(vec![Value::I64(-1)]).unwrap();
         let payload = vec![42_u8; 4096];
@@ -989,7 +1092,7 @@ mod tests {
             .into_snapshot(vec![
                 Value::Agg(root),
                 Value::Closure(Closure {
-                    func: FuncId(7),
+                    func: function_7.clone(),
                     env: child,
                 }),
             ])
@@ -1014,7 +1117,7 @@ mod tests {
         assert_eq!(
             snapshot.values()[1],
             Value::Closure(Closure {
-                func: FuncId(7),
+                func: function_7.clone(),
                 env: first
             })
         );
@@ -1060,6 +1163,15 @@ mod tests {
 
     #[test]
     fn snapshots_preserve_sharing_identity_and_contents_across_heaps() {
+        let function_42 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(42),
+        );
         let mut source = AggHeap::new();
         let child = source
             .tuple_new(vec![Value::Bytes(vec![1, 2]), Value::Str("é".into())])
@@ -1074,7 +1186,7 @@ mod tests {
                 Value::Agg(child),
                 Value::Agg(equal_distinct),
                 Value::Closure(Closure {
-                    func: FuncId(42),
+                    func: function_42.clone(),
                     env: child,
                 }),
             ])
@@ -1101,7 +1213,7 @@ mod tests {
         assert_eq!(
             snapshot.aggregates().tuple_get(root, 3),
             Ok(Value::Closure(Closure {
-                func: FuncId(42),
+                func: function_42.clone(),
                 env: first
             }))
         );
@@ -1147,10 +1259,19 @@ mod tests {
 
     #[test]
     fn constructors_reject_dangling_children_and_closure_environments_atomically() {
+        let function_0 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(0),
+        );
         for value in [
             Value::Agg(AggHandle(0)),
             Value::Closure(Closure {
-                func: FuncId(0),
+                func: function_0.clone(),
                 env: AggHandle(0),
             }),
         ] {
@@ -1645,6 +1766,15 @@ mod tests {
 
     #[test]
     fn delta_merge_traces_and_remaps_root_closure_env() {
+        let function_5 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(5),
+        );
         let mut base = AggHeap::new();
         let _ = base.tuple_new(vec![Value::I64(7)]).unwrap(); // base node 0
 
@@ -1656,7 +1786,7 @@ mod tests {
             o.tuple_new(vec![Value::I64(42)]).expect("alloc")
         });
         let mut roots = vec![Value::Closure(Closure {
-            func: FuncId(5),
+            func: function_5.clone(),
             env,
         })];
 
@@ -1670,13 +1800,22 @@ mod tests {
         let Value::Closure(merged) = &roots[0] else {
             panic!("expected closure root");
         };
-        assert_eq!(merged.func, FuncId(5)); // function id preserved
+        assert_eq!(merged.func, function_5); // function id preserved
         assert_eq!(merged.env, AggHandle(1)); // staged env remapped into base domain
         assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(42)));
     }
 
     #[test]
     fn delta_merge_rewrites_closure_env_nested_in_staged_aggregate() {
+        let function_8 = FunctionRef::from_verified(
+            crate::instance::Instance::new(
+                crate::asm::ProgramBuilder::new().build_verified().unwrap(),
+                alloc::sync::Arc::new(()),
+                0,
+                true,
+            ),
+            FuncId(8),
+        );
         let mut base = AggHeap::new();
 
         // The unreachable filler at staged index 0 makes the env's remap non-trivial (encoded 1
@@ -1685,7 +1824,7 @@ mod tests {
             let _unreachable = o.tuple_new(vec![Value::I64(7)]).expect("alloc");
             let env = o.tuple_new(vec![Value::I64(3)]).expect("alloc");
             let closure = Value::Closure(Closure {
-                func: FuncId(8),
+                func: function_8.clone(),
                 env,
             });
             o.tuple_new(vec![closure]).expect("alloc")
@@ -1701,7 +1840,7 @@ mod tests {
         let Value::Closure(merged) = field else {
             panic!("expected closure field");
         };
-        assert_eq!(merged.func, FuncId(8));
+        assert_eq!(merged.func, function_8);
         assert!(merged.env.0 < base.len_u32()); // env rewritten into base domain
         assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(3)));
     }

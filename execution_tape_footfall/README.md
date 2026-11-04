@@ -21,6 +21,23 @@ it stays on one thread. Dropping it closes remaining scopes from inner to outer,
 creating completion events for an interrupted run.
 After catching a host panic, drop and recreate the sink before another run, regardless of mask.
 
+Captured stacks retain logical scope descriptions while closing physical guards. Reattachment
+reopens those descriptions under the current caller; cancelling a parked sibling does not close
+another stack's guards. Physical spans measure attached-chain elapsed intervals: captured parking
+is excluded, while scheduler pauses and host waiting still count. `is_consistent()` reports malformed
+scope evidence; recreate an inconsistent sink before another execution. `stack_park` and
+`stack_attach` messages identify the logical stack; repeated physical run intervals retain its
+`segment` and `activation` fields. These ordinals belong to the enclosing execution.
+
+Nested instance calls preserve their waiting parent run and host scopes. Child completion closes
+only the child run. Use `with_program_context(&definition, context.handle())` for each independently
+compiled definition, with separate exported program/source pairs under those registered contexts.
+Cloned definition handles share the mapping; unmatched code uses the sink's default context.
+The sink retains mapped code, while the application owns context registration and source artifacts.
+Its recommended mask includes `TraceMask::CONTROL` for entry, return and cross-code non-local
+transfer messages, with execution-local segment and activation endpoints. Those events request
+no guest value capture. Resolve local segment ordinals inside their enclosing root run.
+
 Context labels must identify the program and revision when combining programs. Function,
 import and PC identifiers are program-local. Keep the corresponding encoded program with
 the capture to resolve names, spans, typed joins and instruction operands later.
@@ -37,7 +54,9 @@ The static event schema uses at most four inline fields:
 
 | Observation | Numeric fields |
 | --- | --- |
-| `execution_tape.run` scope | `entry`, `arg_count` |
+| `execution_tape.run` scope | `entry`, `arg_count`, `segment`, `activation` |
+| `execution_tape.stack_park` message | `segment`, `activation` |
+| `execution_tape.stack_attach` message | `segment`, `activation`, optional `parent_segment` and `parent_activation` |
 | `execution_tape.call` scope | `func`, `pc`, `depth` |
 | `execution_tape.host` scope | `func`, `pc`, `depth`, `host_sig` |
 | `execution_tape.instr` message | `func`, `pc`, `opcode`, optional `span_id` |

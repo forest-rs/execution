@@ -81,7 +81,7 @@ fn validate_operand_access(ops: &[(u8, OpcodeSpec)]) -> Result<()> {
     for (_b, op) in ops {
         for operand in &op.operands {
             match operand.kind.as_str() {
-                "reg" | "reg_list" => match operand.access.as_deref() {
+                "reg" | "reg_list" | "handler_list" => match operand.access.as_deref() {
                     Some("read") | Some("write") => {}
                     Some(other) => bail!(
                         "invalid operand access '{}' for opcode {} field {}",
@@ -116,6 +116,7 @@ fn operand_kind_rust(operand: &str) -> Result<&'static str> {
     Ok(match operand {
         "reg" => "OperandKind::Reg",
         "reg_list" => "OperandKind::RegList",
+        "handler_list" => "OperandKind::HandlerList",
         "pc" => "OperandKind::Pc",
 
         "imm_bool" => "OperandKind::ImmBool",
@@ -159,6 +160,7 @@ fn operand_encoding_rust(enc: &str) -> Result<&'static str> {
         "reg_u32_uleb" => "OperandEncoding::RegU32Uleb",
         "reg_list_u32_uleb_count_then_regs" => "OperandEncoding::RegListU32UlebCountThenRegs",
 
+        "handler_list" => "OperandEncoding::HandlerList",
         "bool_u8" => "OperandEncoding::BoolU8",
         "u8_raw" => "OperandEncoding::U8Raw",
         "u32_uleb" => "OperandEncoding::U32Uleb",
@@ -213,6 +215,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    Reg,\n");
     out.push_str("    /// A list of virtual registers.\n");
     out.push_str("    RegList,\n");
+    out.push_str("    /// A list of typed handler arms.\n    HandlerList,\n");
     out.push_str("    /// A bytecode PC (byte offset).\n");
     out.push_str("    Pc,\n");
     out.push_str("    /// An immediate `bool`.\n");
@@ -267,6 +270,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    EffOut,\n");
     out.push_str("    Args,\n");
     out.push_str("    Rets,\n");
+    out.push_str("    Handlers,\n");
     out.push_str("    Values,\n");
     out.push_str("    Tuple,\n");
     out.push_str("    St,\n");
@@ -283,6 +287,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("#[allow(missing_docs, reason = \"generated\")]\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("pub enum OperandEncoding {\n");
+    out.push_str("    HandlerList,\n");
     out.push_str("    RegU32Uleb,\n");
     out.push_str("    RegListU32UlebCountThenRegs,\n");
     out.push_str("    BoolU8,\n");
@@ -341,7 +346,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
             let kind = operand_kind_rust(&operand.kind)?;
             let role = operand_role_rust(&operand.role)?;
             let encoding = operand_encoding_rust(&operand.encoding)?;
-            let access = if operand.kind == "reg" || operand.kind == "reg_list" {
+            let access = if matches!(operand.kind.as_str(), "reg" | "reg_list" | "handler_list") {
                 let a = operand
                     .access
                     .as_deref()
@@ -723,6 +728,11 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                     ));
                 }
 
+                "handler_list" => {
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::read_handlers(r)?;\n"
+                    ));
+                }
                 "reg_list" => {
                     if operand.encoding.as_str() != "reg_list_u32_uleb_count_then_regs" {
                         bail!(
@@ -998,6 +1008,9 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                     ));
                 }
 
+                "handler_list" => {
+                    out.push_str(&format!("            crate::codec_primitives::write_handlers(out, {field}).map_err(|_| EncodeError::OutOfBounds)?;\n"));
+                }
                 "reg_list" => {
                     if operand.encoding.as_str() != "reg_list_u32_uleb_count_then_regs" {
                         bail!(
@@ -1124,61 +1137,44 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
 
     out.push_str("#[rustfmt::skip]\n");
     out.push_str("pub(crate) fn visit_pcs(instr: &Instr, mut f: impl FnMut(u32)) {\n");
-    let mut pc_arms: Vec<(&str, Vec<&str>)> = Vec::new();
-    for (_b, op) in &ops {
-        let pc_fields: Vec<&str> = op
+    let mut emitted = false;
+    for (_, op) in &ops {
+        let fields: Vec<_> = op
             .operands
             .iter()
-            .filter(|o| o.kind == "pc")
-            .map(|o| {
-                rust_field_name(&o.field)
-                    .with_context(|| format!("bad field name '{}' for opcode {}", o.field, op.name))
-            })
-            .collect::<Result<_>>()?;
-        if !pc_fields.is_empty() {
-            pc_arms.push((op.name.as_str(), pc_fields));
+            .filter(|operand| matches!(operand.kind.as_str(), "pc" | "handler_list"))
+            .collect();
+        if fields.is_empty() {
+            continue;
         }
-    }
-
-    match pc_arms.len() {
-        0 => {
-            out.push_str("    let _ = instr;\n");
-            out.push_str("    let _ = f;\n");
-        }
-        1 => {
-            let (op_name, fields) = &pc_arms[0];
-            out.push_str(&format!("    if let Instr::{op_name} {{ "));
-            for (i, field) in fields.iter().enumerate() {
-                if i != 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(field);
-            }
-            out.push_str(", .. } = instr {\n");
-            for field in fields {
-                out.push_str(&format!("        f(*{field});\n"));
-            }
-            out.push_str("    }\n");
-        }
-        _ => {
+        if !emitted {
             out.push_str("    match instr {\n");
-            for (op_name, fields) in &pc_arms {
-                out.push_str(&format!("        Instr::{op_name} {{ "));
-                for (i, field) in fields.iter().enumerate() {
-                    if i != 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(field);
-                }
-                out.push_str(", .. } => {\n");
-                for field in fields {
-                    out.push_str(&format!("            f(*{field});\n"));
-                }
-                out.push_str("        }\n");
-            }
-            out.push_str("        _ => {}\n");
-            out.push_str("    }\n");
+            emitted = true;
         }
+        out.push_str(&format!("        Instr::{} {{ ", op.name));
+        for (index, field) in fields.iter().enumerate() {
+            if index != 0 {
+                out.push_str(", ");
+            }
+            out.push_str(rust_field_name(&field.field)?);
+        }
+        out.push_str(", .. } => {\n");
+        for field in fields {
+            let name = rust_field_name(&field.field)?;
+            if field.kind == "pc" {
+                out.push_str(&format!("            f(*{name});\n"));
+            } else {
+                out.push_str(&format!(
+                    "            for clause in {name} {{ f(clause.target()); }}\n"
+                ));
+            }
+        }
+        out.push_str("        }\n");
+    }
+    if emitted {
+        out.push_str("        _ => {}\n    }\n");
+    } else {
+        out.push_str("    let _ = instr;\n    let _ = f;\n");
     }
     out.push_str("}\n\n");
 
@@ -1322,11 +1318,16 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
     out.push_str(&format!(
         "pub(crate) const MAX_REGISTER_LISTS: usize = {max_lists};\n\n"
     ));
+    out.push_str(&format!(
+        "pub(crate) const MAX_HANDLER_LISTS: usize = {};\n",
+        capacity("handler_list", "read")
+    ));
     for (name, access) in [("ReadsIter", "read"), ("WritesIter", "write")] {
         out.push_str(&format!(
-            "pub(crate) type {name}<'a> = OperandIter<'a, {}, {}>;\n",
+            "pub(crate) type {name}<'a> = OperandIter<'a, {}, {}, {}>;\n",
             capacity("reg", access),
-            capacity("reg_list", access)
+            capacity("reg_list", access),
+            capacity("handler_list", access)
         ));
     }
     out.push('\n');
@@ -1337,6 +1338,7 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
     ] {
         let scalar_capacity = capacity("reg", access);
         let list_capacity = capacity("reg_list", access);
+        let handler_capacity = capacity("handler_list", access);
         out.push_str(&format!("    /// Iterates virtual registers {access} by this instruction without allocation.\n    #[must_use]\n    pub(crate) fn {method}(&self) -> {iter}<'_> {{\n        match self {{\n"));
         for (_, op) in &ops {
             let operands: Vec<_> = op
@@ -1346,6 +1348,7 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
                 .collect();
             let mut scalar = Vec::new();
             let mut lists = Vec::new();
+            let mut handlers = Vec::new();
             let mut fields = Vec::new();
             for operand in operands {
                 let field = rust_field_name(&operand.field)
@@ -1354,6 +1357,7 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
                 match operand.kind.as_str() {
                     "reg" => scalar.push(format!("*{field}")),
                     "reg_list" => lists.push(format!("{field}.as_slice()")),
+                    "handler_list" => handlers.push(format!("{field}.as_slice()")),
                     _ => unreachable!("validated register access"),
                 }
             }
@@ -1371,11 +1375,21 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
             let scalar_count = scalar.len();
             scalar.resize(scalar_capacity, "0".into());
             lists.resize(list_capacity, "&[]".into());
-            out.push_str(&format!(
-                "{iter}::from_parts([{}], {scalar_count}, [{}]),\n",
-                scalar.join(", "),
-                lists.join(", ")
-            ));
+            if handler_capacity == 0 {
+                out.push_str(&format!(
+                    "{iter}::from_parts([{}], {scalar_count}, [{}]),\n",
+                    scalar.join(", "),
+                    lists.join(", ")
+                ));
+            } else {
+                handlers.resize(handler_capacity, "&[]".into());
+                out.push_str(&format!(
+                    "{iter}::from_parts_with_handlers([{}], {scalar_count}, [{}], [{}]),\n",
+                    scalar.join(", "),
+                    lists.join(", "),
+                    handlers.join(", ")
+                ));
+            }
         }
         out.push_str("        }\n    }\n");
     }
@@ -1507,6 +1521,11 @@ mod tests {
                     {"kind":"reg_list","role":"rets","encoding":"reg_list_u32_uleb_count_then_regs","field":"left","access":"write"},
                     {"kind":"reg_list","role":"rets","encoding":"reg_list_u32_uleb_count_then_regs","field":"right","access":"write"}
                 ]},
+                {"name":"Control","mnemonic":"control","byte":"0x04","terminator":false,"flags":[],"operands":[
+                    {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"source","access":"read"},
+                    {"kind":"reg_list","role":"args","encoding":"reg_list_u32_uleb_count_then_regs","field":"args","access":"read"},
+                    {"kind":"handler_list","role":"handlers","encoding":"handler_list","field":"handlers","access":"read"}
+                ]},
                 {"name":"Wide","mnemonic":"wide","byte":"0x03","terminator":false,"flags":[],"operands":[
                     {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"a","access":"read"},
                     {"kind":"reg","role":"src","encoding":"reg_u32_uleb","field":"b","access":"read"},
@@ -1523,19 +1542,32 @@ mod tests {
             .join("../execution_tape/src/register_operands.rs")
             .canonicalize()
             .unwrap();
+        let handler = iterator.parent().unwrap().join("control/handler.rs");
         let source = dir.0.join("main.rs");
         fs::write(&source,format!(r#"
             #[allow(dead_code, reason="fixture tests generated iteration")]
             #[path={iterator:?}] mod register_operands;
+            mod program {{ #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub struct CallSigId(pub u32); }}
+            mod control {{ #[path={handler:?}] pub mod handler; pub use handler::HandlerClause; }}
             mod bytecode {{
                 use crate::register_operands::OperandIter;
                 enum Instr {{
                     ReadLists{{cond:u32,left:Vec<u32>,right:Vec<u32>}},
                     WriteLists{{left:Vec<u32>,right:Vec<u32>}},
                     Wide{{a:u32,b:u32,c:u32,d:u32,x:u32,y:u32}},
+                    Control{{source:u32,args:Vec<u32>,handlers:Vec<crate::control::HandlerClause>}},
                 }}
                 include!({generated:?});
                 pub fn check() {{
+                    let control=Instr::Control{{source:1,args:vec![2,3],handlers:vec![crate::control::HandlerClause::Suspend{{tag:4,signature:crate::program::CallSigId(0),target:5}},crate::control::HandlerClause::Suspend{{tag:6,signature:crate::program::CallSigId(0),target:7}}]}};
+                    assert_eq!(control.reads().collect::<Vec<_>>(),vec![1,2,3,4,6]);
+                    let mut partial=control.reads(); for _ in 0..4 {{ partial.next(); }}
+                    assert_eq!(crate::register_operands::RegIter::from_operands(partial).collect::<Vec<_>>(),vec![6]);
+                    assert_eq!(control.writes().count(),0);
+                    if let Instr::Control {{ handlers, .. }} = &control {{
+                        assert_eq!(handlers.iter().map(|arm| arm.target()).collect::<Vec<_>>(),vec![5,7]);
+                        assert_eq!(handlers.iter().map(|arm| arm.signature().0).collect::<Vec<_>>(),vec![0,0]);
+                    }}
                     assert_eq!(MAX_SCALAR_OPERANDS,4);
                     assert_eq!(MAX_REGISTER_LISTS,2);
                     for (left,right) in [(vec![],vec![9,10]),(vec![4,5],vec![]),(vec![4,5],vec![9,10]),(vec![],vec![])] {{

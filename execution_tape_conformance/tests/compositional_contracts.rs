@@ -206,11 +206,11 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
     let prepared = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let bad_inner = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
     let bad_outer = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Agg(bad_inner)])
         .unwrap();
     vm.host_mut().0 = Value::Agg(bad_outer);
@@ -245,10 +245,13 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
         error => panic!("unexpected trap: {error:?}"),
     }
     // Reusing both the context and numeric handles must not reuse an earlier proof.
-    vm.aggregates_mut().clear();
-    let good_inner = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    vm.collect().unwrap();
+    let good_inner = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let good_outer = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Agg(good_inner)])
         .unwrap();
     vm.host_mut().0 = Value::Agg(good_outer);
@@ -290,7 +293,7 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
     let mut value = Value::I64(42);
     for _ in 0..2048 {
         value = Value::Agg(
-            vm.aggregates_mut()
+            vm.aggregate_builder()
                 .tuple_new(vec![value.clone(), value])
                 .unwrap(),
         );
@@ -300,7 +303,10 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
             .unwrap(),
         Vec::<Value>::new()
     );
-    let heap = vm.aggregates().clone();
+    let snapshot = vm
+        .aggregates()
+        .snapshot(core::slice::from_ref(&value))
+        .unwrap();
     let mut bounded = Vm::new(
         TestHost(Value::Unit),
         Limits {
@@ -308,7 +314,11 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
             ..Limits::default()
         },
     );
-    *bounded.aggregates_mut() = heap;
+    let value = bounded
+        .aggregate_builder()
+        .import(&snapshot)
+        .unwrap()
+        .remove(0);
     let error = bounded
         .run(&prepared, entry, &[value], TraceMask::NONE, None)
         .unwrap_err();
@@ -436,7 +446,10 @@ fn one_handle_must_satisfy_each_distinct_contract() {
         .unwrap();
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
-    let shared = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let shared = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let error = vm
         .run(
             &program,
@@ -475,7 +488,10 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let mut ctx = ExecutionContext::new();
     let mut outputs = vec![];
-    let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let good = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     vm.run_with_ctx(
         &mut ctx,
         &program,
@@ -487,9 +503,9 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
         None,
     )
     .unwrap();
-    vm.aggregates_mut().clear();
+    vm.collect().unwrap();
     let bad = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bool(false)])
         .unwrap();
     assert_eq!(good, bad);
@@ -579,7 +595,7 @@ fn rejected_root_candidate_is_retained_and_checked_during_replay() {
     let program = Arc::new(builder.build_verified().unwrap());
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let bad = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bool(false)])
         .unwrap();
     vm.host_mut().0 = Value::Agg(bad);
@@ -613,7 +629,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
     impl TraceSink for Completions {
         fn instr_end(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             location: TraceLocation,
             _: Option<TraceLocation>,
             outcome: TraceOutcome<'_>,
@@ -624,7 +640,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
         }
         fn scope_exit(
             &mut self,
-            _: &Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             kind: ScopeKind,
             _: usize,
             _: execution_tape::value::FuncId,
@@ -713,7 +729,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             .pc;
         let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
         let bad = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::Bool(false)])
             .unwrap();
         vm.host_mut().0 = Value::Agg(bad);
@@ -789,7 +805,10 @@ fn contract_work_limit_has_exact_accounting_and_boundary_context() {
                 ..Limits::default()
             },
         );
-        let value = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+        let value = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(42)])
+            .unwrap();
         let result = vm.run(
             &program,
             entry,
@@ -1028,7 +1047,7 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
     source.types.array_elems.push(ValueType::Agg);
     let program = verify_program_owned(source, &VerifyConfig::default()).unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
-    let empty = vm.aggregates_mut().array_new(elem, vec![]).unwrap();
+    let empty = vm.aggregate_builder().array_new(elem, vec![]).unwrap();
     vm.run(
         &program,
         check_array,
@@ -1037,9 +1056,12 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
         None,
     )
     .unwrap();
-    let child = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let child = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let wrong = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .struct_new(TypeId(1), vec![Value::Agg(child)])
         .unwrap();
     let error = vm
@@ -1054,15 +1076,12 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
     assert!(matches!(
         error.trap,
         Trap::ContractMismatch {
-            error: execution_tape::contract::ContractViolation {
-                mismatch: ContractMismatch::Aggregate { .. },
-                ..
-            },
+            error,
             ..
-        }
+        } if matches!(error.mismatch, ContractMismatch::Aggregate { .. })
     ));
     let wrong = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .array_new(ElemTypeId(1), vec![])
         .unwrap();
     assert!(matches!(

@@ -379,6 +379,26 @@ impl Comparison<'_> {
                         args: b_args,
                         rets: b_rets,
                     },
+                )
+                | (
+                    Contract::Tag {
+                        request: args,
+                        response: rets,
+                    },
+                    Contract::Tag {
+                        request: b_args,
+                        response: b_rets,
+                    },
+                )
+                | (
+                    Contract::Continuation {
+                        parameters: args,
+                        results: rets,
+                    },
+                    Contract::Continuation {
+                        parameters: b_args,
+                        results: b_rets,
+                    },
                 ) => {
                     self.lists(args, rets, b_args, b_rets, Some(pair.path))?;
                 }
@@ -455,7 +475,7 @@ fn compare(current: &Callable, proposed: &Callable) -> Result<(), SignatureDiffe
     Comparison {
         current: current.program().program(),
         proposed: proposed.program().program(),
-        same_program: Arc::ptr_eq(current.program(), proposed.program()),
+        same_program: current.program().shares_definition_with(proposed.program()),
         links: Vec::new(),
         pending: Vec::new(),
         visited: BTreeSet::new(),
@@ -493,6 +513,21 @@ fn summary(f: &mut fmt::Formatter<'_>, program: &Program, id: Option<ContractId>
             "function({} arguments, {} results)",
             args.len(),
             rets.len()
+        ),
+        Some(Contract::Tag { request, response }) => write!(
+            f,
+            "tag({} request values, {} response values)",
+            request.len(),
+            response.len()
+        ),
+        Some(Contract::Continuation {
+            parameters,
+            results,
+        }) => write!(
+            f,
+            "continuation({} resume values, {} final results)",
+            parameters.len(),
+            results.len()
         ),
         Some(Contract::Closure { args, rets }) => write!(
             f,

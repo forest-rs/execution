@@ -105,9 +105,10 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             .map(|(i, f)| {
                 ListItem::new(Line::styled(
                     format!(
-                        "#{} {} · {}",
+                        "#{}:{} {} · {}",
+                        f.activation.segment_ordinal(),
                         f.activation.ordinal(),
-                        describe::function(self.invocation.program().program(), f.location.func),
+                        describe::function(f.program.program(), f.location.func),
                         if f.waiting_for_return {
                             "waiting for return"
                         } else {
@@ -240,9 +241,12 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             .map(|(index, (pc, text))| {
                 let active = current.is_some_and(|l| Some(l.func) == self.code_func && l.pc == *pc);
                 let point = !self.showing_origin
-                    && self
-                        .code_func
-                        .is_some_and(|f| self.breakpoints.contains(&(f.0, *pc)));
+                    && self.code_func.is_some_and(|f| {
+                        self.has_breakpoint(
+                            self.code_definition(),
+                            TraceLocation { func: f, pc: *pc },
+                        )
+                    });
                 let mut spans = vec![Span::styled(
                     format!(
                         "{}{} {:06} ",

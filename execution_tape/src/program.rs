@@ -24,7 +24,7 @@ use crate::verifier;
 /// The `execution_tape` binary format version supported by this crate (draft).
 pub const VERSION_MAJOR: u16 = 0;
 /// The `execution_tape` binary format version supported by this crate (draft).
-pub const VERSION_MINOR: u16 = 5;
+pub const VERSION_MINOR: u16 = 6;
 
 const MAGIC: &[u8; 8] = b"EXTAPE\0\0";
 
@@ -126,6 +126,10 @@ pub struct HostSigId(pub u32);
 /// Call signature identifier (index into [`Program::call_sigs`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CallSigId(pub u32);
+
+/// Local control-tag declaration. Runtime identity also includes its exact code instance.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ControlTagId(pub u32);
 
 /// A byte range (offset/length) into a per-program arena buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -388,6 +392,9 @@ pub struct Program {
     pub const_str_data: String,
     /// Program-owned call-signature table.
     pub call_sigs: Vec<CallSigEntry>,
+    /// Control-tag declarations, each referencing a request/response signature in `call_sigs`.
+    /// Equal signatures remain distinct declarations; runtime tags additionally retain an instance.
+    pub control_tags: Vec<ControlTagEntry>,
     /// Host signature table.
     pub host_sigs: Vec<HostSigEntry>,
     /// Type table (struct layouts and well-known ids).
@@ -513,6 +520,10 @@ pub enum ValueType {
     Func,
     /// Closure reference.
     Closure,
+    /// A code-qualified request/response protocol identity.
+    Tag,
+    /// One-use authority over execution-owned suspended computation.
+    Continuation,
 }
 
 /// A host-call signature table entry.
@@ -535,6 +546,15 @@ pub struct CallSigEntry {
     pub args: ByteRange,
     /// Result contracts range into `Program::contract_ids`.
     pub rets: ByteRange,
+}
+
+/// One local control protocol. The label supports inspection; identity uses instance and index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlTagEntry {
+    /// Human-readable protocol label in the program's symbol table.
+    pub name: SymbolId,
+    /// Request/response contracts in the program's call-signature table.
+    pub signature: CallSigId,
 }
 
 /// An input struct type definition used to construct a [`TypeTable`].
@@ -892,6 +912,7 @@ impl Program {
             const_bytes_data,
             const_str_data,
             call_sigs: Vec::new(),
+            control_tags: Vec::new(),
             host_sigs: packed_host_sigs,
             contracts: contracts.finish(),
             contract_ids,
@@ -1343,6 +1364,16 @@ impl Program {
             write_section(&mut w, SectionTag::CallSigs, payload.as_slice());
         }
 
+        if !self.control_tags.is_empty() {
+            let mut payload = Writer::new();
+            payload.write_uleb128_u64(self.control_tags.len() as u64);
+            for tag in &self.control_tags {
+                payload.write_uleb128_u32(tag.name.index());
+                payload.write_uleb128_u32(tag.signature.0);
+            }
+            write_section(&mut w, SectionTag::ControlTags, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1421,6 +1452,7 @@ enum SectionTag {
     Names = 9,
     CallSigs = 10,
     Contracts = 12,
+    ControlTags = 13,
 }
 
 impl SectionTag {
@@ -1437,6 +1469,7 @@ impl SectionTag {
             9 => Some(Self::Names),
             10 => Some(Self::CallSigs),
             12 => Some(Self::Contracts),
+            13 => Some(Self::ControlTags),
             _ => None,
         }
     }
@@ -1531,6 +1564,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut const_bytes_data: Vec<u8> = Vec::new();
     let mut const_str_data: String = String::new();
     let mut call_sig_defs: Vec<DecodedCallSig> = Vec::new();
+    let mut control_tags = None;
     let mut host_sig_defs: Vec<(SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry<'_>> = Vec::new();
@@ -1621,6 +1655,28 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_call_sigs = true;
                 call_sig_defs = decode_call_sigs(payload)?;
+            }
+            Some(SectionTag::ControlTags) => {
+                if control_tags.is_some() {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                let mut tags = Reader::new(payload);
+                let count = read_count(&mut tags)?;
+                let mut entries = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let name = SymbolId(
+                        NonZeroU32::new(tags.read_uleb128_u32()?)
+                            .ok_or(DecodeError::OutOfBounds)?,
+                    );
+                    entries.push(ControlTagEntry {
+                        name,
+                        signature: CallSigId(tags.read_uleb128_u32()?),
+                    });
+                }
+                if tags.remaining() != 0 {
+                    return Err(DecodeError::OutOfBounds);
+                }
+                control_tags = Some(entries);
             }
             Some(SectionTag::Contracts) => {
                 if contract_table.is_some() {
@@ -1907,6 +1963,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         const_bytes_data,
         const_str_data,
         call_sigs,
+        control_tags: control_tags.unwrap_or_default(),
         host_sigs,
         contracts,
         contract_ids,
@@ -2067,6 +2124,8 @@ enum ValueTypeTag {
     Agg = 9,
     Func = 10,
     Closure = 11,
+    Tag = 12,
+    Continuation = 13,
 }
 
 impl ValueTypeTag {
@@ -2084,6 +2143,8 @@ impl ValueTypeTag {
             9 => Ok(Self::Agg),
             10 => Ok(Self::Func),
             11 => Ok(Self::Closure),
+            12 => Ok(Self::Tag),
+            13 => Ok(Self::Continuation),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -2091,13 +2152,13 @@ impl ValueTypeTag {
 
 // Temporary construction index. Frozen programs retain only IDs and the type pool.
 struct TypeInterner {
-    scalar: [Option<u32>; 12],
+    scalar: [Option<u32>; 14],
     objects: BTreeMap<u64, u32>,
 }
 impl TypeInterner {
     fn new(types: &[ValueType]) -> Self {
         let mut index = Self {
-            scalar: [None; 12],
+            scalar: [None; 14],
             objects: BTreeMap::new(),
         };
         for (id, &ty) in types.iter().enumerate() {
@@ -2127,6 +2188,8 @@ impl TypeInterner {
             ValueType::Agg => 9,
             ValueType::Func => 10,
             ValueType::Closure => 11,
+            ValueType::Tag => 12,
+            ValueType::Continuation => 13,
         }
     }
     fn intern(&mut self, types: &mut Vec<ValueType>, ty: ValueType) -> Result<u32, DecodeError> {
@@ -2167,6 +2230,8 @@ pub(crate) fn write_value_type(out: &mut Vec<u8>, t: ValueType) {
         ValueType::Agg => ValueTypeTag::Agg,
         ValueType::Func => ValueTypeTag::Func,
         ValueType::Closure => ValueTypeTag::Closure,
+        ValueType::Tag => ValueTypeTag::Tag,
+        ValueType::Continuation => ValueTypeTag::Continuation,
     };
     out.push(tag as u8);
     if let ValueType::Obj(host_type) = t {
@@ -2189,6 +2254,8 @@ pub(crate) fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeE
         ValueTypeTag::Agg => ValueType::Agg,
         ValueTypeTag::Func => ValueType::Func,
         ValueTypeTag::Closure => ValueType::Closure,
+        ValueTypeTag::Tag => ValueType::Tag,
+        ValueTypeTag::Continuation => ValueType::Continuation,
     })
 }
 
@@ -2479,11 +2546,22 @@ fn encode_contracts(w: &mut Writer, table: &ContractTable) {
                     w.write_uleb128_u32(id.0);
                 }
             }
-            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
-                w.write_u8(if matches!(contract, Contract::Function { .. }) {
-                    4
-                } else {
-                    5
+            Contract::Function { args, rets }
+            | Contract::Closure { args, rets }
+            | Contract::Tag {
+                request: args,
+                response: rets,
+            }
+            | Contract::Continuation {
+                parameters: args,
+                results: rets,
+            } => {
+                w.write_u8(match contract {
+                    Contract::Function { .. } => 4,
+                    Contract::Closure { .. } => 5,
+                    Contract::Tag { .. } => 6,
+                    Contract::Continuation { .. } => 7,
+                    _ => unreachable!(),
                 });
                 for values in [args, rets] {
                     w.write_uleb128_u64(values.len() as u64);
@@ -2551,7 +2629,7 @@ fn decode_contracts(payload: &[u8]) -> Result<(ContractTable, Vec<ContractId>), 
                     fields: &fields,
                 }
             }
-            4 | 5 => {
+            4..=7 => {
                 for values in [&mut fields, &mut results] {
                     let count = read_count(&mut r)?;
                     values.reserve(count);
@@ -2563,16 +2641,24 @@ fn decode_contracts(payload: &[u8]) -> Result<(ContractTable, Vec<ContractId>), 
                         );
                     }
                 }
-                if tag == 4 {
-                    Contract::Function {
+                match tag {
+                    4 => Contract::Function {
                         args: &fields,
                         rets: &results,
-                    }
-                } else {
-                    Contract::Closure {
+                    },
+                    5 => Contract::Closure {
                         args: &fields,
                         rets: &results,
-                    }
+                    },
+                    6 => Contract::Tag {
+                        request: &fields,
+                        response: &results,
+                    },
+                    7 => Contract::Continuation {
+                        parameters: &fields,
+                        results: &results,
+                    },
+                    _ => unreachable!(),
                 }
             }
             3 => Contract::Array {

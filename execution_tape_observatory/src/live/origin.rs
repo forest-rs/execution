@@ -135,11 +135,17 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.invocation
     }
 
-    pub(super) fn code_program(&self) -> &execution_tape::program::Program {
+    pub(super) fn code_definition(&self) -> &VerifiedProgram {
         if self.showing_origin {
-            self.origin.as_ref().expect("caller code").program.program()
+            self.origin.as_ref().expect("caller code").program
         } else {
-            self.invocation.program().program()
+            self.frames
+                .get(self.selected_frame)
+                .map_or_else(|| self.invocation.program(), |frame| &frame.program)
         }
+    }
+
+    pub(super) fn code_program(&self) -> &execution_tape::program::Program {
+        self.code_definition().program()
     }
 }

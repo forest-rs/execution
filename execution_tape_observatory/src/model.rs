@@ -4,8 +4,8 @@
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
 use execution_tape::recording::{
-    AggregateId, CallStack, ControlAction, ControlCommand, GuestReturn, HostCall, HostOutcome,
-    Outcome, RecordedValue, Recording, ReplayOutcome,
+    AggregateId, CallStack, ControlAction, ControlCommand, HostCall, HostOutcome, Outcome,
+    RecordedTransfer, RecordedValue, Recording, ReplayOutcome, TransferAction,
 };
 use execution_tape::trace::TraceLocation;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -21,11 +21,14 @@ pub(super) enum Focus {
 pub(super) enum Boundary {
     Host(usize),
     Command(usize),
-    CallbackReturn(usize),
+    Transfer(usize),
 }
 
 pub(super) struct View<'a> {
     pub(super) record: &'a Recording,
+    pub(super) execution: &'a Recording,
+    pub(super) segment: u64,
+    pub(super) transfers: Vec<RecordedTransfer<'a>>,
     pub(super) calls: Vec<HostCall<'a>>,
     pub(super) commands: Vec<ControlCommand<'a>>,
     pub(super) boundaries: Vec<Boundary>,
@@ -45,6 +48,11 @@ pub(super) struct View<'a> {
     pub(super) step_successors: Option<[Option<TraceLocation>; 2]>,
     step_location: Option<TraceLocation>,
     sources: Option<execution_tape::source::BoundSources<'a>>,
+    source_maps: Vec<(
+        execution_tape::verifier::VerifiedProgram,
+        execution_tape::source::BoundSources<'a>,
+    )>,
+    source_definition: Option<&'a execution_tape::verifier::VerifiedProgram>,
     fact_analysis: Option<execution_tape::verifier::FunctionAnalysis<'a>>,
     fact_function: Option<execution_tape::value::FuncId>,
     pub(super) page_rows: usize,
@@ -53,7 +61,7 @@ pub(super) struct View<'a> {
 impl<'a> View<'a> {
     #[cfg(test)]
     pub(super) fn new(record: &'a Recording) -> Self {
-        Self::with_options(record, None, false)
+        Self::in_execution(record, 0, Vec::new(), false).expect("observed root")
     }
 
     pub(super) fn with_options(
@@ -70,17 +78,13 @@ impl<'a> View<'a> {
             .collect();
         for (i, command) in commands.iter().enumerate() {
             ordered.push((command.sequence, Boundary::Command(i)));
-            if let ControlAction::CallGuest {
-                returned: Some(returned),
-                ..
-            } = &command.action
-            {
-                ordered.push((returned.sequence, Boundary::CallbackReturn(i)));
-            }
         }
         ordered.sort_by_key(|(sequence, _)| *sequence);
         let mut view = Self {
             record,
+            execution: record,
+            segment: 0,
+            transfers: Vec::new(),
             calls,
             commands,
             boundaries: ordered.into_iter().map(|(_, boundary)| boundary).collect(),
@@ -100,6 +104,8 @@ impl<'a> View<'a> {
             step_successors: None,
             step_location: None,
             sources,
+            source_maps: Vec::new(),
+            source_definition: None,
             fact_analysis: None,
             fact_function: None,
             page_rows: 10,
@@ -108,18 +114,114 @@ impl<'a> View<'a> {
         view
     }
 
+    pub(super) fn in_execution(
+        execution: &'a Recording,
+        segment: u64,
+        source_maps: Vec<(
+            execution_tape::verifier::VerifiedProgram,
+            execution_tape::source::BoundSources<'a>,
+        )>,
+        instructions: bool,
+    ) -> Option<Self> {
+        let record = execution
+            .segments()
+            .find(|item| item.id == segment)?
+            .recording?;
+        let sources = source_maps
+            .iter()
+            .find(|(program, _)| program.shares_definition_with(record.program()))
+            .map(|(_, map)| *map);
+        let mut view = Self::with_options(record, sources, instructions);
+        view.execution = execution;
+        view.segment = segment;
+        view.source_maps = source_maps;
+        view.transfers = execution
+            .transfers()
+            .filter(|transfer| transfer.segment == segment)
+            .collect();
+        let mut ordered: Vec<_> = view
+            .boundaries
+            .iter()
+            .copied()
+            .map(|boundary| {
+                let sequence = match boundary {
+                    Boundary::Host(i) => view.calls[i].sequence,
+                    Boundary::Command(i) => view.commands[i].sequence,
+                    Boundary::Transfer(_) => unreachable!(),
+                };
+                (sequence, boundary)
+            })
+            .collect();
+        ordered.extend(
+            view.transfers
+                .iter()
+                .enumerate()
+                .map(|(i, transfer)| (transfer.sequence, Boundary::Transfer(i))),
+        );
+        ordered.sort_by_key(|(sequence, _)| *sequence);
+        view.boundaries = ordered.into_iter().map(|(_, boundary)| boundary).collect();
+        view.select(if view.boundaries.is_empty() { 0 } else { 1 });
+        Some(view)
+    }
+
+    pub(super) fn source_program(&self) -> &'a execution_tape::verifier::VerifiedProgram {
+        if self.instruction.is_none()
+            && let Some(Boundary::Transfer(i)) = self.boundary(self.selected)
+        {
+            return self.transfers[i].program;
+        }
+        self.record.program()
+    }
+
+    pub(super) fn source_segment(&self) -> u64 {
+        if self.instruction.is_none()
+            && let Some(Boundary::Transfer(i)) = self.boundary(self.selected)
+            && let TransferAction::Returned { child, .. } = self.transfers[i].action
+        {
+            return child.segment;
+        }
+        self.segment
+    }
+
+    pub(super) fn transfer_values(&self, index: usize) -> &'a [RecordedValue] {
+        match &self.transfers[index].action {
+            TransferAction::Enter { args, .. } => args,
+            TransferAction::Returned { values, .. } | TransferAction::ReturnFrom { values, .. } => {
+                values
+            }
+            TransferAction::Rejected { .. } => &[],
+        }
+    }
+
+    fn switch_segment(&mut self, next: bool) {
+        let ids: Vec<_> = self
+            .execution
+            .segments()
+            .filter(|item| item.recording.is_some())
+            .map(|item| item.id)
+            .collect();
+        let index = ids.iter().position(|&id| id == self.segment).unwrap_or(0);
+        let index = if next {
+            (index + 1) % ids.len()
+        } else {
+            (index + ids.len() - 1) % ids.len()
+        };
+        if let Some(mut view) = Self::in_execution(
+            self.execution,
+            ids[index],
+            self.source_maps.clone(),
+            self.instruction.is_some(),
+        ) {
+            view.replay.clone_from(&self.replay);
+            *self = view;
+        }
+    }
+
     pub(super) fn boundary(&self, index: usize) -> Option<Boundary> {
         index
             .checked_sub(1)
             .and_then(|i| self.boundaries.get(i))
             .copied()
-    }
-
-    pub(super) fn callback_return(&self, index: usize) -> Option<&GuestReturn<'a>> {
-        match &self.commands[index].action {
-            ControlAction::CallGuest { returned, .. } => returned.as_ref(),
-            ControlAction::ReturnFrom { .. } => None,
-        }
     }
 
     pub(super) fn stack(&self) -> Option<CallStack<'a>> {
@@ -131,10 +233,8 @@ impl<'a> View<'a> {
         } else if let Some(boundary) = self.boundary(self.selected) {
             match boundary {
                 Boundary::Host(i) => self.calls[i].stack.clone(),
+                Boundary::Transfer(i) => self.transfers[i].stack.clone(),
                 Boundary::Command(i) => self.commands[i].stack.clone(),
-                Boundary::CallbackReturn(i) => {
-                    self.callback_return(i).and_then(|r| r.stack.clone())
-                }
             }
         } else {
             self.record.outcome_stack()
@@ -160,8 +260,8 @@ impl<'a> View<'a> {
         if let Some(boundary) = self.boundary(self.selected) {
             return match boundary {
                 Boundary::Host(i) => Some(self.calls[i].location),
+                Boundary::Transfer(i) => Some(self.transfers[i].location),
                 Boundary::Command(i) => Some(self.commands[i].location),
-                Boundary::CallbackReturn(i) => self.callback_return(i).map(|r| r.location),
             };
         }
         self.record.outcome_location()
@@ -178,12 +278,16 @@ impl<'a> View<'a> {
 
     fn update_source(&mut self, previous: Option<TraceLocation>) {
         let location = self.location();
-        let source_changed =
-            self.source.as_ref().map(FunctionDisassembly::func) != location.map(|loc| loc.func);
+        let program = self.source_program();
+        let definition_changed = self
+            .source_definition
+            .is_none_or(|old| !old.shares_definition_with(program));
+        self.source_definition = Some(program);
+        let source_changed = definition_changed
+            || self.source.as_ref().map(FunctionDisassembly::func) != location.map(|loc| loc.func);
         if source_changed {
-            self.source = location.and_then(|loc| {
-                disassemble_function(self.record.program().program(), loc.func).ok()
-            });
+            self.source =
+                location.and_then(|loc| disassemble_function(program.program(), loc.func).ok());
             self.flow = self.source.as_ref().map_or_else(Flow::default, Flow::new);
         }
         if location != previous || source_changed {
@@ -197,7 +301,18 @@ impl<'a> View<'a> {
                 })
                 .unwrap_or(0);
         }
-        self.source_lines = self.sources.map_or_else(Vec::new, |sources| {
+        let sources = self
+            .source_maps
+            .iter()
+            .find(|(code, _)| code.shares_definition_with(program))
+            .map(|(_, map)| *map)
+            .or_else(|| {
+                program
+                    .shares_definition_with(self.record.program())
+                    .then_some(self.sources)
+                    .flatten()
+            });
+        self.source_lines = sources.map_or_else(Vec::new, |sources| {
             location.map_or_else(
                 || vec!["Source: no captured instruction location".into()],
                 |location| super::source_context::context_lines(sources, location, 2, 48),
@@ -333,15 +448,11 @@ impl<'a> View<'a> {
                         };
                         ("arg", call.args, returns)
                     }
+                    Boundary::Transfer(i) => ("transfer", self.transfer_values(i), &[]),
                     Boundary::Command(i) => match &self.commands[i].action {
                         ControlAction::CallGuest { args, .. } => ("arg", *args, &[]),
                         ControlAction::ReturnFrom { values, .. } => ("exit", *values, &[]),
                     },
-                    Boundary::CallbackReturn(i) => (
-                        "ret",
-                        self.callback_return(i).map_or(&[], |r| r.values),
-                        &[],
-                    ),
                 }
             } else {
                 (
@@ -434,6 +545,8 @@ impl<'a> View<'a> {
 
     pub(super) fn key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Char(']') => self.switch_segment(true),
+            KeyCode::Char('[') => self.switch_segment(false),
             KeyCode::Char('i') => {
                 let previous = self.location();
                 self.instruction = if self.instruction.is_some() {
@@ -489,7 +602,7 @@ impl<'a> View<'a> {
                 self.value_selected = self.path.pop().map_or(0, |(_, selected)| selected);
             }
             KeyCode::Char('r') => {
-                self.replay = match self.record.replay() {
+                self.replay = match self.execution.replay() {
                     Ok(ReplayOutcome::Returned(values)) => format!(
                         "MATCHED · guest result verified ({} value{})",
                         values.values().len(),

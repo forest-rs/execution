@@ -102,6 +102,35 @@
 //! Run `cargo run -p execution_tape_examples --bin nested_contracts` for a complete example.
 //! Run `cargo run -p execution_tape_examples --bin typed_callable` for an indirect nested result.
 //!
+//! ## Delimited computations
+//!
+//! A computation has separate initial arguments, suspension responses and final results.
+//! [`ProgramBuilder::emit_continuation`](asm::ProgramBuilder::emit_continuation) creates its
+//! one-use capability; [`emit_resume`](asm::ProgramBuilder::emit_resume) transfers control with
+//! an explicit normal result block and local suspension clauses. Declare those targets with
+//! [`result_block`](asm::ProgramBuilder::result_block) and
+//! [`handler_block`](asm::ProgramBuilder::handler_block). A selected clause receives request
+//! values followed by the captured continuation, sharing the resumer's lexical registers.
+//! Reinstalling a clause in a loop does not accumulate handler call frames.
+//!
+//! [`emit_suspend`](asm::ProgramBuilder::emit_suspend) derives response registers from the
+//! operation protocol. Exact [`ControlTag`](control::ControlTag) identity selects a handler;
+//! equal signatures alone do not. Inner nonmatching handlers remain inside a capture; the
+//! matching table is outside it. Capabilities are execution-local and one-use, including aliases.
+//! Hard discard does not execute guest cleanup. Language condition and restart policy belongs
+//! above these primitives. See `examples/tape/src/bin/local_handlers.rs` for a source-linked
+//! example and `docs/overview.md` for the current lifetime and replay limits.
+//!
+//! [`emit_tail_call`](asm::ProgramBuilder::emit_tail_call) and
+//! [`emit_tail_resume`](asm::ProgramBuilder::emit_tail_resume) replace the current activation
+//! and inherit its result recipient. They preserve enclosing control context and require the
+//! containing function's exact final-result contracts. Tail resumption consumes one-use authority;
+//! its target has no local clauses. Retired activations expire and forwarding frames do not
+//! accumulate. Register and temporary payload storage is released on segment replacement;
+//! shared aggregate reclamation still follows the execution's publication policy. Tail transfer
+//! runs no implicit protected cleanup. Its complete recording lifecycle remains unfinished;
+//! capture reports [`recording::CaptureFault::UnsupportedControl`] rather than claiming replayability.
+//!
 //! ## Source connections
 //!
 //! [`source::SourceMap`] owns optional frontend snapshots and exact instruction-to-source ranges.
@@ -210,9 +239,45 @@
 //!
 //! Dropping an unfinished invocation cancels it and rolls back its new aggregates. Host effects
 //! remain performed. Trace scopes close with `TraceOutcome::Cancelled`; a cancelled recording is
-//! incomplete and cannot be replayed as a finished invocation. Logical profiling scopes include
-//! suspension time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
+//! incomplete and cannot be replayed as a finished invocation. Logical scopes retain their identity;
+//! [`trace::StackActivity`] distinguishes capture parking and reattachment. Profiling adapters close
+//! physical spans while parked; scheduler pauses and host waiting within the attached chain still
+//! count as elapsed time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 //! use the unbounded dispatch specialization without scheduling checks.
+//!
+//! ### Durable values in a VM
+//!
+//! [`vm::Invocation::retain_outputs`] moves successful results into one VM registration with
+//! their actual code owner. Cloned [`vm::RootedValues`] handles share that registration. Resolve
+//! through the VM after collection; raw aggregate numbers from an older view can have moved.
+//!
+//! ```
+//! # use execution_tape::{host::Host, value::FuncId, verifier::VerifiedProgram,
+//! #     vm::{RunStatus, InvocationOptions, Vm}};
+//! # fn retain<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId) {
+//! let roots = {
+//!     let mut invocation = vm.start(program, entry, &[], InvocationOptions::default())
+//!         .expect("valid entry");
+//!     while invocation.resume(64).expect("execution succeeds") != RunStatus::Complete {}
+//!     invocation.retain_outputs().expect("registration admitted")
+//!         .expect("successful return")
+//! };
+//! let counts = vm.collect().expect("registered roots are valid");
+//! let view = vm.resolve(&roots).expect("same VM and live registration");
+//! assert_eq!(counts.live_groups, 1);
+//! let values = view.values();
+//! let heap = view.aggregates();
+//! # let _ = (values, heap);
+//! # }
+//! ```
+//!
+//! Last-drop makes a group reclaimable at the next explicit collection; retain, resolve and
+//! drop never collect implicitly. Full collection is embedding work outside guest fuel and
+//! reports node counts rather than bytes. Use [`Vm::aggregate_builder`](vm::Vm::aggregate_builder) to append aggregates
+//! or import snapshots; it cannot clear or replace existing storage. [`Vm::take_aggregates`](vm::Vm::take_aggregates)
+//! transfers the whole heap only when no registered group is live. Independent snapshots remain
+//! the export path beyond a VM's lifetime. Low-level `run` and `take_outputs` return raw ABI
+//! handles valid until explicit collection or heap transfer.
 //!
 //! A stored task can instead transfer its VM into [`callable::Callable::start_owned`].
 //! This returns the same `Invocation` type with independently owned VM, code and inputs;
@@ -268,9 +333,13 @@
 //! make foreign handles portable. Use `retain` for results needed outside the host call.
 //! After successful execution, `Invocation::into_snapshot` consumes the invocation and moves
 //! an owned VM's reachable results out without copying payloads. A borrowed VM copies its
-//! reachable graph and keeps its existing raw handles valid. Clone `Invocation::program_owner`
+//! reachable graph and keeps its existing raw handles valid. Use `invocation.program().clone()`
 //! before consumption to retain the exact code domain for nominal/callable snapshot IDs, even
 //! after the original lookup handle has been dropped.
+//! `VerifiedProgram` clones share the immutable authored program and prepared execution artifacts.
+//! Every started invocation retains that definition, including raw `Vm::start` entries; a compiler
+//! can release its own handle while guest work is suspended. Cloning code does not instantiate it
+//! or share mutable VM state.
 //! Recordings preserve adopted node identities and all successful construction debits, so
 //! replay restores rich results without repeating native work or replenishing guest budgets.
 //!
@@ -289,7 +358,7 @@
 //! extern crate alloc;
 //! use alloc::{string::String, vec};
 //! use execution_tape::{host::{Host, HostError, ValueRef}, value::Value,
-//!     vm::{Invocation, TrapInfo}};
+//!     vm::{ControlError, Invocation, TrapInfo}};
 //! async fn answer<H: Host>(invocation: &mut Invocation<'_, H>,
 //!     service: impl AsyncFnOnce(&str) -> Result<String, HostError>) -> Result<(), TrapInfo> {
 //!     invocation.pending_host_call().expect("AwaitingHost")
@@ -310,19 +379,39 @@
 //! redispatched: resumption reports `HostCallAbandoned` and recording remains incomplete.
 //! Ordinary runs and `Host` implementations keep their existing signatures and behavior.
 //!
+//! ### Function values and code replacement
+//!
+//! A runtime `Value::Func` contains a `value::FunctionRef`, retaining an exact instance and
+//! local function ID. Resolve default entries with `Vm::function`; use `Instance::function`
+//! for an explicit instance. Closures carry the same qualified target and a store-local
+//! environment handle. Ordinary indirect calls follow that target, even when the current
+//! program defines another function at the same local ID. They share the execution's budgets,
+//! store and transaction; synchronous and resumable entry use this same mechanism.
+//!
+//! Replacing a lookup leaves existing function values, closures and paused activations attached
+//! to their old code. `Invocation::instantiate` admits newly verified definitions while paused.
+//! Generic dispatch and publication policy remain with the language runtime.
+//!
+//! Live values use their original store. Explicit `Callable::retain(heap, value)` exports code
+//! and copies a closure's reachable captures. Starting that owned callable imports the graph
+//! and binds captured code references to destination namespaces; it does not copy native host
+//! state or retain external objects. `Vm::bind_instance` explicitly binds a retained code namespace
+//! without an environment. Copying a heap snapshot alone preserves its original function
+//! namespaces and does not grant another VM permission to invoke them.
+//!
 //! ### Guest callbacks from a pending host request
 //!
-//! `PendingHostCall::call_guest` enters a function or closure in this invocation's original
-//! program/heap while retaining the admitted host instruction and its callers. Drive the same
+//! `PendingHostCall::call_guest` enters a function or closure in its exact originating instance
+//! within this VM store, retaining the admitted host instruction and its callers. Drive the same
 //! invocation with `resume`: the callback can yield further host requests, which can reenter
 //! guest code in turn. Its return exposes the original pending request, with result slots
 //! available through `callback_results`/`take_callback_results`. The embedding still chooses and supplies the
 //! final host outcome. Callback and host result signatures are independent.
 //!
 //! ```no_run
-//! use execution_tape::{host::Host, value::Value, vm::{Invocation, TrapInfo}};
+//! use execution_tape::{host::Host, value::Value, vm::{ControlError, Invocation, TrapInfo}};
 //! fn start_handler<H: Host>(run: &mut Invocation<'_, H>, handler: Value,
-//!     args: Vec<Value>) -> Result<(), TrapInfo> {
+//!     args: Vec<Value>) -> Result<(), ControlError> {
 //!     run.pending_host_call().expect("AwaitingHost").call_guest(handler, args)
 //! }
 //! // Resume and handle nested host requests normally. Once this original request returns:
@@ -345,11 +434,12 @@
 //! stack or import another program's function, closure or nominal IDs. Synchronous `Host::call`
 //! retains its existing interface; reentry uses the explicit yielded-request protocol.
 //!
-//! `ValueEvent::CallbackEnter`/`CallbackReturn` and ordinary call scopes describe actual guest
+//! `ValueEvent::GuestCall` records the embedding proposal. Code-qualified
+//! `ControlEvent::EnterInstance`/`ReturnInstance` and ordinary call scopes describe actual guest
 //! activity. Callback return is distinct from host completion and root publication. Recording
 //! retains embedding callback commands, promoted staging and actual guest returns in observation
 //! order. Checked replay runs those guest bodies again and verifies their results. Optional
-//! instruction histories link callback attempts to the host instruction that remains pending.
+//! instruction histories stay with each segment; its parent identifies the retained host caller.
 //!
 //! ### Typed non-local returns
 //!
@@ -458,11 +548,14 @@ pub mod callable;
 pub mod codec;
 pub(crate) mod codec_primitives;
 pub mod contract;
+pub mod control;
 pub mod disasm;
 pub mod format;
 pub mod host;
 pub mod host_binding;
 pub mod host_catalog;
+/// Store-bound namespaces for verified code.
+pub mod instance;
 pub(crate) mod instr_operands;
 pub mod opcode;
 pub mod program;

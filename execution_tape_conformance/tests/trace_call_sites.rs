@@ -5,7 +5,7 @@
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use execution_tape::program::{Program, ValueType};
+use execution_tape::program::ValueType;
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
@@ -32,7 +32,7 @@ struct Calls {
 impl TraceSink for Calls {
     fn scope_enter(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         _: FuncId,
@@ -43,7 +43,7 @@ impl TraceSink for Calls {
     }
     fn scope_exit(
         &mut self,
-        _: &Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         depth: usize,
         func: FuncId,
@@ -51,6 +51,7 @@ impl TraceSink for Calls {
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let _ = _context.program();
         self.exited.push((
             kind,
             depth,

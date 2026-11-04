@@ -9,6 +9,7 @@ use super::*;
 use crate::contract::{
     Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
 };
+use crate::program::ByteRange;
 use crate::value::AggType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -23,7 +24,14 @@ enum Fact {
 impl Fact {
     fn register(state: &RefinementState, types: RegisterTypes<'_>, reg: u32) -> Self {
         let kind = types.get(reg).expect("checked register");
-        if matches!(kind, ValueType::Agg | ValueType::Func | ValueType::Closure) {
+        if matches!(
+            kind,
+            ValueType::Agg
+                | ValueType::Func
+                | ValueType::Closure
+                | ValueType::Tag
+                | ValueType::Continuation
+        ) {
             state
                 .refinement(reg as usize)
                 .copied()
@@ -43,8 +51,9 @@ enum Node {
     Array(ElemTypeId, Fact),
     Function(FuncId),
     Indirect {
-        signature: CallSigId,
-        kind: CallableKind,
+        args: ByteRange,
+        rets: ByteRange,
+        kind: SignatureKind,
     },
     Closure(Fact),
 }
@@ -92,35 +101,41 @@ impl Members<'_> {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum CallableKind {
+enum SignatureKind {
     Function,
     Closure,
+    Tag,
+    Continuation,
 }
-impl CallableKind {
+impl SignatureKind {
     fn from_kind(kind: ValueType) -> Self {
         match kind {
             ValueType::Func => Self::Function,
             ValueType::Closure => Self::Closure,
-            _ => unreachable!("callable kind"),
+            ValueType::Tag => Self::Tag,
+            ValueType::Continuation => Self::Continuation,
+            _ => unreachable!("signature kind"),
         }
     }
     fn value_type(self) -> ValueType {
         match self {
             Self::Function => ValueType::Func,
             Self::Closure => ValueType::Closure,
+            Self::Tag => ValueType::Tag,
+            Self::Continuation => ValueType::Continuation,
         }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Descriptor {
     Aggregate(AggType),
-    Callable { kind: CallableKind, args: u32 },
+    Signature { kind: SignatureKind, args: u32 },
 }
 impl Descriptor {
     fn kind(self) -> ValueType {
         match self {
             Self::Aggregate(_) => ValueType::Agg,
-            Self::Callable { kind, .. } => kind.value_type(),
+            Self::Signature { kind, .. } => kind.value_type(),
         }
     }
 }
@@ -131,8 +146,8 @@ struct View<'a> {
 }
 impl View<'_> {
     fn closure(self) -> Option<Self> {
-        let Descriptor::Callable {
-            kind: CallableKind::Function,
+        let Descriptor::Signature {
+            kind: SignatureKind::Function,
             args,
         } = self.descriptor
         else {
@@ -145,8 +160,8 @@ impl View<'_> {
             _ => unreachable!("signature members"),
         };
         Some(Self {
-            descriptor: Descriptor::Callable {
-                kind: CallableKind::Closure,
+            descriptor: Descriptor::Signature {
+                kind: SignatureKind::Closure,
                 args,
             },
             members,
@@ -194,7 +209,8 @@ struct Arena<'a> {
     heads: BTreeMap<u64, u32>,
     imported: BTreeMap<ContractId, Fact>,
     function_facts: BTreeMap<u32, Fact>,
-    indirect_facts: BTreeMap<(u32, CallableKind), Fact>,
+    indirect_facts: BTreeMap<(u32, SignatureKind), Fact>,
+    suspension_facts: BTreeMap<(u32, u32), Fact>,
     common_cache: BTreeMap<(Fact, Fact), Option<Fact>>,
     replacements: Vec<(u32, Fact)>,
     check_frames: Vec<Check>,
@@ -213,6 +229,7 @@ impl<'a> Arena<'a> {
             imported: BTreeMap::new(),
             function_facts: BTreeMap::new(),
             indirect_facts: BTreeMap::new(),
+            suspension_facts: BTreeMap::new(),
             common_cache: BTreeMap::new(),
             replacements: Vec::new(),
             check_frames: Vec::new(),
@@ -246,9 +263,18 @@ impl<'a> Arena<'a> {
                     AggType::Array { elem_type_id },
                     Members::One(self.imported[&element]),
                 ),
-                Contract::Function { args, rets } | Contract::Closure { args, rets } => View {
-                    descriptor: Descriptor::Callable {
-                        kind: CallableKind::from_kind(self.program.contracts.kind(*id).unwrap()),
+                Contract::Function { args, rets }
+                | Contract::Closure { args, rets }
+                | Contract::Tag {
+                    request: args,
+                    response: rets,
+                }
+                | Contract::Continuation {
+                    parameters: args,
+                    results: rets,
+                } => View {
+                    descriptor: Descriptor::Signature {
+                        kind: SignatureKind::from_kind(self.program.contracts.kind(*id).unwrap()),
                         args: u32::try_from(args.len()).expect("signature arity"),
                     },
                     members: Members::Signature(args, rets, &self.imported),
@@ -275,19 +301,18 @@ impl<'a> Arena<'a> {
                 let args = self.program.verified_contracts(function.arg_types);
                 let rets = self.program.verified_contracts(function.ret_types);
                 View {
-                    descriptor: Descriptor::Callable {
-                        kind: CallableKind::Function,
+                    descriptor: Descriptor::Signature {
+                        kind: SignatureKind::Function,
                         args: u32::try_from(args.len()).expect("signature arity"),
                     },
                     members: Members::Signature(args, rets, &self.imported),
                 }
             }
-            Node::Indirect { signature, kind } => {
-                let entry = &self.program.call_sigs[signature.0 as usize];
-                let args = self.program.verified_contracts(entry.args);
-                let rets = self.program.verified_contracts(entry.rets);
+            Node::Indirect { args, rets, kind } => {
+                let args = self.program.verified_contracts(*args);
+                let rets = self.program.verified_contracts(*rets);
                 View {
-                    descriptor: Descriptor::Callable {
+                    descriptor: Descriptor::Signature {
                         kind: *kind,
                         args: u32::try_from(args.len()).expect("signature arity"),
                     },
@@ -389,7 +414,16 @@ impl<'a> Arena<'a> {
                     pending.extend(fields.iter().map(|&id| (id, false)));
                 }
                 Contract::Array { element, .. } => pending.push((element, false)),
-                Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+                Contract::Function { args, rets }
+                | Contract::Closure { args, rets }
+                | Contract::Tag {
+                    request: args,
+                    response: rets,
+                }
+                | Contract::Continuation {
+                    parameters: args,
+                    results: rets,
+                } => {
                     pending.extend(args.iter().chain(rets).map(|&id| (id, false)));
                 }
                 Contract::Kind(_) => unreachable!(),
@@ -436,7 +470,7 @@ impl<'a> Arena<'a> {
                     .insert(pair, Some(Fact::Kind(self.kind(a))));
                 continue;
             };
-            if matches!(left.descriptor, Descriptor::Callable { .. }) {
+            if matches!(left.descriptor, Descriptor::Signature { .. }) {
                 self.common_cache
                     .insert(pair, Some(Fact::Kind(left.descriptor.kind())));
                 continue;
@@ -477,21 +511,43 @@ impl<'a> Arena<'a> {
         self.common_cache[&root]
     }
     fn indirect_signature(&mut self, signature: CallSigId, kind: ValueType) -> Fact {
-        let kind = CallableKind::from_kind(kind);
+        let kind = SignatureKind::from_kind(kind);
         if let Some(&fact) = self.indirect_facts.get(&(signature.0, kind)) {
             return fact;
         }
         let entry = &self.program.call_sigs[signature.0 as usize];
+        let fact = self.signature_ranges(entry.args, entry.rets, kind);
+        self.indirect_facts.insert((signature.0, kind), fact);
+        fact
+    }
+    fn signature_ranges(&mut self, args: ByteRange, rets: ByteRange, kind: SignatureKind) -> Fact {
         for &id in self
             .program
-            .verified_contracts(entry.args)
+            .verified_contracts(args)
             .iter()
-            .chain(self.program.verified_contracts(entry.rets))
+            .chain(self.program.verified_contracts(rets))
         {
             self.import(id);
         }
-        let fact = self.intern(Node::Indirect { signature, kind });
-        self.indirect_facts.insert((signature.0, kind), fact);
+        self.intern(Node::Indirect { args, rets, kind })
+    }
+    fn suspension_signature(&mut self, operation: CallSigId, resumed: CallSigId) -> Fact {
+        let key = (operation.0, resumed.0);
+        if let Some(&fact) = self.suspension_facts.get(&key) {
+            return fact;
+        }
+        let fact = self.signature_ranges(
+            self.program
+                .call_sig(operation)
+                .expect("operation protocol")
+                .rets,
+            self.program
+                .call_sig(resumed)
+                .expect("resume protocol")
+                .rets,
+            SignatureKind::Continuation,
+        );
+        self.suspension_facts.insert(key, fact);
         fact
     }
     fn callable(&mut self, func: FuncId) -> Fact {
@@ -532,6 +588,7 @@ impl<'a> Arena<'a> {
                 Ok(())
             } else {
                 Err(ContractViolation {
+                    contract_program: None,
                     contract: expected,
                     path: Vec::new(),
                     mismatch: ContractMismatch::Kind {
@@ -566,6 +623,7 @@ impl<'a> Arena<'a> {
                 };
                 if let Some(mismatch) = failure {
                     return Err(ContractViolation {
+                        contract_program: None,
                         contract: frame.expected,
                         path: path.clone(),
                         mismatch,
@@ -575,15 +633,26 @@ impl<'a> Arena<'a> {
                 let actual = self.view(frame.actual);
                 if matches!(
                     contract,
-                    Contract::Function { .. } | Contract::Closure { .. }
+                    Contract::Function { .. }
+                        | Contract::Closure { .. }
+                        | Contract::Tag { .. }
+                        | Contract::Continuation { .. }
                 ) {
                     if actual.is_some() {
                         let expected_fact = self.import(frame.expected);
                         if expected_fact != frame.actual {
                             return Err(ContractViolation {
+                                contract_program: None,
                                 contract: frame.expected,
                                 path: path.clone(),
-                                mismatch: ContractMismatch::Callable { function: None },
+                                mismatch: match contract {
+                                    Contract::Function { .. } | Contract::Closure { .. } => {
+                                        ContractMismatch::Callable { function: None }
+                                    }
+                                    _ => ContractMismatch::Signature {
+                                        kind: contract.kind(),
+                                    },
+                                },
                             });
                         }
                     }
@@ -594,9 +663,11 @@ impl<'a> Arena<'a> {
                     continue;
                 }
                 let expected_view = match contract {
-                    Contract::Kind(_) | Contract::Function { .. } | Contract::Closure { .. } => {
-                        None
-                    }
+                    Contract::Kind(_)
+                    | Contract::Function { .. }
+                    | Contract::Closure { .. }
+                    | Contract::Tag { .. }
+                    | Contract::Continuation { .. } => None,
                     Contract::Tuple(members) => Some((
                         AggType::Tuple {
                             arity: u32::try_from(members.len())
@@ -615,6 +686,7 @@ impl<'a> Arena<'a> {
                 {
                     if actual.descriptor != Descriptor::Aggregate(expected_descriptor) {
                         return Err(ContractViolation {
+                            contract_program: None,
                             contract: frame.expected,
                             path: path.clone(),
                             mismatch: ContractMismatch::Aggregate {
@@ -739,7 +811,13 @@ fn transfer(
         || !instr.writes().any(|reg| {
             matches!(
                 types.get(reg),
-                Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+                Some(
+                    ValueType::Agg
+                        | ValueType::Func
+                        | ValueType::Closure
+                        | ValueType::Tag
+                        | ValueType::Continuation
+                )
             )
         })
     {
@@ -749,12 +827,20 @@ fn transfer(
     let mut replacements = core::mem::take(&mut arena.replacements);
     match instr {
         Instr::ConstFunc { dst, func_id } => replacements.push((*dst, arena.callable(*func_id))),
+        Instr::ConstTag { dst, tag_id } | Instr::TagNew { dst, tag_id, .. } => {
+            let signature = arena.program.control_tags[*tag_id as usize].signature;
+            replacements.push((*dst, arena.indirect_signature(signature, ValueType::Tag)));
+        }
+        Instr::ContNew { dst, call_sig, .. } => replacements.push((
+            *dst,
+            arena.indirect_signature(CallSigId(*call_sig), ValueType::Continuation),
+        )),
         Instr::ClosureNew { dst, func, .. } => {
             if let Some(fact) = arena.closure(arena.fact(state, types, *func)) {
                 replacements.push((*dst, fact));
             }
         }
-        Instr::CallIndirect { call_sig, rets, .. } => {
+        Instr::CallIndirect { call_sig, rets, .. } | Instr::Suspend { call_sig, rets, .. } => {
             for (&reg, &id) in rets.iter().zip(
                 arena
                     .program
@@ -851,7 +937,13 @@ fn transfer(
     for reg in instr.writes() {
         if matches!(
             types.get(reg),
-            Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+            Some(
+                ValueType::Agg
+                    | ValueType::Func
+                    | ValueType::Closure
+                    | ValueType::Tag
+                    | ValueType::Continuation
+            )
         ) {
             state.set_refinement(reg as usize, None);
         }
@@ -859,7 +951,13 @@ fn transfer(
     for &(reg, fact) in &replacements {
         if matches!(
             types.get(reg),
-            Some(ValueType::Agg | ValueType::Func | ValueType::Closure)
+            Some(
+                ValueType::Agg
+                    | ValueType::Func
+                    | ValueType::Closure
+                    | ValueType::Tag
+                    | ValueType::Continuation
+            )
         ) {
             state.set_refinement(
                 reg as usize,
@@ -983,9 +1081,47 @@ fn validate(
                     })?;
             }
         }
-        Instr::CallIndirect {
+        Instr::ContNew {
+            call_sig, callee, ..
+        } => {
+            let expected =
+                arena.indirect_signature(CallSigId(*call_sig), types.get(*callee).unwrap());
+            let actual = arena.fact(state, types, *callee);
+            if matches!(actual, Fact::Refined(_)) && actual != expected {
+                return Err(VerifyError::CallIndirectContractMismatch {
+                    func: func_id,
+                    pc,
+                    call_sig: *call_sig,
+                });
+            }
+        }
+        Instr::TailCall {
             call_sig,
             callee,
+            args,
+            ..
+        }
+        | Instr::TailResume {
+            call_sig,
+            continuation: callee,
+            args,
+            ..
+        }
+        | Instr::CallIndirect {
+            call_sig,
+            callee,
+            args,
+            ..
+        }
+        | Instr::ContResume {
+            call_sig,
+            continuation: callee,
+            args,
+            ..
+        }
+        | Instr::Suspend {
+            call_sig,
+            tag: callee,
             args,
             ..
         } => {
@@ -1013,6 +1149,22 @@ fn validate(
                         },
                         error,
                     })?;
+            }
+            if let Instr::ContResume { handlers, .. } = instr {
+                for (arm, &clause) in handlers.iter().enumerate() {
+                    let crate::control::HandlerClause::Suspend { tag, signature, .. } = clause;
+                    let expected = arena.indirect_signature(signature, ValueType::Tag);
+                    let actual = arena.fact(state, types, tag);
+                    if matches!(actual, Fact::Refined(_)) && actual != expected {
+                        return Err(VerifyError::HandlerProtocolMismatch {
+                            func: func_id,
+                            pc,
+                            arm,
+                            tag,
+                            signature,
+                        });
+                    }
+                }
             }
         }
         Instr::Ret { rets, .. } => {
@@ -1051,14 +1203,50 @@ pub(super) fn verify_flow(
     types: RegisterTypes<'_>,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
-    if !types
-        .iter()
-        .any(|kind| matches!(kind, ValueType::Agg | ValueType::Func | ValueType::Closure))
-    {
+    if !types.iter().any(|kind| {
+        matches!(
+            kind,
+            ValueType::Agg
+                | ValueType::Func
+                | ValueType::Closure
+                | ValueType::Tag
+                | ValueType::Continuation
+        )
+    }) {
         return Ok(());
     }
     let (mut arena, inputs, outputs) =
         solve_flow(program, func_id, blocks, reachable, types, decoded);
+    // Tail result obligations are declarations, including on unreachable transfers. Comparing
+    // canonical facts accepts separately encoded but structurally equal contract graphs.
+    let empty = ByteRange { offset: 0, len: 0 };
+    let mut expected = None;
+    for di in decoded {
+        if let Instr::TailCall { call_sig, .. } | Instr::TailResume { call_sig, .. } = di.instr {
+            let expected = *expected.get_or_insert_with(|| {
+                arena.signature_ranges(
+                    empty,
+                    program.functions[func_id as usize].ret_types,
+                    SignatureKind::Continuation,
+                )
+            });
+            let actual = arena.signature_ranges(
+                empty,
+                program
+                    .call_sig(CallSigId(call_sig))
+                    .expect("validated tail signature")
+                    .rets,
+                SignatureKind::Continuation,
+            );
+            if actual != expected {
+                return Err(VerifyError::TailResultMismatch {
+                    func: func_id,
+                    pc: di.offset,
+                    call_sig: CallSigId(call_sig),
+                });
+            }
+        }
+    }
     for (index, (block, mut state)) in blocks.iter().zip(inputs).enumerate() {
         if !reachable[index] {
             continue;
@@ -1103,13 +1291,47 @@ fn solve_flow<'a>(
             facts: Vec::new(),
         },
         |pred, arm, _, acc, incoming| {
+            if incoming.top {
+                return false;
+            }
             let branch = &decoded[blocks[pred].instr_end - 1].instr;
-            let incoming = if let Some((target, args)) =
-                branch.edge(arm).filter(|(_, args)| !args.is_empty())
+            let mut arena = arena.borrow_mut();
+            let incoming = if let Some((target, args)) = branch
+                .edge(arm)
+                .filter(|(_, args)| args.registers().is_none_or(|values| !values.is_empty()))
             {
-                let params = blocks::declaration(decoded, target).expect("validated target");
+                let params =
+                    blocks::declaration(decoded, target).expect("validated parameter target");
                 let scratch = edge_scratch.get_or_insert_with(|| incoming.clone());
-                blocks::transfer_edge(incoming, scratch, params, args);
+                if let Some(registers) = args.registers() {
+                    blocks::transfer_edge(incoming, scratch, params, registers);
+                } else {
+                    scratch.clone_from(incoming);
+                    let (contracts, continuation) = args.contracts(program).expect("protocol edge");
+                    for (&param, &contract) in params.iter().zip(contracts) {
+                        let refinement = match arena.import(contract) {
+                            Fact::Kind(_) => None,
+                            Fact::Refined(id) => Some(id),
+                        };
+                        scratch.set_refinement(param as usize, refinement);
+                    }
+                    if continuation {
+                        let crate::bytecode::EdgeValues::Suspension(protocol) = args else {
+                            unreachable!()
+                        };
+                        let Instr::ContResume { call_sig, .. } = branch else {
+                            unreachable!()
+                        };
+                        let fact = arena.suspension_signature(protocol, CallSigId(*call_sig));
+                        let Fact::Refined(id) = fact else {
+                            unreachable!()
+                        };
+                        scratch.set_refinement(
+                            *params.last().expect("continuation parameter") as usize,
+                            Some(id),
+                        );
+                    }
+                }
                 &*scratch
             } else {
                 incoming
@@ -1121,7 +1343,6 @@ fn solve_flow<'a>(
                 acc.clone_from(incoming);
                 return true;
             }
-            let mut arena = arena.borrow_mut();
             let mut changed = false;
             acc.facts.retain_mut(|(reg, fact)| {
                 let common = incoming

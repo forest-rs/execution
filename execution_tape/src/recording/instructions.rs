@@ -87,6 +87,11 @@ pub enum InstructionOutcome {
         /// Target activation ordinal within this invocation.
         target: u64,
     },
+    /// The activation was replaced by a terminal transfer.
+    TailTransferred {
+        /// Exact replacement root within the recorded execution.
+        target: crate::recording::RecordedActivation,
+    },
     /// The instruction trapped. The final VM trap is available from the recording outcome.
     Trapped,
 }
@@ -95,7 +100,7 @@ pub enum InstructionOutcome {
 ///
 /// `next` is the actual executable successor; typed block declarations have no event.
 /// Calls complete at callee entry, while returns resume the suspended caller. A host attempt
-/// remains outstanding during its callbacks, so completions can overlap in this admission order.
+/// remains outstanding while its child segments execute; their histories are retained separately.
 #[derive(Clone, Debug)]
 pub struct InstructionStep<'a> {
     /// Selected actual read operands before execution.
@@ -104,9 +109,6 @@ pub struct InstructionStep<'a> {
     pub outputs: RegisterObservations<'a>,
     /// Executed instruction location.
     pub location: TraceLocation,
-    /// Retained host attempt that remains outstanding while this callback instruction executes.
-    /// `None` means no outstanding parent attempt; ordinary guest ancestry is in `stack`.
-    pub parent_attempt: Option<usize>,
     /// Source opcode byte.
     pub opcode: u8,
     /// Actual guest successor, absent at root/callback return, trap or missing completion.
@@ -123,7 +125,6 @@ pub(crate) struct Step {
     pub(crate) inputs: core::ops::Range<usize>,
     pub(crate) outputs: core::ops::Range<usize>,
     pub(crate) location: TraceLocation,
-    pub(crate) parent: Option<usize>,
     pub(crate) opcode: u8,
     pub(crate) next: Option<TraceLocation>,
     pub(crate) outcome: InstructionOutcome,
@@ -141,7 +142,6 @@ pub(crate) struct History {
     next: Option<TraceLocation>,
     admitted: bool,
     control_boundary: bool,
-    returning_callback: bool,
     pub(crate) started: bool,
     pub(crate) finished: bool,
     // An explicit root transfer may close an older host attempt after newer callback steps.
@@ -181,7 +181,6 @@ impl History {
             next: None,
             admitted: false,
             control_boundary: false,
-            returning_callback: false,
             started: false,
             finished: false,
             root_exit: None,
@@ -199,12 +198,7 @@ impl History {
     }
 
     pub(crate) fn finish(&mut self) {
-        if !self.pending.is_empty()
-            || self.returning_callback
-            || !self.started
-            || !self.finished
-            || !self.mask_seen
-        {
+        if !self.pending.is_empty() || !self.started || !self.finished || !self.mask_seen {
             self.status = InstructionStatus::Incomplete;
         }
     }
@@ -214,7 +208,6 @@ impl History {
 struct PendingAttempt {
     location: TraceLocation,
     index: Option<usize>,
-    suspended: bool,
 }
 impl History {
     pub(crate) fn current(&self) -> Option<usize> {
@@ -229,24 +222,6 @@ impl History {
             self.root_exit = self.current();
         }
     }
-    pub(crate) fn begin_callback(&mut self, location: TraceLocation) {
-        if self.status == InstructionStatus::Incomplete {
-            return;
-        }
-        let Some(pending) = self.pending.last_mut().filter(|pending| {
-            pending.location == location && (!pending.suspended || self.control_boundary)
-        }) else {
-            self.status = InstructionStatus::Incomplete;
-            return;
-        };
-        pending.suspended = true;
-        self.control_boundary = true;
-    }
-    pub(crate) fn end_callback(&mut self) {
-        if self.status != InstructionStatus::Incomplete {
-            self.returning_callback = true;
-        }
-    }
     pub(crate) fn record_instruction(
         &mut self,
         location: TraceLocation,
@@ -258,10 +233,7 @@ impl History {
         }
         if !self.started
             || self.finished
-            || self
-                .pending
-                .last()
-                .is_some_and(|pending| !pending.suspended)
+            || !self.pending.is_empty()
             || (self.status == InstructionStatus::Complete
                 && self.admitted
                 && !self.control_boundary
@@ -282,7 +254,6 @@ impl History {
                 outputs: self.registers.len()..self.registers.len(),
                 location,
                 opcode,
-                parent: self.current(),
                 next: None,
                 outcome: InstructionOutcome::Pending,
                 frame,
@@ -294,11 +265,7 @@ impl History {
             };
             None
         };
-        self.pending.push(PendingAttempt {
-            location,
-            index,
-            suspended: false,
-        });
+        self.pending.push(PendingAttempt { location, index });
     }
     pub(crate) fn complete_instruction(
         &mut self,
@@ -313,11 +280,7 @@ impl History {
             self.status = InstructionStatus::Incomplete;
             return;
         };
-        if pending.location != location
-            || (pending.suspended
-                && matches!(outcome, crate::trace::TraceOutcome::Ok)
-                && !self.control_boundary)
-        {
+        if pending.location != location {
             self.status = InstructionStatus::Incomplete;
             return;
         }
@@ -326,6 +289,14 @@ impl History {
             crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
             crate::trace::TraceOutcome::Unwound { target } => {
                 InstructionOutcome::Unwound { target }
+            }
+            crate::trace::TraceOutcome::TailTransferred { target } => {
+                InstructionOutcome::TailTransferred {
+                    target: crate::recording::RecordedActivation {
+                        segment: target.segment_ordinal(),
+                        activation: target.ordinal(),
+                    },
+                }
             }
             crate::trace::TraceOutcome::Cancelled => {
                 self.status = InstructionStatus::Incomplete;
@@ -340,17 +311,6 @@ impl History {
             self.steps[index].outcome = actual;
         }
         self.next = next;
-        if self.returning_callback {
-            self.returning_callback = false;
-            if !matches!(outcome, crate::trace::TraceOutcome::Ok) {
-                self.status = InstructionStatus::Incomplete;
-            }
-            if let Some(parent) = self.pending.last_mut() {
-                parent.suspended = false;
-            } else {
-                self.status = InstructionStatus::Incomplete;
-            }
-        }
         if matches!(
             outcome,
             crate::trace::TraceOutcome::Trap(_) | crate::trace::TraceOutcome::Cancelled

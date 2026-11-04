@@ -16,12 +16,14 @@ mod metadata;
 pub use blocks::{BlockDeclarationError, BlockEdgeError};
 
 pub use contracts::inspection::{
-    EdgeBinding, FactOrigin, FunctionAnalysis, IncomingEdge, InstructionFacts, ProgramAnalysis,
-    RegisterFact, ValueFact,
+    EdgeBinding, EdgeValueSource, FactOrigin, FunctionAnalysis, IncomingEdge, InstructionFacts,
+    ProgramAnalysis, RegisterFact, ValueFact,
 };
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -43,6 +45,7 @@ use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
     FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, VReg, VRegSlice,
 };
+use crate::typed::{ContinuationReg, TagReg};
 use crate::value::FuncId;
 use crate::{analysis::bitset::BitSet, analysis::cfg};
 
@@ -57,9 +60,16 @@ use crate::vm::Vm;
 /// still validating host ABI conformance at runtime.
 ///
 /// Internally, a [`VerifiedProgram`] also carries a decoded instruction stream so the VM does not
-/// need to decode bytecode at runtime.
+/// need to decode bytecode at runtime. Cloning shares this immutable definition, including its
+/// source program, prepared instructions and signature cache. It does not instantiate code or
+/// share mutable VM state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedProgram {
+    definition: Arc<VerifiedDefinition>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VerifiedDefinition {
     program: Program,
     verified_functions: Vec<ExecFunc>,
     signature_cache: SignatureCache,
@@ -134,10 +144,20 @@ pub enum VerifyLint {
 }
 
 impl VerifiedProgram {
+    /// Whether these handles retain the same immutable verified definition.
+    ///
+    /// Clones share one definition. Independently verifying equal program contents creates
+    /// distinct definitions, even when structural equality reports them equal. This does not
+    /// identify an instantiated program, host bindings, or an execution store.
+    #[must_use]
+    pub fn shares_definition_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.definition, &other.definition)
+    }
+
     /// Returns the underlying program.
     #[must_use]
     pub fn program(&self) -> &Program {
-        &self.program
+        &self.definition.program
     }
 
     /// Borrows the prepared execution facts for `func`, or returns `None` for an unknown id.
@@ -147,32 +167,34 @@ impl VerifiedProgram {
         Some(VerifiedFunction {
             program: self,
             id: func,
-            definition: self.program.functions.get(func.0 as usize)?,
+            definition: self.definition.program.functions.get(func.0 as usize)?,
             executable: self.verified(func)?,
         })
     }
 
     /// Iterates prepared functions in function-id order without allocation or decoding.
     pub fn functions(&self) -> impl ExactSizeIterator<Item = VerifiedFunction<'_>> + '_ {
-        self.verified_functions
+        self.definition
+            .verified_functions
             .iter()
             .enumerate()
             .map(|(index, executable)| VerifiedFunction {
                 program: self,
                 id: FuncId(u32::try_from(index).expect("verified function index")),
-                definition: &self.program.functions[index],
+                definition: &self.definition.program.functions[index],
                 executable,
             })
     }
 
     #[must_use]
     pub(crate) fn verified(&self, func: FuncId) -> Option<&ExecFunc> {
-        self.verified_functions.get(func.0 as usize)
+        self.definition.verified_functions.get(func.0 as usize)
     }
 
     #[must_use]
     pub(crate) fn call_sig_fingerprint(&self, call_sig: CallSigId) -> Option<SigFingerprint> {
-        self.signature_cache
+        self.definition
+            .signature_cache
             .call_sigs
             .get(call_sig.0 as usize)
             .copied()
@@ -180,7 +202,8 @@ impl VerifiedProgram {
 
     #[must_use]
     pub(crate) fn function_direct_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
-        self.signature_cache
+        self.definition
+            .signature_cache
             .functions
             .get(func.0 as usize)
             .map(|s| s.direct)
@@ -188,22 +211,39 @@ impl VerifiedProgram {
 
     #[must_use]
     pub(crate) fn function_closure_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
-        self.signature_cache
+        self.definition
+            .signature_cache
             .functions
             .get(func.0 as usize)
             .and_then(|s| s.closure)
     }
 
-    /// Consumes `self` and returns the underlying program.
+    /// Consumes this handle and returns the underlying authored program.
+    ///
+    /// Moves it when this is the last definition owner; otherwise clones only the authored
+    /// program, leaving other handles and their prepared execution artifacts intact.
     #[must_use]
     pub fn into_program(self) -> Program {
-        self.program
+        match Arc::try_unwrap(self.definition) {
+            Ok(definition) => definition.program,
+            Err(definition) => definition.program.clone(),
+        }
     }
 }
 
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
+    /// An instruction refers to a missing control declaration.
+    ControlTagOutOfBounds {
+        /// Containing function.
+        func: u32,
+        /// Instruction byte offset.
+        pc: u32,
+        /// Missing declaration.
+        tag: crate::program::ControlTagId,
+    },
+
     /// A statically known callable contradicts an indirect call's exact signature.
     CallIndirectContractMismatch {
         /// Containing function.
@@ -212,6 +252,28 @@ pub enum VerifyError {
         pc: u32,
         /// Required indirect signature.
         call_sig: u32,
+    },
+    /// A terminal transfer would change the enclosing function's final result contracts.
+    TailResultMismatch {
+        /// Containing function.
+        func: u32,
+        /// Tail instruction's source byte offset.
+        pc: u32,
+        /// Declared target protocol.
+        call_sig: CallSigId,
+    },
+    /// A statically known operation contradicts a local clause's request/response protocol.
+    HandlerProtocolMismatch {
+        /// Containing function.
+        func: u32,
+        /// Resumption instruction byte offset.
+        pc: u32,
+        /// Clause index in matching order.
+        arm: usize,
+        /// Register containing the incompatible operation.
+        tag: u32,
+        /// Protocol required by the clause.
+        signature: CallSigId,
     },
     /// A compositional contract contradicts its nominal schema, even if it is unused.
     InvalidContract {
@@ -579,6 +641,20 @@ pub enum VerifyError {
         /// Call signature id.
         call_sig: u32,
     },
+    /// A control-tag declaration references an absent request/response signature.
+    ControlTagSignature {
+        /// Local declaration index.
+        tag: u32,
+        /// Missing program-local signature.
+        signature: u32,
+    },
+    /// A control protocol label does not resolve in the program's symbol table.
+    ControlTagName {
+        /// Local declaration index.
+        tag: u32,
+        /// Invalid symbol-table index.
+        name: u32,
+    },
     /// A `host_call` referenced a host signature, but that entry was malformed.
     HostCallSigMalformed {
         /// Function index within the program.
@@ -686,9 +762,29 @@ pub enum InvalidJumpTargetReason {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ControlTagOutOfBounds { func, pc, tag } => {
+                write!(f, "f{func}:{pc}: control tag #{} is not declared", tag.0)
+            }
+
             Self::CallIndirectContractMismatch { func, pc, call_sig } => write!(
                 f,
                 "function #{func} at {pc}: callable does not match indirect signature #{call_sig}"
+            ),
+            Self::TailResultMismatch { func, pc, call_sig } => write!(
+                f,
+                "function #{func} at byte {pc}: tail signature #{} must preserve the function's final result contracts",
+                call_sig.0
+            ),
+            Self::HandlerProtocolMismatch {
+                func,
+                pc,
+                arm,
+                tag,
+                signature,
+            } => write!(
+                f,
+                "function #{func} at byte {pc}: handler clause {arm} requires protocol #{}, but operation r{tag} has a different request/response contract",
+                signature.0
             ),
             Self::InvalidContract { contract, error } => {
                 write!(f, "invalid contract {}: {error:?}", contract.0)
@@ -906,9 +1002,17 @@ impl fmt::Display for VerifyError {
                 )
             }
             Self::HostSigMalformed { host_sig } => write!(f, "host_sig {host_sig} malformed"),
+            Self::ControlTagName { tag, name } => write!(
+                f,
+                "control tag #{tag} references absent label symbol #{name}"
+            ),
             Self::CallSigMalformed { call_sig } => {
                 write!(f, "call_sig {call_sig} malformed")
             }
+            Self::ControlTagSignature { tag, signature } => write!(
+                f,
+                "control tag #{tag} references absent signature #{signature}"
+            ),
             Self::HostCallSigMalformed { func, pc, host_sig } => write!(
                 f,
                 "function {func} pc={pc} host_sig {host_sig} malformed (via host_call)"
@@ -1068,9 +1172,11 @@ pub fn verify_program_owned(
     }
 
     Ok(VerifiedProgram {
-        program,
-        verified_functions,
-        signature_cache,
+        definition: Arc::new(VerifiedDefinition {
+            program,
+            verified_functions,
+            signature_cache,
+        }),
     })
 }
 
@@ -1096,9 +1202,11 @@ pub fn verify_program_owned_with_lints(
 
     Ok((
         VerifiedProgram {
-            program,
-            verified_functions,
-            signature_cache,
+            definition: Arc::new(VerifiedDefinition {
+                program,
+                verified_functions,
+                signature_cache,
+            }),
         },
         lints,
     ))
@@ -1274,6 +1382,21 @@ fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
 }
 
 fn verify_call_sigs(program: &Program) -> Result<(), VerifyError> {
+    for (tag, declaration) in program.control_tags.iter().enumerate() {
+        let tag = u32::try_from(tag).unwrap_or(u32::MAX);
+        if program.symbol_str(declaration.name).is_err() {
+            return Err(VerifyError::ControlTagName {
+                tag,
+                name: declaration.name.index(),
+            });
+        }
+        if program.call_sig(declaration.signature).is_none() {
+            return Err(VerifyError::ControlTagSignature {
+                tag,
+                signature: declaration.signature.0,
+            });
+        }
+    }
     for (i, cs) in program.call_sigs.iter().enumerate() {
         let call_sig = u32::try_from(i).unwrap_or(u32::MAX);
         let _ = program
@@ -1463,7 +1586,21 @@ fn verify_id_operands_in_bounds(
             }
         });
 
-        if let Instr::CallIndirect { call_sig, .. } = &di.instr
+        if let Instr::ConstTag { tag_id, .. } | Instr::TagNew { tag_id, .. } = &di.instr
+            && program.control_tags.get(*tag_id as usize).is_none()
+        {
+            err = Some(VerifyError::ControlTagOutOfBounds {
+                func,
+                pc,
+                tag: crate::program::ControlTagId(*tag_id),
+            });
+        }
+        if let Instr::CallIndirect { call_sig, .. }
+        | Instr::ContNew { call_sig, .. }
+        | Instr::TailCall { call_sig, .. }
+        | Instr::TailResume { call_sig, .. }
+        | Instr::ContResume { call_sig, .. }
+        | Instr::Suspend { call_sig, .. } = &di.instr
             && program.call_sig(CallSigId(*call_sig)).is_none()
         {
             err = Some(VerifyError::CallSigOutOfBounds {
@@ -1471,6 +1608,19 @@ fn verify_id_operands_in_bounds(
                 pc,
                 call_sig: *call_sig,
             });
+        }
+        if let Instr::ContResume { handlers, .. } = &di.instr {
+            for clause in handlers {
+                let signature = clause.signature();
+                if program.call_sig(signature).is_none() {
+                    err = Some(VerifyError::CallSigOutOfBounds {
+                        func,
+                        pc,
+                        call_sig: signature.0,
+                    });
+                    break;
+                }
+            }
         }
 
         if let Some(err) = err {
@@ -1550,7 +1700,7 @@ fn verify_function_bytecode(
             pc: 0,
         });
     }
-    blocks::validate_structure(func_id, func.reg_count, decoded)?;
+    blocks::validate_structure(program, func_id, func.reg_count, decoded)?;
     let has_blocks = decoded
         .iter()
         .any(|di| matches!(di.instr, Instr::Block { .. }));
@@ -1704,6 +1854,16 @@ fn verify_function_bytecode(
                 counts.closures += 1;
                 VReg::Closure(r)
             }
+            RegClass::Tag => {
+                let r = TagReg(idx_u32(counts.tags));
+                counts.tags += 1;
+                VReg::Tag(r)
+            }
+            RegClass::Continuation => {
+                let r = ContinuationReg(idx_u32(counts.continuations));
+                counts.continuations += 1;
+                VReg::Continuation(r)
+            }
         };
         reg_map.push(v);
     }
@@ -1716,6 +1876,7 @@ fn verify_function_bytecode(
     let mut reg_layout = RegLayout { counts, arg_regs };
     let mut source_to_exec = Vec::new();
     let mut execution_count = decoded.len();
+    let mut control_bytes = 0;
     if has_blocks {
         source_to_exec.reserve(decoded.len());
         let mut exec_ix = 0_u32;
@@ -1756,7 +1917,14 @@ fn verify_function_bytecode(
     let mut copy_schedule = blocks::CopyScheduler::default();
     for (source_ix, di) in decoded.iter().enumerate() {
         if has_blocks {
-            blocks::validate_types(func_id, di.offset, &di.instr, register_types, decoded)?;
+            blocks::validate_types(
+                program,
+                func_id,
+                di.offset,
+                &di.instr,
+                register_types,
+                decoded,
+            )?;
         }
         validate_instr_types(
             program,
@@ -1855,6 +2023,18 @@ fn verify_function_bytecode(
                 _ => Err(mismatch(reg, ValueType::Closure)),
             }
         };
+        let map_tag = |reg: u32| -> Result<TagReg, VerifyError> {
+            match map(reg)? {
+                VReg::Tag(reg) => Ok(reg),
+                _ => Err(mismatch(reg, ValueType::Tag)),
+            }
+        };
+        let map_continuation = |reg: u32| -> Result<ContinuationReg, VerifyError> {
+            match map(reg)? {
+                VReg::Continuation(reg) => Ok(reg),
+                _ => Err(mismatch(reg, ValueType::Continuation)),
+            }
+        };
         let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
             let start = operands.len();
             operands.reserve(regs.len());
@@ -1868,6 +2048,107 @@ fn verify_function_bytecode(
         };
 
         let vi = match &di.instr {
+            Instr::TailCall {
+                call_sig,
+                callee,
+                args,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::TailCall {
+                signature: CallSigId(*call_sig),
+                callee: map(*callee)?,
+                args: push_vregs(args)?,
+            })),
+            Instr::TailResume {
+                call_sig,
+                continuation,
+                args,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::TailResume {
+                signature: CallSigId(*call_sig),
+                continuation: map_continuation(*continuation)?,
+                args: push_vregs(args)?,
+            })),
+            Instr::ConstTag { dst, tag_id } | Instr::TagNew { dst, tag_id, .. } => {
+                ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Tag {
+                    dst: map_tag(*dst)?,
+                    declaration: crate::program::ControlTagId(*tag_id),
+                    fresh: matches!(di.instr, Instr::TagNew { .. }),
+                }))
+            }
+            Instr::ContNew {
+                dst,
+                callee,
+                call_sig,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::New {
+                dst: map_continuation(*dst)?,
+                callee: map(*callee)?,
+                signature: CallSigId(*call_sig),
+            })),
+            Instr::ContResume {
+                continuation,
+                call_sig,
+                args,
+                pc_return,
+                handlers,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Resume {
+                continuation: map_continuation(*continuation)?,
+                signature: CallSigId(*call_sig),
+                args: push_vregs(args)?,
+                returned: crate::typed::ControlTarget {
+                    pc: *pc_return,
+                    instruction: map_pc_to_ix(pc, *pc_return)?,
+                    parameters: push_vregs(
+                        blocks::declaration(decoded, *pc_return).expect("validated result block"),
+                    )?,
+                },
+                handlers: handlers
+                    .iter()
+                    .map(|arm| match *arm {
+                        crate::control::HandlerClause::Suspend {
+                            tag,
+                            signature,
+                            target,
+                        } => Ok(crate::typed::ControlHandler {
+                            tag: map_tag(tag)?,
+                            signature,
+                            target: crate::typed::ControlTarget {
+                                pc: target,
+                                instruction: map_pc_to_ix(pc, target)?,
+                                parameters: push_vregs(
+                                    blocks::declaration(decoded, target)
+                                        .expect("validated clause block"),
+                                )?,
+                            },
+                        }),
+                    })
+                    .collect::<Result<Vec<_>, VerifyError>>()?
+                    .into_boxed_slice(),
+            })),
+            Instr::Suspend {
+                tag,
+                call_sig,
+                args,
+                rets,
+                ..
+            } => ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Suspend {
+                tag: map_tag(*tag)?,
+                signature: CallSigId(*call_sig),
+                args: push_vregs(args)?,
+                rets: push_vregs(rets)?,
+            })),
+            Instr::ContDrop { continuation, .. } => {
+                ExecInstr::Control(Box::new(crate::typed::ControlInstruction::Drop {
+                    continuation: map_continuation(*continuation)?,
+                }))
+            }
+            Instr::TagIsHandled { dst, tag } => {
+                ExecInstr::Control(Box::new(crate::typed::ControlInstruction::IsHandled {
+                    dst: map_bool(*dst)?,
+                    tag: map_tag(*tag)?,
+                }))
+            }
             Instr::Block { .. } => unreachable!("declarations have no execution step"),
             Instr::Nop => ExecInstr::Nop,
             Instr::Trap { code } => ExecInstr::Trap { code: *code },
@@ -1885,6 +2166,10 @@ fn verify_function_bytecode(
                 (VReg::Agg(d), VReg::Agg(s)) => ExecInstr::MovAgg { dst: d, src: s },
                 (VReg::Func(d), VReg::Func(s)) => ExecInstr::MovFunc { dst: d, src: s },
                 (VReg::Closure(d), VReg::Closure(s)) => ExecInstr::MovClosure { dst: d, src: s },
+                (VReg::Tag(d), VReg::Tag(s)) => ExecInstr::MovTag { dst: d, src: s },
+                (VReg::Continuation(d), VReg::Continuation(s)) => {
+                    ExecInstr::MovContinuation { dst: d, src: s }
+                }
                 _ => {
                     return Err(mismatch(
                         *dst,
@@ -2310,6 +2595,20 @@ fn verify_function_bytecode(
                         b: bb,
                     }
                 }
+                (VReg::Tag(d), VReg::Tag(aa), VReg::Tag(bb)) => ExecInstr::SelectTag {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::Continuation(d), VReg::Continuation(aa), VReg::Continuation(bb)) => {
+                    ExecInstr::SelectContinuation {
+                        dst: d,
+                        cond: map_bool(*cond)?,
+                        a: aa,
+                        b: bb,
+                    }
+                }
                 _ => {
                     return Err(mismatch(
                         *dst,
@@ -2636,6 +2935,9 @@ fn verify_function_bytecode(
             },
         };
 
+        if let ExecInstr::Control(operation) = &vi {
+            control_bytes += operation.prepared_bytes();
+        }
         execution_instrs.push(ExecDecoded {
             offset: di.offset,
             end: decoded
@@ -2691,6 +2993,7 @@ fn verify_function_bytecode(
             reg_layout,
             operands,
             instrs: execution_instrs,
+            control_bytes,
             span_by_instr_ix,
         },
         lints,
@@ -2848,6 +3151,31 @@ fn validate_instr_reads_writes(
 
     // Instruction-specific invariants that are *not* captured by the generic read/write sets.
     match instr {
+        Instr::TagNew {
+            eff_out, eff_in, ..
+        }
+        | Instr::ContNew {
+            eff_out, eff_in, ..
+        }
+        | Instr::TailCall {
+            eff_out, eff_in, ..
+        }
+        | Instr::TailResume {
+            eff_out, eff_in, ..
+        }
+        | Instr::ContResume {
+            eff_out, eff_in, ..
+        }
+        | Instr::Suspend {
+            eff_out, eff_in, ..
+        }
+        | Instr::ContDrop {
+            eff_out, eff_in, ..
+        } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
+        }
+
         Instr::Call {
             eff_out,
             func_id: callee,
@@ -3008,6 +3336,131 @@ fn validate_instr_types(
     let t = |reg: u32| types.get(reg);
 
     match instr {
+        Instr::TailCall {
+            call_sig,
+            callee,
+            args,
+            ..
+        }
+        | Instr::TailResume {
+            call_sig,
+            continuation: callee,
+            args,
+            ..
+        } => {
+            let signature = program
+                .call_sig(CallSigId(*call_sig))
+                .expect("validated tail signature");
+            let expected = if matches!(instr, Instr::TailCall { .. }) {
+                if t(*callee) == Some(ValueType::Closure) {
+                    ValueType::Closure
+                } else {
+                    ValueType::Func
+                }
+            } else {
+                ValueType::Continuation
+            };
+            check_expected(func_id, pc, *callee, t(*callee), expected)?;
+            let parameters = program
+                .call_sig_args(signature)
+                .expect("validated arguments");
+            if args.len() != parameters.len() {
+                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+            }
+            for (&reg, &kind) in args.iter().zip(parameters) {
+                check_expected(func_id, pc, reg, t(reg), kind)?;
+            }
+            let enclosing = &program.functions[func_id as usize];
+            if !program
+                .contracts
+                .kinds(program.verified_contracts(enclosing.ret_types))
+                .iter()
+                .eq(program
+                    .contracts
+                    .kinds(program.verified_contracts(signature.rets)))
+            {
+                return Err(VerifyError::TailResultMismatch {
+                    func: func_id,
+                    pc,
+                    call_sig: CallSigId(*call_sig),
+                });
+            }
+        }
+        Instr::ConstTag { dst, .. } | Instr::TagNew { dst, .. } => {
+            check_expected(func_id, pc, *dst, t(*dst), ValueType::Tag)?;
+        }
+        Instr::ContNew { dst, callee, .. } => {
+            check_expected(func_id, pc, *dst, t(*dst), ValueType::Continuation)?;
+            if !matches!(t(*callee), Some(ValueType::Func | ValueType::Closure)) {
+                check_expected(func_id, pc, *callee, t(*callee), ValueType::Func)?;
+            }
+        }
+        Instr::ContDrop { continuation, .. } => check_expected(
+            func_id,
+            pc,
+            *continuation,
+            t(*continuation),
+            ValueType::Continuation,
+        )?,
+        Instr::TagIsHandled { dst, tag } => {
+            check_expected(func_id, pc, *dst, t(*dst), ValueType::Bool)?;
+            check_expected(func_id, pc, *tag, t(*tag), ValueType::Tag)?;
+        }
+        Instr::ContResume {
+            call_sig,
+            continuation: _,
+            args,
+            ..
+        }
+        | Instr::Suspend { call_sig, args, .. } => {
+            let rets = match instr {
+                Instr::ContResume {
+                    continuation,
+                    handlers,
+                    ..
+                } => {
+                    check_expected(
+                        func_id,
+                        pc,
+                        *continuation,
+                        t(*continuation),
+                        ValueType::Continuation,
+                    )?;
+                    for arm in handlers {
+                        match *arm {
+                            crate::control::HandlerClause::Suspend { tag, .. } => {
+                                check_expected(func_id, pc, tag, t(tag), ValueType::Tag)?;
+                            }
+                        }
+                    }
+                    None
+                }
+                Instr::Suspend { tag, rets, .. } => {
+                    check_expected(func_id, pc, *tag, t(*tag), ValueType::Tag)?;
+                    Some(rets)
+                }
+                _ => unreachable!(),
+            };
+            let signature = program
+                .call_sig(CallSigId(*call_sig))
+                .expect("validated signature");
+            let inputs = program.verified_contracts(signature.args);
+            let outputs = program.verified_contracts(signature.rets);
+            if args.len() != inputs.len() || rets.is_some_and(|rets| rets.len() != outputs.len()) {
+                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+            }
+            for (&reg, kind) in args.iter().zip(program.contracts.kinds(inputs)) {
+                check_expected(func_id, pc, reg, t(reg), *kind)?;
+            }
+            for (&reg, kind) in rets
+                .into_iter()
+                .flatten()
+                .zip(program.contracts.kinds(outputs))
+            {
+                check_expected(func_id, pc, reg, t(reg), *kind)?;
+            }
+        }
+
         Instr::Nop
         | Instr::Trap { .. }
         | Instr::Jmp { .. }
@@ -3448,6 +3901,56 @@ mod tests {
     };
     use crate::value::FuncId;
     use alloc::vec;
+
+    fn shared_identity_program() -> VerifiedProgram {
+        let mut builder = ProgramBuilder::new();
+        let function = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(function).unwrap();
+        body.ret(0, &[1]);
+        builder.define_function(function, body).unwrap();
+        builder.build_verified().unwrap()
+    }
+
+    #[test]
+    fn cloned_definitions_share_authored_and_prepared_storage() {
+        let original = shared_identity_program();
+        let clone = original.clone();
+        assert!(original.shares_definition_with(&clone));
+        assert!(core::ptr::eq(original.program(), clone.program()));
+        assert!(core::ptr::eq(
+            original.verified(FuncId(0)).unwrap(),
+            clone.verified(FuncId(0)).unwrap()
+        ));
+        let independent =
+            verify_program_owned(original.program().clone(), &VerifyConfig::default()).unwrap();
+        assert_eq!(original, independent);
+        assert!(!original.shares_definition_with(&independent));
+    }
+
+    #[test]
+    fn consuming_a_definition_moves_unique_source_and_preserves_shared_code() {
+        let unique = shared_identity_program();
+        let pointer = unique.program().bytecode_data.as_ptr();
+        let source = unique.into_program();
+        assert_eq!(source.bytecode_data.as_ptr(), pointer);
+
+        let shared = shared_identity_program();
+        let prepared = shared.verified(FuncId(0)).unwrap() as *const ExecFunc;
+        let mut source = shared.clone().into_program();
+        assert_eq!(&source, shared.program());
+        assert_ne!(
+            source.bytecode_data.as_ptr(),
+            shared.program().bytecode_data.as_ptr()
+        );
+        source.bytecode_data.clear();
+        assert!(!shared.program().bytecode_data.is_empty());
+        assert!(core::ptr::eq(shared.verified(FuncId(0)).unwrap(), prepared));
+    }
 
     fn tuple_contract(
         pb: &mut ProgramBuilder,

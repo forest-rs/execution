@@ -1,6 +1,6 @@
 # `execution_tape` — execution design
 
-This document describes the Rust 0.1 API and wire format 0.5. See the
+This document describes the unreleased Rust API and wire format 0.6. See the
 [bytecode and execution specification](v1_spec.md) for encoding details; its filename is historical.
 Rust package versions and wire versions are independent. Decoding requires an exact wire-version
 match, so compiled programs must be regenerated when the wire format changes.
@@ -29,6 +29,10 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
   serialized `Program`, it includes verifier-produced, execution-ready function bodies (decoded/validated
   instruction stream + register layout) used by the VM.
 - **`Frame`**: a call instance with bases into typed register banks and a program counter.
+- **`Instance`**: an exact verified definition bound to one VM store namespace. Function values
+  and closures retain their defining instance across independently compiled calls.
+- **`ContinuationRef`**: one-use authority for an unstarted or captured computation. Its execution
+  owns the frames and storage; cloning the reference creates an alias, not another computation.
 - **Register**: a virtual slot with a statically verified `ValueType`. Payload-bearing kinds use
   per-`RegClass` banks; Unit/effect registers have no runtime payload storage.
 - **`SpanId`**: a nonzero frontend-supplied identifier. Its meaning and stability belong to the
@@ -44,7 +48,7 @@ It explicitly does **not** own node-graph authoring formats/UI, domain-specific 
 - Synchronous host dispatch by default, with optional borrow-scoped requests for externally
   completed or asynchronous host operations. The embedding owns scheduling and async runtimes.
 - Limits: instruction fuel, host calls, call depth, contract work, aggregate construction work,
-  and logical byte/string work;
+  saved computation count, and logical byte/string work;
   host calls may contribute additional fuel cost.
 - Errors are traps:
   - Verification rejects malformed bytecode before execution. Runtime traps cover arithmetic,
@@ -82,6 +86,63 @@ reports the configured limit, charged work and rejected request without charging
 counter; each new invocation resets it. Failed invocations roll back their new aggregates as usual.
 Inputs and previously retained results, host allocations, graph imports, frame storage,
 preparation, and capture remain outside this construction-work budget. It is not a heap limit.
+
+## Delimited computations
+
+The execution owns active callers and independently saved computations under one storage
+transaction and one resource budget. A qualified callable supplies a new computation's initial
+arguments and final results. At a later suspension, the control tag instead supplies the request
+sent to a handler and the response required to resume. The captured computation retains its
+original final-result contract. These are separate protocols, each retaining its exact definition.
+
+Guest `cont.resume` terminates a block with a normal result target and local suspension clauses.
+A suspension captures the stack suffix inside the nearest matching delimiter, then transfers
+request values and a one-use continuation to the selected clause's typed block. The clause keeps
+the resumer's lexical registers and frame, outside the matching table. Inner nonmatching tables
+stay captured. A clause can resume under its own table repeatedly without accumulating handler
+frames, or supply another table to change who services later requests.
+Fresh tags give recursive lexical exit scopes distinct identities. Equal signatures identify
+compatible protocols, while exact tag equality selects an operation.
+
+`ProgramBuilder::handler_block` and `result_block` declare the local outcome parameters.
+`emit_continuation`, `emit_resume`, and `emit_suspend` provide the typed instruction path;
+response registers follow the declared protocol's arity, including protocols built dynamically
+by a frontend. Run `cargo run -p execution_tape_examples --bin local_handlers -- --disassemble`
+to follow a computation through two requests and the same lexical handler clause.
+Embeddings use `PendingHostCall::{create_continuation,resume_continuation,discard_continuation}`
+on an explicitly yielded host operation. Each consumes the borrowed request view; reacquire it
+for another command. A successful resumption restores that host request with callback results.
+Pure foreign/stale denials preserve valid authority and the pending request. Admitted failures
+terminate the execution. Staged host aggregates are promoted before checking environments or
+rich resume inputs.
+
+`InvocationInspection::saved_continuations` separates parked computations from active call
+ancestry. Saved registers also contribute object roots. The execution retains their frame charges
+and caps saved computations with `Limits::max_continuations`. Completing the root retires every
+saved capability before heap compaction. Explicit discard and hard cancellation execute no guest
+cleanup. Checked replay of delimited continuation lifecycles remains unfinished.
+
+### Tail positions
+
+`emit_tail_call` replaces the current activation with a qualified function or closure.
+`emit_tail_resume` consumes a computation and replaces the activation with its saved control.
+Both inherit the actual result recipient: a guest caller, pending native request, enclosing
+resumption or root completion. Their final-result contracts must exactly match the containing
+function. They have no result registers or fallthrough. A tail resumption has no local clauses;
+use `emit_resume` when those clauses need the resumer's lexical frame.
+
+Enclosing delimiters and inner saved handlers survive the transfer. A fresh callee has a new
+activation identity; resuming saved frames preserves their identities. The retired activation
+expires. Tail chains retain no forwarding frames, and root replacement releases the old
+register and temporary payload storage. Shared aggregate garbage still awaits root publication;
+this is not a constant-heap guarantee. All existing hard work limits remain shared.
+
+Eliminated cross-definition return edges retain their restriction on exposed nominal values;
+code-qualified closures can still carry private nominal captures. Tail transfer executes no
+implicit cleanup. A language must discharge or explicitly preserve its protected obligations.
+`ControlEvent::TailTransfer` and `TraceOutcome::TailTransferred` describe replacement separately
+from a return or cancellation. Complete tail lifecycle recording remains unfinished;
+recordings encountering it report `CaptureFault::UnsupportedControl` and reject checked replay.
 
 ## Authoring register declarations
 
@@ -213,10 +274,13 @@ and variance/subtyping are separate capabilities.
   `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
   only the caller-visible arguments (see the [specification](v1_spec.md)).
 
-Function references and nominal type IDs belong to their program; aggregate handles belong to
-one heap. Raw `Value`s do not encode those ownership domains. The graph's `TapeValue` adapter owns
-snapshots and rejects program-local values transferred to a different program. It does not provide
-cross-program guest calls.
+Runtime function references retain an exact code instance as well as a local ID. An ordinary
+indirect call follows that owner across independently compiled definitions in the same VM.
+Closures use qualified targets and store-local environment handles. Nominal aggregate schemas
+still require their defining program; aggregate handles require their heap. The graph adapter
+owns snapshots and binds retained callable namespaces to its host store before executing them.
+Function values crossing a graph edge retain their original code rather than being reinterpreted
+using the receiving node's local IDs.
 
 ## Effects
 Calls use a single reserved Unit register, r0. The verifier requires call/host-call `eff_in`
@@ -287,7 +351,7 @@ checked replay reproduces rejected arities, kinds and budgets without calling a 
 This boundary does not create cross-program guest frames, a language method dictionary or
 recoverable guest exceptions.
 
-An admitted host request can explicitly reenter a same-program guest function or closure with
+An admitted host request can explicitly reenter a guest function or closure in its exact instance with
 `call_guest`. It retains the host instruction, original frames, heap, activation identities and
 all hard budgets. The same invocation driver handles nested host waits and further callbacks.
 When a callback returns, `AwaitingHost` identifies the original request again; its callback
@@ -301,15 +365,51 @@ updated heap/budgets. Unused promoted nodes survive until root commit/rollback. 
 owns scheduling and callback selection; no native Rust stack is captured. Cancellation executes
 no guest code. Exact activation-scoped typed exits are available as described below. Dynamic
 condition dispatch, restart policy and protected cleanup are language-runtime responsibilities;
-this VM does not automatically install them or provide typed delimited-effect opcodes.
+the delimited computation primitives above provide the VM transfer mechanism.
 
-Callback entry/return are explicit value events and guest frames have their actual host call
-sites as callers. The parent host instruction remains outstanding while child attempts execute.
+Every embedding-requested guest call owns a segment, even when it uses the same instance.
+`ValueEvent::GuestCall` records the proposal before validation; code-qualified entry and return
+control events identify the actual guest computation and its host caller. The parent host
+instruction remains outstanding while the child segment executes.
 Callback return goes to embedding code, with no next guest instruction; it does not complete the
 parent host instruction. On failure/cancellation all outstanding attempts and scopes close.
 The boundary recorder captures the embedding's command and the callback's actual return separately
 from native host outcomes. Checked replay issues that command into the same invocation, executes
 the guest body again and verifies its actual result.
+
+## Composing independently compiled code
+
+`Vm::instantiate` gives a shared verified definition a namespace within one VM store.
+`PendingHostCall::call_guest` enters that instance while keeping the admitting host request
+and its guest callers suspended. Every segment retains its exact code, registers and parent
+activation. A checked child return restores the original request and its callback result slots;
+the embedding still chooses how to complete that operation. Only the execution root commits
+or rolls back the shared aggregate transaction. Child returns preserve live parent handles.
+
+Instruction fuel, live call depth, host admission, contract work and aggregate/payload work are
+shared across this tree. No child entry replenishes a budget. Native-requested guest entries
+charge immediate string/byte arguments as host ingress; indirect guest calls charge the actual
+materialization of their arguments without charging another host ingress. Structural tuples and host objects
+can cross instance boundaries without snapshot/import. Functions and closures retain exact code
+instances and ordinary indirect calls can enter those instances. Nominal schemas require their
+exact defining code. Iterative provenance checks
+also inspect nested members and spend contract work. A foreign-store instance is denied before
+admission, while an invalid admitted boundary terminates the whole execution.
+
+Typed `return_from` can target an actual live ancestor across these code boundaries. It validates
+the target's result contracts before abandoning intervening activations. `TrapInfo` still names
+the initiating instruction; `Trap::ContractBoundary` separately retains an independent target
+definition when its contract IDs are involved. Language runtimes choose condition matching,
+returning restarts, lexical homes and protected cleanup. The
+[composed conditions example](../examples/tape/composed-conditions.md) demonstrates these policies,
+including replacing a method while its old revision remains suspended.
+
+One optional root recorder retains this actual tree, with a combined capture allowance and
+code-qualified transfers. Checked replay uses one fresh store and invocation, executes the
+child computations again, and checks cross-segment identity, budgets and exact live targets.
+Native effects remain recorded inputs. Live and recorded Observatory views resolve source
+through each retained definition. Ordinary verification and execution retain no recording or
+source map; inspection and capture are requested explicitly.
 
 ## Program serialization
 - Versioned header; canonical little-endian encoding; varint indices/immediates.
@@ -381,6 +481,47 @@ checkpoints and compact aggregate write effects; its cursor replays only the sel
 Each register's outgoing fact comes directly from its write effect. There are no full per-instruction
 register-state snapshots, no `Program` clones, and no inspection storage in normal VM artifacts.
 
+## Retained values and explicit collection
+
+The VM can register a group of values under their actual instance, independently of aggregate
+addresses. `Invocation::retain_outputs` moves successful outputs into `RootedValues`; the
+low-level `Vm::retain_values` registers an explicitly supplied instance and owned values.
+Qualified functions retain their own code, while the group carries the interpretation of
+exposed nominal schemas. A tail-replaced root uses its actual result owner, not its old entry.
+
+Clones share one registration. `Vm::resolve` borrows current values, their instance and heap;
+that VM borrow prevents collection. Dropping the last handle releases the registration at the
+next explicit `Vm::collect`. Retain/resolve/drop never trigger collection. Full collection
+preserves sharing and equal-but-distinct aggregate identity, moves payloads, and reports exact
+before/after node counts. It is embedding work outside guest fuel, with no latency guarantee.
+
+Raw aggregate handles copied from earlier views/results are valid only until collection or
+whole-heap transfer. A recycled stale number cannot reliably identify its old target. Durable
+consumers keep the registration and resolve it again. Standalone snapshots remain independent
+exports. `aggregate_builder()` supplies append-only construction/import authority; mutable
+access that could clear or replace VM storage is no longer exposed. `take_aggregates()` denies
+whole-heap transfer while a registered group is live.
+
+Saved control currently remains inside an exclusive invocation lease, so VM collection cannot
+run alongside active or saved stacks. Persistent control across separate bounded turns must
+add every saved bank, input, pending value and aggregate-backed payload source to this same
+collection boundary before that ownership can move into the VM.
+
+## Logical scopes and physical profiling
+
+A logical stack keeps its exact code and identity while captured. `TraceSink::stack_activity`
+reports `Parked` from leaf to root and `Attached` from root to leaf before resumed instruction
+observations. It is delivered for every nonempty trace mask, including run-only and call-only
+subscriptions. Logical run/scope boundaries are unchanged: parking does not mean returning,
+and attachment is not a new invocation. `Attached.parent` identifies the actual current resumer.
+
+Profiling adapters retain descriptions by logical stack identity and keep physical guards only
+while attached. Thus a captured interval is excluded, while scheduling pauses and host waiting
+within the attached chain still count. These are elapsed intervals, not CPU-time measurements.
+Cancelling a parked computation closes its logical evidence without closing another stack's
+physical scopes. Both adapters expose `is_consistent()` and stop opening spans on malformed
+scope evidence instead of guessing from function IDs or nesting depth.
+
 ## Borrowed value observations
 
 `TraceMask::VALUES` enables `TraceSink::values` on the ordinary execution path. `ValueEvent::Entry`
@@ -432,14 +573,15 @@ external effects are replayed.
 
 ### Recorded embedding control
 
-A yielded host request can enter a same-program guest function or closure while its original
+A yielded host request can enter a guest function or closure in its exact instance while its original
 host instruction remains pending. The boundary recorder retains that embedding command,
 all promoted staging, and the actual callback return separately from the eventual host outcome.
 Their sequence numbers describe observation order; a callback return does not publish the root
 result. Replay issues the recorded command, executes the guest again, and checks the values it
 actually computes. It does not inject saved callback results. Optional instruction history orders
-attempts by admission and links callback instructions to their outstanding parent host attempt.
-Capture budgets and truncated histories remain independent of the live invocation's budgets.
+attempts by admission within each segment. Segment parents and control transfers identify the
+outstanding host caller. Root history completeness covers every child, while the instruction
+iterator stays local to its selected segment. Capture budgets and truncated histories remain independent of the live invocation's budgets.
 
 ### Activation-scoped typed exits
 
@@ -452,7 +594,7 @@ All intervening pending host operations are abandoned without dispatch. They and
 are observed as `Unwound` at the actual initiating source, with no fabricated `Ret` instruction.
 Staging is promoted before admission, one fuel unit and immediate payload ingress are charged,
 and existing hard limits never reset. This transfer primitive has no automatic protected cleanup
-registration. Recording retains admitted transfers, ingress, staging and abandoned callback counts;
+registration. Recording retains admitted transfers, ingress, staging and exact source/target identities;
 checked replay resolves the actual active target and reissues the transfer. Instruction histories
 can end in a checked root transfer rather than an executed `Ret`. Pure foreign/expired denials
 change no guest state and are not recorded as admitted control commands.

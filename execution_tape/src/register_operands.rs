@@ -3,25 +3,50 @@
 
 //! Register iteration shared by verification and disassembly.
 
-use crate::bytecode::{MAX_REGISTER_LISTS, MAX_SCALAR_OPERANDS};
+use crate::bytecode::{MAX_HANDLER_LISTS, MAX_REGISTER_LISTS, MAX_SCALAR_OPERANDS};
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct OperandIter<'a, const SCALARS: usize, const LISTS: usize> {
+pub(crate) struct OperandIter<
+    'a,
+    const SCALARS: usize,
+    const LISTS: usize,
+    const HANDLERS: usize = 0,
+> {
     prefix: [u32; SCALARS],
     prefix_len: u8,
     prefix_idx: u8,
     tails: [&'a [u32]; LISTS],
     tail_idx: u8,
     item_idx: usize,
+    handlers: [&'a [crate::control::HandlerClause]; HANDLERS],
+    handler_list: usize,
+    handler_arm: usize,
+    handler_register: usize,
 }
-impl<'a, const SCALARS: usize, const LISTS: usize> OperandIter<'a, SCALARS, LISTS> {
+impl<'a, const SCALARS: usize, const LISTS: usize, const HANDLERS: usize>
+    OperandIter<'a, SCALARS, LISTS, HANDLERS>
+{
     #[inline]
     pub(crate) const fn from_parts(
         prefix: [u32; SCALARS],
         prefix_len: u8,
         tails: [&'a [u32]; LISTS],
     ) -> Self {
+        Self::from_parts_with_handlers(prefix, prefix_len, tails, [&[]; HANDLERS])
+    }
+
+    #[inline]
+    pub(crate) const fn from_parts_with_handlers(
+        prefix: [u32; SCALARS],
+        prefix_len: u8,
+        tails: [&'a [u32]; LISTS],
+        handlers: [&'a [crate::control::HandlerClause]; HANDLERS],
+    ) -> Self {
         Self {
+            handlers,
+            handler_list: 0,
+            handler_arm: 0,
+            handler_register: 0,
             prefix,
             prefix_len,
             prefix_idx: 0,
@@ -35,7 +60,7 @@ impl<'a, const SCALARS: usize, const LISTS: usize> OperandIter<'a, SCALARS, LIST
 /// An iterator over register operands without allocation.
 #[derive(Copy, Clone, Debug)]
 pub struct RegIter<'a> {
-    inner: OperandIter<'a, MAX_SCALAR_OPERANDS, MAX_REGISTER_LISTS>,
+    inner: OperandIter<'a, MAX_SCALAR_OPERANDS, MAX_REGISTER_LISTS, MAX_HANDLER_LISTS>,
 }
 
 impl<'a> RegIter<'a> {
@@ -52,10 +77,14 @@ impl<'a> RegIter<'a> {
             ),
         }
     }
-    pub(crate) fn from_operands<const SCALARS: usize, const LISTS: usize>(
-        source: OperandIter<'a, SCALARS, LISTS>,
+    pub(crate) fn from_operands<const SCALARS: usize, const LISTS: usize, const HANDLERS: usize>(
+        source: OperandIter<'a, SCALARS, LISTS, HANDLERS>,
     ) -> Self {
         let mut out = Self::new(&source.prefix, &source.tails);
+        out.inner.handlers[..HANDLERS].copy_from_slice(&source.handlers);
+        out.inner.handler_list = source.handler_list;
+        out.inner.handler_arm = source.handler_arm;
+        out.inner.handler_register = source.handler_register;
         out.inner.prefix_len = source.prefix_len;
         out.inner.prefix_idx = source.prefix_idx;
         out.inner.tail_idx = source.tail_idx;
@@ -100,7 +129,9 @@ impl<'a> RegIter<'a> {
     }
 }
 
-impl<const SCALARS: usize, const LISTS: usize> Iterator for OperandIter<'_, SCALARS, LISTS> {
+impl<const SCALARS: usize, const LISTS: usize, const HANDLERS: usize> Iterator
+    for OperandIter<'_, SCALARS, LISTS, HANDLERS>
+{
     type Item = u32;
 
     #[inline]
@@ -117,9 +148,11 @@ impl<const SCALARS: usize, const LISTS: usize> Iterator for OperandIter<'_, SCAL
             return Some(out);
         }
         if LISTS == 1 {
-            let out = self.tails[0].get(self.item_idx).copied()?;
-            self.item_idx += 1;
-            return Some(out);
+            if let Some(out) = self.tails[0].get(self.item_idx).copied() {
+                self.item_idx += 1;
+                return Some(out);
+            }
+            self.tail_idx = 1;
         }
         while let Some(tail) = self.tails.get(usize::from(self.tail_idx)) {
             if let Some(out) = tail.get(self.item_idx).copied() {
@@ -128,6 +161,19 @@ impl<const SCALARS: usize, const LISTS: usize> Iterator for OperandIter<'_, SCAL
             }
             self.tail_idx += 1;
             self.item_idx = 0;
+        }
+        while let Some(arms) = self.handlers.get(self.handler_list) {
+            if let Some(arm) = arms.get(self.handler_arm) {
+                if let Some(reg) = arm.register(self.handler_register) {
+                    self.handler_register += 1;
+                    return Some(reg);
+                }
+                self.handler_arm += 1;
+                self.handler_register = 0;
+            } else {
+                self.handler_list += 1;
+                self.handler_arm = 0;
+            }
         }
         None
     }

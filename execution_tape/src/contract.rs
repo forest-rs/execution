@@ -84,6 +84,20 @@ pub enum Contract<'a> {
         /// Element contract; its kind must agree with the nominal element schema.
         element: ContractId,
     },
+    /// A control operation's request and normal response contracts, without promising identity.
+    Tag {
+        /// Values delivered to the matching handler.
+        request: &'a [ContractId],
+        /// Values required when the captured computation resumes.
+        response: &'a [ContractId],
+    },
+    /// A suspended computation's input at this suspension and its eventual final results.
+    Continuation {
+        /// Values required at the current suspension point.
+        parameters: &'a [ContractId],
+        /// Values produced when the captured computation returns.
+        results: &'a [ContractId],
+    },
 }
 
 impl Contract<'_> {
@@ -98,6 +112,8 @@ impl Contract<'_> {
             Self::Kind(kind) => kind,
             Self::Function { .. } => &ValueType::Func,
             Self::Closure { .. } => &ValueType::Closure,
+            Self::Tag { .. } => &ValueType::Tag,
+            Self::Continuation { .. } => &ValueType::Continuation,
             Self::Tuple(_) | Self::Struct { .. } | Self::Array { .. } => &ValueType::Agg,
         }
     }
@@ -123,6 +139,14 @@ enum Node {
         elem_type_id: ElemTypeId,
         element: ContractId,
     },
+    Tag {
+        args: ByteRange,
+        rets: ByteRange,
+    },
+    Continuation {
+        args: ByteRange,
+        rets: ByteRange,
+    },
 }
 
 impl Node {
@@ -131,6 +155,8 @@ impl Node {
             Self::Kind(kind) => kind,
             Self::Function { .. } => &ValueType::Func,
             Self::Closure { .. } => &ValueType::Closure,
+            Self::Tag { .. } => &ValueType::Tag,
+            Self::Continuation { .. } => &ValueType::Continuation,
             Self::Tuple(_) | Self::Struct { .. } | Self::Array { .. } => &ValueType::Agg,
         }
     }
@@ -169,13 +195,24 @@ impl ContractTable {
                 type_id: *type_id,
                 fields: &self.required_members[fields.offset as usize..fields.end().ok()? as usize],
             },
-            Node::Function { args, rets } | Node::Closure { args, rets } => {
+            Node::Function { args, rets }
+            | Node::Closure { args, rets }
+            | Node::Tag { args, rets }
+            | Node::Continuation { args, rets } => {
                 let args = &self.required_members[args.offset as usize..args.end().ok()? as usize];
                 let rets = &self.required_members[rets.offset as usize..rets.end().ok()? as usize];
-                if matches!(self.nodes[id.0 as usize], Node::Function { .. }) {
-                    Contract::Function { args, rets }
-                } else {
-                    Contract::Closure { args, rets }
+                match self.nodes[id.0 as usize] {
+                    Node::Function { .. } => Contract::Function { args, rets },
+                    Node::Closure { .. } => Contract::Closure { args, rets },
+                    Node::Tag { .. } => Contract::Tag {
+                        request: args,
+                        response: rets,
+                    },
+                    Node::Continuation { .. } => Contract::Continuation {
+                        parameters: args,
+                        results: rets,
+                    },
+                    _ => unreachable!("signature node"),
                 }
             }
             Node::Array {
@@ -270,7 +307,16 @@ impl ContractTableBuilder {
                     check(*id)?;
                 }
             }
-            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+            Contract::Function { args, rets }
+            | Contract::Closure { args, rets }
+            | Contract::Tag {
+                request: args,
+                response: rets,
+            }
+            | Contract::Continuation {
+                parameters: args,
+                results: rets,
+            } => {
                 for &id in args.iter().chain(rets) {
                     check(id)?;
                 }
@@ -319,7 +365,16 @@ impl ContractTableBuilder {
                     fields: range,
                 }
             }
-            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+            Contract::Function { args, rets }
+            | Contract::Closure { args, rets }
+            | Contract::Tag {
+                request: args,
+                response: rets,
+            }
+            | Contract::Continuation {
+                parameters: args,
+                results: rets,
+            } => {
                 let arg_range = range(self.table.required_members.len(), args.len())?;
                 let ret_range = range(
                     arg_range.end().map_err(|_| ContractBuildError::Capacity)? as usize,
@@ -327,16 +382,24 @@ impl ContractTableBuilder {
                 )?;
                 self.table.required_members.extend_from_slice(args);
                 self.table.required_members.extend_from_slice(rets);
-                if matches!(contract, Contract::Function { .. }) {
-                    Node::Function {
+                match contract {
+                    Contract::Function { .. } => Node::Function {
                         args: arg_range,
                         rets: ret_range,
-                    }
-                } else {
-                    Node::Closure {
+                    },
+                    Contract::Closure { .. } => Node::Closure {
                         args: arg_range,
                         rets: ret_range,
-                    }
+                    },
+                    Contract::Tag { .. } => Node::Tag {
+                        args: arg_range,
+                        rets: ret_range,
+                    },
+                    Contract::Continuation { .. } => Node::Continuation {
+                        args: arg_range,
+                        rets: ret_range,
+                    },
+                    _ => unreachable!("signature contract"),
                 }
             }
             Contract::Array {
@@ -527,7 +590,12 @@ pub enum ContractMismatch {
     /// A callable does not match its exact exposed signature.
     Callable {
         /// Concrete target when runtime checking identified one.
-        function: Option<crate::value::FuncId>,
+        function: Option<crate::value::FunctionRef>,
+    },
+    /// A typed control value has incompatible request/response or resume/result contracts.
+    Signature {
+        /// Kind of control value whose exact signature differs.
+        kind: ValueType,
     },
     /// An aggregate handle does not resolve.
     Heap(crate::aggregates::AggError),
@@ -537,9 +605,15 @@ impl fmt::Display for ContractMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Callable { function } => match function {
-                Some(id) => write!(f, "function #{} has incompatible callable contracts", id.0),
+                Some(target) => write!(
+                    f,
+                    "function #{} in {:?} has incompatible callable contracts",
+                    target.id().0,
+                    target.instance().program().program().name()
+                ),
                 None => f.write_str("incompatible callable contracts"),
             },
+            Self::Signature { kind } => write!(f, "incompatible {} contracts", KindName(*kind)),
             Self::Kind { expected, actual } => {
                 write!(
                     f,
@@ -562,7 +636,7 @@ impl fmt::Display for ContractMismatch {
     }
 }
 
-struct KindName(ValueType);
+pub(crate) struct KindName(pub(crate) ValueType);
 impl fmt::Display for KindName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.0 {
@@ -577,6 +651,8 @@ impl fmt::Display for KindName {
             ValueType::Agg => "aggregate",
             ValueType::Func => "function",
             ValueType::Closure => "closure",
+            ValueType::Tag => "control tag",
+            ValueType::Continuation => "continuation",
             ValueType::Obj(id) => return write!(f, "object type #{}", id.0),
         })
     }
@@ -604,8 +680,11 @@ pub enum ContractPath {
 }
 
 /// A contract failure at a specific nested member, without copying its contract graph.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ContractViolation {
+    /// Exact definition owning `contract` when checking a captured foreign environment.
+    /// `None` uses the definition of the reported boundary.
+    pub contract_program: Option<crate::verifier::VerifiedProgram>,
     /// Expected contract at the failing position, local to the originating program.
     pub contract: ContractId,
     /// Member/environment steps from the checked root; empty for a root failure.
@@ -613,6 +692,19 @@ pub struct ContractViolation {
     /// Expected versus observed kind, shape, or handle failure.
     pub mismatch: ContractMismatch,
 }
+impl PartialEq for ContractViolation {
+    fn eq(&self, other: &Self) -> bool {
+        self.contract == other.contract
+            && self.path == other.path
+            && self.mismatch == other.mismatch
+            && match (&self.contract_program, &other.contract_program) {
+                (Some(a), Some(b)) => a.shares_definition_with(b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+impl Eq for ContractViolation {}
 impl fmt::Display for ContractViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("value")?;
@@ -626,6 +718,14 @@ impl ContractViolation {
         position: ContractPosition,
     ) -> fmt::Result {
         match position {
+            ContractPosition::Control { boundary, index } => {
+                write!(f, "{boundary}")?;
+                if let Some(index) = index {
+                    write!(f, " input[{index}]")?;
+                } else {
+                    f.write_str(" protocol")?;
+                }
+            }
             ContractPosition::Argument { callee, index } => {
                 write!(f, "call to function #{}: argument[{index}]", callee.0)?;
             }
@@ -659,6 +759,13 @@ impl core::error::Error for ContractViolation {
 /// Guest boundary whose contract is being checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContractPosition {
+    /// A typed control protocol or its supplied inputs.
+    Control {
+        /// Operation whose contract is being checked.
+        boundary: crate::control::ControlBoundary,
+        /// Input position; `None` denotes comparison of the complete protocol.
+        index: Option<u32>,
+    },
     /// Argument admission, including a closure's injected environment at index zero.
     Argument {
         /// Function being entered.
@@ -683,6 +790,14 @@ pub enum ContractPosition {
 impl fmt::Display for ContractPosition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Control { boundary, index } => {
+                write!(f, "{boundary}")?;
+                if let Some(index) = index {
+                    write!(f, " input[{index}]")
+                } else {
+                    f.write_str(" protocol")
+                }
+            }
             Self::Argument { callee, index } => {
                 write!(f, "argument[{index}] to function #{}", callee.0)
             }
@@ -737,6 +852,7 @@ mod tests {
         use crate::value::FuncId;
         use alloc::format;
         let error = ContractViolation {
+            contract_program: None,
             contract: ContractId(99),
             path: vec![ContractPath::Member(0), ContractPath::Member(0)],
             mismatch: ContractMismatch::Kind {
@@ -761,7 +877,7 @@ mod tests {
                 callee: FuncId(3),
                 index: 1,
             },
-            error,
+            error: alloc::boxed::Box::new(error),
         };
         assert_eq!(
             format!("{trapped}"),

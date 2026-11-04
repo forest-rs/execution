@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::aggregates::AggHeap;
+use crate::control::{ContinuationRef, ControlTag};
 use crate::host::ValueRef;
 use crate::recording::{CaptureFault, CaptureResource, RecordLimits};
-use crate::value::{AggHandle, AggType, Decimal, FuncId, Obj};
+use crate::value::{AggHandle, AggType, Decimal, FunctionRef, Obj};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -48,11 +49,15 @@ pub enum RecordedValue {
     /// Aggregate identity within this recording.
     Agg(AggregateId),
     /// Function in the recorded program.
-    Func(FuncId),
+    Func(FunctionRef),
+    /// The exact instance-qualified operation; signature equality does not merge identities.
+    Tag(ControlTag),
+    /// Logical continuation identity and contracts, not serialized suspended register storage.
+    Continuation(ContinuationRef),
     /// Function and captured environment.
     Closure {
         /// Closure body in the recorded program.
-        func: FuncId,
+        func: FunctionRef,
         /// Environment in this recording.
         env: AggregateId,
     },
@@ -73,6 +78,7 @@ pub struct Aggregate<'a> {
 
 #[derive(Debug)]
 pub(crate) struct Node {
+    pub origin: u32,
     pub kind: Option<AggType>,
     pub fields: Range<usize>,
     pub initial: bool,
@@ -213,10 +219,12 @@ impl Builder {
             ValueRef::F64(value) => RecordedValue::F64(value.to_bits()),
             ValueRef::Decimal(value) => RecordedValue::Decimal(*value),
             ValueRef::Obj(value) => RecordedValue::Obj(value),
-            ValueRef::Func(value) => RecordedValue::Func(value),
+            ValueRef::Func(value) => RecordedValue::Func(value.clone()),
+            ValueRef::Tag(value) => RecordedValue::Tag(value.clone()),
+            ValueRef::Continuation(value) => RecordedValue::Continuation(value.clone()),
             ValueRef::Agg(handle) => RecordedValue::Agg(self.handle(handle, heap)?),
             ValueRef::Closure(value) => RecordedValue::Closure {
-                func: value.func,
+                func: value.func.clone(),
                 env: self.handle(value.env, heap)?,
             },
             ValueRef::Str(value) => {
@@ -263,6 +271,7 @@ impl Builder {
             }
         })?);
         self.arena.nodes.push(Node {
+            origin: handle.0,
             kind: None,
             fields: 0..0,
             initial: handle.0 < self.initial_count,

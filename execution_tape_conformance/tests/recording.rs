@@ -199,12 +199,12 @@ fn deep_graphs_are_walked_iteratively_and_repeated_host_boundaries_keep_one_copy
     );
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
     let mut root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bytes(vec![42; 1024])])
         .unwrap();
     for _ in 1..DEPTH {
         root = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::Agg(root)])
             .unwrap();
     }
@@ -314,14 +314,16 @@ fn initial_graphs_absent_from_entry_inputs_restore_without_unrelated_heap_nodes(
     let p = host_program(ValueType::Agg);
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
     for i in 0..100 {
-        vm.aggregates_mut().tuple_new(vec![Value::I64(i)]).unwrap();
+        vm.aggregate_builder()
+            .tuple_new(vec![Value::I64(i)])
+            .unwrap();
     }
     let child = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Str("retained".into())])
         .unwrap();
     let root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Agg(child), Value::Agg(child)])
         .unwrap();
     vm.host_mut().value = Value::Agg(root);
@@ -378,7 +380,9 @@ fn guest_created_host_return_uses_allocation_ordinal_without_preloading_guest_no
         Limits::default(),
     );
     for i in 0..100 {
-        vm.aggregates_mut().tuple_new(vec![Value::I64(i)]).unwrap();
+        vm.aggregate_builder()
+            .tuple_new(vec![Value::I64(i)])
+            .unwrap();
     }
     let record = capture(&mut vm, &p, &[]);
     drop(vm);
@@ -405,15 +409,15 @@ fn shared_nodes_distinct_equal_nodes_and_interned_payloads_keep_their_meaning() 
     let p = identity(ValueType::Agg);
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
     let a = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Str("same".into())])
         .unwrap();
     let b = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Str("same".into())])
         .unwrap();
     let root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Agg(a), Value::Agg(a), Value::Agg(b)])
         .unwrap();
     let record = capture(&mut vm, &p, &[Value::Agg(root)]);
@@ -464,8 +468,9 @@ fn shared_nodes_distinct_equal_nodes_and_interned_payloads_keep_their_meaning() 
 fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_replay() {
     let p = identity(ValueType::Closure);
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
+    let function = vm.function(&p, FuncId(0)).unwrap();
     let array = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .array_new(
             ElemTypeId(55),
             vec![
@@ -477,11 +482,11 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
         )
         .unwrap();
     let inner = Closure {
-        func: FuncId(0),
+        func: function.clone(),
         env: array,
     };
     let env = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .struct_new(
             TypeId(77),
             vec![
@@ -490,7 +495,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
                     host_type: HostTypeId(123),
                     handle: ObjHandle(987),
                 }),
-                Value::Func(FuncId(0)),
+                Value::Func(function.clone()),
             ],
         )
         .unwrap();
@@ -498,13 +503,13 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
         &mut vm,
         &p,
         &[Value::Closure(Closure {
-            func: FuncId(0),
+            func: function.clone(),
             env,
         })],
     );
     drop(vm);
     let output = returned(&record);
-    let Value::Closure(outer) = output.values()[0] else {
+    let Value::Closure(outer) = &output.values()[0] else {
         panic!("closure");
     };
     assert_eq!(
@@ -652,7 +657,7 @@ fn every_budget_is_explicit_and_does_not_stop_live_execution() {
     }
     let p = identity(ValueType::Agg);
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
-    let root = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+    let root = vm.aggregate_builder().tuple_new(vec![]).unwrap();
     let mut recorder = Recorder::new(
         Arc::clone(&p),
         RecordLimits {

@@ -145,6 +145,8 @@ impl<'a> VerifiedFunction<'a> {
             ValueType::Agg => counts.aggs,
             ValueType::Func => counts.funcs,
             ValueType::Closure => counts.closures,
+            ValueType::Tag => counts.tags,
+            ValueType::Continuation => counts.continuations,
         }
     }
 
@@ -197,12 +199,16 @@ impl<'a> VerifiedFunction<'a> {
                 counts.aggs,
                 counts.funcs,
                 counts.closures,
+                counts.tags,
+                counts.continuations,
             ]
             .into_iter()
             .sum(),
             register_bytes: register_bytes(counts),
-            prepared_used_bytes: buffers.iter().map(|&(used, _)| used).sum(),
-            prepared_capacity_bytes: buffers.iter().map(|&(_, capacity)| capacity).sum(),
+            prepared_used_bytes: buffers.iter().map(|&(used, _)| used).sum::<usize>()
+                + executable.control_bytes,
+            prepared_capacity_bytes: buffers.iter().map(|&(_, capacity)| capacity).sum::<usize>()
+                + executable.control_bytes,
         }
     }
 }
@@ -224,8 +230,10 @@ fn register_bytes(counts: RegCounts) -> usize {
         + counts.strs * size_of::<StrHandle>()
         + counts.objs * size_of::<Obj>()
         + counts.aggs * size_of::<AggHandle>()
-        + counts.funcs * size_of::<FuncId>()
-        + counts.closures * size_of::<Closure>()
+        + counts.funcs * size_of::<Option<crate::value::FunctionRef>>()
+        + counts.closures * size_of::<Option<Closure>>()
+        + counts.tags * size_of::<Option<crate::control::ControlTag>>()
+        + counts.continuations * size_of::<Option<crate::control::ContinuationRef>>()
 }
 
 #[cfg(test)]
@@ -275,6 +283,8 @@ mod tests {
             ValueType::Agg,
             ValueType::Func,
             ValueType::Closure,
+            ValueType::Tag,
+            ValueType::Continuation,
         ];
         let mut body = Asm::new();
         body.set_register_types(vec![
@@ -292,6 +302,8 @@ mod tests {
             ValueType::Agg,
             ValueType::Func,
             ValueType::Closure,
+            ValueType::Tag,
+            ValueType::Continuation,
         ]);
         body.ret(
             0,

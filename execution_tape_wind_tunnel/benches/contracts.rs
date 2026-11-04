@@ -62,7 +62,7 @@ fn bench_contracts(c: &mut Criterion) {
             let mut value = Value::I64(42);
             for _ in 0..depth {
                 value = Value::Agg(
-                    vm.aggregates_mut()
+                    vm.aggregate_builder()
                         .tuple_new(vec![value.clone(), value])
                         .unwrap(),
                 );

@@ -388,9 +388,9 @@ pub(super) fn facts(
             if edge.bindings().len() > 0 {
                 for binding in edge.bindings().take(4) {
                     lines.push(format!(
-                        "    r{} ← r{}: {}",
+                        "    r{} ← {}: {}",
                         binding.parameter,
-                        binding.argument,
+                        binding.source,
                         value_fact(facts.contracts(), binding.value)
                     ));
                 }

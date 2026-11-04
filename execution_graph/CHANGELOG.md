@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Treat cloned `VerifiedProgram` handles as one code-definition domain when validating tape
+  edges and comparing function/closure values. Independently verified programs remain separate,
+  even with equal contents and colliding local IDs. Migration: verify again when a distinct
+  definition is required; cloning retains code identity.
+
 - Own deferred node continuations through `NodeTask`, `NodeOutcome::Deferred` and
   `FnNode::deferred`. Independent work progresses while consumers wait. Provisional reads
   protect publication across edits; cancellation retires tentative results while published
@@ -27,6 +32,17 @@ This release has an [MSRV][] of 1.88.
   exact code and immutable captures for execution after graph edits or executor destruction. ([#211][] by [@waywardmonkeys][])
 
 ### Changed
+
+- Use append-only tape construction and checked unrooted heap transfer in the tape adapter,
+  preserving owned output publication while the VM gains registered values and collection.
+  `TapeError::ValueStore` retains a rejected storage transfer as a typed error source.
+
+- Carry code-qualified function and closure targets across tape graph edges. A receiving node
+  calls the original definition rather than interpreting the same local ID in its own program.
+  Owned imports bind retained callable namespaces to the executor's host store. Functions already
+  carry their code owner; closure environments still require owned snapshot storage. Exposed
+  nominal aggregate IDs retain the existing exact-program restriction. Migration: handle
+  `TapeError::Instance`; `TapeValueDomain::Portable` now includes self-qualified callables.
 
 - `Executor::execute` now returns `NodeOutcome<Self::Value, Self::Error>` so deferred tasks carry
   their exact edge-value and error types. Migration: update explicit return annotations in
@@ -130,6 +146,9 @@ This release has an [MSRV][] of 1.88.
   `GraphError::Node`. ([#97][] by [@waywardmonkeys][])
 
 ### Fixed
+
+- Forward code-qualified control and stack park/attach observations to selected tape observers,
+  respecting their masks even when strict dependency checking requests extra internal events.
 
 - Allow acyclic rewiring without evaluating intermediate edits. Scheduling and cycle checks
   use current authored prerequisites after rewiring; committed reads and cached outputs survive

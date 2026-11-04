@@ -181,16 +181,26 @@ fn exits_cross_nested_callbacks_or_deliver_to_an_exact_callback_root() {
         run.resume(100).unwrap();
         let home = run.inspect().frames().last().unwrap().activation;
         let original = run.pending_host_call().unwrap().location();
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(f.middle), vec![])
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(request.instance().function(f.middle).unwrap()),
+                vec![],
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         run.resume(100).unwrap();
         let callback_home = run.inspect().frames().nth(1).unwrap().activation;
-        run.pending_host_call()
-            .unwrap()
-            .call_guest(Value::Func(f.leaf), vec![])
-            .unwrap();
+        {
+            let request = run.pending_host_call().unwrap();
+            let (callee, arguments) = (
+                Value::Func(request.instance().function(f.leaf).unwrap()),
+                vec![],
+            );
+            request.call_guest(callee, arguments)
+        }
+        .unwrap();
         run.resume(100).unwrap();
         let target = if root_target { &home } else { &callback_home };
         run.pending_host_call()
@@ -270,10 +280,20 @@ struct Evidence {
     transfer: Option<TraceLocation>,
 }
 impl TraceSink for Evidence {
+    fn control(
+        &mut self,
+        _: execution_tape::trace::TraceContext<'_>,
+        event: execution_tape::trace::ControlEvent<'_>,
+    ) {
+        if let execution_tape::trace::ControlEvent::ReturnAcross { location, .. } = event {
+            self.exits += 1;
+            self.transfer = Some(location);
+        }
+    }
     fn mask(&self) -> TraceMask {
         TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR | TraceMask::VALUES
     }
-    fn values(&mut self, _: &execution_tape::program::Program, event: ValueEvent<'_>) {
+    fn values(&mut self, _context: execution_tape::trace::TraceContext<'_>, event: ValueEvent<'_>) {
         if let ValueEvent::ReturnFrom { location, .. } = event {
             self.exits += 1;
             self.transfer = Some(location);
@@ -281,7 +301,7 @@ impl TraceSink for Evidence {
     }
     fn scope_enter(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: ScopeKind,
         _: usize,
         _: FuncId,
@@ -292,7 +312,7 @@ impl TraceSink for Evidence {
     }
     fn scope_exit(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _: usize,
         _: FuncId,
@@ -308,7 +328,7 @@ impl TraceSink for Evidence {
     }
     fn instr_end(
         &mut self,
-        _: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         _: TraceLocation,
         _: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
@@ -332,15 +352,25 @@ fn abandoned_attempts_and_scopes_are_unwound_not_successful_cancelled_or_trapped
     run.resume(100).unwrap();
     let source = run.pending_host_call().unwrap().location();
     let home = run.inspect().frames().last().unwrap().activation;
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.middle), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(request.instance().function(f.middle).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(100).unwrap();
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.leaf), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(request.instance().function(f.leaf).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(100).unwrap();
     let actual_source = run.pending_host_call().unwrap().location();
     run.pending_host_call()
@@ -389,10 +419,15 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                 root.clone()
             };
             if case >= 2 {
-                run.pending_host_call()
-                    .unwrap()
-                    .call_guest(Value::Func(f.middle), vec![])
-                    .unwrap();
+                {
+                    let request = run.pending_host_call().unwrap();
+                    let (callee, arguments) = (
+                        Value::Func(request.instance().function(f.middle).unwrap()),
+                        vec![],
+                    );
+                    request.call_guest(callee, arguments)
+                }
+                .unwrap();
                 run.resume(100).unwrap();
                 if case == 2 {
                     target = run.inspect().frames().nth(1).unwrap().activation;
@@ -401,10 +436,15 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                     target = run.inspect().frames().next().unwrap().activation;
                 }
                 if case == 3 {
-                    run.pending_host_call()
-                        .unwrap()
-                        .call_guest(Value::Func(f.leaf), vec![])
-                        .unwrap();
+                    {
+                        let request = run.pending_host_call().unwrap();
+                        let (callee, arguments) = (
+                            Value::Func(request.instance().function(f.leaf).unwrap()),
+                            vec![],
+                        );
+                        request.call_guest(callee, arguments)
+                    }
+                    .unwrap();
                     run.resume(100).unwrap();
                 }
             }
@@ -438,32 +478,41 @@ fn transfer_commands_replay_across_root_guest_callback_and_truncated_histories()
                 }),
                 "case {case}, max_steps {max_steps}"
             );
-            let commands: Vec<_> = record.control_commands().collect();
-            let transfer = commands.last().unwrap();
-            assert_eq!(transfer.location, source);
-            let ControlAction::ReturnFrom {
-                target: captured,
-                target_location,
-                unwound_callbacks,
-                ..
-            } = transfer.action
-            else {
-                panic!("transfer command");
-            };
+            let local = record
+                .segments()
+                .filter_map(|segment| segment.recording)
+                .flat_map(|record| record.control_commands())
+                .find_map(|command| match command.action {
+                    ControlAction::ReturnFrom {
+                        target,
+                        target_location,
+                        ..
+                    } => Some((command.location, target, target_location)),
+                    _ => None,
+                });
+            let (location, captured, target_location) = local
+                .or_else(|| {
+                    record
+                        .transfers()
+                        .find_map(|transfer| match transfer.action {
+                            execution_tape::recording::TransferAction::ReturnFrom {
+                                target,
+                                target_location,
+                                ..
+                            } => Some((transfer.location, target.activation, target_location)),
+                            _ => None,
+                        })
+                })
+                .expect("admitted exit");
+            assert_eq!(location, source);
             assert_eq!(captured, target.ordinal());
             assert_eq!(target_location, target_source);
-            assert_eq!(
-                unwound_callbacks,
-                match case {
-                    2 => 1,
-                    3 => 2,
-                    _ => 0,
-                }
-            );
             if max_steps == 1000 {
                 assert!(
                     record
-                        .instructions()
+                        .segments()
+                        .filter_map(|segment| segment.recording)
+                        .flat_map(|record| record.instructions())
                         .any(|step| matches!(step.outcome, InstructionOutcome::Unwound { .. }))
                 );
             }
@@ -561,7 +610,10 @@ fn promoted_return_graphs_obey_rich_contracts_work_limits_and_root_retirement() 
                 ..Limits::default()
             },
         );
-        let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+        let retained = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(-1)])
+            .unwrap();
         let mut run = vm.start(&program, root, &[], options()).unwrap();
         run.resume(100).unwrap();
         let home = run.inspect().frames().next().unwrap().activation;
@@ -671,14 +723,18 @@ fn panicking_transfer_observers_cannot_expose_caller_results_or_retry_the_operat
         fn mask(&self) -> TraceMask {
             TraceMask::CALL | TraceMask::HOST | TraceMask::VALUES | TraceMask::INSTR
         }
-        fn values(&mut self, _: &execution_tape::program::Program, event: ValueEvent<'_>) {
+        fn values(
+            &mut self,
+            _context: execution_tape::trace::TraceContext<'_>,
+            event: ValueEvent<'_>,
+        ) {
             if !self.on_scope && matches!(event, ValueEvent::ReturnFrom { .. }) {
                 panic!("admission observer");
             }
         }
         fn scope_exit(
             &mut self,
-            _: &execution_tape::program::Program,
+            _context: execution_tape::trace::TraceContext<'_>,
             kind: ScopeKind,
             _: usize,
             _: FuncId,
@@ -775,7 +831,9 @@ fn transfer_replay_preserves_promoted_graphs_and_actual_contract_failures_after_
                 ..Limits::default()
             },
         );
-        vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+        vm.aggregate_builder()
+            .tuple_new(vec![Value::I64(-1)])
+            .unwrap();
         let mut run = vm
             .start(
                 &program,
@@ -904,10 +962,15 @@ fn transfer_replay_does_not_require_retaining_call_stack_evidence() {
         .unwrap();
     run.resume(100).unwrap();
     let home = run.inspect().frames().last().unwrap().activation;
-    run.pending_host_call()
-        .unwrap()
-        .call_guest(Value::Func(f.leaf), vec![])
-        .unwrap();
+    {
+        let request = run.pending_host_call().unwrap();
+        let (callee, arguments) = (
+            Value::Func(request.instance().function(f.leaf).unwrap()),
+            vec![],
+        );
+        request.call_guest(callee, arguments)
+    }
+    .unwrap();
     run.resume(100).unwrap();
     run.pending_host_call()
         .unwrap()

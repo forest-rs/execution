@@ -21,6 +21,22 @@ pub(super) fn verification(
 ) -> VerificationDiagnostic {
     use execution_tape::contract::{Contract, ContractPath, ContractPosition};
     use execution_tape::verifier::VerifyError;
+    if let VerifyError::TailResultMismatch { func, call_sig, .. } = error
+        && let Some(function) = program.functions.get(*func as usize)
+        && let Ok(required) = function.ret_contracts(program)
+        && let Some(signature) = program.call_sig(*call_sig)
+        && let Ok(actual) = program.call_sig_ret_contracts(signature)
+    {
+        return VerificationDiagnostic {
+            summary: format!(
+                "Tail transfer retires this frame, so its result contract must be preserved.\nRequired results: {}\nTail signature #{} results: {}",
+                contracts(program, required),
+                call_sig.0,
+                contracts(program, actual)
+            ),
+            path: None,
+        };
+    }
     let VerifyError::ContractMismatch {
         func,
         pc,
@@ -34,6 +50,15 @@ pub(super) fn verification(
         };
     };
     let (subject, root, label, contract) = match *position {
+        ContractPosition::Control { boundary, index } => (
+            boundary.to_string(),
+            index.map_or_else(|| "protocol".into(), |index| format!("input[{index}]")),
+            index.map_or_else(
+                || format!("{boundary} protocol"),
+                |index| format!("{boundary} input {}", u64::from(index) + 1),
+            ),
+            Some(error.contract),
+        ),
         ContractPosition::Result { index } => (
             function(program, FuncId(*func)),
             format!("result[{index}]"),
@@ -160,6 +185,8 @@ pub(super) fn type_name(kind: ValueType) -> String {
         ValueType::Agg => "aggregate".into(),
         ValueType::Func => "function".into(),
         ValueType::Closure => "closure".into(),
+        ValueType::Tag => "control tag".into(),
+        ValueType::Continuation => "continuation".into(),
         ValueType::Obj(id) => format!("object #{}", id.0),
     }
 }
@@ -223,7 +250,16 @@ pub(super) fn contract(
                 }
                 format!("struct #{}({preview})", type_id.0)
             }
-            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+            Contract::Function { args, rets }
+            | Contract::Closure { args, rets }
+            | Contract::Tag {
+                request: args,
+                response: rets,
+            }
+            | Contract::Continuation {
+                parameters: args,
+                results: rets,
+            } => {
                 let list = |values: &[execution_tape::contract::ContractId]| {
                     let mut text = values
                         .iter()
@@ -238,10 +274,12 @@ pub(super) fn contract(
                 };
                 format!(
                     "{}({}) → ({})",
-                    if matches!(contract, Contract::Function { .. }) {
-                        "function"
-                    } else {
-                        "closure"
+                    match contract {
+                        Contract::Function { .. } => "function",
+                        Contract::Closure { .. } => "closure",
+                        Contract::Tag { .. } => "tag request → response",
+                        Contract::Continuation { .. } => "continuation resume → final",
+                        _ => unreachable!(),
                     },
                     list(args),
                     list(rets)
@@ -311,6 +349,19 @@ pub(super) fn aggregate_kind(kind: AggType) -> &'static str {
 
 fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
     match value {
+        RecordedValue::Tag(tag) => format!(
+            "tag {} · declaration #{}{}",
+            preview(tag.name(), limit),
+            tag.id().0,
+            if tag.is_fresh() { " · fresh" } else { "" }
+        ),
+        RecordedValue::Continuation(reference) => format!(
+            "continuation #{}:{} · {} resume values → {} final results",
+            reference.id().ordinal(),
+            reference.id().revision(),
+            reference.parameters().ids().len(),
+            reference.results().ids().len()
+        ),
         RecordedValue::Unit => "()".into(),
         RecordedValue::Bool(value) => value.to_string(),
         RecordedValue::I64(value) => value.to_string(),
@@ -338,11 +389,11 @@ fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
         RecordedValue::Obj(value) => {
             format!("object #{} token {}", value.host_type.0, value.handle.0)
         }
-        RecordedValue::Func(id) => function(record.program().program(), *id),
+        RecordedValue::Func(target) => function(target.instance().program().program(), target.id()),
         RecordedValue::Closure { func, env } => {
             format!(
                 "{} [environment @{}]",
-                function(record.program().program(), *func),
+                function(func.instance().program().program(), func.id()),
                 env.get()
             )
         }
@@ -392,6 +443,8 @@ pub(super) fn value(record: &Recording, value: &RecordedValue) -> String {
         );
     }
     let kind = match value {
+        RecordedValue::Tag(_) => "control tag",
+        RecordedValue::Continuation(_) => "execution-local continuation",
         RecordedValue::Unit => "unit",
         RecordedValue::Bool(_) => "bool",
         RecordedValue::I64(_) => "i64",
@@ -461,6 +514,46 @@ fn assignment(registers: &[u32], expression: String) -> String {
 
 pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> String {
     match instruction.operands() {
+        Operands::Tail { target, args, .. } => format!(
+            "{} r{} ({})",
+            instruction.opcode().mnemonic(),
+            target,
+            registers(args.iter().copied())
+        ),
+        Operands::Resume {
+            continuation,
+            args,
+            handlers,
+            returned,
+            ..
+        } => {
+            let handlers = handlers
+                .iter()
+                .map(|arm| match arm {
+                    execution_tape::control::HandlerClause::Suspend { tag, target, .. } => {
+                        format!("suspend r{tag} ⇒ {target:06}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "resume r{} ({}) returned ⇒ {returned:06} under [{}]",
+                continuation,
+                registers(args.iter().copied()),
+                handlers
+            )
+        }
+        Operands::Suspend {
+            tag,
+            request,
+            response,
+            ..
+        } => format!(
+            "{} = suspend r{} ({})",
+            registers(response.iter().copied()),
+            tag,
+            registers(request.iter().copied())
+        ),
         Operands::Call(call) => {
             let callee = match call.callee {
                 CallTarget::HostSig(id, _) => format!("host {}", host(program, id)),

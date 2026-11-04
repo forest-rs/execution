@@ -24,6 +24,10 @@ pub(crate) fn visit_pcs(instr: &Instr, mut f: impl FnMut(u32)) {
             f(*pc_true);
             f(*pc_false);
         }
+        Instr::ContResume { pc_return, handlers, .. } => {
+            f(*pc_return);
+            for clause in handlers { f(clause.target()); }
+        }
         _ => {}
     }
 }

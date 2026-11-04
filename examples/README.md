@@ -30,6 +30,7 @@ cargo run -p execution_graph_examples --bin transforms
 | Example | What it is for |
 | --- | --- |
 | [`bound_host`](tape/src/bin/bound_host.rs) | Bind complete host signatures before execution, reuse bindings with independent state, and preserve an owned domain error. |
+| [`instance_namespaces`](tape/src/bin/instance_namespaces.rs) | Run shared verified code in two distinct host namespaces within one VM store. |
 | [`disasm`](tape/src/bin/disasm.rs) | Assemble a small program and print its decoded instructions and control flow. |
 | [`block_parameters`](tape/src/bin/block_parameters.rs) | Compare explicit register moves with typed block arguments in equivalent loops; inspect prepared execution requirements. |
 | [`nested_contracts`](tape/src/bin/nested_contracts.rs) | Construct and project nested aggregate contracts through assembly, encoding, verification and execution. Optionally write a tape for inspection. |
@@ -65,7 +66,9 @@ and the distinction between static verifier facts and recorded observations.
 | --- | --- | --- |
 | [`smalltalk_blocks`](tape/src/bin/smalltalk_blocks.rs) | Shared mutable captures, ordinary block returns, lexical `^`, nested `ensure:` cleanup and an escaped return after its home has ended. Compare `--normal-return`; inspect the source-linked recording. | [Blocks and lexical homes](tape/blocks.md) |
 | [`conditions`](tape/src/bin/conditions.rs) | Language-owned dynamic handlers, restart lookup, recovery, non-local exits, cleanup suspension and replacement, and expired capabilities above the VM's control primitives. Use `--help` for the scenarios. | [Conditions above the VM](tape/conditions.md) |
+| [`composed_conditions`](tape/src/bin/composed_conditions.rs) | Run independently compiled methods, a dynamic handler, a returning restart and protected cleanup in one VM store. Inspect actual cross-code parents and source, resume old code after publication, or exit to a lexical home. | [Conditions across code instances](tape/composed-conditions.md) |
 | [`message_dispatch`](tape/src/bin/message_dispatch.rs) | Embedding-controlled method lookup, shared cells and compatible method publication while an existing invocation keeps its original code. Inspect the actual waiting caller. | [Messages and method replacement](tape/messages.md) |
+| [`local_handlers`](tape/src/bin/local_handlers.rs) | Two guest requests handled by the same lexical clause within a two-frame limit. `--disassemble` shows the authored source, normal result block and suspension target. | [Delimited computations](../docs/overview.md#delimited-computations) |
 
 The block and condition examples use one program and invocation. The message-dispatch example
 executes independently owned methods in separate invocations. Their guides explain those control

@@ -79,15 +79,11 @@ fn assert_session(session: &Session, fixture: &program::Fixture, expected: [i64;
     }
     for command in session.recording.control_commands() {
         check(command.location);
-        match command.action {
-            ControlAction::ReturnFrom {
-                target_location, ..
-            } => check(target_location),
-            ControlAction::CallGuest {
-                returned: Some(returned),
-                ..
-            } => check(returned.location),
-            _ => {}
+        if let ControlAction::ReturnFrom {
+            target_location, ..
+        } = command.action
+        {
+            check(target_location);
         }
     }
 }
@@ -114,14 +110,7 @@ fn shared_escaping_blocks_and_lexical_returns_compose_with_ensure_and_checked_re
                 session.after_ensure, !non_local,
                 "only ^ leaves the lexical home"
             );
-            assert_eq!(
-                session
-                    .recording
-                    .control_commands()
-                    .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
-                    .count(),
-                usize::from(non_local)
-            );
+            assert_eq!(exit_count(&session.recording), usize::from(non_local));
             assert_session(&session, &fixture, [41, 42, 42, -1]);
         }
     }
@@ -399,4 +388,27 @@ fn nonlocal_return_boxing_preserves_the_owned_aggregate_budget_failure() {
         panic!("trapped guest replay");
     };
     check(&replayed);
+}
+
+fn exit_count(record: &execution_tape::recording::Recording) -> usize {
+    let local = record
+        .segments()
+        .filter_map(|segment| segment.recording)
+        .map(|record| {
+            record
+                .control_commands()
+                .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
+                .count()
+        })
+        .sum::<usize>();
+    local
+        + record
+            .transfers()
+            .filter(|transfer| {
+                matches!(
+                    transfer.action,
+                    execution_tape::recording::TransferAction::ReturnFrom { .. }
+                )
+            })
+            .count()
 }

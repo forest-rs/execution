@@ -57,6 +57,9 @@ lookup happens only when a Tracy client is running; ordinary VM execution is unc
 Active Tracy guards close inner-to-outer when the sink is dropped, including after a host panic.
 After catching a host panic, drop and recreate the sink before another run.
 
-Resumable invocations keep logical call scopes open while suspended; their span
-duration includes that waiting time. Dropping a pending invocation closes its
-scopes without claiming a successful return.
+Logical call scopes retain their identities across suspension. Capturing a stack closes its
+physical Tracy spans; reattachment reopens the retained labels and source locations under the
+current caller. Physical spans measure attached-chain elapsed intervals, including scheduler
+pauses and host waiting while attached. Dropping a pending invocation closes its scopes without
+claiming a successful return. `is_consistent()` reports malformed scope evidence; an inconsistent
+stream closes active guards and stops opening new ones until the sink is recreated.

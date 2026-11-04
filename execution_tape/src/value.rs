@@ -9,7 +9,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::control::{ContinuationRef, ControlTag};
 use crate::program::{ElemTypeId, HostTypeId, TypeId};
+
+mod function;
+pub use function::FunctionRef;
 
 /// An opaque handle to a host-owned object.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -33,15 +37,17 @@ pub struct FuncId(pub u32);
 /// Aggregates are immutable and structural; v1 stores them out-of-line in an aggregate heap.
 /// A handle belongs to its originating heap. Copying it does not retain data or transfer it to
 /// another heap. Host-call handles are borrowed; [`crate::host::HostContext::retain`] creates
-/// an independent snapshot. Returned VM handles stay valid until the heap is explicitly cleared.
+/// an independent snapshot. Raw VM handles stay valid only until explicit collection or heap
+/// transfer. [`crate::vm::RootedValues`] retains values across moving collection; resolve it
+/// through the VM to obtain current handles.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AggHandle(pub u32);
 
 /// A closure value (function + captured environment).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Closure {
-    /// Function identifier for the closure body.
-    pub func: FuncId,
+    /// Exact instance and function for the closure body.
+    pub func: FunctionRef,
     /// Captured immutable environment.
     pub env: AggHandle,
 }
@@ -130,10 +136,25 @@ pub enum Value {
     Obj(Obj),
     /// Aggregate handle (tuple/struct/array).
     Agg(AggHandle),
-    /// Function reference.
-    Func(FuncId),
+    /// Function reference retaining its exact code instance.
+    Func(FunctionRef),
     /// Closure reference (function + captured environment).
     Closure(Closure),
+    /// Instance-qualified resumable operation identity.
+    Tag(ControlTag),
+    /// A single-use capability retained by its originating execution.
+    Continuation(ContinuationRef),
+}
+
+impl From<FunctionRef> for Value {
+    fn from(function: FunctionRef) -> Self {
+        Self::Func(function)
+    }
+}
+impl From<Closure> for Value {
+    fn from(closure: Closure) -> Self {
+        Self::Closure(closure)
+    }
 }
 
 /// Aggregate type descriptor for host signatures and reflection.

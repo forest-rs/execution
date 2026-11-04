@@ -439,9 +439,13 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
         func: FuncId(0),
         pc: 0,
     };
-    recorder.run_start(p.program(), FuncId(0), 0);
+    recorder.run_start(
+        execution_tape::trace::TraceContext::unscoped(p.program()),
+        FuncId(0),
+        0,
+    );
     recorder.values(
-        p.program(),
+        execution_tape::trace::TraceContext::unscoped(p.program()),
         ValueEvent::Entry {
             entry: FuncId(0),
             args: &[],
@@ -451,16 +455,21 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
         },
     );
     recorder.instr(
-        p.program(),
+        execution_tape::trace::TraceContext::unscoped(p.program()),
         FuncId(0),
         0,
         ret,
         None,
         Opcode::ConstI64.byte(),
     );
-    recorder.instr_end(p.program(), location, Some(location), TraceOutcome::Ok); // false self-loop
+    recorder.instr_end(
+        execution_tape::trace::TraceContext::unscoped(p.program()),
+        location,
+        Some(location),
+        TraceOutcome::Ok,
+    ); // false self-loop
     recorder.values(
-        p.program(),
+        execution_tape::trace::TraceContext::unscoped(p.program()),
         ValueEvent::ReturnCandidate {
             location: TraceLocation {
                 func: FuncId(0),
@@ -470,7 +479,10 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
             aggregates: &heap,
         },
     );
-    recorder.run_end(p.program(), TraceOutcome::Ok);
+    recorder.run_end(
+        execution_tape::trace::TraceContext::unscoped(p.program()),
+        TraceOutcome::Ok,
+    );
     let record = recorder.finish();
     assert_eq!(record.status(), Ok(()));
     assert!(matches!(

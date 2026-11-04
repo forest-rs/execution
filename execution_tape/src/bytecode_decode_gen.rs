@@ -141,6 +141,26 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 b,
             }
         },
+        Opcode::ConstTag => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let tag_id = crate::codec_primitives::read_u32_uleb(r)?;
+            Instr::ConstTag {
+                dst,
+                tag_id,
+            }
+        },
+        Opcode::TagNew => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let tag_id = crate::codec_primitives::read_u32_uleb(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            Instr::TagNew {
+                dst,
+                tag_id,
+                eff_out,
+                eff_in,
+            }
+        },
         Opcode::I64Add => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let a = crate::codec_primitives::read_reg(r)?;
@@ -1037,6 +1057,100 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
             Instr::F64FromBits {
                 dst,
                 a,
+            }
+        },
+        Opcode::ContNew => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let callee = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            Instr::ContNew {
+                dst,
+                call_sig,
+                callee,
+                eff_out,
+                eff_in,
+            }
+        },
+        Opcode::ContResume => {
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let continuation = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            let pc_return = crate::codec_primitives::read_u32_uleb(r)?;
+            let handlers = crate::codec_primitives::read_handlers(r)?;
+            Instr::ContResume {
+                call_sig,
+                continuation,
+                eff_out,
+                eff_in,
+                args,
+                pc_return,
+                handlers,
+            }
+        },
+        Opcode::Suspend => {
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let tag = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            let rets = crate::codec_primitives::read_reg_list(r)?;
+            Instr::Suspend {
+                call_sig,
+                tag,
+                eff_out,
+                eff_in,
+                args,
+                rets,
+            }
+        },
+        Opcode::ContDrop => {
+            let continuation = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            Instr::ContDrop {
+                continuation,
+                eff_out,
+                eff_in,
+            }
+        },
+        Opcode::TagIsHandled => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let tag = crate::codec_primitives::read_reg(r)?;
+            Instr::TagIsHandled {
+                dst,
+                tag,
+            }
+        },
+        Opcode::TailCall => {
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let callee = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::TailCall {
+                call_sig,
+                callee,
+                eff_out,
+                eff_in,
+                args,
+            }
+        },
+        Opcode::TailResume => {
+            let call_sig = crate::codec_primitives::read_u32_uleb(r)?;
+            let continuation = crate::codec_primitives::read_reg(r)?;
+            let eff_out = crate::codec_primitives::read_reg(r)?;
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::TailResume {
+                call_sig,
+                continuation,
+                eff_out,
+                eff_in,
+                args,
             }
         },
     })

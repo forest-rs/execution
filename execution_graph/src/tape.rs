@@ -37,6 +37,11 @@ pub use observation::{NoTapeObserver, TapeInvocation, TapeObserver};
 /// Failures specific to tape nodes.
 #[derive(Clone, Debug)]
 pub enum TapeError {
+    /// A continuation is scoped to an execution and cannot be imported from a cached edge.
+    ExecutionLocalInput {
+        /// Positional graph input.
+        input: usize,
+    },
     /// A retained root contains program-local IDs without their owning program.
     MissingProgram {
         /// Root index in the retained snapshot.
@@ -54,6 +59,10 @@ pub enum TapeError {
     },
     /// Retaining or importing an aggregate graph failed.
     Aggregate(AggError),
+    /// Registered value ownership prevents a storage transfer.
+    ValueStore(execution_tape::vm::RootError),
+    /// A retained callable could not be bound to this executor's host store.
+    Instance(execution_tape::instance::InstanceError),
     /// A function id was not present in the verified program supplied for a node.
     BadEntryFunc {
         /// Invalid entry function id.
@@ -86,6 +95,10 @@ impl fmt::Display for TapeError {
                 f,
                 "snapshot root {root} contains program-local IDs; supply its original prepared program"
             ),
+            Self::ExecutionLocalInput { input } => write!(
+                f,
+                "input {input} contains an execution-local continuation; keep resumption within its owning invocation"
+            ),
             Self::UnownedInput { input } => write!(
                 f,
                 "input {input} contains an unowned aggregate or callable; adopt a retained snapshot with TapeValue::from_snapshot"
@@ -95,6 +108,8 @@ impl fmt::Display for TapeError {
                 "input {input} contains IDs belonging to a different prepared program; use its original program or explicitly translate the value"
             ),
             Self::Aggregate(error) => write!(f, "aggregate transfer failed: {error}"),
+            Self::ValueStore(error) => write!(f, "value storage transfer failed: {error}"),
+            Self::Instance(error) => write!(f, "callable transfer failed: {error}"),
             Self::BadEntryFunc { func } => {
                 write!(
                     f,
@@ -126,6 +141,8 @@ impl core::error::Error for TapeError {
         match self {
             Self::Trap(trap) => Some(trap),
             Self::Aggregate(error) => Some(error),
+            Self::ValueStore(error) => Some(error),
+            Self::Instance(error) => Some(error),
             _ => None,
         }
     }
@@ -328,7 +345,9 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
         self.args.clear();
         self.results.clear();
         self.importer.clear();
-        self.vm.aggregates_mut().clear();
+        self.vm
+            .collect()
+            .expect("the adapter's unrooted workspace has no live roots");
     }
 }
 
@@ -391,11 +410,11 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             input.validate_input(index, &node.program)?;
         }
         for input in inputs {
-            match self.importer.import(input, self.vm.aggregates_mut()) {
+            match self.importer.import(input, &mut self.vm) {
                 Ok(value) => self.args.push(value),
                 Err(error) => {
                     self.clear_workspace();
-                    return Err(TapeError::Aggregate(error));
+                    return Err(error);
                 }
             }
         }
@@ -471,7 +490,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             return Ok(());
         }
         let values = core::mem::take(&mut self.results);
-        let heap = core::mem::take(self.vm.aggregates_mut());
+        let heap = self.vm.take_aggregates().map_err(TapeError::ValueStore)?;
         let origins = core::mem::take(&mut self.importer.origins);
         TapeValue::publish(heap, values, Arc::clone(&node.program), origins, outputs)?;
         Ok(())
@@ -913,7 +932,7 @@ impl TraceSink for StrictDepsTrace<'_> {
 
     fn scope_enter(
         &mut self,
-        _program: &execution_tape::program::Program,
+        _context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -931,7 +950,7 @@ impl TraceSink for StrictDepsTrace<'_> {
 
     fn scope_exit(
         &mut self,
-        program: &execution_tape::program::Program,
+        context: execution_tape::trace::TraceContext<'_>,
         kind: ScopeKind,
         _depth: usize,
         _func: FuncId,
@@ -939,6 +958,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         _span_id: Option<u64>,
         outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
+        let program = context.program();
         let ScopeKind::HostCall { .. } = kind else {
             return;
         };
