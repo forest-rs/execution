@@ -568,44 +568,62 @@ fn return_candidates_preserve_pre_compaction_identity_and_exclude_output_prefix(
 }
 
 #[test]
-fn dangling_host_and_root_values_remain_observable_before_the_commit_trap() {
-    let program = host_program(&[], ValueType::Agg);
-    let mut vm = Vm::new(
-        ReturnHost {
-            values: vec![Value::Agg(AggHandle(u32::MAX))],
-            fuel: 0,
-            error: None,
-        },
-        Limits::default(),
-    );
-    let mut sink = Observe::default();
-    let mut outputs = vec![Value::I64(99)];
-    let error = vm
-        .run_with_ctx(
-            &mut ExecutionContext::new(),
-            &program,
-            FuncId(0),
-            &[],
-            &mut outputs,
-            sink.mask(),
-            Some(&mut sink),
-            None,
-        )
-        .unwrap_err();
-    assert!(
-        matches!(error.trap, Trap::AggError(AggError::UnresolvedStagedHandle)),
-        "{error:?}"
-    );
-    assert_eq!(outputs, [Value::I64(99)]);
-    assert_eq!(
-        sink.order,
-        ["run_start", "entry", "host", "candidate", "run_end"]
-    );
-    assert!(matches!(sink.host_returns[0].4, Err(AggError::BadHandle)));
-    let (_, raw, retained) = sink.candidate.unwrap();
-    assert_eq!(raw, [Value::Agg(AggHandle(u32::MAX))]);
-    assert!(matches!(retained, Err(AggError::BadHandle)));
-    assert!(sink.outcome.unwrap().is_err());
+fn dangling_host_handles_remain_observable_before_their_rejection() {
+    for handle in [u32::MAX, 12345] {
+        let program = host_program(&[], ValueType::Agg);
+        let mut vm = Vm::new(
+            ReturnHost {
+                values: vec![Value::Agg(AggHandle(handle))],
+                fuel: 0,
+                error: None,
+            },
+            Limits::default(),
+        );
+        let mut sink = Observe::default();
+        let mut outputs = vec![Value::I64(99)];
+        let error = vm
+            .run_with_ctx(
+                &mut ExecutionContext::new(),
+                &program,
+                FuncId(0),
+                &[],
+                &mut outputs,
+                sink.mask(),
+                Some(&mut sink),
+                None,
+            )
+            .unwrap_err();
+        if handle == u32::MAX {
+            assert!(
+                matches!(error.trap, Trap::AggError(AggError::BadHandle)),
+                "{error:?}"
+            );
+        } else {
+            assert!(
+                matches!(error.trap, Trap::AggError(AggError::UnresolvedStagedHandle)),
+                "{error:?}"
+            );
+        }
+        assert_eq!(outputs, [Value::I64(99)]);
+        let expected: &[&str] = if handle == u32::MAX {
+            &["run_start", "entry", "host", "run_end"]
+        } else {
+            &["run_start", "entry", "host", "candidate", "run_end"]
+        };
+        assert_eq!(sink.order, expected);
+        assert!(matches!(sink.host_returns[0].4, Err(AggError::BadHandle)));
+        if handle == u32::MAX {
+            assert!(
+                sink.candidate.is_none(),
+                "rejected host admission has no root-return candidate"
+            );
+        } else {
+            let (_, raw, retained) = sink.candidate.unwrap();
+            assert_eq!(raw, [Value::Agg(AggHandle(handle))]);
+            assert!(matches!(retained, Err(AggError::BadHandle)));
+        }
+        assert!(sink.outcome.unwrap().is_err());
+    }
 }
 
 #[test]

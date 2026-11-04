@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use crate::aggregates::AggHeap;
 use crate::program::{ConstId, Program};
 use crate::value::{AggHandle, Value};
+use crate::vm::Trap;
 
 /// Immutable payload source within one active run.
 #[derive(Copy, Clone, Debug)]
@@ -87,6 +88,21 @@ pub(crate) struct BytesHandle(pub(crate) u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct StrHandle(pub(crate) u32);
 
+impl BytesHandle {
+    pub(crate) const UNINITIALIZED: Self = Self(u32::MAX);
+}
+impl StrHandle {
+    pub(crate) const UNINITIALIZED: Self = Self(u32::MAX);
+}
+
+/// Reserve one representation for uninitialized register slots; reject before inserting data.
+fn payload_index(length: usize) -> Result<u32, Trap> {
+    u32::try_from(length)
+        .ok()
+        .filter(|&index| index != u32::MAX)
+        .ok_or(Trap::PayloadSizeOverflow)
+}
+
 /// Arena storage for bytes and strings.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ValueArena {
@@ -119,28 +135,28 @@ impl ValueArena {
         self.strs.clear();
     }
 
-    pub(crate) fn alloc_bytes(&mut self, bytes: Vec<u8>) -> BytesHandle {
-        let idx = u32::try_from(self.bytes.len()).unwrap_or(u32::MAX);
+    pub(crate) fn alloc_bytes(&mut self, bytes: Vec<u8>) -> Result<BytesHandle, Trap> {
+        let idx = payload_index(self.bytes.len())?;
         self.bytes.push(Stored::Owned(bytes));
-        BytesHandle(idx)
+        Ok(BytesHandle(idx))
     }
 
-    pub(crate) fn borrow_bytes(&mut self, source: PayloadSource) -> BytesHandle {
-        let idx = u32::try_from(self.bytes.len()).unwrap_or(u32::MAX);
+    pub(crate) fn borrow_bytes(&mut self, source: PayloadSource) -> Result<BytesHandle, Trap> {
+        let idx = payload_index(self.bytes.len())?;
         self.bytes.push(Stored::Source(source));
-        BytesHandle(idx)
+        Ok(BytesHandle(idx))
     }
 
-    pub(crate) fn alloc_str(&mut self, s: String) -> StrHandle {
-        let idx = u32::try_from(self.strs.len()).unwrap_or(u32::MAX);
+    pub(crate) fn alloc_str(&mut self, s: String) -> Result<StrHandle, Trap> {
+        let idx = payload_index(self.strs.len())?;
         self.strs.push(Stored::Owned(s));
-        StrHandle(idx)
+        Ok(StrHandle(idx))
     }
 
-    pub(crate) fn borrow_str(&mut self, source: PayloadSource) -> StrHandle {
-        let idx = u32::try_from(self.strs.len()).unwrap_or(u32::MAX);
+    pub(crate) fn borrow_str(&mut self, source: PayloadSource) -> Result<StrHandle, Trap> {
+        let idx = payload_index(self.strs.len())?;
         self.strs.push(Stored::Source(source));
-        StrHandle(idx)
+        Ok(StrHandle(idx))
     }
 
     pub(crate) fn bytes<'a>(
@@ -169,6 +185,23 @@ mod tests {
     use alloc::vec;
 
     #[test]
+    fn payload_indices_reserve_the_uninitialized_marker_without_large_allocations() {
+        assert_eq!(payload_index(0).unwrap(), 0);
+        assert_eq!(
+            payload_index((u32::MAX - 1) as usize).unwrap(),
+            u32::MAX - 1
+        );
+        assert!(matches!(
+            payload_index(u32::MAX as usize),
+            Err(Trap::PayloadSizeOverflow)
+        ));
+        assert!(matches!(
+            payload_index(usize::MAX),
+            Err(Trap::PayloadSizeOverflow)
+        ));
+    }
+
+    #[test]
     fn borrowed_payloads_resolve_to_their_original_owners() {
         let mut pb = ProgramBuilder::new();
         let bytes = pb.const_bytes(b"constant");
@@ -181,8 +214,8 @@ mod tests {
             .unwrap();
         let sources = ValueSources::new(&p, &args, &heap);
         let mut arena = ValueArena::default();
-        let cb = arena.borrow_bytes(PayloadSource::Constant(bytes));
-        let cs = arena.borrow_str(PayloadSource::Constant(text));
+        let cb = arena.borrow_bytes(PayloadSource::Constant(bytes)).unwrap();
+        let cs = arena.borrow_str(PayloadSource::Constant(text)).unwrap();
         assert_eq!(
             arena.bytes(cb, sources).unwrap().as_ptr(),
             p.const_bytes(bytes).unwrap().as_ptr()
@@ -204,7 +237,7 @@ mod tests {
             let Value::Bytes(expected) = value else {
                 unreachable!()
             };
-            let handle = arena.borrow_bytes(source);
+            let handle = arena.borrow_bytes(source).unwrap();
             assert_eq!(
                 arena.bytes(handle, sources).unwrap().as_ptr(),
                 expected.as_ptr()
@@ -223,15 +256,15 @@ mod tests {
             let Value::Str(expected) = value else {
                 unreachable!()
             };
-            let handle = arena.borrow_str(source);
+            let handle = arena.borrow_str(source).unwrap();
             assert_eq!(
                 arena.str(handle, sources).unwrap().as_ptr(),
                 expected.as_ptr()
             );
         }
-        let missing = arena.borrow_bytes(PayloadSource::Argument(9));
+        let missing = arena.borrow_bytes(PayloadSource::Argument(9)).unwrap();
         assert_eq!(arena.bytes(missing, sources), None);
-        let wrong_type = arena.borrow_bytes(PayloadSource::Argument(1));
+        let wrong_type = arena.borrow_bytes(PayloadSource::Argument(1)).unwrap();
         assert_eq!(arena.bytes(wrong_type, sources), None);
     }
 
@@ -245,8 +278,8 @@ mod tests {
         let bytes_ptr = bytes.as_ptr();
         let text = String::from("owned");
         let text_ptr = text.as_ptr();
-        let b = arena.alloc_bytes(bytes);
-        let s = arena.alloc_str(text);
+        let b = arena.alloc_bytes(bytes).unwrap();
+        let s = arena.alloc_str(text).unwrap();
         assert_eq!(arena.bytes(b, sources).unwrap().as_ptr(), bytes_ptr);
         assert_eq!(arena.str(s, sources).unwrap().as_ptr(), text_ptr);
         arena.clear();

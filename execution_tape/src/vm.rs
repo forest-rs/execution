@@ -685,6 +685,9 @@ impl ExecutionContext {
 }
 
 impl Registers {
+    // Only bank cells use this marker. Generic values and staged handles retain full validation.
+    const UNINITIALIZED_AGG: AggHandle = AggHandle(u32::MAX);
+
     fn clear(&mut self) {
         self.instance = None;
         self.frames.clear();
@@ -1811,12 +1814,18 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolBytes { dst, idx } => {
-                    let h = ctx.arena.borrow_bytes(PayloadSource::Constant(*idx));
+                    let h = ctx
+                        .arena
+                        .borrow_bytes(PayloadSource::Constant(*idx))
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolStr { dst, idx } => {
-                    let h = ctx.arena.borrow_str(PayloadSource::Constant(*idx));
+                    let h = ctx
+                        .arena
+                        .borrow_str(PayloadSource::Constant(*idx))
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3399,7 +3408,10 @@ impl<H: Host> Vm<H> {
                         out.extend_from_slice(b);
                         out
                     };
-                    let h = ctx.arena.alloc_bytes(out);
+                    let h = ctx
+                        .arena
+                        .alloc_bytes(out)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3434,7 +3446,10 @@ impl<H: Host> Vm<H> {
                         out.push_str(b);
                         out
                     };
-                    let h = ctx.arena.alloc_str(out);
+                    let h = ctx
+                        .arena
+                        .alloc_str(out)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3482,7 +3497,10 @@ impl<H: Host> Vm<H> {
                         .read_bytes(bytes, base, sources)
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?[start..end]
                         .to_vec();
-                    let h = ctx.arena.alloc_bytes(out);
+                    let h = ctx
+                        .arena
+                        .alloc_bytes(out)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3509,7 +3527,10 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?
                             [start..end],
                     );
-                    let h = ctx.arena.alloc_str(out);
+                    let h = ctx
+                        .arena
+                        .alloc_str(out)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3528,7 +3549,10 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                         s.as_bytes().to_vec()
                     };
-                    let h = ctx.arena.alloc_bytes(out);
+                    let h = ctx
+                        .arena
+                        .alloc_bytes(out)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3548,7 +3572,10 @@ impl<H: Host> Vm<H> {
                         String::from_utf8(bytes.to_vec())
                             .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::InvalidUtf8))?
                     };
-                    let h = ctx.arena.alloc_str(out);
+                    let h = ctx
+                        .arena
+                        .alloc_str(out)
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -3750,8 +3777,10 @@ impl Registers {
         self.f64s.resize(base.f64s + counts.f64s, 0.0);
         self.decimals
             .resize(base.decimals + counts.decimals, Decimal::new(0, 0));
-        self.bytes.resize(base.bytes + counts.bytes, BytesHandle(0));
-        self.strs.resize(base.strs + counts.strs, StrHandle(0));
+        self.bytes
+            .resize(base.bytes + counts.bytes, BytesHandle::UNINITIALIZED);
+        self.strs
+            .resize(base.strs + counts.strs, StrHandle::UNINITIALIZED);
         self.objs.resize(
             base.objs + counts.objs,
             Obj {
@@ -3759,7 +3788,8 @@ impl Registers {
                 handle: ObjHandle(0),
             },
         );
-        self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
+        self.aggs
+            .resize(base.aggs + counts.aggs, Self::UNINITIALIZED_AGG);
         self.funcs.resize(base.funcs + counts.funcs, None);
         self.closures.resize(base.closures + counts.closures, None);
         self.tags.resize(base.tags + counts.tags, None);
@@ -3805,12 +3835,12 @@ impl Registers {
     fn write_owned_value(&mut self, base: RegBase, dst: VReg, value: Value) -> Result<(), Trap> {
         match (dst, value) {
             (VReg::Bytes(reg), Value::Bytes(bytes)) => {
-                let handle = self.arena.alloc_bytes(bytes);
+                let handle = self.arena.alloc_bytes(bytes)?;
                 self.write_bytes_handle(base, reg, handle);
                 Ok(())
             }
             (VReg::Str(reg), Value::Str(s)) => {
-                let handle = self.arena.alloc_str(s);
+                let handle = self.arena.alloc_str(s)?;
                 self.write_str_handle(base, reg, handle);
                 Ok(())
             }
@@ -3827,12 +3857,12 @@ impl Registers {
     ) -> Result<(), Trap> {
         match (dst, value) {
             (VReg::Bytes(reg), Value::Bytes(_)) => {
-                let handle = self.arena.borrow_bytes(source);
+                let handle = self.arena.borrow_bytes(source)?;
                 self.write_bytes_handle(base, reg, handle);
                 Ok(())
             }
             (VReg::Str(reg), Value::Str(_)) => {
-                let handle = self.arena.borrow_str(source);
+                let handle = self.arena.borrow_str(source)?;
                 self.write_str_handle(base, reg, handle);
                 Ok(())
             }
@@ -3868,6 +3898,11 @@ impl Registers {
                 Ok(())
             }
             (VReg::Agg(r), Value::Agg(h)) => {
+                // Raw entry/control/host values must not masquerade as an uninitialized
+                // bank slot. Legitimate staged handles are adopted before this boundary.
+                if *h == Self::UNINITIALIZED_AGG {
+                    return Err(Trap::AggError(AggError::BadHandle));
+                }
                 self.write_agg_handle(base, r, *h);
                 Ok(())
             }
@@ -4509,8 +4544,12 @@ mod tests {
     #[test]
     fn clearing_context_releases_payloads_and_preserves_register_capacity() {
         let mut ctx = ExecutionContext::new();
-        let bytes = ctx.registers.arena.alloc_bytes(vec![7; 8192]);
-        let text = ctx.registers.arena.alloc_str(String::from("computed"));
+        let bytes = ctx.registers.arena.alloc_bytes(vec![7; 8192]).unwrap();
+        let text = ctx
+            .registers
+            .arena
+            .alloc_str(String::from("computed"))
+            .unwrap();
         ctx.registers.i64s.extend([1, 2, 3]);
         let capacity = ctx.registers.i64s.capacity();
         let program = ProgramBuilder::new().build();
@@ -4630,10 +4669,17 @@ mod tests {
                     )
                     .unwrap_err();
                 assert_eq!(e.func, entry);
-                assert!(
-                    matches!(e.trap, Trap::ContractMismatch { position:ContractPosition::Argument{callee,index:0}, .. } if callee == target),
-                    "mode={mode}: {e:?}"
-                );
+                if handle.0 == u32::MAX {
+                    assert!(
+                        matches!(e.trap, Trap::AggError(AggError::BadHandle)),
+                        "mode={mode}: {e:?}"
+                    );
+                } else {
+                    assert!(
+                        matches!(e.trap, Trap::ContractMismatch { position:ContractPosition::Argument{callee,index:0}, .. } if callee == target),
+                        "mode={mode}: {e:?}"
+                    );
+                }
             }
             vm.run_with_ctx(
                 &mut ctx,

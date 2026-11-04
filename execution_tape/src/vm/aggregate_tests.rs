@@ -244,3 +244,124 @@ fn borrowed_nested_aggregates_charge_only_new_immediate_fields() {
         Value::Agg(input)
     );
 }
+
+#[test]
+fn reserved_uninitialized_aggregate_is_rejected_before_guest_or_host_admission() {
+    use crate::host::HostSig;
+    struct ReturnsInvalid;
+    impl Host for ReturnsInvalid {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            _: &[ValueRef<'_>],
+            values: &mut [Value],
+            _: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            values[0] = Value::Agg(AggHandle(u32::MAX));
+            Ok(0)
+        }
+    }
+    for from_host in [false, true] {
+        let mut builder = ProgramBuilder::new();
+        let import = builder.host_sig_for(
+            "invalid",
+            HostSig {
+                args: vec![],
+                rets: vec![ValueType::Agg],
+            },
+        );
+        let entry = builder
+            .declare_function(FunctionSig {
+                arg_types: if from_host {
+                    vec![]
+                } else {
+                    vec![ValueType::Agg]
+                },
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(entry).unwrap();
+        if from_host {
+            let [_ignored] = builder.emit_call(&mut body, import, &[]).unwrap();
+        }
+        let answer = body.alloc_register(ValueType::I64);
+        body.const_i64(answer, 42).ret(0, &[answer]); // Do not dereference the invalid input.
+        builder.define_function(entry, body).unwrap();
+        let program = builder.build_verified().unwrap();
+        let args = if from_host {
+            vec![]
+        } else {
+            vec![Value::Agg(AggHandle(u32::MAX))]
+        };
+        let mut vm = Vm::new(ReturnsInvalid, Limits::default());
+        for yielded in [false, true] {
+            if yielded {
+                let mut run = vm.start(
+                    &program,
+                    entry,
+                    &args,
+                    InvocationOptions::default().yield_host_calls(),
+                );
+                let error = match run.as_mut() {
+                    Err(error) => error.clone(),
+                    Ok(run) => {
+                        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+                        run.pending_host_call()
+                            .unwrap()
+                            .complete(&mut [Value::Agg(AggHandle(u32::MAX))], Ok(0))
+                            .unwrap_err()
+                    }
+                };
+                assert!(matches!(error.trap, Trap::AggError(AggError::BadHandle)));
+            } else {
+                let error = vm
+                    .run(&program, entry, &args, TraceMask::NONE, None)
+                    .unwrap_err();
+                assert!(matches!(error.trap, Trap::AggError(AggError::BadHandle)));
+            }
+        }
+    }
+}
+
+#[test]
+fn reference_registers_do_not_alias_zero_or_survive_frame_reuse() {
+    let mut builder = ProgramBuilder::new();
+    let entry = builder
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::Agg, ValueType::Bytes, ValueType::Str],
+            ret_types: vec![],
+        })
+        .unwrap();
+    let mut body = builder.function_asm(entry).unwrap();
+    body.ret(0, &[]);
+    builder.define_function(entry, body).unwrap();
+    let program = builder.build_verified().unwrap();
+    let function = program.verified(entry).unwrap();
+    let mut registers = Registers::default();
+    let base = registers.alloc_frame(function);
+    assert_eq!(registers.aggs, [Registers::UNINITIALIZED_AGG]);
+    assert_eq!(registers.bytes, [BytesHandle::UNINITIALIZED]);
+    assert_eq!(registers.strs, [StrHandle::UNINITIALIZED]);
+    let mut heap = AggHeap::new();
+    let tuple = heap.tuple_new(vec![]).unwrap();
+    registers
+        .init_args(
+            base,
+            function,
+            &[
+                Value::Agg(tuple),
+                Value::Bytes(vec![1]),
+                Value::Str("input".into()),
+            ],
+        )
+        .unwrap();
+    assert_eq!(registers.aggs, [tuple]);
+    assert_eq!(registers.bytes, [BytesHandle(0)]);
+    assert_eq!(registers.strs, [StrHandle(0)]);
+    registers.truncate_to(base);
+    registers.alloc_frame(function);
+    assert_eq!(registers.aggs, [Registers::UNINITIALIZED_AGG]);
+    assert_eq!(registers.bytes, [BytesHandle::UNINITIALIZED]);
+    assert_eq!(registers.strs, [StrHandle::UNINITIALIZED]);
+}

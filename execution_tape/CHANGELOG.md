@@ -223,6 +223,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Fixed
 
+- Reject reserved invalid aggregate handles at raw-value admission, before they can resemble
+  uninitialized internal reference slots. Raw host outcomes remain observable before rejection;
+  a rejected host result does not become a root-return candidate. Payload arena allocation now
+  checks its index space before insertion instead of saturating an overflowing handle.
+
 - Qualify run-only trace observations with their exact stack identity and pair run endings
   only with actual observed starts, including interrupted tail entry.
 
