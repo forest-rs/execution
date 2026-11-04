@@ -66,7 +66,10 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
                     ..Limits::default()
                 },
             );
-            let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+            let retained = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(99)])
+                .unwrap();
             let mut ctx = ExecutionContext::new();
             let mut outputs = vec![Value::Bool(true)];
             let error = vm
@@ -223,7 +226,7 @@ fn borrowed_nested_aggregates_charge_only_new_immediate_fields() {
         },
     );
     let input = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::I64(7); 4096])
         .unwrap();
     let output = vm

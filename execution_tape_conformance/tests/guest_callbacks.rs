@@ -465,7 +465,7 @@ fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_wor
     for mode in 1..5 {
         let mut vm = Vm::new(NoHost, Limits::default());
         let env = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::Bool(false)])
             .unwrap();
         let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();

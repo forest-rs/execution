@@ -162,7 +162,9 @@ fn a_child_command_can_first_observe_an_aggregate_created_before_its_entry() {
     let mut vm = Vm::new(NoHost, Limits::default());
     // Deliberately omit this initial node from every observation. Replay's initial prefix
     // therefore differs from the original; absolute aggregate handle numbers cannot work.
-    vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+    vm.aggregate_builder()
+        .tuple_new(vec![Value::I64(-1)])
+        .unwrap();
     let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
     {
         let mut run = vm
@@ -215,17 +217,19 @@ fn a_child_command_can_first_observe_an_aggregate_created_before_its_entry() {
 fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording {
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
-    vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap(); // Unobserved initial node.
+    vm.aggregate_builder()
+        .tuple_new(vec![Value::I64(-1)])
+        .unwrap(); // Unobserved initial node.
     let shared = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bytes(vec![7; 4096])])
         .unwrap();
     let distinct = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bytes(vec![7; 4096])])
         .unwrap();
     let input = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![
             Value::Agg(shared),
             Value::Agg(shared),
@@ -496,7 +500,10 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
             _ => Limits::default(),
         };
         let mut vm = Vm::new(NoHost, limits);
-        let input = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+        let input = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(1)])
+            .unwrap();
         let args = [Value::Agg(input)];
         let mut run = vm
             .start(
@@ -587,7 +594,7 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
             RecordLimits::default(),
         )));
         let mut vm = Vm::new(NoHost, Limits::default());
-        let input = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let input = vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let args = [Value::Agg(input)];
         let mut run = vm
             .start(

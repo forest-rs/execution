@@ -169,7 +169,10 @@ fn cancellation_rolls_back_only_new_aggregates_without_undoing_host_effects() {
     let (p, entry) = fixture();
     let args = [Value::Str("value".into())];
     let mut vm = Vm::new(Echo::default(), Limits::default());
-    let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let retained = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let mut events = Events::default();
     {
         let options = InvocationOptions::default().trace(
@@ -380,7 +383,10 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
     let program = builder.build_verified().unwrap();
     for instruction in [false, true] {
         let mut vm = Vm::new(Echo::default(), Limits::default());
-        let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+        let retained = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(99)])
+            .unwrap();
         let mut observer = PanicAtReturn {
             instruction,
             fired: false,
@@ -446,7 +452,10 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
             ..Limits::default()
         },
     );
-    let root = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let root = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let args = [Value::Agg(root)];
     let mut invocation = vm
         .start(&p, entry, &args, InvocationOptions::default())

@@ -610,7 +610,10 @@ fn promoted_return_graphs_obey_rich_contracts_work_limits_and_root_retirement() 
                 ..Limits::default()
             },
         );
-        let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+        let retained = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(-1)])
+            .unwrap();
         let mut run = vm.start(&program, root, &[], options()).unwrap();
         run.resume(100).unwrap();
         let home = run.inspect().frames().next().unwrap().activation;
@@ -828,7 +831,9 @@ fn transfer_replay_preserves_promoted_graphs_and_actual_contract_failures_after_
                 ..Limits::default()
             },
         );
-        vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+        vm.aggregate_builder()
+            .tuple_new(vec![Value::I64(-1)])
+            .unwrap();
         let mut run = vm
             .start(
                 &program,

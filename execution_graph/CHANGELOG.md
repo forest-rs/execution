@@ -33,6 +33,10 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Use append-only tape construction and checked unrooted heap transfer in the tape adapter,
+  preserving owned output publication while the VM gains registered values and collection.
+  `TapeError::ValueStore` retains a rejected storage transfer as a typed error source.
+
 - Carry code-qualified function and closure targets across tape graph edges. A receiving node
   calls the original definition rather than interpreting the same local ID in its own program.
   Owned imports bind retained callable namespaces to the executor's host store. Functions already

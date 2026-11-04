@@ -51,6 +51,8 @@ use inspection::{ExecutionControl, Waiting};
 mod observations;
 mod observer;
 use observer::Observers;
+mod roots;
+pub use roots::{CollectionStats, RootError, RootedValues, RootedView};
 mod ownership;
 mod work;
 pub use invocation::{ControlError, Invocation, InvocationOptions, PendingHostCall, RunStatus};
@@ -69,6 +71,9 @@ pub struct Limits {
     /// Maximum saved one-use computations in a single execution (1,024 by default).
     /// Parked frames also remain charged against [`Self::max_call_depth`].
     pub max_continuations: usize,
+    /// Maximum live registered value groups in this VM (4,096 by default).
+    /// This counts groups, not payload bytes; clones share a group.
+    pub max_value_roots: usize,
     /// Maximum host calls.
     pub max_host_calls: u64,
     /// Maximum aggregate contract and transfer-provenance work per execution:
@@ -148,6 +153,7 @@ impl Default for Limits {
             fuel: 1_000_000,
             max_call_depth: 256,
             max_continuations: 1024,
+            max_value_roots: 4096,
             max_host_calls: 1_000_000,
             max_contract_work: 1_000_000,
             max_aggregate_work: 1_000_000,
@@ -738,6 +744,7 @@ pub struct Vm<H: Host> {
     /// Retained aggregates and temporary allocations from the active run.
     memory: ProgramMemory,
     instances: instances::Instances,
+    roots: roots::Roots,
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -1370,6 +1377,7 @@ impl<H: Host> Vm<H> {
             limits,
             memory: ProgramMemory::new(),
             instances: instances::Instances::default(),
+            roots: roots::Roots::default(),
         }
     }
 
@@ -3709,14 +3717,11 @@ impl<H: Host> Vm<H> {
         &mut self.host
     }
 
-    /// Returns a reference to the aggregate heap.
+    /// Borrows current aggregate storage. Holding this view prevents collection; copying a
+    /// raw handle does not retain its target across collection. Use [`Self::resolve`] for
+    /// registered values and [`Self::aggregate_builder`] for append-only construction.
     pub fn aggregates(&self) -> &AggHeap {
         self.memory.aggs()
-    }
-
-    /// Returns a mutable reference to the aggregate heap.
-    pub fn aggregates_mut(&mut self) -> &mut AggHeap {
-        self.memory.aggs_mut()
     }
 }
 
@@ -4602,10 +4607,13 @@ mod tests {
             let p = pb.build_verified().unwrap();
             let mut vm = Vm::new(TestHost, Limits::default());
             let wrong = vm
-                .aggregates_mut()
+                .aggregate_builder()
                 .tuple_new(vec![Value::Bool(true)])
                 .unwrap();
-            let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+            let good = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(42)])
+                .unwrap();
             let mut ctx = ExecutionContext::new();
             let mut outputs = Vec::new();
             for handle in [wrong, AggHandle(u32::MAX)] {
@@ -5027,7 +5035,10 @@ mod tests {
                 .unwrap();
             let program = pb.build_verified().unwrap();
             let mut vm = Vm::new(TestHost, Limits::default());
-            let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+            let root = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(1)])
+                .unwrap();
             let mut ctx = ExecutionContext::new();
             let mut outputs = vec![Value::Unit];
             for _ in 0..100 {
@@ -5244,7 +5255,7 @@ mod tests {
             assert_eq!(vm.aggregates().len_u32(), 0);
             assert_eq!(ends.instructions, [true, false]);
             assert_eq!(ends.scopes, [false]);
-            let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+            let env = vm.aggregate_builder().tuple_new(vec![]).unwrap();
             let valid = if ty == ValueType::Agg {
                 Value::Agg(env)
             } else {
@@ -5334,7 +5345,7 @@ mod tests {
                 };
                 assert_eq!(vm.aggregates().tuple_get(root, 0), Ok(Value::I64(42)));
             }
-            vm.aggregates_mut().clear();
+            vm.collect().unwrap();
             let values = vm.memory.aggs_mut().import(&vm.host.retained[0]).unwrap();
             let [Value::Agg(root)] = values[..] else {
                 panic!("expected imported retained argument");
@@ -5384,7 +5395,10 @@ mod tests {
             .unwrap();
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(TestHost, Limits::default());
-        let aggregate = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+        let aggregate = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(99)])
+            .unwrap();
         let args = vec![
             Value::I64(42),
             Value::Bytes(vec![1, 2]),
@@ -5507,7 +5521,7 @@ mod tests {
             .unwrap();
             // Owned outputs are independent of program, source heap, and subsequent context reuse.
             drop(p);
-            vm.aggregates_mut().clear();
+            vm.collect().unwrap();
         }
         assert_eq!(
             outputs,
@@ -6203,7 +6217,7 @@ mod tests {
             env: AggHandle(0),
         };
 
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -6247,7 +6261,7 @@ mod tests {
             env: AggHandle(0),
         };
 
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -6301,7 +6315,7 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         let env = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::I64(11), Value::Bool(true)])
             .unwrap();
 
@@ -6835,7 +6849,7 @@ mod tests {
             env: AggHandle(0),
         };
 
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -6886,8 +6900,8 @@ mod tests {
         };
 
         // cond=true → selects r2 (closure_a)
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -6905,8 +6919,8 @@ mod tests {
 
         // cond=false → selects r3 (closure_b)
         let mut vm = Vm::new(TestHost, Limits::default());
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
-        vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
+        vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let out = vm
             .run(
                 &p,
@@ -7167,7 +7181,7 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let instance = vm.instances.default_for(&p).unwrap();
 
-        let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let env = vm.aggregate_builder().tuple_new(vec![]).unwrap();
         let err = vm
             .run(
                 &p,

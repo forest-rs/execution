@@ -481,6 +481,32 @@ checkpoints and compact aggregate write effects; its cursor replays only the sel
 Each register's outgoing fact comes directly from its write effect. There are no full per-instruction
 register-state snapshots, no `Program` clones, and no inspection storage in normal VM artifacts.
 
+## Retained values and explicit collection
+
+The VM can register a group of values under their actual instance, independently of aggregate
+addresses. `Invocation::retain_outputs` moves successful outputs into `RootedValues`; the
+low-level `Vm::retain_values` registers an explicitly supplied instance and owned values.
+Qualified functions retain their own code, while the group carries the interpretation of
+exposed nominal schemas. A tail-replaced root uses its actual result owner, not its old entry.
+
+Clones share one registration. `Vm::resolve` borrows current values, their instance and heap;
+that VM borrow prevents collection. Dropping the last handle releases the registration at the
+next explicit `Vm::collect`. Retain/resolve/drop never trigger collection. Full collection
+preserves sharing and equal-but-distinct aggregate identity, moves payloads, and reports exact
+before/after node counts. It is embedding work outside guest fuel, with no latency guarantee.
+
+Raw aggregate handles copied from earlier views/results are valid only until collection or
+whole-heap transfer. A recycled stale number cannot reliably identify its old target. Durable
+consumers keep the registration and resolve it again. Standalone snapshots remain independent
+exports. `aggregate_builder()` supplies append-only construction/import authority; mutable
+access that could clear or replace VM storage is no longer exposed. `take_aggregates()` denies
+whole-heap transfer while a registered group is live.
+
+Saved control currently remains inside an exclusive invocation lease, so VM collection cannot
+run alongside active or saved stacks. Persistent control across separate bounded turns must
+add every saved bank, input, pending value and aggregate-backed payload source to this same
+collection boundary before that ownership can move into the VM.
+
 ## Logical scopes and physical profiling
 
 A logical stack keeps its exact code and identity while captured. `TraceSink::stack_activity`

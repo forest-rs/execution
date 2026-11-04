@@ -161,7 +161,7 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
     );
     // Deliberately provide a valid VM-local aggregate @0. A host preview of @0 still must not
     // be resolved against this heap: it carries no declaration that this is its owner.
-    vm.aggregates_mut()
+    vm.aggregate_builder()
         .tuple_new(vec![Value::I64(999)])
         .unwrap();
     let preview_function = vm.function(&p, FuncId(0)).unwrap();
@@ -289,7 +289,7 @@ fn finish_motion(view: &mut LiveExplorer<'_, '_, Counter>) {
 fn live_frames_source_stepping_and_aggregate_contents_are_real() {
     let (p, entry, _, sources) = program(false);
     let mut vm = Vm::new(Counter::default(), Limits::default());
-    vm.aggregates_mut()
+    vm.aggregate_builder()
         .tuple_new(vec![Value::Obj(Obj {
             host_type: execution_tape::program::HostTypeId(1),
             handle: execution_tape::value::ObjHandle(42),

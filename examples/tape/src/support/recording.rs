@@ -78,12 +78,12 @@ pub(super) fn fixture(depth: usize, payload_bytes: usize) -> (Vm<Echo>, Vec<Valu
     assert!(depth > 0, "depth must be positive");
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bytes(vec![42; payload_bytes])])
         .unwrap();
     for _ in 1..depth {
         root = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::Agg(root), Value::Agg(root)])
             .unwrap();
     }

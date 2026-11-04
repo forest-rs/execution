@@ -296,7 +296,7 @@ fn conservative_roots_support_a_real_host_collection_between_quanta() {
         Limits::default(),
     );
     let retained = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Obj(object(43))])
         .unwrap();
     let args = [Value::Obj(object(42))];

@@ -142,7 +142,7 @@ fn reusable_root_outputs_preserve_nominal_prefixes_across_tail_replacement() {
     let a = vm.instantiate(&left).unwrap();
     let b = vm.instantiate(&right).unwrap();
     let prior = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .struct_new(crate::program::TypeId(99), vec![Value::I64(7)])
         .unwrap();
     let mut outputs = vec![Value::Agg(prior)];
@@ -527,7 +527,7 @@ fn a_failed_replacement_preserves_output_prefix_and_reusable_scratch() {
     let a = vm.instantiate(&left).unwrap();
     let b = vm.instantiate(&right).unwrap();
     let prior = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .struct_new(crate::program::TypeId(99), vec![Value::I64(7)])
         .unwrap();
     let mut outputs = vec![Value::Agg(prior)];

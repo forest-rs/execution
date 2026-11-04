@@ -640,7 +640,10 @@ mod tests {
                 },
             );
             let mut budget = Budget::new(&vm.limits);
-            let tuple = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+            let tuple = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(42)])
+                .unwrap();
             let mut first = Continuation::new(
                 CodeOwner::Original(checked_identity(ValueType::I64)),
                 FuncId(0),

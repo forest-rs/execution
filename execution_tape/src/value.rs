@@ -37,7 +37,9 @@ pub struct FuncId(pub u32);
 /// Aggregates are immutable and structural; v1 stores them out-of-line in an aggregate heap.
 /// A handle belongs to its originating heap. Copying it does not retain data or transfer it to
 /// another heap. Host-call handles are borrowed; [`crate::host::HostContext::retain`] creates
-/// an independent snapshot. Returned VM handles stay valid until the heap is explicitly cleared.
+/// an independent snapshot. Raw VM handles stay valid only until explicit collection or heap
+/// transfer. [`crate::vm::RootedValues`] retains values across moving collection; resolve it
+/// through the VM to obtain current handles.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AggHandle(pub u32);
 

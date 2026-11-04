@@ -449,14 +449,45 @@ impl<H: Host> Invocation<'_, H> {
         })
     }
 
-    /// Takes committed owned outputs, leaving an empty result buffer. Returns `None` before a
-    /// successful return. Aggregate handles remain owned by this invocation's VM heap.
-    /// These are raw ABI values: function/closure/nominal IDs still need their original code
-    /// owner. Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
-    /// invocation when its lookup handle has already been discarded.
+    /// Takes raw committed ABI outputs, leaving an empty result buffer. Returns `None` before
+    /// a successful return. Aggregate handles remain borrowed from this invocation's VM heap
+    /// until explicit collection or heap transfer. Use [`Self::retain_outputs`] for durable
+    /// values in that VM, or [`Self::into_snapshot`] for an independently owned export.
+    /// Qualified callables retain code; exposed nominal schemas still need their actual owner.
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
         (self.parents.is_empty() && matches!(self.continuation.outcome, Some(Ok(()))))
             .then(|| core::mem::take(&mut self.continuation.outputs))
+    }
+
+    /// Moves successful results into a durable VM registration with their actual code owner.
+    ///
+    /// Returns `None` before completion or after a trap. Rejection preserves the outputs and
+    /// does not collect. The returned handle survives moving collection after this invocation
+    /// is dropped, and resolves through [`Vm::resolve`]. It retains neither the invocation nor
+    /// an owned VM; use [`Self::into_snapshot`] when exporting beyond that VM's lifetime.
+    pub fn retain_outputs(&mut self) -> Result<Option<RootedValues>, RootError> {
+        if !self.parents.is_empty() || !matches!(self.continuation.outcome, Some(Ok(()))) {
+            return Ok(None);
+        }
+        self.vm.check_retention_limit()?;
+        let instance = match self.continuation.ctx.instance.as_ref() {
+            Some(instance) => instance.clone(),
+            None => self
+                .vm
+                .instances
+                .default_for(&self.continuation.program)
+                .map_err(|_| RootError::CapacityExceeded)?,
+        };
+        let results = &self.continuation.outputs[self.continuation.output_start..];
+        self.vm.validate_retention(&instance, results)?;
+        let values = if self.continuation.output_start == 0 {
+            core::mem::take(&mut self.continuation.outputs)
+        } else {
+            self.continuation
+                .outputs
+                .split_off(self.continuation.output_start)
+        };
+        Ok(Some(self.vm.retain_validated(instance, values)))
     }
 
     /// Consumes a successful invocation and retains its result independently of the VM.

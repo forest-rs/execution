@@ -120,7 +120,7 @@ impl Host for Build {
     }
 }
 fn input(vm: &mut Vm<Build>) -> AggHandle {
-    vm.aggregates_mut()
+    vm.aggregate_builder()
         .tuple_new(vec![Value::Str("borrowed".into())])
         .unwrap()
 }

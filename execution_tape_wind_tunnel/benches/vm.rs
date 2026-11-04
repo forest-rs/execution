@@ -90,7 +90,10 @@ fn bench_run_memory(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let mut vm = Vm::new(NopHost, wide_open_limits());
-                        let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+                        let root = vm
+                            .aggregate_builder()
+                            .tuple_new(vec![Value::I64(1)])
+                            .unwrap();
                         (
                             vm,
                             ExecutionContext::new(),
@@ -232,7 +235,7 @@ fn bench_payloads(c: &mut Criterion) {
                                 .unwrap();
                                 black_box(&outputs);
                                 // These fixtures return owned payloads/scalars, never heap handles.
-                                vm.aggregates_mut().clear();
+                                vm.collect().unwrap();
                             })
                         },
                     );
@@ -1040,6 +1043,7 @@ fn wide_open_limits() -> Limits {
         fuel: u64::MAX,
         max_call_depth: 1024,
         max_continuations: 1024,
+        max_value_roots: 4096,
         max_host_calls: u64::MAX,
         max_contract_work: u64::MAX,
         max_aggregate_work: u64::MAX,

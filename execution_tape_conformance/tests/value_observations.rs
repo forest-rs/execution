@@ -619,11 +619,11 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         },
         Limits::default(),
     );
-    live.aggregates_mut()
+    live.aggregate_builder()
         .tuple_new(vec![Value::I64(123)])
         .unwrap();
     let root = live
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![
             Value::Str("durable host value".into()),
             Value::F64(f64::from_bits(0x7ff8_0000_0000_0042)),
@@ -647,7 +647,7 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         },
         Limits::default(),
     );
-    replay.host_mut().values = replay.aggregates_mut().import(&snapshot).unwrap();
+    replay.host_mut().values = replay.aggregate_builder().import(&snapshot).unwrap();
     let outputs = replay
         .run(&program, FuncId(0), &[], TraceMask::NONE, None)
         .unwrap();

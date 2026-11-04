@@ -849,7 +849,10 @@ fn dropping_an_active_child_cancels_the_whole_execution() {
         vm.aggregates().len_u32() == 0,
         "the single transaction owns every new allocation"
     );
-    let fresh = vm.aggregates_mut().tuple_new(vec![Value::I64(9)]).unwrap();
+    let fresh = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(9)])
+        .unwrap();
     assert_eq!(
         vm.run(&child, method, &[Value::Agg(fresh)], TraceMask::NONE, None)
             .unwrap(),
@@ -1003,7 +1006,11 @@ fn cross_code_exit_to_a_local_callback_restores_its_original_host_request() {
     let (child, method) = signalling_child();
     let mut vm = Vm::new(NoHost, Limits::default());
     let instance = vm.instantiate(&child).unwrap();
-    let tuple = Value::Agg(vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap());
+    let tuple = Value::Agg(
+        vm.aggregate_builder()
+            .tuple_new(vec![Value::I64(42)])
+            .unwrap(),
+    );
     let mut recorder = Recorder::new(parent.clone(), RecordLimits::default())
         .with_instructions(InstructionCapture::default());
     {

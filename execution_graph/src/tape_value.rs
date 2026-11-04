@@ -546,9 +546,9 @@ impl Importer {
                 );
             }
             let imported = match shape {
-                Shape::Tuple(_) => vm.aggregates_mut().tuple_new(values),
-                Shape::Struct(id, _) => vm.aggregates_mut().struct_new(id, values),
-                Shape::Array(id, _) => vm.aggregates_mut().array_new(id, values),
+                Shape::Tuple(_) => vm.aggregate_builder().tuple_new(values),
+                Shape::Struct(id, _) => vm.aggregate_builder().struct_new(id, values),
+                Shape::Array(id, _) => vm.aggregate_builder().array_new(id, values),
             }
             .map_err(TapeError::Aggregate)?;
             let original = bundle.origins.nodes[handle.0 as usize];

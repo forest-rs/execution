@@ -17,6 +17,19 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Retain successful invocation results with `retain_outputs`, or explicitly register raw
+  values with `Vm::retain_values`. Cloneable `RootedValues` handles share a registration;
+  `Vm::resolve` borrows its current values, heap and actual code owner. Last-drop makes the
+  group reclaimable at the next explicit `Vm::collect`, whose statistics report node counts.
+  `Limits::max_value_roots` bounds registered groups. Retaining/resolving never collects.
+
+- Migration: replace `Vm::aggregates_mut()` construction with `aggregate_builder()`. Its
+  append-only authority can construct aggregates and import snapshots, without clearing or
+  replacing storage behind registered values. Replace unrooted heap clearing with `collect`;
+  use `take_aggregates` to transfer the heap only when no registered groups remain live.
+  Raw `run`/`take_outputs` handles are valid until explicit collection or transfer. Use
+  registered values for durability across collection and snapshots for independent export.
+
 - `TraceSink::stack_activity` separates capture parking and attachment from logical run/scope
   lifetime. Trace forwarding adapters must forward this callback for every nonempty mask,
   including run-only and call-only subscriptions. Attachment retains logical stack identity

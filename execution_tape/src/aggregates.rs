@@ -548,6 +548,59 @@ impl<'a> AggOverlay<'a> {
     }
 }
 
+/// Append-only authority for aggregate construction and snapshot import.
+///
+/// Obtained from [`crate::vm::Vm::aggregate_builder`]. Existing nodes cannot be cleared or
+/// replaced through this view, so registered VM roots remain valid. Standalone [`AggHeap`]
+/// owners retain their ordinary mutable operations.
+///
+/// ```compile_fail
+/// use execution_tape::{host::Host, vm::Vm};
+/// fn cannot_clear<H: Host>(vm: &mut Vm<H>) {
+///     vm.aggregate_builder().clear();
+/// }
+/// ```
+#[derive(Debug)]
+pub struct AggBuilder<'a> {
+    heap: &'a mut AggHeap,
+}
+impl<'a> AggBuilder<'a> {
+    pub(crate) fn new(heap: &'a mut AggHeap) -> Self {
+        Self { heap }
+    }
+    /// Allocates a tuple, rejecting dangling aggregate or closure children before mutation.
+    pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, AggError> {
+        self.heap.tuple_new(values)
+    }
+    /// Allocates a nominal struct whose schema belongs to the caller's code definition.
+    pub fn struct_new(
+        &mut self,
+        type_id: TypeId,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        self.heap.struct_new(type_id, values)
+    }
+    /// Allocates a nominal array whose element schema belongs to the caller's definition.
+    pub fn array_new(
+        &mut self,
+        elem_type_id: ElemTypeId,
+        values: Vec<Value>,
+    ) -> Result<AggHandle, AggError> {
+        self.heap.array_new(elem_type_id, values)
+    }
+    /// Copies a snapshot into this store, preserving sharing and leaving it unchanged on error.
+    /// Code-qualified values still require explicit destination-instance binding.
+    pub fn import(&mut self, snapshot: &ValueSnapshot) -> Result<Vec<Value>, AggError> {
+        self.heap.import(snapshot)
+    }
+}
+impl core::ops::Deref for AggBuilder<'_> {
+    type Target = AggHeap;
+    fn deref(&self) -> &AggHeap {
+        self.heap
+    }
+}
+
 impl AggHeap {
     pub(crate) fn node_values(&self) -> impl Iterator<Item = &[Value]> {
         self.nodes.iter().map(AggNode::values)
@@ -686,7 +739,7 @@ impl AggHeap {
         self.compact_since(base_len, roots, false).map(|_| ())
     }
 
-    fn compact_since(
+    pub(crate) fn compact_since(
         &mut self,
         base_len: u32,
         roots: &mut [Value],

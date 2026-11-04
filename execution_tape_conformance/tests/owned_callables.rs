@@ -173,7 +173,10 @@ fn escaped_closure_owns_code_and_captures_after_creator_vm_and_frames_disappear(
 fn invocation_imports_are_transactional_and_do_not_accumulate_in_a_long_lived_vm() {
     let callable = escaped();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
+    let retained = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(99)])
+        .unwrap();
     for cancel in [true, false, false, true] {
         let args = [Value::I64(2)];
         let mut invocation = callable

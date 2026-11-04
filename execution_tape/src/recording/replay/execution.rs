@@ -819,9 +819,11 @@ pub(super) fn replay(root: &Recording) -> Result<ReplayOutcome, ReplayError> {
             .borrow_mut()
             .materialize(record, node.values, vm.aggregates())?;
         let handle = match node.kind {
-            AggType::Tuple { .. } => vm.aggregates_mut().tuple_new(values),
-            AggType::Struct { type_id } => vm.aggregates_mut().struct_new(type_id, values),
-            AggType::Array { elem_type_id } => vm.aggregates_mut().array_new(elem_type_id, values),
+            AggType::Tuple { .. } => vm.aggregate_builder().tuple_new(values),
+            AggType::Struct { type_id } => vm.aggregate_builder().struct_new(type_id, values),
+            AggType::Array { elem_type_id } => {
+                vm.aggregate_builder().array_new(elem_type_id, values)
+            }
         }
         .map_err(ReplayError::Aggregate)?;
         state.borrow_mut().bind(id, handle)?;

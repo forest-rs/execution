@@ -101,7 +101,7 @@ fn recording_with_options(
         Limits::default(),
     );
     let root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Str("line\n\u{1b}[2J".into()), Value::I64(42)])
         .unwrap();
     let mut recorder = Recorder::new(Arc::clone(&program), limits);
@@ -320,7 +320,7 @@ fn wide_nodes_render_only_the_selected_viewport() {
         Limits::default(),
     );
     let root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new((0..20_000).map(Value::I64).collect())
         .unwrap();
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());

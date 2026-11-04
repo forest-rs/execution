@@ -201,14 +201,17 @@ fn closure_construction_preserves_exposed_signature_and_checks_concrete_environm
         .unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let good = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     assert_eq!(
         vm.run(&p, entry, &[Value::Agg(good)], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(42)]
     );
     let bad = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
     assert!(
@@ -257,7 +260,10 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
     let p =
         execution_tape::verifier::verify_program_owned(decoded, &VerifyConfig::default()).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let env = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let env = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let first = vm.function(&p, first).unwrap();
     let second = vm.function(&p, second).unwrap();
     let error = vm
@@ -384,7 +390,7 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
     );
     let invalid_function = vm.function(&p, take).unwrap();
     let invalid = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Func(invalid_function)])
         .unwrap();
     let error = vm

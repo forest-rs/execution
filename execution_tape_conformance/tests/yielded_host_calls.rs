@@ -297,7 +297,10 @@ fn return_arity_kind_payload_and_owned_host_errors_use_normal_admission_and_roll
                 ..Limits::default()
             },
         );
-        let root = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
+        let root = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(7)])
+            .unwrap();
         let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
         let mut call = vm
             .start(
@@ -708,7 +711,9 @@ fn cancellation_of_a_pending_host_call_is_incomplete_and_releases_only_new_aggre
     let f = fixture(1, true);
     let args = args();
     let mut vm = Vm::new(Echo::default(), Limits::default());
-    vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
+    vm.aggregate_builder()
+        .tuple_new(vec![Value::I64(7)])
+        .unwrap();
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
     let mut call = vm
         .start(

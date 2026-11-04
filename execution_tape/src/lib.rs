@@ -245,6 +245,40 @@
 //! count as elapsed time. Ordinary `run` and `run_with_ctx` remain run-to-completion conveniences and
 //! use the unbounded dispatch specialization without scheduling checks.
 //!
+//! ### Durable values in a VM
+//!
+//! [`vm::Invocation::retain_outputs`] moves successful results into one VM registration with
+//! their actual code owner. Cloned [`vm::RootedValues`] handles share that registration. Resolve
+//! through the VM after collection; raw aggregate numbers from an older view can have moved.
+//!
+//! ```
+//! # use execution_tape::{host::Host, value::FuncId, verifier::VerifiedProgram,
+//! #     vm::{RunStatus, InvocationOptions, Vm}};
+//! # fn retain<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId) {
+//! let roots = {
+//!     let mut invocation = vm.start(program, entry, &[], InvocationOptions::default())
+//!         .expect("valid entry");
+//!     while invocation.resume(64).expect("execution succeeds") != RunStatus::Complete {}
+//!     invocation.retain_outputs().expect("registration admitted")
+//!         .expect("successful return")
+//! };
+//! let counts = vm.collect().expect("registered roots are valid");
+//! let view = vm.resolve(&roots).expect("same VM and live registration");
+//! assert_eq!(counts.live_groups, 1);
+//! let values = view.values();
+//! let heap = view.aggregates();
+//! # let _ = (values, heap);
+//! # }
+//! ```
+//!
+//! Last-drop makes a group reclaimable at the next explicit collection; retain, resolve and
+//! drop never collect implicitly. Full collection is embedding work outside guest fuel and
+//! reports node counts rather than bytes. Use [`Vm::aggregate_builder`](vm::Vm::aggregate_builder) to append aggregates
+//! or import snapshots; it cannot clear or replace existing storage. [`Vm::take_aggregates`](vm::Vm::take_aggregates)
+//! transfers the whole heap only when no registered group is live. Independent snapshots remain
+//! the export path beyond a VM's lifetime. Low-level `run` and `take_outputs` return raw ABI
+//! handles valid until explicit collection or heap transfer.
+//!
 //! A stored task can instead transfer its VM into [`callable::Callable::start_owned`].
 //! This returns the same `Invocation` type with independently owned VM, code and inputs;
 //! it needs no self-references or pinned VM allocation. Borrowed entry points still support

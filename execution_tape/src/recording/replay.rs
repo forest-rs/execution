@@ -1332,10 +1332,10 @@ impl Recording {
                 .borrow_mut()
                 .materialize(self, node.values, vm.aggregates())?;
             let handle = match node.kind {
-                AggType::Tuple { .. } => vm.aggregates_mut().tuple_new(values),
-                AggType::Struct { type_id } => vm.aggregates_mut().struct_new(type_id, values),
+                AggType::Tuple { .. } => vm.aggregate_builder().tuple_new(values),
+                AggType::Struct { type_id } => vm.aggregate_builder().struct_new(type_id, values),
                 AggType::Array { elem_type_id } => {
-                    vm.aggregates_mut().array_new(elem_type_id, values)
+                    vm.aggregate_builder().array_new(elem_type_id, values)
                 }
             }
             .map_err(ReplayError::Aggregate)?;
@@ -1780,10 +1780,16 @@ mod tests {
         let program = Arc::new(builder.build_verified().unwrap());
         let mut vm = Vm::new(Echo, Limits::default());
         let arg = if aggregate {
-            let first = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
-            let second = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
+            let first = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(7)])
+                .unwrap();
+            let second = vm
+                .aggregate_builder()
+                .tuple_new(vec![Value::I64(7)])
+                .unwrap();
             Value::Agg(
-                vm.aggregates_mut()
+                vm.aggregate_builder()
                     .tuple_new(vec![Value::Agg(first), Value::Agg(second)])
                     .unwrap(),
             )

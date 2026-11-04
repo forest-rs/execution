@@ -57,7 +57,7 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
     for limit in [required.saturating_sub(1), required] {
         let mut vm = vm(limit);
         let retained = vm
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::Str("retained".into())])
             .unwrap();
         let mut ctx = ExecutionContext::new();
@@ -635,7 +635,7 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         },
     );
     let root = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Bytes(vec![1; 4])])
         .unwrap();
     vm.host_mut().0 = root;

@@ -42,7 +42,9 @@ fn baseline_fallback_checks_contents_and_global_aliases_before_returning_a_value
     builder.define_function(entry, body).unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     let mut vm = Vm::new(NoHost, crate::vm::Limits::default());
-    vm.aggregates_mut().tuple_new(vec![Value::I64(-1)]).unwrap();
+    vm.aggregate_builder()
+        .tuple_new(vec![Value::I64(-1)])
+        .unwrap();
     let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
     vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
         .unwrap();
@@ -116,7 +118,10 @@ fn capture(nonlocal: bool) -> Recording {
     let parent = Arc::new(parent);
     let mut vm = Vm::new(NoHost, crate::vm::Limits::default());
     let instance = vm.instantiate(&child).unwrap();
-    let aggregate = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let aggregate = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let mut recorder = Recorder::new(parent.clone(), RecordLimits::default())
         .with_instructions(InstructionCapture::default());
     {
@@ -260,9 +265,12 @@ fn replay_restores_initial_nodes_observed_only_inside_a_child() {
     let (child, method) = build(false);
     let parent = Arc::new(parent);
     let mut vm = Vm::new(NoHost, crate::vm::Limits::default());
-    let member = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let member = vm
+        .aggregate_builder()
+        .tuple_new(vec![Value::I64(42)])
+        .unwrap();
     let hidden = vm
-        .aggregates_mut()
+        .aggregate_builder()
         .tuple_new(vec![Value::Agg(member)])
         .unwrap();
     let instance = vm.instantiate(&child).unwrap();

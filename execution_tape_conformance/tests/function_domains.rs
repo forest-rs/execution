@@ -105,7 +105,10 @@ fn ordinary_indirect_calls_follow_qualified_functions_and_closures_through_aggre
         let mut vm = Vm::new(NoHost, Limits::default());
         let instance = vm.instantiate(&callee).unwrap();
         let function = instance.function(function).unwrap();
-        let env = vm.aggregates_mut().tuple_new(vec![Value::I64(40)]).unwrap();
+        let env = vm
+            .aggregate_builder()
+            .tuple_new(vec![Value::I64(40)])
+            .unwrap();
         let argument = if closure {
             Value::Closure(Closure {
                 func: function,
@@ -249,11 +252,11 @@ fn a_closure_keeps_nominal_captures_private_across_code_boundaries() {
             let mut vm = Vm::new(NoHost, Limits::default());
             let function = vm.function(&code, entry).unwrap();
             let capture = vm
-                .aggregates_mut()
+                .aggregate_builder()
                 .struct_new(schema, vec![Value::I64(40)])
                 .unwrap();
             let environment = if nested {
-                vm.aggregates_mut()
+                vm.aggregate_builder()
                     .tuple_new(vec![Value::Agg(capture)])
                     .unwrap()
             } else {
@@ -500,7 +503,7 @@ fn an_escaped_closure_can_capture_foreign_code_and_run_after_its_original_store_
         let mut source = Vm::new(NoHost, Limits::default());
         let function = source.function(&foreign, target).unwrap();
         let env = source
-            .aggregates_mut()
+            .aggregate_builder()
             .tuple_new(vec![Value::I64(40)])
             .unwrap();
         let args = [Value::Closure(Closure {

@@ -134,13 +134,17 @@ fn callables(c: &mut Criterion) {
                 );
                 let mut vm = Vm::new(NoHost, Limits::default());
                 let value = if aggregate {
-                    Value::Agg(vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap())
+                    Value::Agg(
+                        vm.aggregate_builder()
+                            .tuple_new(vec![Value::I64(42)])
+                            .unwrap(),
+                    )
                 } else {
                     Value::I64(42)
                 };
                 let target = vm.function(&p, target).unwrap();
                 let callee = if closure {
-                    let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+                    let env = vm.aggregate_builder().tuple_new(vec![]).unwrap();
                     Value::Closure(Closure { func: target, env })
                 } else {
                     Value::Func(target)

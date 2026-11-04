@@ -59,6 +59,8 @@ pub enum TapeError {
     },
     /// Retaining or importing an aggregate graph failed.
     Aggregate(AggError),
+    /// Registered value ownership prevents a storage transfer.
+    ValueStore(execution_tape::vm::RootError),
     /// A retained callable could not be bound to this executor's host store.
     Instance(execution_tape::instance::InstanceError),
     /// A function id was not present in the verified program supplied for a node.
@@ -106,6 +108,7 @@ impl fmt::Display for TapeError {
                 "input {input} contains IDs belonging to a different prepared program; use its original program or explicitly translate the value"
             ),
             Self::Aggregate(error) => write!(f, "aggregate transfer failed: {error}"),
+            Self::ValueStore(error) => write!(f, "value storage transfer failed: {error}"),
             Self::Instance(error) => write!(f, "callable transfer failed: {error}"),
             Self::BadEntryFunc { func } => {
                 write!(
@@ -138,6 +141,7 @@ impl core::error::Error for TapeError {
         match self {
             Self::Trap(trap) => Some(trap),
             Self::Aggregate(error) => Some(error),
+            Self::ValueStore(error) => Some(error),
             Self::Instance(error) => Some(error),
             _ => None,
         }
@@ -341,7 +345,9 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
         self.args.clear();
         self.results.clear();
         self.importer.clear();
-        self.vm.aggregates_mut().clear();
+        self.vm
+            .collect()
+            .expect("the adapter's unrooted workspace has no live roots");
     }
 }
 
@@ -484,7 +490,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             return Ok(());
         }
         let values = core::mem::take(&mut self.results);
-        let heap = core::mem::take(self.vm.aggregates_mut());
+        let heap = self.vm.take_aggregates().map_err(TapeError::ValueStore)?;
         let origins = core::mem::take(&mut self.importer.origins);
         TapeValue::publish(heap, values, Arc::clone(&node.program), origins, outputs)?;
         Ok(())
