@@ -9,7 +9,6 @@ use super::*;
 use crate::contract::{
     Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
 };
-use crate::program::CatchClause;
 use crate::value::AggType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -1139,7 +1138,8 @@ fn solve_flow<'a>(
                         scratch.set_refinement(reg as usize, None);
                     }
                 }
-                if let CatchClause::Tag { tag, target } = raise.handler.catch {
+                if let Some(tag) = raise.handler.catch.tag() {
+                    let target = raise.handler.catch.target();
                     let params = blocks::declaration(decoded, target).unwrap_or(&[]);
                     let entry = program.tag(tag).expect("verified tag");
                     let contracts = program

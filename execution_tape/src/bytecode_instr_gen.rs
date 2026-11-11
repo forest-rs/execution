@@ -13,6 +13,7 @@ impl Instr {
             Self::Trap { .. } => Opcode::Trap,
             Self::Block { .. } => Opcode::Block,
             Self::Throw { .. } => Opcode::Throw,
+            Self::ThrowRef { .. } => Opcode::ThrowRef,
             Self::ConstUnit { .. } => Opcode::ConstUnit,
             Self::ConstBool { .. } => Opcode::ConstBool,
             Self::ConstI64 { .. } => Opcode::ConstI64,

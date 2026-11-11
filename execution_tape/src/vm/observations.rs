@@ -114,7 +114,7 @@ pub(super) fn emit(
 /// Source-to-bank mapping requested by optional tracing or paused inspection.
 pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>> {
     let function = program.functions.get(func.0 as usize)?;
-    let mut counts = [0_u32; 12];
+    let mut counts = [0_u32; 13];
     let mut registers = Vec::with_capacity(function.reg_count as usize);
     for kind in function.register_types(program).ok()?.iter() {
         let class = crate::typed::RegClass::of(kind);
@@ -134,6 +134,7 @@ pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>>
             ValueType::Agg => VReg::Agg(AggReg(n)),
             ValueType::Func => VReg::Func(FuncReg(n)),
             ValueType::Closure => VReg::Closure(ClosureReg(n)),
+            ValueType::Exn => VReg::Exn(ExnReg(n)),
         });
     }
     Some(registers)

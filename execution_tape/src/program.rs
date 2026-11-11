@@ -142,7 +142,9 @@ pub struct RegionId(pub u32);
 /// One handler clause of a protected region. Clauses are tried in order.
 ///
 /// Targets are byte offsets of block headers in the same function. A tag clause's target
-/// declares one parameter per payload value; a catch-all target declares none.
+/// declares one parameter per payload value; a catch-all target declares none. The `*Ref`
+/// clauses additionally bind the exception itself to one final `Exn` parameter, so the handler
+/// can rethrow it with `throw_ref`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CatchClause {
     /// Catches exactly one tag, binding its payload to the target's block parameters.
@@ -157,6 +159,18 @@ pub enum CatchClause {
         /// Handler block header.
         target: u32,
     },
+    /// Catches exactly one tag, binding its payload and then the exception reference.
+    TagRef {
+        /// Caught tag.
+        tag: TagId,
+        /// Handler block header.
+        target: u32,
+    },
+    /// Catches every exception, binding only the exception reference.
+    AllRef {
+        /// Handler block header.
+        target: u32,
+    },
 }
 
 impl CatchClause {
@@ -164,7 +178,10 @@ impl CatchClause {
     #[must_use]
     pub fn target(self) -> u32 {
         match self {
-            Self::Tag { target, .. } | Self::All { target } => target,
+            Self::Tag { target, .. }
+            | Self::All { target }
+            | Self::TagRef { target, .. }
+            | Self::AllRef { target } => target,
         }
     }
 
@@ -172,9 +189,15 @@ impl CatchClause {
     #[must_use]
     pub fn tag(self) -> Option<TagId> {
         match self {
-            Self::Tag { tag, .. } => Some(tag),
-            Self::All { .. } => None,
+            Self::Tag { tag, .. } | Self::TagRef { tag, .. } => Some(tag),
+            Self::All { .. } | Self::AllRef { .. } => None,
         }
+    }
+
+    /// Whether the handler's last parameter receives the exception reference.
+    #[must_use]
+    pub fn binds_exception(self) -> bool {
+        matches!(self, Self::TagRef { .. } | Self::AllRef { .. })
     }
 
     /// Whether this clause catches an exception raised with `tag`.
@@ -626,6 +649,12 @@ pub enum ValueType {
     Func,
     /// Closure reference.
     Closure,
+    /// A caught exception: its tag, payload and original throw site.
+    ///
+    /// Exception references live only in guest registers and guest-to-guest signatures. They
+    /// cannot appear in host signatures, invocation entry signatures, tag payloads or aggregates,
+    /// and they have no [`crate::value::Value`] representation.
+    Exn,
 }
 
 /// A host-call signature table entry.
@@ -1571,17 +1600,17 @@ impl Program {
                     let clauses = self.region_clauses(region).expect("valid clauses");
                     payload.write_uleb128_u64(clauses.len() as u64);
                     for clause in clauses {
-                        match *clause {
-                            CatchClause::Tag { tag, target } => {
-                                payload.write_u8(0);
-                                payload.write_uleb128_u32(tag.0);
-                                payload.write_uleb128_u32(target);
-                            }
-                            CatchClause::All { target } => {
-                                payload.write_u8(1);
-                                payload.write_uleb128_u32(target);
-                            }
+                        let kind = match *clause {
+                            CatchClause::Tag { .. } => 0,
+                            CatchClause::All { .. } => 1,
+                            CatchClause::TagRef { .. } => 2,
+                            CatchClause::AllRef { .. } => 3,
+                        };
+                        payload.write_u8(kind);
+                        if let Some(tag) = clause.tag() {
+                            payload.write_uleb128_u32(tag.0);
                         }
+                        payload.write_uleb128_u32(clause.target());
                     }
                 }
                 let runs = f.region_runs(self).expect("valid region runs");
@@ -2405,6 +2434,7 @@ enum ValueTypeTag {
     Agg = 9,
     Func = 10,
     Closure = 11,
+    Exn = 12,
 }
 
 impl ValueTypeTag {
@@ -2422,6 +2452,7 @@ impl ValueTypeTag {
             9 => Ok(Self::Agg),
             10 => Ok(Self::Func),
             11 => Ok(Self::Closure),
+            12 => Ok(Self::Exn),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -2429,13 +2460,13 @@ impl ValueTypeTag {
 
 // Temporary construction index. Frozen programs retain only IDs and the type pool.
 struct TypeInterner {
-    scalar: [Option<u32>; 12],
+    scalar: [Option<u32>; 13],
     objects: BTreeMap<u64, u32>,
 }
 impl TypeInterner {
     fn new(types: &[ValueType]) -> Self {
         let mut index = Self {
-            scalar: [None; 12],
+            scalar: [None; 13],
             objects: BTreeMap::new(),
         };
         for (id, &ty) in types.iter().enumerate() {
@@ -2465,6 +2496,7 @@ impl TypeInterner {
             ValueType::Agg => 9,
             ValueType::Func => 10,
             ValueType::Closure => 11,
+            ValueType::Exn => 12,
         }
     }
     fn intern(&mut self, types: &mut Vec<ValueType>, ty: ValueType) -> Result<u32, DecodeError> {
@@ -2505,6 +2537,7 @@ pub(crate) fn write_value_type(out: &mut Vec<u8>, t: ValueType) {
         ValueType::Agg => ValueTypeTag::Agg,
         ValueType::Func => ValueTypeTag::Func,
         ValueType::Closure => ValueTypeTag::Closure,
+        ValueType::Exn => ValueTypeTag::Exn,
     };
     out.push(tag as u8);
     if let ValueType::Obj(host_type) = t {
@@ -2527,6 +2560,7 @@ pub(crate) fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeE
         ValueTypeTag::Agg => ValueType::Agg,
         ValueTypeTag::Func => ValueType::Func,
         ValueTypeTag::Closure => ValueType::Closure,
+        ValueTypeTag::Exn => ValueType::Exn,
     })
 }
 
@@ -2730,6 +2764,13 @@ fn decode_regions(payload: &[u8]) -> Result<Vec<DecodedProtection>, DecodeError>
                         target: r.read_uleb128_u32()?,
                     },
                     1 => CatchClause::All {
+                        target: r.read_uleb128_u32()?,
+                    },
+                    2 => CatchClause::TagRef {
+                        tag: TagId(r.read_uleb128_u32()?),
+                        target: r.read_uleb128_u32()?,
+                    },
+                    3 => CatchClause::AllRef {
                         target: r.read_uleb128_u32()?,
                     },
                     _ => return Err(DecodeError::OutOfBounds),

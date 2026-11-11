@@ -98,6 +98,30 @@
       ]
     },
     {
+      "name": "ThrowRef",
+      "mnemonic": "throw_ref",
+      "byte": "0x05",
+      "terminator": true,
+      "flags": [],
+      "doc": "Rethrow a caught exception reference with its original tag and payload.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "exn",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "ConstUnit",
       "mnemonic": "const.unit",
       "byte": "0x10",

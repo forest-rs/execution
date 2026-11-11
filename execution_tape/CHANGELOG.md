@@ -43,6 +43,21 @@ This release has an [MSRV][] of 1.88.
   Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
   Migration: handle the new `Opcode` variants in exhaustive matches.
 
+- Rethrow caught exceptions by reference. The new `ValueType::Exn` register kind holds a caught
+  exception; `Catch::TagRef` and `Catch::AllRef` (`CatchClause::TagRef`/`AllRef`) bind it as the
+  handler's final parameter, and `Asm::throw_ref` propagates it again with its original tag,
+  payload and throw site (`UncaughtException::origin`). Handlers implement cleanup by catching
+  with `catch_all_ref`, running cleanup and rethrowing; an exception raised by the cleanup
+  replaces the original. `Exn` stays inside guest registers and guest-to-guest signatures: the
+  verifier rejects it in host signatures, tag payloads, struct fields, array elements and tuples
+  (`VerifyError::ExceptionReference`), and entering an `Exn` signature from outside the guest
+  traps with `Trap::ExceptionBoundary`. `ValueEvent::Rethrown` links a rethrow to its original
+  exception, and recordings store each payload once; replay checks the link at
+  `ReplayBoundary::Rethrown`. `Value` is unchanged.
+  Migration: handle `ValueType::Exn`, `CatchClause::TagRef`/`AllRef`, `Catch::TagRef`/`AllRef`,
+  `ValueEvent::Rethrown`, `ReplayBoundary::Rethrown`, `Trap::ExceptionBoundary`,
+  `VerifyError::ExceptionReference` and `RegionError::ClauseException` in exhaustive matches.
+
 - Catch exceptions in protected regions. `Asm::begin_region`, `end_region` and `resume_region`
   attribute emitted instructions to a region tree with ordered `Catch::Tag` and `Catch::All`
   clauses targeting typed blocks; a tag clause's block receives the payload as parameters. The

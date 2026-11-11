@@ -67,6 +67,13 @@ The VM defines a closed set of value kinds:
 - `Agg` (aggregate handle: tuple/struct/array heap node)
 - `Func` (function reference)
 - `Closure` (function reference + captured environment aggregate)
+- `Exn` (a caught exception: tag, payload and original throw site)
+
+`Exn` exists only in guest registers and guest-to-guest signatures. It has no `Value`
+representation; host signatures, invocation entry signatures (including guest callbacks), tag
+payloads, struct fields, array elements and tuples cannot contain it. Entering a function whose
+signature contains `Exn` from outside the guest traps with `ExceptionBoundary`, and observers see
+`Exn` registers as unavailable.
 
 The VM stores payload-bearing registers in per-kind banks (`RegClass`), rather than as tagged
 `Value`s. The producer declares each register's kind, and verification enforces it before preparing
@@ -353,6 +360,7 @@ Tags:
 - `9 Agg`
 - `10 Func`
 - `11 Closure`
+- `12 Exn`
 
 ### Struct types
 Field names are interned once per Types payload; each struct field references that table by id.
@@ -522,8 +530,8 @@ protection are omitted:
     - `parent_plus_one: ULEB128` (`0` for a root region; otherwise an earlier region + 1)
     - `clause_count: ULEB128`
     - repeated `clause_count` times:
-      - `kind: u8` (`0 = catch tag`, `1 = catch_all`)
-      - `tag_id: ULEB128` (only for `catch tag`)
+      - `kind: u8` (`0 = catch tag`, `1 = catch_all`, `2 = catch_ref tag`, `3 = catch_all_ref`)
+      - `tag_id: ULEB128` (only for `catch tag` and `catch_ref tag`)
       - `target_pc: ULEB128` (handler block header)
   - `run_count: ULEB128`
   - repeated `run_count` times:
@@ -531,7 +539,8 @@ protection are omitted:
 
 Runs are sorted, disjoint, non-empty and start and end at instruction boundaries (or the
 bytecode end). A `catch tag` target declares one block parameter per payload value, with matching
-kinds; a `catch_all` target declares none.
+kinds; a `catch_all` target declares none. The `_ref` clauses append one final `Exn` parameter
+that receives the exception itself.
 
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
@@ -724,6 +733,13 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     `ValueSnapshot` before rollback discards the invocation's aggregates. Host objects stay
     host-owned handles; function IDs still name the throwing program.
   - Traps (fuel, limits, arithmetic, contract failures) are not exceptions and cannot be caught.
+- `throw_ref r_eff_in, r_exn`
+  - Terminator. Raises the exception referenced by the `Exn` register again, with its original
+    tag, payload and throw site, and propagates it exactly like `throw`. The payload is neither
+    copied nor checked again; `ValueEvent::Rethrown` names the original exception. Uncaught, it
+    traps at the `throw_ref` with `UncaughtException::origin` still naming the original `throw`.
+  - Handlers implement cleanup by catching with `catch_all_ref`, running cleanup code and then
+    rethrowing. An exception raised by the cleanup code replaces the original.
   - Verification adds an exceptional edge from each raising instruction to every clause it can
     reach. The edge leaves before the raising instruction completes: registers written earlier in
     its basic block are initialized at the handler, but its results are not. Refinement facts of
@@ -749,6 +765,7 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x02 trap code`
 - `0x03 block params` (counted ULEB32 register IDs; kinds come from the function register ledger)
 - `0x04 throw eff_in, tag_id, payload_count, payload...`
+- `0x05 throw_ref eff_in, exn`
 
 - `0x10 const_unit dst`
 - `0x11 const_bool dst, imm_u8` (`0` or `1`)

@@ -180,6 +180,7 @@ pub(super) fn type_name(kind: ValueType) -> String {
         ValueType::Agg => "aggregate".into(),
         ValueType::Func => "function".into(),
         ValueType::Closure => "closure".into(),
+        ValueType::Exn => "exception".into(),
         ValueType::Obj(id) => format!("object #{}", id.0),
     }
 }

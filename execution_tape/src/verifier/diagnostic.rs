@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use super::VerifyError;
+use super::{ExceptionPlace, VerifyError};
 use crate::value::FuncId;
 
 impl VerifyError {
@@ -70,6 +70,10 @@ impl VerifyError {
             | Self::MissingTerminator { func, .. }
             | Self::InternalBlockInconsistent { func, .. }
             | Self::BytecodeDecode { func, .. } => Some(FuncId(*func)),
+            Self::ExceptionReference {
+                place: ExceptionPlace::Aggregate { func, .. },
+            } => Some(FuncId(*func)),
+            Self::ExceptionReference { .. } => None,
             Self::InvalidContract { .. }
             | Self::InvalidMetadata { .. }
             | Self::Decode(..)
@@ -124,6 +128,10 @@ impl VerifyError {
             | Self::MissingTerminator { pc, .. }
             | Self::InternalBlockInconsistent { pc, .. } => Some(*pc),
             Self::RegisterTypeMismatch { pc, .. } => *pc,
+            Self::ExceptionReference {
+                place: ExceptionPlace::Aggregate { pc, .. },
+            } => Some(*pc),
+            Self::ExceptionReference { .. } => None,
             Self::InvalidContract { .. }
             | Self::InvalidMetadata { .. }
             | Self::Decode(..)

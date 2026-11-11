@@ -123,9 +123,14 @@ pub enum ReplayBoundary {
         /// Zero-based exception ordinal in raise order.
         index: usize,
     },
-    /// Checking the catch clause and handler that received an exception.
+    /// Checking a `throw_ref` and the original exception it rethrows.
+    Rethrown {
+        /// Zero-based propagation ordinal, counting throws and rethrows.
+        index: usize,
+    },
+    /// Checking the catch clause and handler that received a propagation.
     Caught {
-        /// Zero-based exception ordinal in raise order.
+        /// Zero-based propagation ordinal, counting throws and rethrows.
         index: usize,
     },
     /// Comparing final call counts and run outcomes.
@@ -189,6 +194,7 @@ struct State {
     location: Option<TraceLocation>,
     candidate: bool,
     thrown: usize,
+    propagations: usize,
     caught: usize,
     frames: usize,
     top: Option<crate::recording::frames::FrameId>,
@@ -1062,8 +1068,18 @@ impl TraceSink for Check<'_> {
                 } => {
                     let index = state.thrown;
                     state.thrown += 1;
+                    let propagation = state.propagations;
+                    state.propagations += 1;
                     state.boundary = ReplayBoundary::Thrown { index };
                     state.location = Some(location);
+                    if !self
+                        .record
+                        .propagations
+                        .get(propagation)
+                        .is_some_and(|p| p.exception == index && p.location == location)
+                    {
+                        return Err(state.mismatch(Divergence::Outcome));
+                    }
                     match self.record.thrown.get(index) {
                         Some(expected) if expected.location == location && expected.tag == tag => {
                             state.matches(
@@ -1076,6 +1092,28 @@ impl TraceSink for Check<'_> {
                         _ => return Err(state.mismatch(Divergence::Outcome)),
                     }
                 }
+                ValueEvent::Rethrown {
+                    location,
+                    tag,
+                    exception,
+                    origin,
+                } => {
+                    let index = state.propagations;
+                    state.propagations += 1;
+                    state.boundary = ReplayBoundary::Rethrown { index };
+                    state.location = Some(location);
+                    let linked =
+                        self.record
+                            .propagations
+                            .get(index)
+                            .is_some_and(|p| p.exception == exception && p.location == location)
+                            && self.record.thrown.get(exception).is_some_and(|thrown| {
+                                thrown.tag == tag && thrown.location == origin
+                            });
+                    if !linked {
+                        return Err(state.mismatch(Divergence::Outcome));
+                    }
+                }
                 ValueEvent::Caught {
                     location,
                     tag,
@@ -1085,7 +1123,7 @@ impl TraceSink for Check<'_> {
                     clause,
                     unwound_callbacks,
                 } => {
-                    let index = state.thrown.wrapping_sub(1);
+                    let index = state.propagations.wrapping_sub(1);
                     state.caught += 1;
                     state.boundary = ReplayBoundary::Caught { index };
                     state.location = Some(location);
@@ -1096,10 +1134,10 @@ impl TraceSink for Check<'_> {
                         clause,
                         unwound_callbacks,
                     };
-                    match self.record.thrown.get(index) {
+                    match self.record.propagations.get(index) {
                         Some(expected)
                             if expected.location == location
-                                && expected.tag == tag
+                                && self.record.thrown[expected.exception].tag == tag
                                 && expected.caught == Some(actual) => {}
                         _ => return Err(state.mismatch(Divergence::Outcome)),
                     }
@@ -1267,11 +1305,12 @@ impl Recording {
             })
             || (matches!(self.end, Some(End::Returned)) && !state.active_commands.is_empty())
             || state.thrown != self.thrown.len()
+            || state.propagations != self.propagations.len()
             || state.caught
                 != self
-                    .thrown
+                    .propagations
                     .iter()
-                    .filter(|thrown| thrown.caught.is_some())
+                    .filter(|propagation| propagation.caught.is_some())
                     .count()
         {
             return Err(state.mismatch(Divergence::Outcome));
@@ -1989,7 +2028,7 @@ mod tests {
         };
         assert!(matches!(record().replay(), Ok(ReplayOutcome::Returned(_))));
         let mut changed = record();
-        let caught = changed.thrown[0].caught.as_mut().unwrap();
+        let caught = changed.propagations[0].caught.as_mut().unwrap();
         caught.clause += 1;
         assert!(matches!(
             changed.replay(),
@@ -2000,11 +2039,62 @@ mod tests {
             })
         ));
         let mut missing = record();
-        missing.thrown[0].caught = None;
+        missing.propagations[0].caught = None;
         assert!(matches!(
             missing.replay(),
             Err(ReplayError::Diverged {
                 boundary: ReplayBoundary::Caught { index: 0 },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_rethrow_must_link_to_its_recorded_original() {
+        let record = || {
+            let mut builder = ProgramBuilder::new();
+            let failed = builder
+                .declare_tag("failed", &[ValueType::I64.into()])
+                .unwrap();
+            let function = builder
+                .declare_function(FunctionSig {
+                    arg_types: vec![ValueType::I64],
+                    ret_types: vec![],
+                })
+                .unwrap();
+            let mut body = builder.function_asm(function).unwrap();
+            let caught = body.alloc_register(ValueType::Exn);
+            let handler = body.block(&[caught]);
+            body.begin_region(&[crate::asm::Catch::AllRef(handler)]);
+            builder.emit_throw(&mut body, failed, &[1]).unwrap();
+            body.end_region();
+            body.place(handler).unwrap();
+            body.throw_ref(0, caught);
+            builder.define_function(function, body).unwrap();
+            let program = Arc::new(builder.build_verified().unwrap());
+            let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+            let error = Vm::new(Echo, Limits::default())
+                .run(
+                    &program,
+                    function,
+                    &[Value::I64(3)],
+                    recorder.mask(),
+                    Some(&mut recorder),
+                )
+                .unwrap_err();
+            assert!(matches!(error.trap, Trap::Uncaught(_)));
+            recorder.finish()
+        };
+        let original = record();
+        assert_eq!((original.thrown.len(), original.propagations.len()), (1, 2));
+        assert!(matches!(original.replay(), Ok(ReplayOutcome::Trapped(_))));
+        let mut changed = record();
+        changed.propagations[1].exception = 1;
+        assert!(matches!(
+            changed.replay(),
+            Err(ReplayError::Diverged {
+                boundary: ReplayBoundary::Rethrown { index: 1 },
+                reason: Divergence::Outcome,
                 ..
             })
         ));
@@ -2032,6 +2122,7 @@ mod tests {
 
         let mut missing = thrown_record();
         missing.thrown.clear();
+        missing.propagations.clear();
         assert_eq!(reason(&missing), Divergence::Outcome);
     }
 

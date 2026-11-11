@@ -9,6 +9,7 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -26,8 +27,8 @@ use crate::trace::{
     HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, F64Reg, FuncReg,
-    I64Reg, ObjReg, StrReg, U64Reg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, ExnReg, F64Reg,
+    FuncReg, I64Reg, ObjReg, StrReg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use crate::verifier::VerifiedProgram;
@@ -38,6 +39,7 @@ mod budget;
 mod continuation;
 use budget::Budget;
 mod exceptions;
+pub(crate) use exceptions::Exception;
 pub use exceptions::UncaughtException;
 mod host_call;
 mod inspection;
@@ -264,6 +266,12 @@ pub enum Trap {
     InvalidUtf8,
     /// Explicit trap instruction.
     TrapCode(u32),
+    /// An exception reference would cross the invocation boundary.
+    ///
+    /// Entry functions, guest callbacks and the embedding exchange [`Value`]s, which cannot hold
+    /// an exception reference. A callee whose signature contains `Exn` cannot be entered from
+    /// outside the guest.
+    ExceptionBoundary,
     /// A guest exception escaped every activation of the invocation.
     ///
     /// This is a guest-raised outcome rather than a VM failure. Its payload survives the
@@ -358,6 +366,9 @@ impl fmt::Display for Trap {
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
             Self::TrapCode(code) => write!(f, "trap({code})"),
+            Self::ExceptionBoundary => f.write_str(
+                "exception references cannot cross the invocation boundary",
+            ),
             Self::Uncaught(exception) => exception.fmt(f),
         }
     }
@@ -430,6 +441,8 @@ struct RegBase {
     funcs: usize,
     /// Base offset for the closure register bank.
     closures: usize,
+    /// Base offset for the exception reference register bank.
+    exns: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -499,6 +512,10 @@ struct Registers {
     funcs: Vec<FuncId>,
     /// Closure registers.
     closures: Vec<Closure>,
+    /// Exception reference registers; `None` only before initialization.
+    exns: Vec<Option<Arc<Exception>>>,
+    /// Exceptions raised so far in this invocation; also the next raise's ordinal.
+    raised: usize,
 
     /// Call stack.
     frames: Vec<Frame>,
@@ -539,6 +556,8 @@ impl Registers {
         self.aggs.clear();
         self.funcs.clear();
         self.closures.clear();
+        self.exns.clear();
+        self.raised = 0;
         self.arena.clear();
     }
 }
@@ -1471,6 +1490,22 @@ impl<H: Host> Vm<H> {
                     // The handler's instruction attempt starts on the next iteration.
                     continue;
                 }
+                ExecInstr::ThrowRef { exn } => {
+                    let exception = ctx
+                        .read_exn(base, *exn)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    self.rethrow::<P>(
+                        ctx,
+                        budget,
+                        program,
+                        exception,
+                        trace,
+                        control,
+                        TraceLocation { func: func_id, pc },
+                        span_id,
+                    )?;
+                    continue;
+                }
 
                 ExecInstr::MovBool { dst, src } => {
                     let v = ctx.read_bool(base, *src);
@@ -1537,6 +1572,12 @@ impl<H: Host> Vm<H> {
                     ctx.write_closure(base, *dst, v);
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
+                ExecInstr::MovExn { dst, src } => {
+                    let v = ctx
+                        .read_exn(base, *src)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_exn(base, *dst, v);
                 }
 
                 ExecInstr::ConstBool { dst, imm } => {
@@ -3580,6 +3621,7 @@ impl Registers {
             aggs: self.aggs.len(),
             funcs: self.funcs.len(),
             closures: self.closures.len(),
+            exns: self.exns.len(),
         };
 
         self.bools.resize(base.bools + counts.bools, false);
@@ -3606,6 +3648,7 @@ impl Registers {
                 env: AggHandle(0),
             },
         );
+        self.exns.resize(base.exns + counts.exns, None);
 
         base
     }
@@ -3622,6 +3665,7 @@ impl Registers {
         self.aggs.truncate(base.aggs);
         self.funcs.truncate(base.funcs);
         self.closures.truncate(base.closures);
+        self.exns.truncate(base.exns);
     }
 
     fn init_args(&mut self, base: RegBase, vf: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
@@ -3767,6 +3811,7 @@ impl Registers {
             VReg::Agg(r) => Value::Agg(self.read_agg_handle(base, r)),
             VReg::Func(r) => Value::Func(self.read_func(base, r)),
             VReg::Closure(r) => Value::Closure(self.read_closure(base, r)),
+            VReg::Exn(_) => return Err(Trap::ExceptionBoundary),
         })
     }
 
@@ -3834,8 +3879,24 @@ impl Registers {
                 self.write_closure(dst_base, d, v);
                 Ok(())
             }
+            (VReg::Exn(s), VReg::Exn(d)) => {
+                let v = self.exns[src_base.exns + s.0 as usize].clone();
+                self.exns[dst_base.exns + d.0 as usize] = v;
+                Ok(())
+            }
             _ => Err(Trap::InvalidPc),
         }
+    }
+
+    /// Reads an initialized exception reference register.
+    fn read_exn(&self, base: RegBase, r: ExnReg) -> Result<Arc<Exception>, Trap> {
+        self.exns[base.exns + r.0 as usize]
+            .clone()
+            .ok_or(Trap::InvalidPc)
+    }
+
+    fn write_exn(&mut self, base: RegBase, r: ExnReg, exception: Arc<Exception>) {
+        self.exns[base.exns + r.0 as usize] = Some(exception);
     }
 
     #[inline(always)]
@@ -4051,6 +4112,14 @@ impl Value {
 #[inline]
 fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -> Result<(), Trap> {
     let arg_types = entry_fn.arg_types(program).map_err(|_| Trap::InvalidPc)?;
+    let ret_types = entry_fn.ret_types(program).map_err(|_| Trap::InvalidPc)?;
+    if arg_types
+        .iter()
+        .chain(ret_types.iter())
+        .any(|&kind| kind == ValueType::Exn)
+    {
+        return Err(Trap::ExceptionBoundary);
+    }
     if arg_types.len() != args.len() {
         return Err(Trap::ArityMismatch);
     }
@@ -4192,6 +4261,8 @@ fn read_value_ref_at<'a>(
         VReg::Agg(r) => ValueRef::Agg(aggs[base.aggs + r.0 as usize]),
         VReg::Func(r) => ValueRef::Func(funcs[base.funcs + r.0 as usize]),
         VReg::Closure(r) => ValueRef::Closure(closures[base.closures + r.0 as usize]),
+        // Exception references have no embedding-visible value; observers see them as absent.
+        VReg::Exn(_) => return Err(Trap::ExceptionBoundary),
     })
 }
 

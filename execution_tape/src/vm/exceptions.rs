@@ -4,9 +4,11 @@
 //! Raising typed exceptions.
 //!
 //! `throw` materializes its payload, checks the tag's payload contracts and then unwinds to the
-//! innermost catching clause of a protected region. An exception no clause catches leaves the
-//! invocation as [`Trap::Uncaught`]; its payload is detached into an owned [`ValueSnapshot`]
-//! before the failed invocation rolls back its aggregates, so the embedding can inspect it.
+//! innermost catching clause of a protected region. A `*_ref` clause also binds a shared
+//! reference to the exception, which `throw_ref` propagates again with its original tag, payload
+//! and throw site. An exception no clause catches leaves the invocation as [`Trap::Uncaught`];
+//! its payload is detached into an owned [`ValueSnapshot`] before the failed invocation rolls
+//! back its aggregates, so the embedding can inspect it.
 
 use super::*;
 use crate::aggregates::ValueSnapshot;
@@ -24,6 +26,7 @@ pub struct UncaughtException {
     tag: TagId,
     name: Box<str>,
     payload: ValueSnapshot,
+    origin: TraceLocation,
 }
 
 impl UncaughtException {
@@ -44,6 +47,12 @@ impl UncaughtException {
     pub fn payload(&self) -> &ValueSnapshot {
         &self.payload
     }
+
+    /// The original `throw`. A rethrown exception keeps it; the trap reports the last raise.
+    #[must_use]
+    pub fn origin(&self) -> TraceLocation {
+        self.origin
+    }
 }
 
 impl fmt::Display for UncaughtException {
@@ -58,11 +67,16 @@ impl fmt::Display for UncaughtException {
     }
 }
 
-/// A raised exception: its tag and checked payload, independent of any register.
+/// A raised exception: its tag, checked payload and original throw site.
+///
+/// Exception reference registers share one record; rethrowing never copies or rechecks it.
 #[derive(Debug)]
-pub(super) struct Exception {
-    pub(super) tag: TagId,
-    pub(super) payload: Vec<Value>,
+pub(crate) struct Exception {
+    tag: TagId,
+    payload: Vec<Value>,
+    origin: TraceLocation,
+    /// Invocation-local raise ordinal, linking rethrows to the original in evidence.
+    ordinal: usize,
 }
 
 impl<H: Host> Vm<H> {
@@ -128,10 +142,40 @@ impl<H: Host> Vm<H> {
                 ));
             }
         }
-        let exception = Exception {
+        let exception = Arc::new(Exception {
             tag,
             payload: values,
-        };
+            origin: location,
+            ordinal: ctx.raised,
+        });
+        ctx.raised += 1;
+        self.propagate::<P>(
+            ctx, budget, prepared, exception, trace, control, location, span_id,
+        )
+    }
+
+    /// Raises a caught exception again at `location`, without rechecking its payload.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the interpreter state borrowed by other instruction helpers"
+    )]
+    pub(super) fn rethrow<P: TracePolicy>(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        prepared: &VerifiedProgram,
+        exception: Arc<Exception>,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        location: TraceLocation,
+        span_id: Option<u64>,
+    ) -> Result<(), TrapInfo> {
+        P::values(trace, prepared.program(), || ValueEvent::Rethrown {
+            location,
+            tag: exception.tag,
+            exception: exception.ordinal,
+            origin: exception.origin,
+        });
         self.propagate::<P>(
             ctx, budget, prepared, exception, trace, control, location, span_id,
         )
@@ -152,7 +196,7 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         prepared: &VerifiedProgram,
-        exception: Exception,
+        exception: Arc<Exception>,
         trace: &mut TraceCtx<'_>,
         control: &mut ExecutionControl,
         location: TraceLocation,
@@ -173,7 +217,12 @@ impl<H: Host> Vm<H> {
         let name = program.tag_name(tag).unwrap_or_default().into();
         Err(fail(
             ctx,
-            Trap::Uncaught(Box::new(UncaughtException { tag, name, payload })),
+            Trap::Uncaught(Box::new(UncaughtException {
+                tag,
+                name,
+                payload,
+                origin: exception.origin,
+            })),
         ))
     }
 
@@ -187,7 +236,7 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         prepared: &VerifiedProgram,
-        exception: Exception,
+        exception: Arc<Exception>,
         trace: &mut TraceCtx<'_>,
         control: &mut ExecutionControl,
         location: TraceLocation,
@@ -251,13 +300,19 @@ impl<H: Host> Vm<H> {
         catcher.instr_ix = target_ix;
         catcher.pc = handler.pc;
         let base = catcher.base;
-        for (&param, value) in body
-            .vregs(catch.handler.params)
-            .iter()
-            .zip(exception.payload)
-        {
-            ctx.write_owned_value(base, param, value)
+        let params = body.vregs(catch.handler.params);
+        let (payload_params, reference) = if catch.handler.binds_exception {
+            let (last, payload) = params.split_last().expect("verified exception parameter");
+            (payload, Some(*last))
+        } else {
+            (params, None)
+        };
+        for (&param, value) in payload_params.iter().zip(&exception.payload) {
+            ctx.write_owned_value(base, param, value.clone())
                 .map_err(|trap| ctx.trap(location.func, location.pc, span_id, trap))?;
+        }
+        if let Some(VReg::Exn(reference)) = reference {
+            ctx.write_exn(base, reference, exception);
         }
         Ok(())
     }
@@ -281,4 +336,18 @@ fn find_catch(
             let raising = frame.instr_ix.checked_sub(1)?;
             Some((index, protection.catch(raising, tag)?))
         })
+}
+
+// The pinned sizes are the 64-bit layout; 32-bit targets such as wasm32 lay `Value` out
+// smaller, so pinning them there would test pointer width rather than `Exn`.
+#[cfg(all(test, target_pointer_width = "64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exception_references_add_no_boundary_value_representation() {
+        // `Exn` lives only in guest registers; boundary values and kinds keep their size.
+        assert_eq!(size_of::<Value>(), 32);
+        assert_eq!(size_of::<ValueType>(), 16);
+    }
 }

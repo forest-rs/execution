@@ -341,12 +341,20 @@ enum End {
     Returned,
     Trapped(TrapInfo),
 }
-/// One raised exception in raise order, with its payload captured at the throw.
+/// One `throw` in raise order, with its payload captured once at the throw.
 #[derive(Debug)]
 struct Thrown {
     location: TraceLocation,
     tag: TagId,
     values: Range<usize>,
+}
+/// One propagation of an exception: its `throw`, or a later `throw_ref` linking back to it.
+#[derive(Debug)]
+struct Propagation {
+    /// Index of the original exception in [`Recording::thrown`].
+    exception: usize,
+    /// Raising instruction.
+    location: TraceLocation,
     caught: Option<Caught>,
 }
 /// The clause that handled an exception and where execution resumed.
@@ -376,6 +384,7 @@ pub struct Recording {
     outcome_frame: Option<frames::FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
     thrown: Vec<Thrown>,
+    propagations: Vec<Propagation>,
     end: Option<End>,
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,

@@ -31,7 +31,7 @@ pub(crate) struct Protection {
 
 /// What an instruction can raise, if anything.
 enum Raises {
-    /// A callee or host may raise any tag.
+    /// A callee, host or rethrown reference may raise any tag.
     Any,
     /// `throw` raises exactly this tag.
     Tag(TagId),
@@ -39,9 +39,10 @@ enum Raises {
 
 fn raises(instr: &Instr) -> Option<Raises> {
     match instr {
-        Instr::Call { .. } | Instr::CallIndirect { .. } | Instr::HostCall { .. } => {
-            Some(Raises::Any)
-        }
+        Instr::Call { .. }
+        | Instr::CallIndirect { .. }
+        | Instr::HostCall { .. }
+        | Instr::ThrowRef { .. } => Some(Raises::Any),
         Instr::Throw { tag, .. } => Some(Raises::Tag(TagId(*tag))),
         _ => None,
     }

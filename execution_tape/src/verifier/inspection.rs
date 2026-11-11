@@ -145,6 +145,7 @@ impl<'a> VerifiedFunction<'a> {
             ValueType::Agg => counts.aggs,
             ValueType::Func => counts.funcs,
             ValueType::Closure => counts.closures,
+            ValueType::Exn => counts.exns,
         }
     }
 
@@ -226,6 +227,7 @@ fn register_bytes(counts: RegCounts) -> usize {
         + counts.aggs * size_of::<AggHandle>()
         + counts.funcs * size_of::<FuncId>()
         + counts.closures * size_of::<Closure>()
+        + counts.exns * size_of::<Option<alloc::sync::Arc<crate::vm::Exception>>>()
 }
 
 #[cfg(test)]

@@ -1381,6 +1381,17 @@ impl Asm {
         self
     }
 
+    /// Encodes `throw_ref eff_in, exn`, rethrowing the exception referenced by `exn`.
+    ///
+    /// The exception keeps its original tag, payload and throw site. `exn` must be an initialized
+    /// `Exn` register, as bound by a [`Catch::TagRef`] or [`Catch::AllRef`] handler.
+    pub fn throw_ref(&mut self, eff_in: u32, exn: u32) -> &mut Self {
+        self.opcode(Opcode::ThrowRef);
+        self.reg(eff_in);
+        self.reg(exn);
+        self
+    }
+
     /// Encodes `const_unit dst`.
     pub fn const_unit(&mut self, dst: u32) -> &mut Self {
         self.opcode(Opcode::ConstUnit);

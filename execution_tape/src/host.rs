@@ -736,6 +736,7 @@ fn encode_value_type_tag(t: ValueType) -> u8 {
         ValueType::Agg => 9,
         ValueType::Func => 10,
         ValueType::Closure => 11,
+        ValueType::Exn => 12,
     }
 }
 
