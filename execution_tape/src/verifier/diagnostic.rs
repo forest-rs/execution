@@ -70,6 +70,7 @@ impl VerifyError {
             | Self::Decode(..)
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
+            | Self::DuplicateTagName { .. }
             | Self::HostSigHashMismatch { .. } => None,
         }
     }
@@ -137,6 +138,7 @@ impl VerifyError {
             | Self::ArgCountExceedsRegs { .. }
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
+            | Self::DuplicateTagName { .. }
             | Self::HostSigHashMismatch { .. }
             | Self::MissingRegisterTypes { .. }
             | Self::BytecodeDecode { .. } => None,

@@ -21,7 +21,9 @@ use core::fmt;
 use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
-use crate::program::{CallSigId, ConstId, ElemTypeId, HostSigId, Program, TypeId, ValueType};
+use crate::program::{
+    CallSigId, ConstId, ElemTypeId, HostSigId, Program, TagId, TypeId, ValueType,
+};
 pub use crate::register_operands::RegIter;
 use crate::value::{Decimal, DecimalRounding, FuncId};
 use crate::verifier::VerifiedProgram;
@@ -1179,6 +1181,21 @@ fn fmt_value_type_list<'a>(
     write!(w, "]")
 }
 
+fn fmt_tag_payload_annotation(
+    w: &mut fmt::Formatter<'_>,
+    program: &Program,
+    tag: TagId,
+) -> fmt::Result {
+    write!(w, " ; payload=")?;
+    let Some(entry) = program.tag(tag) else {
+        return write!(w, "<invalid>");
+    };
+    let Ok(payload) = program.tag_payload(entry) else {
+        return write!(w, "<malformed>");
+    };
+    fmt_value_type_list(w, payload)
+}
+
 fn fmt_call_sig_annotation(
     w: &mut fmt::Formatter<'_>,
     program: &Program,
@@ -1206,6 +1223,19 @@ impl fmt::Display for Disassembly<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(name) = self.program.name() {
             writeln!(f, "; program=\"{name}\"")?;
+            writeln!(f)?;
+        }
+        if !self.program.tags.is_empty() {
+            for index in 0..self.program.tags.len() {
+                let tag = TagId(u32::try_from(index).unwrap_or(u32::MAX));
+                write!(f, "tag#{}", tag.0)?;
+                match self.program.tag_name(tag) {
+                    Some(name) => write!(f, " \"{name}\"")?,
+                    None => write!(f, " <invalid name>")?,
+                }
+                fmt_tag_payload_annotation(f, self.program, tag)?;
+                writeln!(f)?;
+            }
             writeln!(f)?;
         }
         for (i, fd) in self.functions.iter().enumerate() {

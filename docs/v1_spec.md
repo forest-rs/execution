@@ -305,9 +305,10 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `10 = call_sigs` (optional)
 - `11` is retired
 - `12 = contracts`
+- `13 = tags` (optional)
 
-Sections `1..=8` and `12` are required; `9 = names` and `10 = call_sigs` are optional (each omitted
-entirely when empty). Unknown section tags are skipped within the accepted wire version.
+Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs` and `13 = tags` are optional
+(each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -489,6 +490,19 @@ function signatures. Exact prepared signature keys provide collision-safe dispat
 hash alone does not prove contract equality. Known contradictions fail verification. Otherwise,
 matching occurs before callee entry, and the callee enforces the same result obligations before
 caller installation.
+
+## Tags (optional)
+Exception tags are nominal, program-local identities. A `TagId` is the index into this table.
+Two tags with equal payload contracts are still different tags. The section is omitted when the
+program declares no tags:
+- `count: ULEB128`
+- repeated `count` times:
+  - `name_symbol_id: ULEB128` (non-zero; names are unique within the program)
+  - `payload_count: ULEB128`
+  - `payload_contract_ids[payload_count]: ULEB128...`
+
+Payload contracts use the shared contract table, like call signatures. Decoding packs them into
+`Program::contract_ids` after call signatures.
 
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
@@ -902,6 +916,8 @@ These checks apply alongside the structural and contract rules described above.
   - `host_sigs[i].symbol_id` must be in-bounds
   - `host_sigs[i].sig_hash` must match the canonical hash of its `(arg_types, ret_types)`
 - **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types.
+- **Tag table**: every tag's name symbol and payload contracts must be in bounds, and names must be
+  unique, including tags that no instruction references.
 
 ## Implementation authority
 

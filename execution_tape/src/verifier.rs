@@ -13,6 +13,7 @@ use contracts::RefinementState;
 mod diagnostic;
 mod inspection;
 mod metadata;
+mod tags;
 pub use blocks::{BlockDeclarationError, BlockEdgeError};
 
 pub use contracts::inspection::{
@@ -22,6 +23,7 @@ pub use contracts::inspection::{
 pub use inspection::{FunctionStats, InstructionInfo, VerifiedFunction};
 pub use metadata::MetadataTable;
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
@@ -611,6 +613,15 @@ pub enum VerifyError {
         /// Host signature id.
         host_sig: u32,
     },
+    /// Two exception tags share a name. Names identify tags in diagnostics and tooling.
+    DuplicateTagName {
+        /// Later tag with the repeated name.
+        tag: u32,
+        /// Earlier tag that already uses the name.
+        first: u32,
+        /// The repeated name.
+        name: Box<str>,
+    },
     /// A function has no register declarations, including the required r0 effect token.
     MissingRegisterTypes {
         /// Function index.
@@ -933,6 +944,10 @@ impl fmt::Display for VerifyError {
             Self::HostSigHashMismatch { host_sig } => {
                 write!(f, "host_sig {host_sig} sig_hash mismatch")
             }
+            Self::DuplicateTagName { tag, first, name } => write!(
+                f,
+                "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
+            ),
             Self::MissingRegisterTypes { func } => write!(
                 f,
                 "function {func} has no register declarations (r0 must be Unit)"
@@ -1034,6 +1049,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
     metadata::verify(program)?;
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
+    tags::verify(program)?;
     verify_function_value_names(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
@@ -1051,6 +1067,7 @@ pub fn verify_program_with_lints(
     metadata::verify(program)?;
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
+    tags::verify(program)?;
     verify_function_value_names(program)?;
 
     let mut lints: Vec<VerifyLint> = Vec::new();
@@ -1070,6 +1087,7 @@ pub fn verify_program_owned(
     metadata::verify(&program)?;
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
+    tags::verify(&program)?;
     verify_function_value_names(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
@@ -1095,6 +1113,7 @@ pub fn verify_program_owned_with_lints(
     metadata::verify(&program)?;
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
+    tags::verify(&program)?;
     verify_function_value_names(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 

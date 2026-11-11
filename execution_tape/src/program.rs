@@ -127,6 +127,13 @@ pub struct HostSigId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CallSigId(pub u32);
 
+/// Exception tag identifier (index into [`Program::tags`]).
+///
+/// A tag is a nominal, program-local identity. Two tags with equal payload contracts remain
+/// different exceptions; compare tags by identity, never by their payload signature.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TagId(pub u32);
+
 /// A byte range (offset/length) into a per-program arena buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ByteRange {
@@ -388,6 +395,8 @@ pub struct Program {
     pub const_str_data: String,
     /// Program-owned call-signature table.
     pub call_sigs: Vec<CallSigEntry>,
+    /// Program-owned exception tags, indexed by [`TagId`].
+    pub tags: Vec<TagEntry>,
     /// Host signature table.
     pub host_sigs: Vec<HostSigEntry>,
     /// Type table (struct layouts and well-known ids).
@@ -535,6 +544,15 @@ pub struct CallSigEntry {
     pub args: ByteRange,
     /// Result contracts range into `Program::contract_ids`.
     pub rets: ByteRange,
+}
+
+/// A nominal exception tag and the contracts of the payload it carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagEntry {
+    /// Tag name; unique within the program and used by diagnostics and tooling.
+    pub name: SymbolId,
+    /// Payload contracts range into `Program::contract_ids`, in payload order.
+    pub payload: ByteRange,
 }
 
 /// An input struct type definition used to construct a [`TypeTable`].
@@ -892,6 +910,7 @@ impl Program {
             const_bytes_data,
             const_str_data,
             call_sigs: Vec::new(),
+            tags: Vec::new(),
             host_sigs: packed_host_sigs,
             contracts: contracts.finish(),
             contract_ids,
@@ -1073,6 +1092,26 @@ impl Program {
         self.call_sigs.get(id.0 as usize)
     }
 
+    /// Returns the exception tag entry for `id`.
+    pub fn tag(&self, id: TagId) -> Option<&TagEntry> {
+        self.tags.get(id.0 as usize)
+    }
+
+    /// Borrows an exception tag's payload contracts, in payload order.
+    pub fn tag_payload_contracts(&self, entry: &TagEntry) -> Result<&[ContractId], DecodeError> {
+        self.function_contracts(entry.payload)
+    }
+
+    /// Projects an exception tag's payload to storage kinds without allocation.
+    pub fn tag_payload(&self, entry: &TagEntry) -> Result<ContractKinds<'_>, DecodeError> {
+        Ok(self.contracts.kinds(self.tag_payload_contracts(entry)?))
+    }
+
+    /// Returns the name of exception tag `id`, if both the tag and its symbol exist.
+    pub fn tag_name(&self, id: TagId) -> Option<&str> {
+        self.symbol_str(self.tag(id)?.name).ok()
+    }
+
     /// Borrows indirect-call argument contracts.
     pub fn call_sig_arg_contracts(
         &self,
@@ -1169,6 +1208,7 @@ impl Program {
         // 8 = host_sigs
         // 10 = call_sigs (optional)
         // 11 = retired argument-shape metadata; 12 = compositional contracts (mandatory)
+        // 13 = exception tags (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1343,6 +1383,21 @@ impl Program {
             write_section(&mut w, SectionTag::CallSigs, payload.as_slice());
         }
 
+        // exception tag table section (optional; omitted when empty)
+        if !self.tags.is_empty() {
+            let mut payload = Writer::new();
+            payload.write_uleb128_u64(self.tags.len() as u64);
+            for tag in &self.tags {
+                payload.write_uleb128_u32(tag.name.index());
+                let contracts = self.tag_payload_contracts(tag).expect("valid tag payload");
+                payload.write_uleb128_u64(contracts.len() as u64);
+                for &t in contracts {
+                    payload.write_uleb128_u32(t.0);
+                }
+            }
+            write_section(&mut w, SectionTag::Tags, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1421,6 +1476,7 @@ enum SectionTag {
     Names = 9,
     CallSigs = 10,
     Contracts = 12,
+    Tags = 13,
 }
 
 impl SectionTag {
@@ -1437,6 +1493,7 @@ impl SectionTag {
             9 => Some(Self::Names),
             10 => Some(Self::CallSigs),
             12 => Some(Self::Contracts),
+            13 => Some(Self::Tags),
             _ => None,
         }
     }
@@ -1531,6 +1588,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut const_bytes_data: Vec<u8> = Vec::new();
     let mut const_str_data: String = String::new();
     let mut call_sig_defs: Vec<DecodedCallSig> = Vec::new();
+    let mut tag_defs: Vec<DecodedTag> = Vec::new();
     let mut host_sig_defs: Vec<(SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry<'_>> = Vec::new();
@@ -1545,6 +1603,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_symbols = false;
     let mut saw_const_pool = false;
     let mut saw_call_sigs = false;
+    let mut saw_tags = false;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -1621,6 +1680,13 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_call_sigs = true;
                 call_sig_defs = decode_call_sigs(payload)?;
+            }
+            Some(SectionTag::Tags) => {
+                if saw_tags {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                saw_tags = true;
+                tag_defs = decode_tags(payload)?;
             }
             Some(SectionTag::Contracts) => {
                 if contract_table.is_some() {
@@ -1848,6 +1914,27 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         });
     }
 
+    // Tags are packed after call sigs, matching the builder.
+    let mut tags: Vec<TagEntry> = Vec::with_capacity(tag_defs.len());
+    for (name, payload) in tag_defs {
+        if symbols.get(name.index() as usize).is_none() {
+            return Err(DecodeError::OutOfBounds);
+        }
+        let offset = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        for id in &payload {
+            contract_ids.push(
+                *contract_remap
+                    .get(id.0 as usize)
+                    .ok_or(DecodeError::OutOfBounds)?,
+            );
+        }
+        let len = u32::try_from(payload.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        tags.push(TagEntry {
+            name,
+            payload: ByteRange { offset, len },
+        });
+    }
+
     // Validate optional name metadata.
     if let Some(name) = names.program_name
         && symbols.get(name.index() as usize).is_none()
@@ -1907,6 +1994,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         const_bytes_data,
         const_str_data,
         call_sigs,
+        tags,
         host_sigs,
         contracts,
         contract_ids,
@@ -2262,6 +2350,7 @@ fn decode_types(payload: &[u8]) -> Result<TypeTableDef, DecodeError> {
 type DecodedFunctionSig = (Vec<ContractId>, Vec<ContractId>, Vec<u32>, Vec<u32>);
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
 type DecodedCallSig = (Vec<ContractId>, Vec<ContractId>);
+type DecodedTag = (SymbolId, Vec<ContractId>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
     let mut r = Reader::new(payload);
@@ -2345,6 +2434,25 @@ fn decode_call_sigs(payload: &[u8]) -> Result<Vec<DecodedCallSig>, DecodeError> 
             rets.push(ContractId(r.read_uleb128_u32()?));
         }
         out.push((args, rets));
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok(out)
+}
+
+fn decode_tags(payload: &[u8]) -> Result<Vec<DecodedTag>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_count(&mut r)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let name = SymbolId(r.read_uleb128_u32_nz()?);
+        let count = read_count(&mut r)?;
+        let mut contracts = Vec::with_capacity(count);
+        for _ in 0..count {
+            contracts.push(ContractId(r.read_uleb128_u32()?));
+        }
+        out.push((name, contracts));
     }
     if r.remaining() != 0 {
         return Err(DecodeError::OutOfBounds);
