@@ -43,6 +43,18 @@ This release has an [MSRV][] of 1.88.
   Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
   Migration: handle the new `Opcode` variants in exhaustive matches.
 
+- Raise typed exceptions with the `throw` terminator (`Asm::throw`, or the checked
+  `ProgramBuilder::emit_throw`). The verifier names the tag in `TagOutOfBounds`,
+  `ThrowArityMismatch` and `ThrowPayloadMismatch`; refined payload contracts are proven statically
+  where possible and otherwise checked at the throw as `ContractPosition::Payload`.
+  No protected regions exist yet: every exception leaves the invocation as `Trap::Uncaught`,
+  located at the `throw`, whose `UncaughtException` keeps the tag, its name and a `ValueSnapshot`
+  of the payload taken before rollback. `ValueEvent::Thrown` observes the payload at the throw
+  site; recording captures it and replay checks it at `ReplayBoundary::Thrown`.
+  Migration: handle `Trap::Uncaught`, `ValueEvent::Thrown`, `ContractPosition::Payload`,
+  `disasm::Operands::Throw`, `disasm::InputIndex::Tag`, `ReplayBoundary::Thrown` and the new
+  `VerifyError` variants in exhaustive matches.
+
 - Declare nominal exception tags with `ProgramBuilder::declare_tag`. Tags live in an optional
   `tags` program section, are identified by `TagId` and carry payload contracts; equal payloads
   never make two tags the same exception. Names are unique, appear in disassembly, and the

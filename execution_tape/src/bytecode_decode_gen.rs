@@ -27,6 +27,16 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 params,
             }
         },
+        Opcode::Throw => {
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let tag = crate::codec_primitives::read_u32_uleb(r)?;
+            let args = crate::codec_primitives::read_reg_list(r)?;
+            Instr::Throw {
+                eff_in,
+                tag,
+                args,
+            }
+        },
         Opcode::ConstUnit => {
             let dst = crate::codec_primitives::read_reg(r)?;
             Instr::ConstUnit {

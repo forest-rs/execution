@@ -214,6 +214,10 @@ Runtime failures include exhausted fuel/depth/host/data-work limits, arithmetic 
 errors, invalid indexing/UTF-8, guest contract mismatches, and rejected host returns. `TrapCode`
 represents an explicit guest trap. See `vm::Trap` for the complete variant set.
 
+`Uncaught` reports a guest exception raised by `throw` that left the invocation. It is a guest
+outcome rather than a VM failure: it carries the tag, its name, and an owned `ValueSnapshot` of
+the payload taken before rollback. See [Exceptions](#exceptions).
+
 Malformed containers and invalid bytecode fail decoding or verification before execution; they
 are not runtime `InvalidProgram` traps. A failed invocation discards newly allocated aggregates
 and preserves the caller's previous output buffer. It cannot undo host effects.
@@ -492,9 +496,9 @@ matching occurs before callee entry, and the callee enforces the same result obl
 caller installation.
 
 ## Tags (optional)
-Exception tags are nominal, program-local identities. A `TagId` is the index into this table.
-Two tags with equal payload contracts are still different tags. The section is omitted when the
-program declares no tags:
+Exception tags are nominal, program-local identities referenced by `throw`. A `TagId` is the index
+into this table. Two tags with equal payload contracts are still different tags. The section is
+omitted when the program declares no tags:
 - `count: ULEB128`
 - repeated `count` times:
   - `name_symbol_id: ULEB128` (non-zero; names are unique within the program)
@@ -673,6 +677,21 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     contract before producing the closure. Dispatch also checks externally supplied environments,
     including that an unrefined environment handle resolves. `r_env` is injected as the first argument.
 
+### Exceptions
+- `throw r_eff_in, tag_id, payload...`
+  - Terminator. Raises `tags[tag_id]` with `payload` in tag order.
+  - The payload is materialized at the throw site and observed as `ValueEvent::Thrown`, then
+    checked against the tag's payload contracts. A refined contract that the verifier could not
+    prove traps there as `ContractMismatch` at position `Payload { tag, index }`.
+  - Unwinding abandons every active activation, including guest callbacks entered from a pending
+    host request and that request itself. Protected regions do not exist yet, so the exception
+    always leaves the invocation as `Trap::Uncaught`, located at the `throw`. Call scopes close with
+    that trap outcome at the throwing instruction.
+  - Uncaught payloads are detached into a `ValueSnapshot` before rollback discards the
+    invocation's aggregates. Host objects stay host-owned handles; function IDs still name the
+    throwing program.
+  - Traps (fuel, limits, arithmetic, contract failures) are not exceptions and cannot be caught.
+
 ### Host calls
 - `host_call r_eff_out, host_sig_id, r_eff_in, args... -> rets...`
   - Increments host-call count; traps if limit exceeded.
@@ -691,6 +710,7 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x01 mov dst, src`
 - `0x02 trap code`
 - `0x03 block params` (counted ULEB32 register IDs; kinds come from the function register ledger)
+- `0x04 throw eff_in, tag_id, payload_count, payload...`
 
 - `0x10 const_unit dst`
 - `0x11 const_bool dst, imm_u8` (`0` or `1`)
@@ -890,10 +910,12 @@ Required checks:
   - `call` matches callee signature counts and types
   - `ret` matches function return types
   - `host_call` matches the `host_sigs[host_sig_id]` types
+  - `throw` matches the `tags[tag_id]` payload count and kinds, and statically known payload facts
+    do not contradict the tag's payload contracts
 - **Declaration limit**: `reg_count` is within `VerifyConfig::max_regs_per_function`.
 - **Effect threading**:
   - call/host-call `eff_in` and `eff_out` must be r0 (`Unit`, initialized at entry)
-  - `ret` must use r0 as its effect operand
+  - `ret` and `throw` must use r0 as their effect operand
 
 ### Additional verifier details
 These checks apply alongside the structural and contract rules described above.
@@ -909,7 +931,7 @@ These checks apply alongside the structural and contract rules described above.
   - `r0` (effect token) is considered initialized at entry.
   - value arguments are considered initialized at entry in `r1..=r_arg_count`.
 - **Init-before-use**: any read of a register not definitely initialized on all paths to that point is rejected.
-- **No fallthrough between blocks**: every reachable basic block must end in a terminator (`ret`/`trap`/`br`/`jmp`).
+- **No fallthrough between blocks**: every reachable basic block must end in a terminator (`ret`/`trap`/`throw`/`br`/`jmp`).
 - **Call arity**: `call` must pass exactly `callee.arg_count` value args and list exactly `callee.ret_count` return regs.
 - **Return arity**: `ret` must return exactly `func.ret_count` values.
 - **HostSig table**:
@@ -917,7 +939,9 @@ These checks apply alongside the structural and contract rules described above.
   - `host_sigs[i].sig_hash` must match the canonical hash of its `(arg_types, ret_types)`
 - **Host call**: `host_call` must reference an in-bounds `host_sig_id` and its args must match that signature's types.
 - **Tag table**: every tag's name symbol and payload contracts must be in bounds, and names must be
-  unique, including tags that no instruction references.
+  unique, including tags that no instruction throws.
+- **Throw**: `throw` must reference an in-bounds `tag_id`. Diagnostics name the tag
+  (`ThrowArityMismatch`, `ThrowPayloadMismatch`).
 
 ## Implementation authority
 

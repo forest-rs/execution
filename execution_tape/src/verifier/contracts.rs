@@ -1015,6 +1015,27 @@ fn validate(
                     })?;
             }
         }
+        Instr::Throw { tag, args, .. } => {
+            let tag = TagId(*tag);
+            let entry = arena.program.tag(tag).expect("verified tag");
+            let contracts = arena
+                .program
+                .tag_payload_contracts(entry)
+                .expect("verified tag payload");
+            for (index, (&reg, &contract)) in args.iter().zip(contracts).enumerate() {
+                arena
+                    .check(contract, arena.fact(state, types, reg))
+                    .map_err(|error| VerifyError::ContractMismatch {
+                        func: func_id,
+                        pc,
+                        position: ContractPosition::Payload {
+                            tag,
+                            index: u32::try_from(index).expect("verified payload arity"),
+                        },
+                        error,
+                    })?;
+            }
+        }
         Instr::Ret { rets, .. } => {
             for (index, (&reg, &contract)) in rets
                 .iter()

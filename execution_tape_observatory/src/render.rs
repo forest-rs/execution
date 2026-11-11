@@ -41,6 +41,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 ReplayBoundary::InitialState => "initial state".into(),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
+                ReplayBoundary::Thrown => "thrown exception".into(),
                 ReplayBoundary::ControlCommand { index } => format!("control command {index}"),
                 ReplayBoundary::ControlReturn { index } => {
                     format!("guest return for command {index}")

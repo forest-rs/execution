@@ -108,6 +108,12 @@ pub(crate) enum Instr {
     Mov { dst: u32, src: u32 },
     /// Trap unconditionally with a trap code.
     Trap { code: u32 },
+    /// Raise exception `tag` with payload registers `args`.
+    Throw {
+        eff_in: u32,
+        tag: u32,
+        args: Vec<u32>,
+    },
 
     /// `dst = ()`.
     ConstUnit { dst: u32 },
@@ -592,6 +598,14 @@ mod tests {
             (Opcode::Nop, Instr::Nop),
             (Opcode::Mov, Instr::Mov { dst: 1, src: 2 }),
             (Opcode::Trap, Instr::Trap { code: 7 }),
+            (
+                Opcode::Throw,
+                Instr::Throw {
+                    eff_in: 0,
+                    tag: 3,
+                    args: vec![1, 2],
+                },
+            ),
             (Opcode::ConstBool, Instr::ConstBool { dst: 1, imm: true }),
             (Opcode::ConstI64, Instr::ConstI64 { dst: 1, imm: -3 }),
             (Opcode::ConstU64, Instr::ConstU64 { dst: 1, imm: 3 }),
@@ -840,6 +854,11 @@ mod tests {
         let smoke: Vec<Instr> = vec![
             Instr::Nop,
             Instr::Trap { code: 42 },
+            Instr::Throw {
+                eff_in: 0,
+                tag: 1,
+                args: vec![4],
+            },
             Instr::Mov { dst: 1, src: 2 },
             Instr::ConstUnit { dst: 1 },
             Instr::ConstBool { dst: 1, imm: true },

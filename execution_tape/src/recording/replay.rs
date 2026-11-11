@@ -118,6 +118,8 @@ pub enum ReplayBoundary {
     },
     /// Checking the top-level return candidate before heap commit.
     ReturnCandidate,
+    /// Checking a raised exception's tag, location and payload before contract checks.
+    Thrown,
     /// Comparing final call counts and run outcomes.
     Completion,
 }
@@ -178,6 +180,7 @@ struct State {
     calls: usize,
     location: Option<TraceLocation>,
     candidate: bool,
+    thrown: bool,
     frames: usize,
     top: Option<crate::recording::frames::FrameId>,
     final_top: Option<crate::recording::frames::FrameId>,
@@ -1039,6 +1042,27 @@ impl TraceSink for Check<'_> {
                         _ => return Err(state.mismatch(Divergence::Outcome)),
                     }
                 }
+                ValueEvent::Thrown {
+                    location,
+                    tag,
+                    values,
+                    aggregates,
+                } => {
+                    state.thrown = true;
+                    state.boundary = ReplayBoundary::Thrown;
+                    state.location = Some(location);
+                    match &self.record.thrown {
+                        Some(expected) if expected.location == location && expected.tag == tag => {
+                            state.matches(
+                                self.record,
+                                self.record.arena.slice(&expected.values),
+                                values.iter().map(ValueRef::from_value),
+                                aggregates,
+                            )?;
+                        }
+                        _ => return Err(state.mismatch(Divergence::Outcome)),
+                    }
+                }
             }
             Ok(())
         })();
@@ -1195,6 +1219,7 @@ impl Recording {
                 )
             })
             || (matches!(self.end, Some(End::Returned)) && !state.active_commands.is_empty())
+            || state.thrown != self.thrown.is_some()
         {
             return Err(state.mismatch(Divergence::Outcome));
         }
@@ -1349,6 +1374,10 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
             },
         ) => ae == be && aa == right_actual,
         (Trap::TrapCode(a), Trap::TrapCode(b)) => a == b,
+        // Payload values and sharing were checked against the recorded `Thrown` event.
+        (Trap::Uncaught(a), Trap::Uncaught(b)) => {
+            a.local_tag() == b.local_tag() && a.name() == b.name()
+        }
         _ => false,
     }
 }
@@ -1838,6 +1867,60 @@ mod tests {
             location: Some(actual),
             reason: Divergence::Value { aggregate: None, index: 0 },
         }) if actual == location));
+    }
+
+    fn thrown_record() -> Recording {
+        let mut builder = ProgramBuilder::new();
+        let failed = builder
+            .declare_tag("failed", &[ValueType::I64.into()])
+            .unwrap();
+        let function = builder
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![],
+            })
+            .unwrap();
+        let mut body = builder.function_asm(function).unwrap();
+        builder.emit_throw(&mut body, failed, &[1]).unwrap();
+        builder.define_function(function, body).unwrap();
+        let program = Arc::new(builder.build_verified().unwrap());
+        let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+        let error = Vm::new(Echo, Limits::default())
+            .run(
+                &program,
+                function,
+                &[Value::I64(3)],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
+            .unwrap_err();
+        assert!(matches!(error.trap, Trap::Uncaught(_)));
+        recorder.finish()
+    }
+
+    #[test]
+    fn changed_or_missing_thrown_payload_is_rejected() {
+        let record = thrown_record();
+        assert!(matches!(record.replay(), Ok(ReplayOutcome::Trapped(_))));
+
+        let mut changed = thrown_record();
+        let root = changed.thrown.as_ref().unwrap().values.start;
+        changed.arena.values[root] = RecordedValue::I64(4);
+        assert!(matches!(
+            changed.replay(),
+            Err(ReplayError::Diverged {
+                boundary: ReplayBoundary::Thrown,
+                reason: Divergence::Value {
+                    aggregate: None,
+                    index: 0
+                },
+                ..
+            })
+        ));
+
+        let mut missing = thrown_record();
+        missing.thrown = None;
+        assert_eq!(reason(&missing), Divergence::Outcome);
     }
 
     #[test]

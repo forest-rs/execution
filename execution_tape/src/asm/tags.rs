@@ -1,11 +1,11 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Exception tag declarations.
+//! Exception tag declarations and signature-aware `throw` emission.
 
 use super::*;
 
-/// An exception tag could not be declared. The builder is unchanged.
+/// An exception tag could not be declared or thrown. The builder and assembler are unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TagBuildError {
     /// Another tag in this builder already uses the name.
@@ -17,6 +17,34 @@ pub enum TagBuildError {
     },
     /// A payload contract does not belong to this builder.
     Contract(ContractBuildError),
+    /// The tag has no declaration in this builder.
+    UnknownTag(TagId),
+    /// The number of payload registers disagrees with the declaration.
+    Payload {
+        /// Thrown tag.
+        tag: TagId,
+        /// Declared payload arity.
+        expected: usize,
+        /// Supplied payload register count.
+        actual: usize,
+    },
+    /// A payload register is not declared.
+    Register(u32),
+    /// A payload register's declared kind disagrees with the tag.
+    PayloadKind {
+        /// Thrown tag.
+        tag: TagId,
+        /// Offending source register.
+        register: u32,
+        /// Zero-based payload position.
+        index: usize,
+        /// Kind declared by the tag.
+        expected: ValueType,
+        /// Register's declared kind.
+        actual: ValueType,
+    },
+    /// r0 must be declared as Unit; start with [`ProgramBuilder::function_asm`].
+    EffectRegister,
 }
 
 impl fmt::Display for TagBuildError {
@@ -30,6 +58,31 @@ impl fmt::Display for TagBuildError {
                 )
             }
             Self::Contract(error) => error.fmt(f),
+            Self::UnknownTag(tag) => write!(f, "tag#{} has no declaration", tag.0),
+            Self::Payload {
+                tag,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "throw tag#{} expects {expected} payload values, got {actual}",
+                tag.0
+            ),
+            Self::Register(register) => write!(f, "throw uses undeclared register r{register}"),
+            Self::PayloadKind {
+                tag,
+                register,
+                index,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "throw tag#{}, payload {index} at r{register} requires {expected:?}, register declares {actual:?}",
+                tag.0
+            ),
+            Self::EffectRegister => f.write_str(
+                "throw requires r0 declared as Unit; start with ProgramBuilder::function_asm",
+            ),
         }
     }
 }
@@ -38,7 +91,7 @@ impl core::error::Error for TagBuildError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Contract(error) => Some(error),
-            Self::DuplicateName { .. } => None,
+            _ => None,
         }
     }
 }
@@ -48,8 +101,9 @@ impl ProgramBuilder {
     ///
     /// Every declaration is a distinct tag, even when another tag has the same payload
     /// contracts. Names must be unique within the program; they identify the tag in verifier
-    /// diagnostics and disassembly. Payload positions are [`ContractRef`]s, as in
-    /// [`FunctionAbi`]: plain kinds convert with `.into()`, and rich contracts use their IDs.
+    /// diagnostics, disassembly and uncaught-exception traps. Payload positions are
+    /// [`ContractRef`]s, as in [`FunctionAbi`]: plain kinds convert with `.into()`, and rich
+    /// contracts use their IDs.
     ///
     /// ```
     /// use execution_tape::{asm::ProgramBuilder, program::ValueType};
@@ -85,5 +139,69 @@ impl ProgramBuilder {
         let id = TagId(u32::try_from(self.tags.len()).unwrap_or(u32::MAX));
         self.tags.push(TagDef { name, payload });
         Ok(id)
+    }
+
+    /// Emits `throw`, checking the payload registers against the tag's declaration first.
+    ///
+    /// This checks the tag, arity, declared register kinds and r0. Initialization and rich
+    /// payload contracts still require [`Self::build_verified`]; refined contracts that cannot
+    /// be proven statically are checked when the exception is raised.
+    ///
+    /// ```
+    /// use execution_tape::{asm::{FunctionSig, ProgramBuilder}, program::ValueType};
+    /// let mut program = ProgramBuilder::new();
+    /// let failed = program.declare_tag("failed", &[ValueType::I64.into()])?;
+    /// let signature = FunctionSig { arg_types: vec![ValueType::I64], ret_types: vec![] };
+    /// let function = program.declare_function(signature)?;
+    /// let mut body = program.function_asm(function)?;
+    /// let code = program.argument(function, 0)?;
+    /// program.emit_throw(&mut body, failed, &[code])?;
+    /// program.define_function(function, body)?;
+    /// program.build_verified()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn emit_throw(
+        &self,
+        body: &mut Asm,
+        tag: TagId,
+        payload: &[u32],
+    ) -> Result<(), TagBuildError> {
+        let declaration = self
+            .tags
+            .get(tag.0 as usize)
+            .ok_or(TagBuildError::UnknownTag(tag))?;
+        if payload.len() != declaration.payload.len() {
+            return Err(TagBuildError::Payload {
+                tag,
+                expected: declaration.payload.len(),
+                actual: payload.len(),
+            });
+        }
+        if body.register_types.first() != Some(&ValueType::Unit) {
+            return Err(TagBuildError::EffectRegister);
+        }
+        for (index, (&register, &contract)) in payload.iter().zip(&declaration.payload).enumerate()
+        {
+            let actual = *body
+                .register_types
+                .get(register as usize)
+                .ok_or(TagBuildError::Register(register))?;
+            let expected = self
+                .contracts
+                .table()
+                .kind(contract)
+                .expect("declared contract");
+            if actual != expected {
+                return Err(TagBuildError::PayloadKind {
+                    tag,
+                    register,
+                    index,
+                    expected,
+                    actual,
+                });
+            }
+        }
+        body.throw(0, tag, payload);
+        Ok(())
     }
 }

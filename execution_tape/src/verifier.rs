@@ -39,7 +39,7 @@ use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
     CallSigId, ConstEntry, ElemTypeId, Function, Program, RegisterTypes, SpanEntry, SpanId,
-    SymbolId, TypeId, ValueType,
+    SymbolId, TagId, TypeId, ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
@@ -622,6 +622,49 @@ pub enum VerifyError {
         /// The repeated name.
         name: Box<str>,
     },
+    /// A `throw` references an exception tag outside the program's tag table.
+    TagOutOfBounds {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Requested tag id.
+        tag: u32,
+    },
+    /// A `throw` supplies a different number of payload values than its tag declares.
+    ThrowArityMismatch {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Thrown tag id.
+        tag: u32,
+        /// Thrown tag name.
+        name: Box<str>,
+        /// Declared payload arity.
+        expected: u32,
+        /// Supplied payload register count.
+        actual: u32,
+    },
+    /// A `throw` payload register's declared kind differs from its tag's payload kind.
+    ThrowPayloadMismatch {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Thrown tag id.
+        tag: u32,
+        /// Thrown tag name.
+        name: Box<str>,
+        /// Zero-based payload position.
+        index: u32,
+        /// Source register.
+        reg: u32,
+        /// Kind declared by the tag.
+        expected: ValueType,
+        /// Kind declared for the register.
+        actual: ValueType,
+    },
     /// A function has no register declarations, including the required r0 effect token.
     MissingRegisterTypes {
         /// Function index.
@@ -947,6 +990,33 @@ impl fmt::Display for VerifyError {
             Self::DuplicateTagName { tag, first, name } => write!(
                 f,
                 "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
+            ),
+            Self::TagOutOfBounds { func, pc, tag } => {
+                write!(f, "function {func} pc={pc} throw: tag#{tag} out of bounds")
+            }
+            Self::ThrowArityMismatch {
+                func,
+                pc,
+                tag,
+                name,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "function {func} pc={pc} throw tag#{tag} (\"{name}\") expects {expected} payload values, got {actual}"
+            ),
+            Self::ThrowPayloadMismatch {
+                func,
+                pc,
+                tag,
+                name,
+                index,
+                reg,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "function {func} pc={pc} throw tag#{tag} (\"{name}\") payload[{index}] requires {expected:?}, r{reg} declares {actual:?}"
             ),
             Self::MissingRegisterTypes { func } => write!(
                 f,
@@ -1505,6 +1575,16 @@ fn verify_id_operands_in_bounds(
             });
         }
 
+        if let Instr::Throw { tag, .. } = &di.instr
+            && program.tag(TagId(*tag)).is_none()
+        {
+            err = Some(VerifyError::TagOutOfBounds {
+                func,
+                pc,
+                tag: *tag,
+            });
+        }
+
         if let Some(err) = err {
             return Err(err);
         }
@@ -1903,6 +1983,13 @@ fn verify_function_bytecode(
             Instr::Block { .. } => unreachable!("declarations have no execution step"),
             Instr::Nop => ExecInstr::Nop,
             Instr::Trap { code } => ExecInstr::Trap { code: *code },
+            Instr::Throw { eff_in, tag, args } => {
+                check_unit(*eff_in)?;
+                ExecInstr::Throw {
+                    tag: TagId(*tag),
+                    args: push_vregs(args)?,
+                }
+            }
 
             Instr::Mov { dst, src } => match (map(*dst)?, map(*src)?) {
                 (VReg::Unit, VReg::Unit) => ExecInstr::Nop,
@@ -3041,6 +3128,10 @@ fn validate_instr_reads_writes(
                 return Err(VerifyError::ReturnArityMismatch { func: func_id, pc });
             }
         }
+        Instr::Throw { eff_in, tag, args } => {
+            require_eff_in_r0(*eff_in)?;
+            tags::check_throw_arity(program, func_id, pc, TagId(*tag), args.len())?;
+        }
         Instr::HostCall {
             eff_out,
             host_sig,
@@ -3186,6 +3277,9 @@ fn validate_instr_types(
     let t = |reg: u32| types.get(reg);
 
     match instr {
+        Instr::Throw { tag, args, .. } => {
+            tags::check_throw_payload(program, func_id, pc, TagId(*tag), args, types)?;
+        }
         Instr::Nop
         | Instr::Trap { .. }
         | Instr::Jmp { .. }

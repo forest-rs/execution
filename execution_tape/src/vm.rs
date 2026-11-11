@@ -37,6 +37,8 @@ mod aggregate_tests;
 mod budget;
 mod continuation;
 use budget::Budget;
+mod exceptions;
+pub use exceptions::UncaughtException;
 mod host_call;
 mod inspection;
 mod invocation;
@@ -262,6 +264,11 @@ pub enum Trap {
     InvalidUtf8,
     /// Explicit trap instruction.
     TrapCode(u32),
+    /// A guest exception escaped every activation of the invocation.
+    ///
+    /// This is a guest-raised outcome rather than a VM failure. Its payload survives the
+    /// invocation's rollback as a detached snapshot.
+    Uncaught(Box<UncaughtException>),
 }
 
 impl fmt::Display for Trap {
@@ -351,6 +358,7 @@ impl fmt::Display for Trap {
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
             Self::TrapCode(code) => write!(f, "trap({code})"),
+            Self::Uncaught(exception) => exception.fmt(f),
         }
     }
 }
@@ -1445,6 +1453,20 @@ impl<H: Host> Vm<H> {
                 ExecInstr::Nop => {}
                 ExecInstr::Trap { code } => {
                     return Err(ctx.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
+                }
+                ExecInstr::Throw { tag, args } => {
+                    return Err(self.raise::<P>(
+                        ctx,
+                        budget,
+                        program_ref,
+                        *tag,
+                        vf.vregs(*args),
+                        base,
+                        sources,
+                        trace,
+                        TraceLocation { func: func_id, pc },
+                        span_id,
+                    ));
                 }
 
                 ExecInstr::MovBool { dst, src } => {

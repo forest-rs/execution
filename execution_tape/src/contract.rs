@@ -633,6 +633,9 @@ impl ContractViolation {
                 write!(f, "indirect signature #{}: argument[{index}]", signature.0)?;
             }
             ContractPosition::Result { index } => write!(f, "result[{index}]")?,
+            ContractPosition::Payload { tag, index } => {
+                write!(f, "throw tag#{}: payload[{index}]", tag.0)?;
+            }
         }
         self.fmt_suffix(f)
     }
@@ -678,6 +681,13 @@ pub enum ContractPosition {
         /// Zero-based return position.
         index: u32,
     },
+    /// An exception payload value, checked where `throw` raises it.
+    Payload {
+        /// Program-local exception tag.
+        tag: crate::program::TagId,
+        /// Zero-based payload position.
+        index: u32,
+    },
 }
 
 impl fmt::Display for ContractPosition {
@@ -692,6 +702,7 @@ impl fmt::Display for ContractPosition {
                 signature.0
             ),
             Self::Result { index } => write!(f, "result[{index}]"),
+            Self::Payload { tag, index } => write!(f, "payload[{index}] of tag#{}", tag.0),
         }
     }
 }
