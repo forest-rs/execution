@@ -92,6 +92,9 @@ impl FootfallSink {
             TraceOutcome::Unwound { .. } => {
                 footfall::message_with(ok_desc, self.context, "unwound", args);
             }
+            TraceOutcome::Caught { .. } => {
+                footfall::message_with(ok_desc, self.context, "caught", args);
+            }
             TraceOutcome::Cancelled => {
                 footfall::message_with(ok_desc, self.context, "cancelled", args);
             }

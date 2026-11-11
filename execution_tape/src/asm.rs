@@ -13,7 +13,9 @@ mod calls;
 pub use calls::{CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
+mod regions;
 mod sources;
+pub use regions::Catch;
 mod tags;
 pub use tags::TagBuildError;
 
@@ -28,8 +30,9 @@ use crate::host::HostSig;
 use crate::opcode::Opcode;
 use crate::program::{
     ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
-    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry,
-    SpanId, StructTypeDef, SymbolId, TagEntry, TagId, TypeId, TypeTableDef, ValueType,
+    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, RegionDef,
+    RegionId, RegionRun, SpanEntry, SpanId, StructTypeDef, SymbolId, TagEntry, TagId, TypeId,
+    TypeTableDef, ValueType,
 };
 use crate::value::FuncId;
 use crate::value::{Decimal, DecimalRounding};
@@ -134,6 +137,10 @@ pub struct AsmParts {
     pub spans: Vec<SpanEntry>,
     /// Optional named labels placed within the function.
     pub labels: Vec<NamedLabel>,
+    /// Protected regions with resolved handler targets, indexed by [`RegionId`].
+    pub regions: Vec<RegionDef>,
+    /// Instruction ranges attributed to their innermost region, sorted by offset.
+    pub region_runs: Vec<RegionRun>,
 }
 
 /// A named label placed within a function.
@@ -776,6 +783,8 @@ impl ProgramBuilder {
             register_types: Vec::new(),
             bytecode: Vec::new(),
             spans: Vec::new(),
+            regions: Vec::new(),
+            region_runs: Vec::new(),
         });
         Ok(id)
     }
@@ -814,6 +823,8 @@ impl ProgramBuilder {
         slot.register_types = parts.register_types;
         slot.bytecode = parts.bytecode;
         slot.spans = parts.spans;
+        slot.regions = parts.regions;
+        slot.region_runs = parts.region_runs;
         for l in parts.labels {
             let sym = self.symbol(&l.name);
             self.labels.push(LabelNameEntry {
@@ -839,6 +850,8 @@ impl ProgramBuilder {
         slot.register_types = parts.register_types;
         slot.bytecode = parts.bytecode;
         slot.spans = spans;
+        slot.regions = parts.regions;
+        slot.region_runs = parts.region_runs;
         for l in parts.labels {
             let sym = self.symbol(&l.name);
             self.labels.push(LabelNameEntry {
@@ -868,6 +881,8 @@ impl ProgramBuilder {
             register_types: parts.register_types,
             bytecode: parts.bytecode,
             spans: parts.spans,
+            regions: parts.regions,
+            region_runs: parts.region_runs,
         });
         for l in parts.labels {
             let sym = self.symbol(&l.name);
@@ -882,7 +897,17 @@ impl ProgramBuilder {
 
     /// Builds the [`Program`].
     #[must_use]
-    pub fn build(self) -> Program {
+    pub fn build(mut self) -> Program {
+        let protection: Vec<_> = self
+            .functions
+            .iter_mut()
+            .map(|f| {
+                (
+                    core::mem::take(&mut f.regions),
+                    core::mem::take(&mut f.region_runs),
+                )
+            })
+            .collect();
         let mut p = Program::new_with_contracts(
             self.symbols,
             self.const_pool,
@@ -910,6 +935,9 @@ impl ProgramBuilder {
                     len: rets_len,
                 },
             });
+        }
+        for (function, (regions, runs)) in protection.into_iter().enumerate() {
+            p.set_protection(function, regions, runs);
         }
         // Tags follow call signatures in the contract arena, matching decoding.
         for tag in self.tags {
@@ -1040,6 +1068,7 @@ pub struct Asm {
     fixups: Vec<Fixup>,
     span_marks: Vec<(u32, SpanId)>,
     sources: sources::Sources,
+    regions: regions::Regions,
 }
 
 #[derive(Clone, Debug)]
@@ -1239,11 +1268,14 @@ impl Asm {
             labels_out.push(NamedLabel { pc, name });
         }
 
+        let (regions, region_runs) = self.regions.finish(&self.labels, self.bytes.len())?;
         Ok(AsmParts {
             register_types: self.register_types,
             bytecode: self.bytes,
             spans,
             labels: labels_out,
+            regions,
+            region_runs,
         })
     }
 
@@ -1305,6 +1337,8 @@ impl Asm {
             register_types: parts.register_types.clone(),
             bytecode: parts.bytecode.clone(),
             spans: parts.spans.clone(),
+            regions: parts.regions.clone(),
+            region_runs: parts.region_runs.clone(),
         });
         let p = builder.build();
         verify_program(&p, cfg)?;

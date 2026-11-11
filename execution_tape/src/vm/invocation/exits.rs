@@ -304,7 +304,7 @@ impl<H: Host> Running<'_, '_, H> {
 }
 
 impl TraceCtx<'_> {
-    fn exit_host(
+    pub(in crate::vm) fn exit_host(
         &mut self,
         program: &Program,
         location: TraceLocation,
@@ -326,7 +326,7 @@ impl TraceCtx<'_> {
             }
         }
     }
-    fn exit_frame(
+    pub(in crate::vm) fn exit_frame(
         &mut self,
         program: &Program,
         depth: usize,

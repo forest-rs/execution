@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::analysis::protection::{Handler, Protection};
 use crate::bytecode::DecodedInstr;
 use crate::instr_operands;
 use crate::opcode::Opcode;
@@ -24,7 +25,7 @@ pub(crate) enum Successors {
 }
 
 impl Successors {
-    fn push(&mut self, target: usize) {
+    pub(crate) fn push(&mut self, target: usize) {
         match self {
             Self::None => *self = Self::One(target),
             Self::One(first) => *self = Self::Two([*first, target]),
@@ -58,7 +59,27 @@ pub(crate) struct BasicBlock {
     pub(crate) end_pc: u32,
     pub(crate) instr_start: usize,
     pub(crate) instr_end: usize,
+    /// Ordinary arms, followed by one exceptional arm per [`Self::raises`] entry.
     pub(crate) succs: Successors,
+    /// Catch clauses reachable from raising instructions in this block, in arm order.
+    pub(crate) raises: Vec<Raise>,
+}
+
+/// An exceptional arm: control leaves before `first` executes and enters `handler`.
+///
+/// `first` is the earliest decoded instruction in the block that can reach this clause. Every
+/// earlier instruction of the block has completed, so its writes are definitely available.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Raise {
+    pub(crate) first: usize,
+    pub(crate) handler: Handler,
+}
+
+impl BasicBlock {
+    /// Number of ordinary arms; exceptional arms follow them in [`Self::succs`].
+    pub(crate) fn normal_arms(&self) -> usize {
+        self.succs.iter().len() - self.raises.len()
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -85,6 +106,7 @@ pub(crate) fn build_basic_blocks(
     byte_len: u32,
     decoded: &[DecodedInstr],
     boundaries: &[bool],
+    protection: &Protection,
 ) -> Result<Vec<BasicBlock>, InvalidJumpTarget> {
     // Leaders are: entry, jump targets, and the next instruction after a terminator.
     let mut leader = vec![false; (byte_len as usize) + 1];
@@ -121,6 +143,14 @@ pub(crate) fn build_basic_blocks(
         });
         if let Some(err) = err {
             return Err(err);
+        }
+        // Validated clause targets are block headers within the function.
+        for handler in protection.handlers(i) {
+            let target = handler.catch.target();
+            if target < byte_len {
+                leader[target as usize] = true;
+                leader_src[target as usize].get_or_insert(di.offset);
+            }
         }
 
         if op.is_terminator() && end <= byte_len as usize {
@@ -175,6 +205,7 @@ pub(crate) fn build_basic_blocks(
             instr_start,
             instr_end,
             succs: Successors::None,
+            raises: Vec::new(),
         });
     }
 
@@ -207,6 +238,26 @@ pub(crate) fn build_basic_blocks(
             successors.push(pc_to_block[pc as usize]);
         });
         blocks[i].succs = successors;
+    }
+
+    // Exceptional arms follow the ordinary ones, one per distinct reachable clause.
+    for block in &mut blocks {
+        for index in block.instr_start..block.instr_end {
+            for &handler in protection.handlers(index) {
+                if block.raises.iter().any(|raise| {
+                    (raise.handler.region, raise.handler.clause) == (handler.region, handler.clause)
+                }) {
+                    continue;
+                }
+                block.raises.push(Raise {
+                    first: index,
+                    handler,
+                });
+                block
+                    .succs
+                    .push(pc_to_block[handler.catch.target() as usize]);
+            }
+        }
     }
 
     Ok(blocks)

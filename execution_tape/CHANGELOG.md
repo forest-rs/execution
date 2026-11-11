@@ -43,6 +43,25 @@ This release has an [MSRV][] of 1.88.
   Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
   Migration: handle the new `Opcode` variants in exhaustive matches.
 
+- Catch exceptions in protected regions. `Asm::begin_region`, `end_region` and `resume_region`
+  attribute emitted instructions to a region tree with ordered `Catch::Tag` and `Catch::All`
+  clauses targeting typed blocks; a tag clause's block receives the payload as parameters. The
+  optional `regions` section stores each function's `RegionEntry` tree, `CatchClause`s and
+  `RegionRun`s. The innermost catching clause, searched from the throwing activation outward,
+  receives the exception; abandoned activations, guest callbacks and their pending host requests
+  are released. Traps, limits and payload contract failures are never caught; uncaught exceptions
+  still end as `Trap::Uncaught`. The verifier follows exceptional edges for initialization and
+  refinement facts and reports `InvalidRegion` and `InvalidRegionRun`, naming the region and
+  clause. `ValueEvent::Caught` reports the clause and handler, abandoned work closes with
+  `TraceOutcome::Caught`, recordings retain every raised exception and replay checks each catch.
+  Disassembly lists regions and their clauses.
+  Migration: handle `TraceOutcome::Caught`, `ValueEvent::Caught`, `InstructionOutcome::Caught`,
+  `ReplayBoundary::Caught` and the new `VerifyError` variants in exhaustive matches;
+  `ReplayBoundary::Thrown` now carries the exception's index. Code constructing `Function` or
+  `Program` directly must initialize `Function::regions`, `Function::region_runs`,
+  `Program::regions`, `Program::catch_clauses` and `Program::region_runs`, and `AsmParts` gains
+  `regions` and `region_runs`.
+
 - Raise typed exceptions with the `throw` terminator (`Asm::throw`, or the checked
   `ProgramBuilder::emit_throw`). The verifier names the tag in `TagOutOfBounds`,
   `ThrowArityMismatch` and `ThrowPayloadMismatch`; refined payload contracts are proven statically

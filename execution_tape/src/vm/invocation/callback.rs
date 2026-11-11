@@ -17,21 +17,21 @@ struct WaitingHost {
 }
 
 impl Callbacks {
-    pub(super) fn count_exited(&self, first: usize) -> usize {
+    pub(in crate::vm) fn count_exited(&self, first: usize) -> usize {
         self.waiting
             .iter()
             .rev()
             .take_while(|waiting| waiting.host.depth >= first)
             .count()
     }
-    pub(super) fn waiting_at(&self, depth: usize) -> Option<(PendingHost, bool)> {
+    pub(in crate::vm) fn waiting_at(&self, depth: usize) -> Option<(PendingHost, bool)> {
         self.waiting
             .iter()
             .rev()
             .find(|waiting| waiting.host.depth == depth)
             .map(|waiting| (waiting.host, waiting.instruction))
     }
-    pub(super) fn discard_exited(&mut self, first: usize) {
+    pub(in crate::vm) fn discard_exited(&mut self, first: usize) {
         while self
             .waiting
             .last()

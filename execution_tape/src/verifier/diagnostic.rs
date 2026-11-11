@@ -53,6 +53,8 @@ impl VerifyError {
             | Self::StructFieldIndexOutOfBounds { func, .. }
             | Self::HostSigOutOfBounds { func, .. }
             | Self::CallSigOutOfBounds { func, .. }
+            | Self::InvalidRegion { func, .. }
+            | Self::InvalidRegionRun { func, .. }
             | Self::TagOutOfBounds { func, .. }
             | Self::ThrowArityMismatch { func, .. }
             | Self::ThrowPayloadMismatch { func, .. }
@@ -145,6 +147,8 @@ impl VerifyError {
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
             | Self::DuplicateTagName { .. }
+            | Self::InvalidRegion { .. }
+            | Self::InvalidRegionRun { .. }
             | Self::HostSigHashMismatch { .. }
             | Self::MissingRegisterTypes { .. }
             | Self::BytecodeDecode { .. } => None,

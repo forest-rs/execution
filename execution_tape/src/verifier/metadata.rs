@@ -39,6 +39,8 @@ pub enum MetadataTable {
     ReturnNames,
     /// Exception tag names and payload contract ranges, indexed by tag.
     Tags,
+    /// Protected region, clause and run ranges, indexed by function.
+    Regions,
 }
 
 fn invalid(table: MetadataTable, entry: usize, error: DecodeError) -> VerifyError {

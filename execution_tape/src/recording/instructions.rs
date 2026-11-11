@@ -87,6 +87,11 @@ pub enum InstructionOutcome {
         /// Target activation ordinal within this invocation.
         target: u64,
     },
+    /// The instruction was abandoned by an exception that a catch clause handled.
+    Caught {
+        /// Stack depth of the catching activation; the root activation has depth one.
+        depth: usize,
+    },
     /// The instruction trapped. The final VM trap is available from the recording outcome.
     Trapped,
 }
@@ -229,6 +234,10 @@ impl History {
             self.root_exit = self.current();
         }
     }
+    /// A caught exception resumes at a handler rather than at the abandoned attempts' successors.
+    pub(crate) fn begin_catch(&mut self) {
+        self.control_boundary = true;
+    }
     pub(crate) fn begin_callback(&mut self, location: TraceLocation) {
         if self.status == InstructionStatus::Incomplete {
             return;
@@ -327,6 +336,7 @@ impl History {
             crate::trace::TraceOutcome::Unwound { target } => {
                 InstructionOutcome::Unwound { target }
             }
+            crate::trace::TraceOutcome::Caught { depth } => InstructionOutcome::Caught { depth },
             crate::trace::TraceOutcome::Cancelled => {
                 self.status = InstructionStatus::Incomplete;
                 InstructionOutcome::Pending

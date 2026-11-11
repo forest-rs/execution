@@ -4,7 +4,7 @@
 use crate::host::ValueRef;
 use crate::program::Program;
 use crate::recording::{
-    Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, InstructionCapture,
+    Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry, InstructionCapture,
     InstructionOutcome, InstructionStatus, RecordLimits, Recording, Thrown,
     control::{Action, Command, Returned},
     frames::{Frame, FrameId},
@@ -41,7 +41,7 @@ pub struct Recorder {
     top: Option<FrameId>,
     outcome_frame: Option<FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
-    thrown: Option<Thrown>,
+    thrown: Vec<Thrown>,
     end: Option<End>,
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
@@ -64,7 +64,7 @@ impl Recorder {
             top: None,
             outcome_frame: None,
             candidate: None,
-            thrown: None,
+            thrown: Vec::new(),
             end: None,
             fault: None,
             fault_location: None,
@@ -403,10 +403,11 @@ impl Recorder {
                 values,
                 aggregates,
             } => {
+                // Only a caught exception lets execution raise another.
                 if self.entry.is_none()
                     || self.end.is_some()
                     || self.candidate.is_some()
-                    || self.thrown.is_some()
+                    || self.thrown.last().is_some_and(|last| last.caught.is_none())
                 {
                     return Err(CaptureFault::InvalidSequence);
                 }
@@ -414,11 +415,44 @@ impl Recorder {
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
                 self.check_location(location)?;
-                self.thrown = Some(Thrown {
+                self.thrown.push(Thrown {
                     location,
                     tag,
                     values,
+                    caught: None,
                 });
+            }
+            ValueEvent::Caught {
+                location,
+                tag,
+                handler,
+                depth,
+                region,
+                clause,
+                unwound_callbacks,
+            } => {
+                let Some(last) = self.thrown.last_mut().filter(|last| {
+                    last.caught.is_none() && last.location == location && last.tag == tag
+                }) else {
+                    return Err(CaptureFault::InvalidSequence);
+                };
+                last.caught = Some(Caught {
+                    handler,
+                    depth,
+                    region,
+                    clause,
+                    unwound_callbacks,
+                });
+                // Abandoned callbacks never return to their commands.
+                let active = self
+                    .active_commands
+                    .len()
+                    .checked_sub(unwound_callbacks)
+                    .ok_or(CaptureFault::InvalidSequence)?;
+                self.active_commands.truncate(active);
+                if let Some(history) = &mut self.history {
+                    history.begin_catch();
+                }
             }
         }
         Ok(())
@@ -579,7 +613,8 @@ impl TraceSink for Recorder {
             | ValueEvent::CallbackReturn { location, .. }
             | ValueEvent::ReturnFrom { location, .. }
             | ValueEvent::ReturnCandidate { location, .. }
-            | ValueEvent::Thrown { location, .. } => Some(location),
+            | ValueEvent::Thrown { location, .. }
+            | ValueEvent::Caught { location, .. } => Some(location),
         };
         if self.check(program)
             && let Err(error) = self.capture(event)
@@ -710,7 +745,9 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
-            TraceOutcome::Unwound { .. } => self.fail(CaptureFault::InvalidSequence),
+            TraceOutcome::Unwound { .. } | TraceOutcome::Caught { .. } => {
+                self.fail(CaptureFault::InvalidSequence);
+            }
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),
             TraceOutcome::Ok => {
                 if !self.active_commands.is_empty() {
@@ -731,8 +768,9 @@ impl TraceSink for Recorder {
                     _ => 0,
                 };
                 if let Trap::Uncaught(exception) = &error.trap
-                    && !self.thrown.as_ref().is_some_and(|thrown| {
-                        thrown.tag == exception.local_tag()
+                    && !self.thrown.last().is_some_and(|thrown| {
+                        thrown.caught.is_none()
+                            && thrown.tag == exception.local_tag()
                             && thrown.location.func == error.func
                             && thrown.location.pc == error.pc
                     })

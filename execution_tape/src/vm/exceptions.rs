@@ -3,14 +3,15 @@
 
 //! Raising typed exceptions.
 //!
-//! `throw` materializes its payload, checks the tag's payload contracts and then unwinds. No
-//! protected region exists yet, so every exception escapes the invocation and is reported as
-//! [`Trap::Uncaught`]. The payload is detached into an owned [`ValueSnapshot`] before the failed
-//! invocation rolls back its aggregates, so the embedding can still inspect it.
+//! `throw` materializes its payload, checks the tag's payload contracts and then unwinds to the
+//! innermost catching clause of a protected region. An exception no clause catches leaves the
+//! invocation as [`Trap::Uncaught`]; its payload is detached into an owned [`ValueSnapshot`]
+//! before the failed invocation rolls back its aggregates, so the embedding can inspect it.
 
 use super::*;
 use crate::aggregates::ValueSnapshot;
 use crate::program::TagId;
+use crate::typed::ExecCatch;
 
 /// A guest exception that no protected region caught before it left the invocation.
 ///
@@ -58,10 +59,14 @@ impl fmt::Display for UncaughtException {
 }
 
 impl<H: Host> Vm<H> {
-    /// Raises `tag` at the throwing instruction and returns the trap that ends the invocation.
+    /// Raises `tag` at the throwing instruction.
     ///
     /// Payload materialization, observation and contract checks happen at the throw site, so a
-    /// rejected payload reports its own trap there rather than an uncaught exception.
+    /// rejected payload reports its own trap there rather than an exception. Then the innermost
+    /// catching clause, searched from the throwing activation outward, receives the payload and
+    /// execution continues at its handler: `Ok(())`. Activations and pending host requests it
+    /// passes through are abandoned. With no catching clause, the returned trap ends the
+    /// invocation with a detached payload snapshot.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -70,21 +75,23 @@ impl<H: Host> Vm<H> {
         &self,
         ctx: &mut Registers,
         budget: &mut Budget,
-        program: &Program,
+        prepared: &VerifiedProgram,
         tag: TagId,
         payload: &[VReg],
         base: RegBase,
         sources: ValueSources<'_>,
         trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
         location: TraceLocation,
         span_id: Option<u64>,
-    ) -> TrapInfo {
+    ) -> Result<(), TrapInfo> {
+        let program = prepared.program();
         let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
         let mut values = Vec::with_capacity(payload.len());
         for &register in payload {
             match ctx.materialize_vreg(budget, base, register, sources) {
                 Ok(value) => values.push(value),
-                Err(trap) => return fail(ctx, trap),
+                Err(trap) => return Err(fail(ctx, trap)),
             }
         }
         P::values(trace, program, || ValueEvent::Thrown {
@@ -112,17 +119,126 @@ impl<H: Host> Vm<H> {
                     tag,
                     index: u32::try_from(index).expect("verified payload arity"),
                 };
-                return fail(ctx, self.contract_trap(location.func, position, error));
+                return Err(fail(
+                    ctx,
+                    self.contract_trap(location.func, position, error),
+                ));
             }
+        }
+        if let Some((frame, catch)) = find_catch(ctx, prepared, tag) {
+            return self.catch::<P>(
+                ctx, budget, prepared, tag, values, trace, control, location, span_id, frame, catch,
+            );
         }
         let payload = match self.memory.aggs().snapshot(&values) {
             Ok(payload) => payload,
-            Err(error) => return fail(ctx, Trap::AggError(error)),
+            Err(error) => return Err(fail(ctx, Trap::AggError(error))),
         };
         let name = program.tag_name(tag).unwrap_or_default().into();
-        fail(
+        Err(fail(
             ctx,
             Trap::Uncaught(Box::new(UncaughtException { tag, name, payload })),
-        )
+        ))
     }
+
+    /// Unwinds to `frame` and enters `catch`'s handler with the payload.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "continues the raise with the same interpreter state"
+    )]
+    fn catch<P: TracePolicy>(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        prepared: &VerifiedProgram,
+        tag: TagId,
+        values: Vec<Value>,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        location: TraceLocation,
+        span_id: Option<u64>,
+        frame: usize,
+        catch: ExecCatch,
+    ) -> Result<(), TrapInfo> {
+        let program = prepared.program();
+        let catcher = &ctx.frames[frame];
+        let body = prepared
+            .verified(catcher.func)
+            .expect("active verified function");
+        let target_ix = catch.handler.target_ix as usize;
+        let handler = TraceLocation {
+            func: catcher.func,
+            pc: body.pc_at_ix(target_ix).expect("verified handler entry"),
+        };
+        let depth = frame + 1;
+        let unwound_callbacks = control
+            .callbacks
+            .as_ref()
+            .map_or(0, |callbacks| callbacks.count_exited(depth));
+        P::values(trace, program, || ValueEvent::Caught {
+            location,
+            tag,
+            handler,
+            depth,
+            region: catch.region,
+            clause: catch.clause,
+            unwound_callbacks,
+        });
+        let outcome = TraceOutcome::Caught { depth };
+        // Close the throw first, then every abandoned activation and pending host request,
+        // innermost first, while their frames and banks are still intact.
+        trace.instr_end(program, Some(handler), outcome);
+        for exited in (depth + 1..=ctx.frames.len()).rev() {
+            trace.exit_frame(program, exited, location, span_id, outcome);
+            let waiting = control
+                .callbacks
+                .as_ref()
+                .and_then(|callbacks| callbacks.waiting_at(exited - 1));
+            if let Some((host, instruction)) = waiting {
+                trace.pending = instruction.then_some(host.location);
+                let span = ctx.span_at(program, host.location.func, host.location.pc);
+                trace.exit_host(program, host.location, span, outcome);
+                trace.instr_end(program, None, outcome);
+            }
+        }
+        if let Some(first) = ctx.frames.get(depth) {
+            let base = first.base;
+            budget.frames -= ctx.frames.len() - depth;
+            ctx.frames.truncate(depth);
+            ctx.truncate_to(base);
+        }
+        control.truncate(depth);
+        if let Some(callbacks) = &mut control.callbacks {
+            callbacks.discard_exited(depth);
+        }
+        let catcher = ctx.frames.last_mut().expect("catching activation");
+        catcher.instr_ix = target_ix;
+        catcher.pc = handler.pc;
+        let base = catcher.base;
+        for (&param, value) in body.vregs(catch.handler.params).iter().zip(values) {
+            ctx.write_owned_value(base, param, value)
+                .map_err(|trap| ctx.trap(location.func, location.pc, span_id, trap))?;
+        }
+        Ok(())
+    }
+}
+
+/// Finds the innermost activation whose protected regions catch `tag` at its raising instruction.
+///
+/// The leaf raised with `throw`; every other activation is suspended at the call or host call
+/// that entered the activation above it. Each frame has already advanced past that instruction.
+fn find_catch(
+    ctx: &Registers,
+    prepared: &VerifiedProgram,
+    tag: TagId,
+) -> Option<(usize, ExecCatch)> {
+    ctx.frames
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, frame)| {
+            let protection = prepared.verified(frame.func)?.protection.as_deref()?;
+            let raising = frame.instr_ix.checked_sub(1)?;
+            Some((index, protection.catch(raising, tag)?))
+        })
 }
