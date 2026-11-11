@@ -90,6 +90,7 @@ impl TraceSink for Observe {
                         ));
                     }
                     HostCallOutcome::Failed(error) => self.host_errors.push(error.clone()),
+                    HostCallOutcome::Threw { .. } => panic!("fixture host raises no exceptions"),
                 }
             }
             ValueEvent::ReturnCandidate {

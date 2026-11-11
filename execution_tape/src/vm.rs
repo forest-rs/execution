@@ -266,6 +266,11 @@ pub enum Trap {
     InvalidUtf8,
     /// Explicit trap instruction.
     TrapCode(u32),
+    /// A host raised a tag that the calling program does not declare.
+    TagOutOfBounds {
+        /// Requested tag.
+        tag: crate::program::TagId,
+    },
     /// An exception reference would cross the invocation boundary.
     ///
     /// Entry functions, guest callbacks and the embedding exchange [`Value`]s, which cannot hold
@@ -366,6 +371,9 @@ impl fmt::Display for Trap {
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
             Self::TrapCode(code) => write!(f, "trap({code})"),
+            Self::TagOutOfBounds { tag } => {
+                write!(f, "host raised tag#{}, which the program does not declare", tag.0)
+            }
             Self::ExceptionBoundary => f.write_str(
                 "exception references cannot cross the invocation boundary",
             ),
@@ -2513,12 +2521,14 @@ impl<H: Host> Vm<H> {
                         &mut host_results,
                         access_for_call,
                     );
-                    let host_result =
+                    let mut host_result =
                         self.host
                             .call(sym, hs.sig_hash, call_args, ret_slots, host_ctx);
                     let work = host_results.work;
-                    let created =
-                        host_results.adopt(self.memory.aggs_mut(), ret_slots, host_result.is_ok());
+                    let created = match host_call::adopted_roots(ret_slots, &mut host_result) {
+                        Some(roots) => host_results.adopt(self.memory.aggs_mut(), roots, true),
+                        None => host_results.adopt(self.memory.aggs_mut(), &mut [], false),
+                    };
                     budget.aggregate_work += work.aggregate;
                     budget.payload_work += work.payload;
                     if P::values_enabled(trace) {
@@ -2550,13 +2560,7 @@ impl<H: Host> Vm<H> {
                             location: TraceLocation { func: func_id, pc },
                             host_sig: *host_sig,
                             args: &observed_args,
-                            outcome: match &host_result {
-                                Ok(extra_fuel) => HostCallOutcome::Returned {
-                                    values: ret_slots,
-                                    extra_fuel: *extra_fuel,
-                                },
-                                Err(error) => HostCallOutcome::Failed(error),
-                            },
+                            outcome: host_call::observed(ret_slots, &host_result),
                             work,
                             created: created.as_ref().ok().unwrap_or(&(0..0)),
                             aggregates: self.memory.aggs(),
@@ -2564,6 +2568,19 @@ impl<H: Host> Vm<H> {
                     }
                     created
                         .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
+                    if let Err(HostError::Throw(thrown)) = host_result {
+                        self.raise_host::<P>(
+                            ctx,
+                            budget,
+                            program,
+                            *thrown,
+                            trace,
+                            control,
+                            TraceLocation { func: func_id, pc },
+                            span_id,
+                        )?;
+                        continue;
+                    }
                     host_call::admit_return(
                         ctx,
                         budget,

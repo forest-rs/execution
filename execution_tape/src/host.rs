@@ -9,12 +9,13 @@
 mod results;
 pub(crate) use results::HostResults;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
-use crate::program::{HostSigId, Program, ValueType};
+use crate::program::{HostSigId, Program, TagId, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
@@ -519,6 +520,7 @@ pub(crate) fn sig_hash_iter<'a>(
 ///
 /// Use [`Self::custom`] to preserve an owned domain error in the VM result. Detailed failures
 /// can be recovered by downcasting the error source; they need no host-side last-error channel.
+/// [`Self::throw`] is not a failure: it raises a guest exception at the calling instruction.
 #[derive(Clone, Debug)]
 pub enum HostError {
     /// The symbol is unknown to the host.
@@ -531,6 +533,23 @@ pub enum HostError {
     Failed,
     /// An owned, typed operation failure. Clones share the immutable error payload.
     Custom(Arc<dyn core::error::Error + Send + Sync>),
+    /// Raise a guest exception at the `host_call` instead of returning results.
+    ///
+    /// Protected regions around the call can catch it, exactly as if the guest had executed
+    /// `throw`. The payload is checked against the tag; a wrong tag, arity or kind traps.
+    Throw(Box<HostThrow>),
+}
+
+/// A guest exception raised by a host call: a program tag and its payload, in tag order.
+///
+/// Aggregate payload values may be built with the call's [`HostContext`]; they are adopted
+/// like returned values. Other handles must belong to the calling invocation.
+#[derive(Clone, Debug)]
+pub struct HostThrow {
+    /// Program-local tag of the calling program.
+    pub tag: TagId,
+    /// Payload values in tag order.
+    pub payload: Vec<Value>,
 }
 
 impl HostError {
@@ -542,6 +561,12 @@ impl HostError {
     pub fn custom(error: impl core::error::Error + Send + Sync + 'static) -> Self {
         Self::Custom(Arc::new(error))
     }
+
+    /// Raises `tag` with `payload` as a guest exception at the calling `host_call`.
+    #[must_use]
+    pub fn throw(tag: TagId, payload: Vec<Value>) -> Self {
+        Self::Throw(Box::new(HostThrow { tag, payload }))
+    }
 }
 
 impl fmt::Display for HostError {
@@ -552,6 +577,12 @@ impl fmt::Display for HostError {
             Self::ProgramMismatch => write!(f, "host binding program mismatch"),
             Self::Failed => write!(f, "host call failed"),
             Self::Custom(error) => error.fmt(f),
+            Self::Throw(thrown) => write!(
+                f,
+                "host raised tag#{} with {} payload values",
+                thrown.tag.0,
+                thrown.payload.len()
+            ),
         }
     }
 }

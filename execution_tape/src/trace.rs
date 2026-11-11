@@ -214,6 +214,14 @@ pub enum HostCallOutcome<'a> {
     },
     /// The host returned an owned operation error, borrowed for this callback.
     Failed(&'a HostError),
+    /// The host raised a guest exception with [`HostError::throw`]. Payload aggregates have been
+    /// adopted into the invocation heap; tag and payload are validated after observation.
+    Threw {
+        /// Raised tag.
+        tag: TagId,
+        /// Raw payload values.
+        payload: &'a [Value],
+    },
 }
 
 /// Borrowed values at an execution boundary, enabled by [`TraceMask::VALUES`].

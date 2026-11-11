@@ -370,6 +370,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         let call = &view.calls[index];
         let returns = match call.outcome {
             HostOutcome::Returned { values, .. } => values.len(),
+            HostOutcome::Threw { payload, .. } => payload.len(),
             HostOutcome::Failed(_) => 0,
         };
         call.args
@@ -428,6 +429,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 format!("returned {}", describe::values(view.record, values))
             }
             HostOutcome::Failed(error) => format!("failed: {}", host_error(error)),
+            HostOutcome::Threw { tag, payload } => format!(
+                "raised {}{}",
+                describe::exception_tag(view.record.program().program(), tag),
+                describe::values(view.record, payload)
+            ),
         };
         let mut detail = format!(
             "Call #{}: {name}({}) {response}\nSignature: {}",
@@ -835,6 +841,7 @@ fn call_values(
 ) {
     let (returns, failure) = match call.outcome {
         HostOutcome::Returned { values, .. } => (values, None),
+        HostOutcome::Threw { payload, .. } => (payload, None),
         HostOutcome::Failed(error) => (&[][..], Some(host_error(error))),
     };
     // Empty groups still get a descriptive row, but keyboard selection only visits values.

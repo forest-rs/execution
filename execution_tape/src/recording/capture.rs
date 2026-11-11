@@ -385,6 +385,12 @@ impl Recorder {
                         fuel: extra_fuel,
                     },
                     HostCallOutcome::Failed(error) => CallOutcome::Failed(error.clone()),
+                    HostCallOutcome::Threw { tag, payload } => CallOutcome::Threw {
+                        tag,
+                        payload: self
+                            .builder
+                            .roots(payload.iter().map(ValueRef::from_value), aggregates)?,
+                    },
                 };
                 let constructed = self.builder.constructed(created.clone())?;
                 self.check_location(location)?;

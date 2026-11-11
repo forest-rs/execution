@@ -752,6 +752,10 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - Host returns:
     - either success with return values and optional additional fuel cost
     - or failure, which becomes `HostCallFailed { symbol, sig_hash, error }`
+    - or `HostError::throw(tag, payload)` (`PendingHostCall::throw` for yielded requests), which
+      raises a guest exception at the `host_call` exactly as `throw` would there. Payload
+      aggregates built with the call's context are adopted like results. An undeclared tag traps
+      with `TagOutOfBounds`; a wrong payload arity or kind traps like an invalid return.
 
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and

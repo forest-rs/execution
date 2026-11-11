@@ -328,7 +328,10 @@ impl<'a> View<'a> {
                     Boundary::Host(i) => {
                         let call = &self.calls[i];
                         let returns = match call.outcome {
-                            HostOutcome::Returned { values, .. } => values,
+                            HostOutcome::Returned { values, .. }
+                            | HostOutcome::Threw {
+                                payload: values, ..
+                            } => values,
                             HostOutcome::Failed(_) => &[],
                         };
                         ("arg", call.args, returns)

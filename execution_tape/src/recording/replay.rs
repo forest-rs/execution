@@ -609,6 +609,14 @@ impl RecordedHost<'_> {
                 )?;
                 Ok(Delivery::Host(Ok((values, *fuel))))
             }
+            CallOutcome::Threw { tag, payload } => {
+                let payload = state.materialize(
+                    self.record,
+                    self.record.arena.slice(payload),
+                    request.aggregates(),
+                )?;
+                Ok(Delivery::Host(Err(HostError::throw(*tag, payload))))
+            }
         }
     }
 }
@@ -1466,6 +1474,8 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
             },
         ) => ae == be && aa == right_actual,
         (Trap::TrapCode(a), Trap::TrapCode(b)) => a == b,
+        (Trap::TagOutOfBounds { tag: a }, Trap::TagOutOfBounds { tag: b }) => a == b,
+        (Trap::ExceptionBoundary, Trap::ExceptionBoundary) => true,
         // Payload values and sharing were checked against the recorded `Thrown` event.
         (Trap::Uncaught(a), Trap::Uncaught(b)) => {
             a.local_tag() == b.local_tag() && a.name() == b.name()

@@ -261,6 +261,13 @@ pub enum HostOutcome<'a> {
     },
     /// Owned operation failure borrowed from this recording.
     Failed(&'a HostError),
+    /// The host raised a guest exception. Replay delivers the same tag and payload.
+    Threw {
+        /// Raised tag.
+        tag: TagId,
+        /// Captured payload values.
+        payload: &'a [RecordedValue],
+    },
 }
 
 /// One host-call observation, without expanding its aggregate graph.
@@ -335,6 +342,7 @@ struct Call {
 enum CallOutcome {
     Returned { values: Range<usize>, fuel: u64 },
     Failed(HostError),
+    Threw { tag: TagId, payload: Range<usize> },
 }
 #[derive(Debug)]
 enum End {
@@ -492,6 +500,10 @@ impl Recording {
                     extra_fuel: *fuel,
                 },
                 CallOutcome::Failed(error) => HostOutcome::Failed(error),
+                CallOutcome::Threw { tag, payload } => HostOutcome::Threw {
+                    tag: *tag,
+                    payload: self.arena.slice(payload),
+                },
             },
         })
     }
