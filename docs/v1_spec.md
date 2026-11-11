@@ -539,6 +539,8 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `i64_add r_dst, r_a, r_b`
 - `i64_sub r_dst, r_a, r_b`
 - `i64_mul r_dst, r_a, r_b`
+- `i64_add_ovf`/`i64_sub_ovf`/`i64_mul_ovf r_dst, r_overflow, r_a, r_b` -> `I64`, `Bool`
+- `u64_add_ovf`/`u64_sub_ovf`/`u64_mul_ovf r_dst, r_overflow, r_a, r_b` -> `U64`, `Bool`
 - `f64_add r_dst, r_a, r_b`
 - `f64_sub r_dst, r_a, r_b`
 - `f64_mul r_dst, r_a, r_b`
@@ -566,6 +568,14 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `dec_div r_dst, r_a, r_b, r_scale, rounding_u8`
 - `dec_rescale r_dst, r_a, r_scale, rounding_u8`
 - `dec_scale r_dst, r_a` -> `U64`
+
+#### Integer overflow semantics
+- `i64_add`/`i64_sub`/`i64_mul` (and the `u64` forms) wrap modulo 2^64 without reporting overflow.
+- The `_ovf` forms write the same wrapped result to `r_dst` and, to `r_overflow`, whether the exact
+  result was outside the operand type's range: signed overflow for `i64` and carry/borrow/overflow
+  for `u64`. They match Cranelift `sadd_overflow`/`ssub_overflow`/`smul_overflow` and
+  `uadd_overflow`/`usub_overflow`/`umul_overflow`, and never trap. A frontend with unbounded
+  integers uses them as its fast path, branching on the flag to promote or signal.
 
 #### Decimal semantics
 - `r_scale` is a `U64` register holding the result scale; a value above 255 traps with
@@ -732,6 +742,12 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x9E dec_scale dst, a` (`decimal` -> `u64`)
 - `0x9F dec_rescale dst, a, scale, rounding_u8` (`scale` is a `u64` register)
 - `0xA0 dec_div dst, a, b, scale, rounding_u8` (`scale` is a `u64` register; traps on zero divisor)
+- `0xA1 i64_add_ovf dst, overflow, a, b` (`dst` wrapped `i64`, `overflow` `bool`)
+- `0xA2 i64_sub_ovf dst, overflow, a, b`
+- `0xA3 i64_mul_ovf dst, overflow, a, b`
+- `0xA4 u64_add_ovf dst, overflow, a, b` (`dst` wrapped `u64`, `overflow` `bool`: carry)
+- `0xA5 u64_sub_ovf dst, overflow, a, b` (`overflow`: borrow)
+- `0xA6 u64_mul_ovf dst, overflow, a, b`
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`

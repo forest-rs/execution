@@ -1159,5 +1159,77 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 rounding,
             }
         },
+        Opcode::I64AddOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I64AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::I64SubOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I64SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::I64MulOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I64MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::U64AddOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U64AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::U64SubOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U64SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::U64MulOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U64MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
     })
 }

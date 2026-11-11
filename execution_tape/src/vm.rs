@@ -1777,6 +1777,45 @@ impl<H: Host> Vm<H> {
                     );
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::I64AddOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let (value, overflowed) = ctx
+                        .read_i64(base, *a)
+                        .overflowing_add(ctx.read_i64(base, *b));
+                    ctx.write_i64(base, *dst, value);
+                    ctx.write_bool(base, *overflow, overflowed);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64SubOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let (value, overflowed) = ctx
+                        .read_i64(base, *a)
+                        .overflowing_sub(ctx.read_i64(base, *b));
+                    ctx.write_i64(base, *dst, value);
+                    ctx.write_bool(base, *overflow, overflowed);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64MulOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let (value, overflowed) = ctx
+                        .read_i64(base, *a)
+                        .overflowing_mul(ctx.read_i64(base, *b));
+                    ctx.write_i64(base, *dst, value);
+                    ctx.write_bool(base, *overflow, overflowed);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
                 ExecInstr::I64And { dst, a, b } => {
                     ctx.write_i64(base, *dst, ctx.read_i64(base, *a) & ctx.read_i64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
@@ -1822,6 +1861,45 @@ impl<H: Host> Vm<H> {
                         *dst,
                         ctx.read_u64(base, *a).wrapping_mul(ctx.read_u64(base, *b)),
                     );
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64AddOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let (value, overflowed) = ctx
+                        .read_u64(base, *a)
+                        .overflowing_add(ctx.read_u64(base, *b));
+                    ctx.write_u64(base, *dst, value);
+                    ctx.write_bool(base, *overflow, overflowed);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64SubOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let (value, overflowed) = ctx
+                        .read_u64(base, *a)
+                        .overflowing_sub(ctx.read_u64(base, *b));
+                    ctx.write_u64(base, *dst, value);
+                    ctx.write_bool(base, *overflow, overflowed);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64MulOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let (value, overflowed) = ctx
+                        .read_u64(base, *a)
+                        .overflowing_mul(ctx.read_u64(base, *b));
+                    ctx.write_u64(base, *dst, value);
+                    ctx.write_bool(base, *overflow, overflowed);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::U64And { dst, a, b } => {

@@ -461,6 +461,30 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Scale, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::ImmU8, OperandRole::Rounding, OperandEncoding::U8Raw, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -657,6 +681,12 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "dec.scale", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 320, len: 2 } }, // 0x9E DecScale
     OpcodeInfo { mnemonic: "dec.rescale", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 322, len: 4 } }, // 0x9F DecRescale
     OpcodeInfo { mnemonic: "dec.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 326, len: 5 } }, // 0xA0 DecDiv
+    OpcodeInfo { mnemonic: "i64.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 331, len: 4 } }, // 0xA1 I64AddOvf
+    OpcodeInfo { mnemonic: "i64.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 335, len: 4 } }, // 0xA2 I64SubOvf
+    OpcodeInfo { mnemonic: "i64.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 339, len: 4 } }, // 0xA3 I64MulOvf
+    OpcodeInfo { mnemonic: "u64.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 343, len: 4 } }, // 0xA4 U64AddOvf
+    OpcodeInfo { mnemonic: "u64.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 347, len: 4 } }, // 0xA5 U64SubOvf
+    OpcodeInfo { mnemonic: "u64.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 351, len: 4 } }, // 0xA6 U64MulOvf
 ];
 
 /// Bytecode opcode byte for the v1 instruction set.
@@ -907,6 +937,18 @@ pub enum Opcode {
     DecRescale = 0x9F,
     /// `dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow).
     DecDiv = 0xA0,
+    /// `(dst, overflow) = a + b` (`i64` wrapped sum; `bool` true if the signed sum overflowed).
+    I64AddOvf = 0xA1,
+    /// `(dst, overflow) = a - b` (`i64` wrapped difference; `bool` true if the signed difference overflowed).
+    I64SubOvf = 0xA2,
+    /// `(dst, overflow) = a * b` (`i64` wrapped product; `bool` true if the signed product overflowed).
+    I64MulOvf = 0xA3,
+    /// `(dst, overflow) = a + b` (`u64` wrapped sum; `bool` true if the sum carried out).
+    U64AddOvf = 0xA4,
+    /// `(dst, overflow) = a - b` (`u64` wrapped difference; `bool` true if the difference borrowed).
+    U64SubOvf = 0xA5,
+    /// `(dst, overflow) = a * b` (`u64` wrapped product; `bool` true if the product overflowed).
+    U64MulOvf = 0xA6,
 }
 
 impl Opcode {
@@ -1036,6 +1078,12 @@ impl Opcode {
             0x9E => Self::DecScale,
             0x9F => Self::DecRescale,
             0xA0 => Self::DecDiv,
+            0xA1 => Self::I64AddOvf,
+            0xA2 => Self::I64SubOvf,
+            0xA3 => Self::I64MulOvf,
+            0xA4 => Self::U64AddOvf,
+            0xA5 => Self::U64SubOvf,
+            0xA6 => Self::U64MulOvf,
             _ => return None,
         })
     }

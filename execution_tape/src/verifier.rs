@@ -2131,6 +2131,39 @@ fn verify_function_bytecode(
                 a: map_i64(*a)?,
                 b: map_i64(*b)?,
             },
+            Instr::I64AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::I64AddOvf {
+                dst: map_i64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::I64SubOvf {
+                dst: map_i64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
+            Instr::I64MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::I64MulOvf {
+                dst: map_i64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i64(*a)?,
+                b: map_i64(*b)?,
+            },
 
             Instr::U64Add { dst, a, b } => ExecInstr::U64Add {
                 dst: map_u64(*dst)?,
@@ -2144,6 +2177,39 @@ fn verify_function_bytecode(
             },
             Instr::U64Mul { dst, a, b } => ExecInstr::U64Mul {
                 dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::U64AddOvf {
+                dst: map_u64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::U64SubOvf {
+                dst: map_u64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::U64MulOvf {
+                dst: map_u64(*dst)?,
+                overflow: map_bool(*overflow)?,
                 a: map_u64(*a)?,
                 b: map_u64(*b)?,
             },
@@ -3167,7 +3233,12 @@ fn validate_instr_types(
         Instr::F64FromBits { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
         }
-        Instr::I64Add { a, b, .. } | Instr::I64Sub { a, b, .. } | Instr::I64Mul { a, b, .. } => {
+        Instr::I64Add { a, b, .. }
+        | Instr::I64Sub { a, b, .. }
+        | Instr::I64Mul { a, b, .. }
+        | Instr::I64AddOvf { a, b, .. }
+        | Instr::I64SubOvf { a, b, .. }
+        | Instr::I64MulOvf { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::I64)?;
         }
@@ -3179,7 +3250,12 @@ fn validate_instr_types(
             check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::I64)?;
         }
-        Instr::U64Add { a, b, .. } | Instr::U64Sub { a, b, .. } | Instr::U64Mul { a, b, .. } => {
+        Instr::U64Add { a, b, .. }
+        | Instr::U64Sub { a, b, .. }
+        | Instr::U64Mul { a, b, .. }
+        | Instr::U64AddOvf { a, b, .. }
+        | Instr::U64SubOvf { a, b, .. }
+        | Instr::U64MulOvf { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::U64)?;
         }

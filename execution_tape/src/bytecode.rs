@@ -199,6 +199,27 @@ pub(crate) enum Instr {
     I64Sub { dst: u32, a: u32, b: u32 },
     /// `dst = a * b` (`i64`).
     I64Mul { dst: u32, a: u32, b: u32 },
+    /// `(dst, overflow) = a + b` (`i64` wrapped sum; `bool` true if the signed sum overflowed).
+    I64AddOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a - b` (`i64` wrapped difference; `bool` true if the signed difference overflowed).
+    I64SubOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a * b` (`i64` wrapped product; `bool` true if the signed product overflowed).
+    I64MulOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
 
     /// `dst = a + b` (`u64`).
     U64Add { dst: u32, a: u32, b: u32 },
@@ -206,6 +227,27 @@ pub(crate) enum Instr {
     U64Sub { dst: u32, a: u32, b: u32 },
     /// `dst = a * b` (`u64`).
     U64Mul { dst: u32, a: u32, b: u32 },
+    /// `(dst, overflow) = a + b` (`u64` wrapped sum; `bool` true if the sum carried out).
+    U64AddOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a - b` (`u64` wrapped difference; `bool` true if the difference borrowed).
+    U64SubOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a * b` (`u64` wrapped product; `bool` true if the product overflowed).
+    U64MulOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
     /// `dst = a & b` (`u64`).
     U64And { dst: u32, a: u32, b: u32 },
     /// `dst = a | b` (`u64`).

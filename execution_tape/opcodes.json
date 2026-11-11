@@ -3517,6 +3517,234 @@
           "field": "rounding"
         }
       ]
+    },
+    {
+      "name": "I64AddOvf",
+      "mnemonic": "i64.add_ovf",
+      "byte": "0xA1",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = a + b` (`i64` wrapped sum; `bool` true if the signed sum overflowed).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "I64SubOvf",
+      "mnemonic": "i64.sub_ovf",
+      "byte": "0xA2",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = a - b` (`i64` wrapped difference; `bool` true if the signed difference overflowed).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "I64MulOvf",
+      "mnemonic": "i64.mul_ovf",
+      "byte": "0xA3",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = a * b` (`i64` wrapped product; `bool` true if the signed product overflowed).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64AddOvf",
+      "mnemonic": "u64.add_ovf",
+      "byte": "0xA4",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = a + b` (`u64` wrapped sum; `bool` true if the sum carried out).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64SubOvf",
+      "mnemonic": "u64.sub_ovf",
+      "byte": "0xA5",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = a - b` (`u64` wrapped difference; `bool` true if the difference borrowed).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64MulOvf",
+      "mnemonic": "u64.mul_ovf",
+      "byte": "0xA6",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = a * b` (`u64` wrapped product; `bool` true if the product overflowed).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
     }
   ]
 }

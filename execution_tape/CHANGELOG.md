@@ -36,6 +36,13 @@ This release has an [MSRV][] of 1.88.
   `InputIndex::Rounding`. Migration: handle the new `Opcode`, `OperandRole::Rounding`,
   `InputIndex::Rounding` and `VerifyError::InvalidDecimalRounding` variants in exhaustive matches.
 
+- Detect integer overflow without trapping: `i64.add_ovf` (`0xA1`), `i64.sub_ovf` (`0xA2`),
+  `i64.mul_ovf` (`0xA3`) and the unsigned `u64.add_ovf` (`0xA4`), `u64.sub_ovf` (`0xA5`),
+  `u64.mul_ovf` (`0xA6`), emitted with `Asm::{i64_add_ovf, i64_sub_ovf, i64_mul_ovf, u64_add_ovf,
+  u64_sub_ovf, u64_mul_ovf}`. Each writes the wrapped result and a `bool` overflow flag, matching
+  Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
+  Migration: handle the new `Opcode` variants in exhaustive matches.
+
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
   provides checked snapshot differences and sums across code domains. This is accounting, not
