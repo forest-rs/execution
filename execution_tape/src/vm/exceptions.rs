@@ -12,6 +12,7 @@
 
 use super::*;
 use crate::aggregates::ValueSnapshot;
+use crate::host::HostThrow;
 use crate::program::TagId;
 use crate::typed::ExecCatch;
 
@@ -102,7 +103,6 @@ impl<H: Host> Vm<H> {
         location: TraceLocation,
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
-        let program = prepared.program();
         let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
         let mut values = Vec::with_capacity(payload.len());
         for &register in payload {
@@ -111,6 +111,84 @@ impl<H: Host> Vm<H> {
                 Err(trap) => return Err(fail(ctx, trap)),
             }
         }
+        self.raise_values::<P>(
+            ctx, budget, prepared, tag, values, trace, control, location, span_id,
+        )
+    }
+
+    /// Raises a host's [`HostThrow`] at its `host_call`.
+    ///
+    /// The tag must belong to the calling program and the payload must match its declared
+    /// kinds; otherwise the call traps, as an invalid host return does. Payload bytes are charged
+    /// as host ingress before the exception is observed and checked like a guest `throw`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the interpreter state borrowed by other instruction helpers"
+    )]
+    pub(super) fn raise_host<P: TracePolicy>(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        prepared: &VerifiedProgram,
+        thrown: HostThrow,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        location: TraceLocation,
+        span_id: Option<u64>,
+    ) -> Result<(), TrapInfo> {
+        let program = prepared.program();
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
+        let Some(entry) = program.tag(thrown.tag) else {
+            return Err(fail(ctx, Trap::TagOutOfBounds { tag: thrown.tag }));
+        };
+        let kinds = program.tag_payload(entry).expect("verified tag payload");
+        if kinds.len() != thrown.payload.len() {
+            return Err(fail(ctx, Trap::ArityMismatch));
+        }
+        let mut bytes = 0_usize;
+        for (value, &kind) in thrown.payload.iter().zip(kinds.iter()) {
+            value.check_type(kind).map_err(|trap| fail(ctx, trap))?;
+            bytes = bytes.saturating_add(match value {
+                Value::Bytes(bytes) => bytes.len(),
+                Value::Str(text) => text.len(),
+                _ => 0,
+            });
+        }
+        budget
+            .charge_payload_bytes(bytes, 1)
+            .map_err(|trap| fail(ctx, trap))?;
+        self.raise_values::<P>(
+            ctx,
+            budget,
+            prepared,
+            thrown.tag,
+            thrown.payload,
+            trace,
+            control,
+            location,
+            span_id,
+        )
+    }
+
+    /// Observes and checks a materialized payload, then propagates the new exception.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the interpreter state borrowed by other instruction helpers"
+    )]
+    fn raise_values<P: TracePolicy>(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        prepared: &VerifiedProgram,
+        tag: TagId,
+        values: Vec<Value>,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        location: TraceLocation,
+        span_id: Option<u64>,
+    ) -> Result<(), TrapInfo> {
+        let program = prepared.program();
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
         P::values(trace, program, || ValueEvent::Thrown {
             location,
             tag,
@@ -270,8 +348,10 @@ impl<H: Host> Vm<H> {
             unwound_callbacks,
         });
         let outcome = TraceOutcome::Caught { depth };
-        // Close the throw first, then every abandoned activation and pending host request,
-        // innermost first, while their frames and banks are still intact.
+        // Close a raising host call's scope and the raising instruction first, then every
+        // abandoned activation and pending host request, innermost first, while their frames
+        // and banks are still intact.
+        trace.exit_host(program, location, span_id, outcome);
         trace.instr_end(program, Some(handler), outcome);
         for exited in (depth + 1..=ctx.frames.len()).rev() {
             trace.exit_frame(program, exited, location, span_id, outcome);

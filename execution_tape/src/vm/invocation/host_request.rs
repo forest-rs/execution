@@ -4,9 +4,10 @@
 //! Borrow-scoped delivery of one admitted host instruction.
 
 use super::*;
+use crate::host::HostThrow;
 use crate::host::SigHash;
-use crate::program::HostSigId;
-use crate::vm::host_call::{HostReturnSite, PendingHost, admit_return};
+use crate::program::{HostSigId, TagId};
+use crate::vm::host_call::{HostReturnSite, PendingHost, admit_return, adopted_roots, observed};
 
 struct Site<'a> {
     pending: PendingHost,
@@ -246,6 +247,14 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         self.delivering = false;
         result
     }
+    /// Completes this instruction by raising `tag` with `payload` as a guest exception.
+    ///
+    /// This is [`Self::complete`] with [`HostError::throw`]: protected regions around the call can
+    /// catch it, and a wrong tag, arity or payload kind traps. Aggregate payload values built with
+    /// [`Self::context`] are adopted like returned values.
+    pub fn throw(self, tag: TagId, payload: Vec<Value>) -> Result<(), TrapInfo> {
+        self.complete(&mut [], Err(HostError::throw(tag, payload)))
+    }
     /// Produces and admits an external outcome asynchronously, with cancellation tracking.
     ///
     /// The producer can borrow request inputs across `await`; no argument payload clone or
@@ -379,7 +388,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     fn complete_pending(
         &mut self,
         values: &mut [Value],
-        outcome: Result<u64, HostError>,
+        mut outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
         if let Some(callbacks) = &mut self.continuation.control.callbacks {
             callbacks.returned = None;
@@ -390,7 +399,10 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             .take()
             .unwrap_or_else(|| self.budget.host_results());
         let work = results.work;
-        let created = results.adopt(self.vm.memory.aggs_mut(), values, outcome.is_ok());
+        let created = match adopted_roots(values, &mut outcome) {
+            Some(roots) => results.adopt(self.vm.memory.aggs_mut(), roots, true),
+            None => results.adopt(self.vm.memory.aggs_mut(), &mut [], false),
+        };
         self.budget.aggregate_work += work.aggregate;
         self.budget.payload_work += work.payload;
         let result = if self.continuation.trace.active() {
@@ -430,12 +442,55 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 &mut (),
             )
         };
-        self.continuation.control.pending_host = None;
+        let pending = self
+            .continuation
+            .control
+            .pending_host
+            .take()
+            .expect("pending guard");
+        let result = match result {
+            Ok(Some(thrown)) => self.raise_pending(pending, thrown),
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
         if let Err(error) = &result {
             self.finish(Err(error.clone()));
         }
         result
     }
+    /// Raises a delivered [`HostThrow`] at its pending `host_call`.
+    fn raise_pending(&mut self, pending: PendingHost, thrown: HostThrow) -> Result<(), TrapInfo> {
+        let program = self.continuation.program.program();
+        let span =
+            self.continuation
+                .ctx
+                .span_at(program, pending.location.func, pending.location.pc);
+        let continuation = &mut *self.continuation;
+        if continuation.trace.active() {
+            self.vm.raise_host::<WithTracePolicy>(
+                &mut continuation.ctx,
+                self.budget,
+                &continuation.program,
+                thrown,
+                &mut continuation.trace,
+                &mut continuation.control,
+                pending.location,
+                span,
+            )
+        } else {
+            self.vm.raise_host::<NoTracePolicy>(
+                &mut continuation.ctx,
+                self.budget,
+                &continuation.program,
+                thrown,
+                &mut continuation.trace,
+                &mut continuation.control,
+                pending.location,
+                span,
+            )
+        }
+    }
+
     pub(super) fn finish_abandoned_host(&mut self, pending: PendingHost) -> TrapInfo {
         if let Some(results) = self.continuation.host_results.take() {
             self.budget.aggregate_work += results.work.aggregate;
@@ -489,7 +544,7 @@ fn finish_pending<P: TracePolicy>(
     created: Result<core::ops::Range<u32>, AggError>,
     trace: &mut TraceCtx<'_>,
     register_state: &mut P::RegisterState,
-) -> Result<(), TrapInfo> {
+) -> Result<Option<HostThrow>, TrapInfo> {
     let site = site(prepared, ctx, pending);
     let program = prepared.program();
     if P::values_enabled(trace) {
@@ -504,13 +559,7 @@ fn finish_pending<P: TracePolicy>(
             location: site.pending.location,
             host_sig: site.import,
             args: &args,
-            outcome: match &outcome {
-                Ok(fuel) => HostCallOutcome::Returned {
-                    values,
-                    extra_fuel: *fuel,
-                },
-                Err(error) => HostCallOutcome::Failed(error),
-            },
+            outcome: observed(values, &outcome),
             aggregates: heap,
             work,
             created: created.as_ref().ok().unwrap_or(&(0..0)),
@@ -524,6 +573,9 @@ fn finish_pending<P: TracePolicy>(
             Trap::AggError(error),
         )
     })?;
+    if let Err(HostError::Throw(thrown)) = outcome {
+        return Ok(Some(*thrown));
+    }
     admit_return(
         ctx,
         budget,
@@ -570,5 +622,5 @@ fn finish_pending<P: TracePolicy>(
             pc: frame.pc,
         }),
     );
-    Ok(())
+    Ok(None)
 }

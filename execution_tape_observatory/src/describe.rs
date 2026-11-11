@@ -319,6 +319,7 @@ pub(super) fn host_error(error: &HostError) -> &'static str {
         HostError::ProgramMismatch => "program mismatch",
         HostError::Failed => "host failed",
         HostError::Custom(_) => "typed host failure (payload retained)",
+        HostError::Throw(_) => "raised a guest exception",
     }
 }
 

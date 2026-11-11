@@ -25,6 +25,38 @@ pub(super) struct HostReturnSite<'a> {
     pub(super) destinations: &'a [VReg],
 }
 
+/// Values whose staged aggregates an outcome adopts: results, or a raised payload.
+///
+/// A failed call adopts nothing.
+pub(super) fn adopted_roots<'a>(
+    values: &'a mut [Value],
+    outcome: &'a mut Result<u64, HostError>,
+) -> Option<&'a mut [Value]> {
+    match outcome {
+        Ok(_) => Some(values),
+        Err(HostError::Throw(thrown)) => Some(&mut thrown.payload),
+        Err(_) => None,
+    }
+}
+
+/// The raw outcome as observers see it.
+pub(super) fn observed<'a>(
+    values: &'a [Value],
+    outcome: &'a Result<u64, HostError>,
+) -> HostCallOutcome<'a> {
+    match outcome {
+        Ok(extra_fuel) => HostCallOutcome::Returned {
+            values,
+            extra_fuel: *extra_fuel,
+        },
+        Err(HostError::Throw(thrown)) => HostCallOutcome::Threw {
+            tag: thrown.tag,
+            payload: &thrown.payload,
+        },
+        Err(error) => HostCallOutcome::Failed(error),
+    }
+}
+
 #[inline(always)]
 pub(super) fn admit_return(
     ctx: &mut Registers,

@@ -43,6 +43,14 @@ This release has an [MSRV][] of 1.88.
   Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
   Migration: handle the new `Opcode` variants in exhaustive matches.
 
+- Raise guest exceptions from hosts. A host returns `HostError::throw(tag, payload)`, and a
+  yielded request can complete with `PendingHostCall::throw`; the exception is raised at the
+  `host_call` and is caught by protected regions like a guest `throw`. Undeclared tags trap with
+  `Trap::TagOutOfBounds`. Observers see `HostCallOutcome::Threw`, and recordings keep the payload
+  as `HostOutcome::Threw` so replay delivers the same exception.
+  Migration: handle `HostError::Throw`, `HostCallOutcome::Threw`, `HostOutcome::Threw` and
+  `Trap::TagOutOfBounds` in exhaustive matches.
+
 - Rethrow caught exceptions by reference. The new `ValueType::Exn` register kind holds a caught
   exception; `Catch::TagRef` and `Catch::AllRef` (`CatchClause::TagRef`/`AllRef`) bind it as the
   handler's final parameter, and `Asm::throw_ref` propagates it again with its original tag,
