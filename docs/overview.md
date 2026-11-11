@@ -1,6 +1,6 @@
 # `execution_tape` — execution design
 
-This document describes the Rust 0.1 API and wire format 0.5. See the
+This document describes the Rust 0.1 API and wire format 0.6. See the
 [bytecode and execution specification](v1_spec.md) for encoding details; its filename is historical.
 Rust package versions and wire versions are independent. Decoding requires an exact wire-version
 match, so compiled programs must be regenerated when the wire format changes.

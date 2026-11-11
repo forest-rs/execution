@@ -40,7 +40,7 @@ registry dependencies can resolve. Footfall and Tracy stay separate so applicati
 backend without depending on the other.
 
 Rust package versions and the tape wire version are independent. The current wire version
-is 0.5, and decoding requires an exact wire-version match. Regenerate compiled tapes and
+is 0.6, and decoding requires an exact wire-version match. Regenerate compiled tapes and
 their matching source metadata when upgrading from an older format. Recordings currently
 own in-memory evidence; they do not define a portable, durable archive format.
 

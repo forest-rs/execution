@@ -104,6 +104,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- The tape wire version is now 0.6. Published 0.1.0 reads exactly 0.5, and new opcodes and
+  program sections are about to land, so the version is advanced ahead of them. The wire version
+  advances once per release cycle: later format changes before the next release stay at 0.6.
+  Migration: regenerate serialized programs from their producer; 0.6 readers reject 0.5 headers
+  with `DecodeError::UnsupportedVersion`, and 0.1.0 readers reject 0.6 headers.
+
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include
   the added event field in explicit patterns. Remove provisional `CaptureFault::UnsupportedTransfer`:
