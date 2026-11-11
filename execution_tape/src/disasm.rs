@@ -1196,6 +1196,7 @@ fn fmt_value_type(w: &mut fmt::Formatter<'_>, ty: ValueType) -> fmt::Result {
         ValueType::Agg => write!(w, "Agg"),
         ValueType::Func => write!(w, "Func"),
         ValueType::Closure => write!(w, "Closure"),
+        ValueType::Exn => write!(w, "Exn"),
     }
 }
 
@@ -1357,14 +1358,15 @@ fn fmt_regions(
         };
         for (clause, catch) in clauses.iter().enumerate() {
             write!(f, "{} ", if clause == 0 { ":" } else { "," })?;
+            let suffix = if catch.binds_exception() { "_ref" } else { "" };
             match catch.tag() {
                 Some(tag) => {
-                    write!(f, "catch tag#{}", tag.0)?;
+                    write!(f, "catch{suffix} tag#{}", tag.0)?;
                     if let Some(name) = program.tag_name(tag) {
                         write!(f, "(\"{name}\")")?;
                     }
                 }
-                None => write!(f, "catch_all")?,
+                None => write!(f, "catch_all{suffix}")?,
             }
             write!(f, " -> ")?;
             fmt_label_ref(f, catch.target(), label_pcs)?;

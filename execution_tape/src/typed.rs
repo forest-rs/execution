@@ -29,6 +29,7 @@ pub(crate) enum RegClass {
     Agg,
     Func,
     Closure,
+    Exn,
 }
 
 impl RegClass {
@@ -46,6 +47,7 @@ impl RegClass {
             ValueType::Agg => Self::Agg,
             ValueType::Func => Self::Func,
             ValueType::Closure => Self::Closure,
+            ValueType::Exn => Self::Exn,
         }
     }
 }
@@ -72,6 +74,8 @@ pub(crate) struct AggReg(pub u32);
 pub(crate) struct FuncReg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClosureReg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExnReg(pub u32);
 
 /// A typed register reference (class + class-local index).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -89,6 +93,7 @@ pub(crate) enum VReg {
     Agg(AggReg),
     Func(FuncReg),
     Closure(ClosureReg),
+    Exn(ExnReg),
 }
 
 impl VReg {
@@ -107,6 +112,7 @@ impl VReg {
             Self::Agg(reg) => (9, reg.0),
             Self::Func(reg) => (10, reg.0),
             Self::Closure(reg) => (11, reg.0),
+            Self::Exn(reg) => (12, reg.0),
         }
     }
 }
@@ -143,6 +149,7 @@ pub(crate) struct RegCounts {
     pub(crate) aggs: usize,
     pub(crate) funcs: usize,
     pub(crate) closures: usize,
+    pub(crate) exns: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +178,10 @@ pub(crate) enum ExecInstr {
     Throw {
         tag: TagId,
         args: VRegSlice,
+    },
+    /// Rethrow a caught exception reference.
+    ThrowRef {
+        exn: ExnReg,
     },
 
     MovBool {
@@ -216,6 +227,10 @@ pub(crate) enum ExecInstr {
     MovClosure {
         dst: ClosureReg,
         src: ClosureReg,
+    },
+    MovExn {
+        dst: ExnReg,
+        src: ExnReg,
     },
 
     ConstBool {
@@ -945,6 +960,8 @@ pub(crate) struct ExecProtection {
 pub(crate) struct ExecClause {
     /// Caught tag; `None` catches everything.
     pub(crate) tag: Option<TagId>,
+    /// Whether the last parameter receives the exception reference.
+    pub(crate) binds_exception: bool,
     /// First executable instruction of the handler block.
     pub(crate) target_ix: u32,
     /// Handler block parameters receiving the payload, in payload order.

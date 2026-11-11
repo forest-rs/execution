@@ -32,10 +32,10 @@ pub enum RegionError {
         /// Requested target offset.
         target: u32,
     },
-    /// A clause target's block parameters do not receive exactly the clause's payload.
+    /// A clause target's block parameters do not receive exactly the clause's values.
     ///
     /// A tag clause's target declares one parameter per payload value; a catch-all target
-    /// declares none.
+    /// declares none. Reference clauses add one final `Exn` parameter.
     ClauseParams {
         /// Clause index within the region.
         clause: u32,
@@ -47,6 +47,13 @@ pub enum RegionError {
         expected: u32,
         /// Parameters declared at the target.
         actual: u32,
+    },
+    /// A `catch_ref` or `catch_all_ref` target's last parameter is not an `Exn` register.
+    ClauseException {
+        /// Clause index within the region.
+        clause: u32,
+        /// The last parameter's declared kind.
+        actual: ValueType,
     },
     /// A clause target's parameter kind differs from the payload kind it receives.
     ClauseParamKind {
@@ -99,6 +106,10 @@ impl core::fmt::Display for RegionError {
                     ") delivers {expected} values; its target declares {actual} parameters"
                 )
             }
+            Self::ClauseException { clause, actual } => write!(
+                f,
+                "clause {clause} binds the exception to a parameter declared {actual:?}, not Exn"
+            ),
             Self::ClauseParamKind {
                 clause,
                 tag,
@@ -189,7 +200,8 @@ pub(super) fn verify(
                 return Err(invalid(index, RegionError::ClauseTarget { clause, target }));
             }
             let params = super::blocks::declaration(decoded, target).unwrap_or(&[]);
-            let expected = payload.as_ref().map_or(0, |(_, payload)| payload.len());
+            let expected = payload.as_ref().map_or(0, |(_, payload)| payload.len())
+                + usize::from(catch.binds_exception());
             if params.len() != expected {
                 return Err(invalid(
                     index,
@@ -221,6 +233,16 @@ pub(super) fn verify(
                             },
                         ));
                     }
+                }
+            }
+            if catch.binds_exception() {
+                let last = *params.last().expect("checked parameter count");
+                let actual = function.register_type(program, last).map_err(malformed)?;
+                if actual != ValueType::Exn {
+                    return Err(invalid(
+                        index,
+                        RegionError::ClauseException { clause, actual },
+                    ));
                 }
             }
         }

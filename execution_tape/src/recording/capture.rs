@@ -5,7 +5,7 @@ use crate::host::ValueRef;
 use crate::program::Program;
 use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry, InstructionCapture,
-    InstructionOutcome, InstructionStatus, RecordLimits, Recording, Thrown,
+    InstructionOutcome, InstructionStatus, Propagation, RecordLimits, Recording, Thrown,
     control::{Action, Command, Returned},
     frames::{Frame, FrameId},
     instructions::History,
@@ -42,6 +42,7 @@ pub struct Recorder {
     outcome_frame: Option<FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
     thrown: Vec<Thrown>,
+    propagations: Vec<Propagation>,
     end: Option<End>,
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
@@ -65,6 +66,7 @@ impl Recorder {
             outcome_frame: None,
             candidate: None,
             thrown: Vec::new(),
+            propagations: Vec::new(),
             end: None,
             fault: None,
             fault_location: None,
@@ -144,6 +146,7 @@ impl Recorder {
             },
             candidate: self.candidate,
             thrown: self.thrown,
+            propagations: self.propagations,
             end: self.end,
             fault: self.fault,
             fault_location: self.fault_location,
@@ -177,6 +180,21 @@ impl Recorder {
         } else {
             Ok(())
         }
+    }
+
+    /// A new raise requires a started invocation whose previous exception, if any, was caught.
+    fn check_raise(&self) -> Result<(), CaptureFault> {
+        if self.entry.is_none()
+            || self.end.is_some()
+            || self.candidate.is_some()
+            || self
+                .propagations
+                .last()
+                .is_some_and(|last| last.caught.is_none())
+        {
+            return Err(CaptureFault::InvalidSequence);
+        }
+        Ok(())
     }
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
@@ -403,22 +421,41 @@ impl Recorder {
                 values,
                 aggregates,
             } => {
-                // Only a caught exception lets execution raise another.
-                if self.entry.is_none()
-                    || self.end.is_some()
-                    || self.candidate.is_some()
-                    || self.thrown.last().is_some_and(|last| last.caught.is_none())
-                {
-                    return Err(CaptureFault::InvalidSequence);
-                }
+                self.check_raise()?;
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
                 self.check_location(location)?;
+                self.propagations.push(Propagation {
+                    exception: self.thrown.len(),
+                    location,
+                    caught: None,
+                });
                 self.thrown.push(Thrown {
                     location,
                     tag,
                     values,
+                });
+            }
+            ValueEvent::Rethrown {
+                location,
+                tag,
+                exception,
+                origin,
+            } => {
+                self.check_raise()?;
+                // A rethrow links to its original throw; the payload is never recorded twice.
+                if !self
+                    .thrown
+                    .get(exception)
+                    .is_some_and(|thrown| thrown.tag == tag && thrown.location == origin)
+                {
+                    return Err(CaptureFault::InvalidSequence);
+                }
+                self.check_location(location)?;
+                self.propagations.push(Propagation {
+                    exception,
+                    location,
                     caught: None,
                 });
             }
@@ -431,8 +468,11 @@ impl Recorder {
                 clause,
                 unwound_callbacks,
             } => {
-                let Some(last) = self.thrown.last_mut().filter(|last| {
-                    last.caught.is_none() && last.location == location && last.tag == tag
+                let thrown = &self.thrown;
+                let Some(last) = self.propagations.last_mut().filter(|last| {
+                    last.caught.is_none()
+                        && last.location == location
+                        && thrown[last.exception].tag == tag
                 }) else {
                     return Err(CaptureFault::InvalidSequence);
                 };
@@ -614,6 +654,7 @@ impl TraceSink for Recorder {
             | ValueEvent::ReturnFrom { location, .. }
             | ValueEvent::ReturnCandidate { location, .. }
             | ValueEvent::Thrown { location, .. }
+            | ValueEvent::Rethrown { location, .. }
             | ValueEvent::Caught { location, .. } => Some(location),
         };
         if self.check(program)
@@ -768,11 +809,12 @@ impl TraceSink for Recorder {
                     _ => 0,
                 };
                 if let Trap::Uncaught(exception) = &error.trap
-                    && !self.thrown.last().is_some_and(|thrown| {
-                        thrown.caught.is_none()
-                            && thrown.tag == exception.local_tag()
-                            && thrown.location.func == error.func
-                            && thrown.location.pc == error.pc
+                    && !self.propagations.last().is_some_and(|last| {
+                        last.caught.is_none()
+                            && self.thrown[last.exception].tag == exception.local_tag()
+                            && self.thrown[last.exception].location == exception.origin()
+                            && last.location.func == error.func
+                            && last.location.pc == error.pc
                     })
                 {
                     self.fail(CaptureFault::InvalidSequence);

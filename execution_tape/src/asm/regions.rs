@@ -13,13 +13,18 @@ use crate::program::CatchClause;
 /// A handler clause whose target is an assembler label.
 ///
 /// The target should be a block reserved with [`Asm::block`]. A tag clause's block declares one
-/// parameter per payload value, in payload order; a catch-all block declares none.
+/// parameter per payload value, in payload order; a catch-all block declares none. The `*Ref`
+/// clauses append one `Exn` parameter receiving the exception, for [`Asm::throw_ref`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Catch {
     /// Catches exactly `tag`, binding its payload to the target block's parameters.
     Tag(TagId, Label),
     /// Catches every exception and binds nothing.
     All(Label),
+    /// Catches exactly `tag`, binding its payload and then the exception reference.
+    TagRef(TagId, Label),
+    /// Catches every exception, binding only the exception reference.
+    AllRef(Label),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +68,13 @@ impl Regions {
                         target: resolve(label).ok_or(UnresolvedLabel)?,
                     },
                     Catch::All(label) => CatchClause::All {
+                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                    },
+                    Catch::TagRef(tag, label) => CatchClause::TagRef {
+                        tag,
+                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                    },
+                    Catch::AllRef(label) => CatchClause::AllRef {
                         target: resolve(label).ok_or(UnresolvedLabel)?,
                     },
                 });

@@ -114,6 +114,8 @@ pub(crate) enum Instr {
         tag: u32,
         args: Vec<u32>,
     },
+    /// Rethrow the exception referenced by `exn`.
+    ThrowRef { eff_in: u32, exn: u32 },
 
     /// `dst = ()`.
     ConstUnit { dst: u32 },

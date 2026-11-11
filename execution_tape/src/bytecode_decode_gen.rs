@@ -37,6 +37,14 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 args,
             }
         },
+        Opcode::ThrowRef => {
+            let eff_in = crate::codec_primitives::read_reg(r)?;
+            let exn = crate::codec_primitives::read_reg(r)?;
+            Instr::ThrowRef {
+                eff_in,
+                exn,
+            }
+        },
         Opcode::ConstUnit => {
             let dst = crate::codec_primitives::read_reg(r)?;
             Instr::ConstUnit {

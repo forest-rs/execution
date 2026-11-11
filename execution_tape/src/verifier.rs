@@ -46,8 +46,8 @@ use crate::program::{
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
-    ExecInstr, ExecProtection, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout,
-    StrReg, U64Reg, VReg, VRegSlice,
+    ExecInstr, ExecProtection, ExnReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
+    RegLayout, StrReg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{DecimalRounding, FuncId};
 use crate::{analysis::bitset::BitSet, analysis::cfg};
@@ -626,6 +626,11 @@ pub enum VerifyError {
         /// The repeated name.
         name: Box<str>,
     },
+    /// An exception reference appears where only embedding-visible values may.
+    ExceptionReference {
+        /// Where the `Exn` kind appeared.
+        place: ExceptionPlace,
+    },
     /// A protected region or one of its catch clauses is invalid.
     InvalidRegion {
         /// Function index within the program.
@@ -1013,6 +1018,9 @@ impl fmt::Display for VerifyError {
                 f,
                 "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
             ),
+            Self::ExceptionReference { place } => {
+                write!(f, "exception references cannot appear in {place}")
+            }
             Self::InvalidRegion {
                 func,
                 region,
@@ -1127,6 +1135,105 @@ impl From<DecodeError> for VerifyError {
     }
 }
 
+/// A place that can only hold values the embedding can see, so never an `Exn` reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExceptionPlace {
+    /// A host signature argument or result.
+    HostSig {
+        /// Host signature id.
+        host_sig: u32,
+    },
+    /// An exception tag's payload.
+    TagPayload {
+        /// Tag id.
+        tag: u32,
+    },
+    /// A nominal struct field.
+    StructField {
+        /// Struct type id.
+        type_id: u32,
+        /// Field index.
+        field: u32,
+    },
+    /// A nominal array element type.
+    ArrayElement {
+        /// Array element type id.
+        elem_type_id: u32,
+    },
+    /// A value stored into a tuple.
+    Aggregate {
+        /// Function index.
+        func: u32,
+        /// Instruction offset.
+        pc: u32,
+        /// Stored register.
+        reg: u32,
+    },
+}
+
+impl fmt::Display for ExceptionPlace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HostSig { host_sig } => write!(f, "host_sig {host_sig}"),
+            Self::TagPayload { tag } => write!(f, "the payload of tag#{tag}"),
+            Self::StructField { type_id, field } => {
+                write!(f, "field {field} of struct type {type_id}")
+            }
+            Self::ArrayElement { elem_type_id } => {
+                write!(f, "array element type {elem_type_id}")
+            }
+            Self::Aggregate { func, pc, reg } => {
+                write!(f, "a tuple built in function {func} at pc={pc} (r{reg})")
+            }
+        }
+    }
+}
+
+/// Rejects `Exn` anywhere a value could reach the embedding or the aggregate heap.
+fn verify_exception_places(program: &Program) -> Result<(), VerifyError> {
+    let reject = |place| Err(VerifyError::ExceptionReference { place });
+    for (index, entry) in program.host_sigs.iter().enumerate() {
+        let kinds = program
+            .host_sig_args(entry)
+            .into_iter()
+            .chain(program.host_sig_rets(entry))
+            .flatten();
+        if kinds.into_iter().any(|&kind| kind == ValueType::Exn) {
+            return reject(ExceptionPlace::HostSig {
+                host_sig: u32::try_from(index).unwrap_or(u32::MAX),
+            });
+        }
+    }
+    for (index, entry) in program.tags.iter().enumerate() {
+        if program
+            .tag_payload(entry)
+            .is_ok_and(|payload| payload.iter().any(|&kind| kind == ValueType::Exn))
+        {
+            return reject(ExceptionPlace::TagPayload {
+                tag: u32::try_from(index).unwrap_or(u32::MAX),
+            });
+        }
+    }
+    for (index, schema) in program.types.structs.iter().enumerate() {
+        if let Ok(fields) = program.types.struct_field_types(schema)
+            && let Some(field) = fields.iter().position(|&kind| kind == ValueType::Exn)
+        {
+            return reject(ExceptionPlace::StructField {
+                type_id: u32::try_from(index).unwrap_or(u32::MAX),
+                field: u32::try_from(field).unwrap_or(u32::MAX),
+            });
+        }
+    }
+    for (index, &kind) in program.types.array_elems.iter().enumerate() {
+        if kind == ValueType::Exn {
+            return reject(ExceptionPlace::ArrayElement {
+                elem_type_id: u32::try_from(index).unwrap_or(u32::MAX),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Verifier configuration and limits.
 #[derive(Clone, Debug)]
 pub struct VerifyConfig {
@@ -1150,6 +1257,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     tags::verify(program)?;
+    verify_exception_places(program)?;
     verify_function_value_names(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
@@ -1168,6 +1276,7 @@ pub fn verify_program_with_lints(
     verify_host_sigs(program)?;
     verify_call_sigs(program)?;
     tags::verify(program)?;
+    verify_exception_places(program)?;
     verify_function_value_names(program)?;
 
     let mut lints: Vec<VerifyLint> = Vec::new();
@@ -1188,6 +1297,7 @@ pub fn verify_program_owned(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     tags::verify(&program)?;
+    verify_exception_places(&program)?;
     verify_function_value_names(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
@@ -1214,6 +1324,7 @@ pub fn verify_program_owned_with_lints(
     verify_host_sigs(&program)?;
     verify_call_sigs(&program)?;
     tags::verify(&program)?;
+    verify_exception_places(&program)?;
     verify_function_value_names(&program)?;
     let signature_cache = build_signature_cache(&program)?;
 
@@ -1849,6 +1960,11 @@ fn verify_function_bytecode(
                 counts.closures += 1;
                 VReg::Closure(r)
             }
+            RegClass::Exn => {
+                let r = ExnReg(idx_u32(counts.exns));
+                counts.exns += 1;
+                VReg::Exn(r)
+            }
         };
         reg_map.push(v);
     }
@@ -2023,6 +2139,13 @@ fn verify_function_bytecode(
                     args: push_vregs(args)?,
                 }
             }
+            Instr::ThrowRef { eff_in, exn } => {
+                check_unit(*eff_in)?;
+                match map(*exn)? {
+                    VReg::Exn(exn) => ExecInstr::ThrowRef { exn },
+                    _ => return Err(mismatch(*exn, ValueType::Exn)),
+                }
+            }
 
             Instr::Mov { dst, src } => match (map(*dst)?, map(*src)?) {
                 (VReg::Unit, VReg::Unit) => ExecInstr::Nop,
@@ -2037,6 +2160,7 @@ fn verify_function_bytecode(
                 (VReg::Agg(d), VReg::Agg(s)) => ExecInstr::MovAgg { dst: d, src: s },
                 (VReg::Func(d), VReg::Func(s)) => ExecInstr::MovFunc { dst: d, src: s },
                 (VReg::Closure(d), VReg::Closure(s)) => ExecInstr::MovClosure { dst: d, src: s },
+                (VReg::Exn(d), VReg::Exn(s)) => ExecInstr::MovExn { dst: d, src: s },
                 _ => {
                     return Err(mismatch(
                         *dst,
@@ -3033,6 +3157,7 @@ fn prepare_protection(
             operands.extend(params.iter().map(|&reg| reg_map[reg as usize]));
             clauses.push(ExecClause {
                 tag: catch.tag(),
+                binds_exception: catch.binds_exception(),
                 target_ix: exec_ix(catch.target()),
                 params: slice,
             });
@@ -3229,6 +3354,9 @@ fn validate_instr_reads_writes(
             require_eff_in_r0(*eff_in)?;
             tags::check_throw_arity(program, func_id, pc, TagId(*tag), args.len())?;
         }
+        Instr::ThrowRef { eff_in, .. } => {
+            require_eff_in_r0(*eff_in)?;
+        }
         Instr::HostCall {
             eff_out,
             host_sig,
@@ -3376,6 +3504,9 @@ fn validate_instr_types(
     match instr {
         Instr::Throw { tag, args, .. } => {
             tags::check_throw_payload(program, func_id, pc, TagId(*tag), args, types)?;
+        }
+        Instr::ThrowRef { exn, .. } => {
+            check_expected(func_id, pc, *exn, t(*exn), ValueType::Exn)?;
         }
         Instr::Nop
         | Instr::Trap { .. }
@@ -3712,7 +3843,17 @@ fn validate_instr_types(
             check_expected(func_id, pc, *func, t(*func), ValueType::Func)?;
             check_expected(func_id, pc, *env, t(*env), ValueType::Agg)?;
         }
-        Instr::TupleNew { .. } => {}
+        Instr::TupleNew { values, .. } => {
+            if let Some(&reg) = values.iter().find(|&&reg| t(reg) == Some(ValueType::Exn)) {
+                return Err(VerifyError::ExceptionReference {
+                    place: ExceptionPlace::Aggregate {
+                        func: func_id,
+                        pc,
+                        reg,
+                    },
+                });
+            }
+        }
         Instr::TupleGet { tuple, .. } => {
             check_expected(func_id, pc, *tuple, t(*tuple), ValueType::Agg)?;
         }

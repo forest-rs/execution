@@ -336,7 +336,21 @@ pub enum ValueEvent<'a> {
         /// Storage containing payload aggregates at the throw site.
         aggregates: &'a AggHeap,
     },
-    /// A catch clause selected the preceding [`Self::Thrown`] exception, before unwinding.
+    /// `throw_ref` raised a caught exception again, before propagation.
+    ///
+    /// The payload was observed and checked by the original [`Self::Thrown`]; it is neither
+    /// copied nor checked again. A catch is again reported by [`Self::Caught`].
+    Rethrown {
+        /// Rethrowing instruction.
+        location: TraceLocation,
+        /// The exception's original tag.
+        tag: TagId,
+        /// Zero-based ordinal of the original [`Self::Thrown`] among this invocation's raises.
+        exception: usize,
+        /// The original throwing instruction.
+        origin: TraceLocation,
+    },
+    /// A catch clause selected the exception most recently thrown or rethrown, before unwinding.
     ///
     /// Scopes and instruction attempts it abandons then close with [`TraceOutcome::Caught`].
     Caught {
@@ -462,6 +476,18 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("tag", tag)
                 .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::Rethrown {
+                location,
+                tag,
+                exception,
+                origin,
+            } => f
+                .debug_struct("Rethrown")
+                .field("location", location)
+                .field("tag", tag)
+                .field("exception", exception)
+                .field("origin", origin)
                 .finish(),
             Self::Caught {
                 location,
