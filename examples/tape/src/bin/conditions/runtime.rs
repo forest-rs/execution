@@ -1,21 +1,20 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The VM owns physical control validity. This language runtime owns logical dynamic extents,
-//! handler masking, restart policy and protected cleanup. Physical guest frames remain available
-//! while crossed logical extents are retired and their cleanup callbacks execute.
+//! The language runtime owns the dynamic handler and restart stacks, handler masking and restart
+//! policy. Guest code owns its extents: each scope pops itself when its protected region exits,
+//! and protected cleanup is ordinary guest code. Exiting to a restart is a guest exception that
+//! this runtime raises at the pending request; the VM unwinds it.
 
 use execution_tape::{
     callable::Callable,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
-    program::ValueType,
+    program::{TagId, ValueType},
     recording::{InstructionCapture, RecordLimits, Recorder, Recording},
     trace::{TraceLocation, TraceSink},
     value::{FuncId, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
-    vm::{
-        ActivationId, ControlError, Invocation, InvocationOptions, Limits, RunStatus, TrapInfo, Vm,
-    },
+    vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, TrapInfo, Vm},
 };
 use std::{
     cell::RefCell,
@@ -61,7 +60,6 @@ pub(super) struct Condition {
 #[derive(Clone, Debug)]
 pub(super) enum Error {
     Vm(TrapInfo),
-    Control(ControlError),
     Abi(&'static str),
     ExpiredRestart,
     ForeignRestart,
@@ -71,7 +69,6 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Vm(error) => error.fmt(f),
-            Self::Control(error) => error.fmt(f),
             Self::Abi(message) => write!(f, "condition protocol: {message}"),
             Self::ExpiredRestart => f.write_str("restart's dynamic extent has ended"),
             Self::ForeignRestart => f.write_str("restart token belongs to another runtime"),
@@ -83,7 +80,6 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Vm(error) => Some(error),
-            Self::Control(error) => Some(error),
             _ => None,
         }
     }
@@ -91,11 +87,6 @@ impl std::error::Error for Error {
 impl From<TrapInfo> for Error {
     fn from(error: TrapInfo) -> Self {
         Self::Vm(error)
-    }
-}
-impl From<ControlError> for Error {
-    fn from(error: ControlError) -> Self {
-        Self::Control(error)
     }
 }
 
@@ -111,7 +102,6 @@ pub(super) enum Status {
 pub(super) enum Action {
     ScopeEntered {
         scope: usize,
-        body_activation: u64,
         kind: ExtentKind,
     },
     ScopeExpired(usize),
@@ -128,9 +118,6 @@ pub(super) enum Action {
         reason: RestartDenial,
         argument: i64,
     },
-    CleanupStarted(usize),
-    CleanupFinished(usize),
-    CleanupAbandoned(usize),
     Native(i64),
     Unhandled(Class),
     HardAbort,
@@ -162,7 +149,6 @@ pub(super) enum PolicyEnd {
     Trapped,
     Cancelled,
 }
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ExtentKind {
     Handler {
@@ -175,12 +161,9 @@ pub(super) enum ExtentKind {
         class: Class,
         token: Obj,
     },
-    Protected,
 }
-
 #[derive(Clone, Debug)]
 pub(super) struct Event {
-    /// None only when a terminal VM trap supplies a source but no live activation inspection.
     pub(super) activation: Option<u64>,
     pub(super) location: TraceLocation,
     pub(super) action: Action,
@@ -204,6 +187,7 @@ impl Host for NoHost {
         panic!("the condition runtime must drive yielded requests explicitly")
     }
 }
+/// The pending request that is waiting for this runtime.
 #[derive(Clone)]
 struct Key {
     activation: ActivationId,
@@ -223,9 +207,6 @@ enum Binding {
         class: Class,
         token: Obj,
     },
-    Protected {
-        cleanup: Value,
-    },
     // Keep only identity after retirement, never borrowed guest capture handles.
     Retired {
         restart: Option<Obj>,
@@ -243,20 +224,8 @@ impl Binding {
         std::mem::replace(self, Self::Retired { restart })
     }
 }
-struct Scope {
-    body: ActivationId,
-    depth: usize,
-    binding: Binding,
-}
-impl Scope {
-    fn active(&self) -> bool {
-        !matches!(self.binding, Binding::Retired { .. })
-    }
-}
 struct Mask {
-    id: usize,
-    activation: ActivationId,
-    depth: usize,
+    callback: ActivationId,
     hidden: Vec<usize>,
 }
 struct Signal {
@@ -264,38 +233,25 @@ struct Signal {
     condition: Condition,
     remaining: Vec<usize>,
 }
-struct Transfer {
-    target: ActivationId,
-    depth: usize,
-    values: Vec<Value>,
-}
 enum AfterRestart {
     Guest,
     Debugger(Signal),
 }
 enum Continuation {
-    Scope(usize),
     Handler {
         scope: usize,
         policy: Policy,
-        mask: usize,
         signal: Signal,
     },
     Restart {
         scope: usize,
         after: AfterRestart,
     },
-    NormalCleanup {
-        scope: usize,
-        values: Vec<Value>,
-    },
-    ExitCleanup {
-        scope: usize,
-        transfer: Transfer,
-    },
 }
+/// A guest callback this runtime entered, and what to do when it returns to `key`.
 struct Waiting {
     key: Key,
+    callback: ActivationId,
     continuation: Continuation,
 }
 
@@ -311,11 +267,11 @@ pub(super) struct Session {
 pub(super) struct Runtime {
     run: Invocation<'static, NoHost>,
     recorder: Rc<RefCell<Recorder>>,
-    scopes: Vec<Scope>,
+    exit: TagId,
+    scopes: Vec<Binding>,
     active: Vec<usize>,
     waiting: Vec<Waiting>,
     masks: Vec<Mask>,
-    next_mask: usize,
     unhandled: Option<Signal>,
     debugger_reply: Option<Vec<Value>>,
     failed: Option<Error>,
@@ -330,6 +286,11 @@ impl Runtime {
         entry: FuncId,
         limits: Limits,
     ) -> Result<Self, Error> {
+        let code = program.program();
+        let exit = (0..code.tags.len())
+            .map(|index| TagId(u32::try_from(index).expect("bounded tag table")))
+            .find(|&tag| code.tag_name(tag) == Some(super::program::EXIT_TAG))
+            .ok_or(Error::Abi("program declares no exit tag"))?;
         let recorder = Rc::new(RefCell::new(
             Recorder::new(program.clone(), RecordLimits::default())
                 .with_instructions(InstructionCapture::default()),
@@ -346,11 +307,11 @@ impl Runtime {
         Ok(Self {
             run,
             recorder,
+            exit,
             scopes: Vec::new(),
             active: Vec::new(),
             waiting: Vec::new(),
             masks: Vec::new(),
-            next_mask: 0,
             unhandled: None,
             debugger_reply: None,
             failed: None,
@@ -361,10 +322,9 @@ impl Runtime {
         })
     }
     pub(super) fn explanation(&self) -> String {
-        let mut text = String::from("Logical dynamic extents (innermost first):\n");
+        let mut text = String::from("Dynamic bindings (innermost first):\n");
         for id in self.active.iter().rev() {
-            let scope = &self.scopes[*id];
-            let role = match &scope.binding {
+            let role = match &self.scopes[*id] {
                 Binding::Handler { class, policy, .. } => format!(
                     "handler {class:?} [{policy:?}]{}",
                     if self.masked(*id) {
@@ -376,15 +336,11 @@ impl Runtime {
                 Binding::Restart { name, mode, .. } => {
                     format!("restart {} [{mode:?}]", super::program::restart_name(*name))
                 }
-                Binding::Protected { .. } => "protected body".into(),
-                Binding::Retired { .. } => "retired extent".into(),
+                Binding::Retired { .. } => "retired binding".into(),
             };
-            text.push_str(&format!(
-                "  scope {id}, body activation #{}: {role}\n",
-                scope.body.ordinal()
-            ));
+            text.push_str(&format!("  scope {id}: {role}\n"));
         }
-        text.push_str("Physical guest frames retained by the VM:\n");
+        text.push_str("Guest frames (innermost first):\n");
         for frame in self.run.inspect().frames() {
             let name = self
                 .run
@@ -489,7 +445,7 @@ impl Runtime {
         callee: Value,
         args: Vec<Value>,
         continuation: Continuation,
-    ) -> Result<(ActivationId, usize), Error> {
+    ) -> Result<ActivationId, Error> {
         if self.waiting.len() >= SCOPE_LIMIT {
             return Err(Error::ScopeLimit);
         }
@@ -497,16 +453,13 @@ impl Runtime {
             .pending_host_call()
             .ok_or(Error::Abi("guest callback requires a pending request"))?
             .call_guest(callee, args)?;
-        let inspection = self.run.inspect();
-        let frame = inspection
-            .frames()
-            .next()
-            .ok_or(Error::Abi("callback did not enter"))?;
-        let depth = inspection.frames().len();
-        let activation = frame.activation;
-        drop(inspection);
-        self.waiting.push(Waiting { key, continuation });
-        Ok((activation, depth))
+        let callback = self.key()?.activation;
+        self.waiting.push(Waiting {
+            key,
+            callback: callback.clone(),
+            continuation,
+        });
+        Ok(callback)
     }
     fn complete(&mut self, mut values: Vec<Value>) -> Result<(), Error> {
         self.run
@@ -547,7 +500,7 @@ impl Runtime {
     fn fail(&mut self, error: Error) -> Error {
         let key = self.key().ok();
         let location = key.as_ref().map(|key| key.location).or(match &error {
-            Error::Vm(trap) | Error::Control(ControlError::Trapped(trap)) => Some(TraceLocation {
+            Error::Vm(trap) => Some(TraceLocation {
                 func: trap.func,
                 pc: trap.pc,
             }),
@@ -572,10 +525,22 @@ impl Runtime {
         self.debugger_reply = None;
         self.native_wait = None;
         for scope in &mut self.scopes {
-            scope.binding.retire();
+            scope.retire();
         }
         self.failed = Some(error.clone());
         error
+    }
+    /// Forgets callbacks and masks that an exception abandoned with their guest frames.
+    fn prune(&mut self) {
+        let live: Vec<_> = self
+            .run
+            .inspect()
+            .frames()
+            .map(|frame| frame.activation)
+            .collect();
+        self.waiting
+            .retain(|waiting| live.contains(&waiting.callback));
+        self.masks.retain(|mask| live.contains(&mask.callback));
     }
     fn step(&mut self, quantum: u64) -> Result<Status, Error> {
         match self.run.resume(quantum)? {
@@ -590,6 +555,7 @@ impl Runtime {
             .ok_or(Error::Abi("missing pending request"))?;
         if let Some(values) = request.take_callback_results() {
             drop(request);
+            // The returned callback is the newest one entered from this request.
             let index = self
                 .waiting
                 .iter()
@@ -599,31 +565,27 @@ impl Runtime {
                 .ok_or(Error::Abi(
                     "callback returned without a language continuation",
                 ))?;
-            let continuation = self.waiting.remove(index).continuation;
-            self.returned(key, continuation, values)?;
+            let waiting = self.waiting.remove(index);
+            self.masks.retain(|mask| mask.callback != waiting.callback);
+            self.returned(key, waiting.continuation, values)?;
             return Ok(Status::Running);
         }
         let symbol = request.symbol().to_string();
         let args: Vec<_> = request.arguments().map(|value| value.to_value()).collect();
         drop(request);
+        self.prune();
         self.dispatch(key, &symbol, args)
     }
-    fn scope(&mut self, key: Key, body: Value, binding: Binding) -> Result<(), Error> {
+    fn push(&mut self, key: &Key, binding: Binding) -> Result<(), Error> {
         if self.scopes.len() >= SCOPE_LIMIT {
             return Err(Error::ScopeLimit);
         }
-        self.callable(&body, &[], &[ValueType::I64, ValueType::Bool])?;
         let id = self.scopes.len();
-        let (body, depth) = self.guest(key.clone(), body, vec![], Continuation::Scope(id))?;
-        self.scopes.push(Scope {
-            body,
-            depth,
-            binding,
-        });
-        self.active.push(id);
-        let scope = &self.scopes[id];
-        let kind = match scope.binding {
-            Binding::Handler { class, policy, .. } => ExtentKind::Handler { class, policy },
+        let kind = match &binding {
+            Binding::Handler { class, policy, .. } => ExtentKind::Handler {
+                class: *class,
+                policy: *policy,
+            },
             Binding::Restart {
                 name,
                 mode,
@@ -631,43 +593,42 @@ impl Runtime {
                 token,
                 ..
             } => ExtentKind::Restart {
-                name,
-                mode,
-                class,
-                token,
+                name: *name,
+                mode: *mode,
+                class: *class,
+                token: *token,
             },
-            Binding::Protected { .. } => ExtentKind::Protected,
-            Binding::Retired { .. } => {
-                return Err(Error::Abi("new scope cannot already be retired"));
-            }
+            Binding::Retired { .. } => return Err(Error::Abi("new scope cannot be retired")),
         };
-        self.event(
-            &key,
-            Action::ScopeEntered {
-                scope: id,
-                body_activation: scope.body.ordinal(),
-                kind,
-            },
-        );
-        Ok(())
+        self.scopes.push(binding);
+        self.active.push(id);
+        self.event(key, Action::ScopeEntered { scope: id, kind });
+        self.complete(vec![Value::I64(scope_value(id))])
     }
-    fn expire(&mut self, key: &Key, id: usize) -> Result<Option<Binding>, Error> {
-        if !self.scopes[id].active() {
-            return Ok(None);
-        }
-        if self.active.pop() != Some(id) {
+    fn pop(&mut self, key: &Key, scope: i64) -> Result<(), Error> {
+        let id = usize::try_from(scope).map_err(|_| Error::Abi("negative scope"))?;
+        if self.active.last() != Some(&id) {
             return Err(Error::Abi("dynamic scopes left out of order"));
         }
-        let binding = self.scopes[id].binding.retire();
+        self.active.pop();
+        self.scopes[id].retire();
         self.event(key, Action::ScopeExpired(id));
-        Ok(Some(binding))
+        self.complete(vec![])
     }
     fn masked(&self, scope: usize) -> bool {
         self.masks.iter().any(|mask| mask.hidden.contains(&scope))
     }
     fn signal(&mut self, key: Key, condition: Condition) -> Result<(), Error> {
         // Snapshot outermost first, then pop innermost without shifting the remaining handlers.
-        let remaining = self.active.iter().copied().filter(|id| !self.masked(*id) && matches!(self.scopes[*id].binding, Binding::Handler { class, .. } if condition.class.is_a(class))).collect();
+        let remaining = self
+            .active
+            .iter()
+            .copied()
+            .filter(|id| {
+                !self.masked(*id)
+                    && matches!(self.scopes[*id], Binding::Handler { class, .. } if condition.class.is_a(class))
+            })
+            .collect();
         self.next_handler(Signal {
             key,
             condition,
@@ -676,15 +637,16 @@ impl Runtime {
     }
     fn next_handler(&mut self, mut signal: Signal) -> Result<(), Error> {
         while let Some(id) = signal.remaining.pop() {
-            if !self.scopes[id].active() || self.masked(id) {
-                continue;
-            }
             let Binding::Handler {
                 handler, policy, ..
-            } = self.scopes[id].binding.clone()
+            } = self.scopes[id].clone()
             else {
-                return Err(Error::Abi("handler scope expected"));
+                continue;
             };
+            if self.masked(id) {
+                continue;
+            }
+            // While a handler runs, it and every handler bound inside it are masked.
             let position = self
                 .active
                 .iter()
@@ -693,14 +655,12 @@ impl Runtime {
             let hidden = self.active[position..]
                 .iter()
                 .copied()
-                .filter(|scope| matches!(self.scopes[*scope].binding, Binding::Handler { .. }))
+                .filter(|scope| matches!(self.scopes[*scope], Binding::Handler { .. }))
                 .collect();
-            let mask = self.next_mask;
-            self.next_mask += 1;
             let key = signal.key.clone();
             let condition = signal.condition;
             self.event(&key, Action::HandlerCalled(id, condition.class));
-            let (activation, depth) = self.guest(
+            let callback = self.guest(
                 key,
                 handler,
                 vec![
@@ -710,16 +670,10 @@ impl Runtime {
                 Continuation::Handler {
                     scope: id,
                     policy,
-                    mask,
                     signal,
                 },
             )?;
-            self.masks.push(Mask {
-                id: mask,
-                activation,
-                depth,
-                hidden,
-            });
+            self.masks.push(Mask { callback, hidden });
             return Ok(());
         }
         self.event(&signal.key, Action::Unhandled(signal.condition.class));
@@ -733,7 +687,7 @@ impl Runtime {
         self.active
             .iter()
             .rev()
-            .filter_map(|id| match self.scopes[*id].binding {
+            .filter_map(|id| match self.scopes[*id] {
                 Binding::Restart {
                     name, token, class, ..
                 } if condition.is_none_or(|condition| condition.class.is_a(class)) => {
@@ -744,8 +698,12 @@ impl Runtime {
             .collect()
     }
     fn restart(&self, token: Obj) -> Result<usize, Error> {
-        let id = self.scopes.iter().position(|scope| matches!(scope.binding, Binding::Restart { token: known, .. } | Binding::Retired { restart: Some(known) } if known == token)).ok_or(Error::ForeignRestart)?;
-        if !self.scopes[id].active() {
+        let id = self
+            .scopes
+            .iter()
+            .position(|scope| matches!(scope, Binding::Restart { token: known, .. } | Binding::Retired { restart: Some(known) } if *known == token))
+            .ok_or(Error::ForeignRestart)?;
+        if matches!(self.scopes[id], Binding::Retired { .. }) {
             return Err(Error::ExpiredRestart);
         }
         Ok(id)
@@ -757,7 +715,7 @@ impl Runtime {
         argument: i64,
         after: AfterRestart,
     ) -> Result<(), Error> {
-        let Binding::Restart { name, function, .. } = self.scopes[id].binding.clone() else {
+        let Binding::Restart { name, function, .. } = self.scopes[id].clone() else {
             return Err(Error::Abi("restart binding expected"));
         };
         self.event(&key, Action::RestartCalled(name));
@@ -775,7 +733,7 @@ impl Runtime {
             .unhandled
             .as_ref()
             .ok_or(Error::Abi("no unhandled condition"))?;
-        let Binding::Restart { class, .. } = self.scopes[id].binding else {
+        let Binding::Restart { class, .. } = self.scopes[id] else {
             return Err(Error::Abi("restart binding expected"));
         };
         if !signal.condition.class.is_a(class) {
@@ -805,31 +763,11 @@ impl Runtime {
         values: Vec<Value>,
     ) -> Result<(), Error> {
         match continuation {
-            Continuation::Scope(id) => {
-                pair(&values)?;
-                let cleanup = match self.expire(&key, id)? {
-                    Some(Binding::Protected { cleanup }) => Some(cleanup),
-                    _ => None,
-                };
-                if let Some(cleanup) = cleanup {
-                    self.event(&key, Action::CleanupStarted(id));
-                    self.guest(
-                        key,
-                        cleanup,
-                        vec![],
-                        Continuation::NormalCleanup { scope: id, values },
-                    )?;
-                } else {
-                    self.complete(values)?;
-                }
-            }
             Continuation::Handler {
                 scope,
                 policy,
-                mask,
                 signal,
             } => {
-                self.masks.retain(|entry| entry.id != mask);
                 let [Value::Bool(accepted), Value::I64(value), Value::Bool(flag)] =
                     values.as_slice()
                 else {
@@ -844,25 +782,24 @@ impl Runtime {
                 }
             }
             Continuation::Restart { scope, after } => {
-                pair(&values)?;
-                let binding = &self.scopes[scope];
-                let Binding::Restart { mode, .. } = binding.binding else {
+                let reply = pair(&values)?;
+                let Binding::Restart { mode, .. } = self.scopes[scope] else {
                     return Err(Error::Abi("restart binding expected"));
                 };
                 if mode == RestartMode::Exit {
-                    let transfer = Transfer {
-                        target: binding.body.clone(),
-                        depth: binding.depth,
-                        values,
-                    };
-                    self.event(
-                        &key,
-                        Action::ExitSelected {
-                            scope,
-                            reply: pair(&transfer.values)?,
-                        },
-                    );
-                    self.unwind(key, transfer)?;
+                    // The guest unwinds to the restart's region, running cleanup on the way.
+                    self.event(&key, Action::ExitSelected { scope, reply });
+                    self.run
+                        .pending_host_call()
+                        .ok_or(Error::Abi("exit requires a pending request"))?
+                        .throw(
+                            self.exit,
+                            vec![
+                                Value::I64(scope_value(scope)),
+                                Value::I64(reply.value),
+                                Value::Bool(reply.flag),
+                            ],
+                        )?;
                 } else {
                     match after {
                         AfterRestart::Guest => self.complete(values)?,
@@ -873,85 +810,12 @@ impl Runtime {
                     }
                 }
             }
-            Continuation::NormalCleanup {
-                scope,
-                values: original,
-            } => {
-                if !values.is_empty() {
-                    return Err(Error::Abi("cleanup reply must be empty"));
-                }
-                self.event(&key, Action::CleanupFinished(scope));
-                self.complete(original)?;
-            }
-            Continuation::ExitCleanup { scope, transfer } => {
-                if !values.is_empty() {
-                    return Err(Error::Abi("cleanup reply must be empty"));
-                }
-                self.event(&key, Action::CleanupFinished(scope));
-                self.unwind(key, transfer)?;
-            }
         }
-        Ok(())
-    }
-    fn unwind(&mut self, key: Key, transfer: Transfer) -> Result<(), Error> {
-        while let Some(id) = self.active.last().copied() {
-            if self.scopes[id].depth < transfer.depth {
-                break;
-            }
-            let binding = self.expire(&key, id)?;
-            let depth = self.scopes[id].depth;
-            // Restore the owner's logical handler environment before cleanup. Abandoned handler
-            // callbacks still have physical VM frames, but their temporary masks are out of extent.
-            self.masks.retain(|mask| mask.depth <= depth);
-            let cleanup = match binding {
-                Some(Binding::Protected { cleanup }) => Some(cleanup),
-                _ => None,
-            };
-            if let Some(cleanup) = cleanup {
-                self.event(&key, Action::CleanupStarted(id));
-                self.guest(
-                    key,
-                    cleanup,
-                    vec![],
-                    Continuation::ExitCleanup {
-                        scope: id,
-                        transfer,
-                    },
-                )?;
-                return Ok(());
-            }
-        }
-        self.run
-            .pending_host_call()
-            .ok_or(Error::Abi("exit requires a pending request"))?
-            .return_from(&transfer.target, transfer.values)?;
-        let live: Vec<_> = self
-            .run
-            .inspect()
-            .frames()
-            .map(|frame| frame.activation)
-            .collect();
-        let abandoned: Vec<_> = self
-            .waiting
-            .iter()
-            .filter(|waiting| !live.contains(&waiting.key.activation))
-            .filter_map(|waiting| match waiting.continuation {
-                Continuation::NormalCleanup { scope, .. }
-                | Continuation::ExitCleanup { scope, .. } => Some(scope),
-                _ => None,
-            })
-            .collect();
-        for scope in abandoned {
-            self.event(&key, Action::CleanupAbandoned(scope));
-        }
-        self.waiting
-            .retain(|waiting| live.contains(&waiting.key.activation));
-        self.masks.retain(|mask| live.contains(&mask.activation));
         Ok(())
     }
     fn dispatch(&mut self, key: Key, symbol: &str, args: Vec<Value>) -> Result<Status, Error> {
         match (symbol, args.as_slice()) {
-            ("condition.handle", [body, handler, Value::I64(class), Value::U64(policy)]) => {
+            ("condition.push_handler", [handler, Value::I64(class), Value::U64(policy)]) => {
                 self.callable(
                     handler,
                     &[ValueType::I64, ValueType::I64],
@@ -962,20 +826,16 @@ impl Runtime {
                     1 => Policy::Dylan,
                     _ => return Err(Error::Abi("unknown handler policy")),
                 };
-                self.scope(
-                    key,
-                    body.clone(),
-                    Binding::Handler {
-                        class: Class::decode(*class)?,
-                        handler: handler.clone(),
-                        policy,
-                    },
-                )?;
+                let binding = Binding::Handler {
+                    class: Class::decode(*class)?,
+                    handler: handler.clone(),
+                    policy,
+                };
+                self.push(&key, binding)?;
             }
             (
-                "condition.restart_bind",
+                "condition.push_restart",
                 [
-                    body,
                     function,
                     Value::I64(name),
                     Value::U64(mode),
@@ -992,29 +852,16 @@ impl Runtime {
                     1 => RestartMode::Exit,
                     _ => return Err(Error::Abi("unknown restart mode")),
                 };
-                let token = restart_token()?;
-                self.scope(
-                    key,
-                    body.clone(),
-                    Binding::Restart {
-                        name: *name,
-                        function: function.clone(),
-                        mode,
-                        class: Class::decode(*class)?,
-                        token,
-                    },
-                )?;
+                let binding = Binding::Restart {
+                    name: *name,
+                    function: function.clone(),
+                    mode,
+                    class: Class::decode(*class)?,
+                    token: restart_token()?,
+                };
+                self.push(&key, binding)?;
             }
-            ("condition.protect", [body, cleanup]) => {
-                self.callable(cleanup, &[], &[])?;
-                self.scope(
-                    key,
-                    body.clone(),
-                    Binding::Protected {
-                        cleanup: cleanup.clone(),
-                    },
-                )?;
-            }
+            ("condition.pop", [Value::I64(scope)]) => self.pop(&key, *scope)?,
             ("condition.signal", [Value::I64(class), Value::I64(payload)]) => self.signal(
                 key,
                 Condition {
@@ -1098,6 +945,9 @@ impl Runtime {
         Ok(Status::Running)
     }
 }
+fn scope_value(id: usize) -> i64 {
+    i64::try_from(id).expect("scope count is bounded")
+}
 fn pair(values: &[Value]) -> Result<Reply, Error> {
     if let [Value::I64(value), Value::Bool(flag)] = values {
         Ok(Reply {
@@ -1105,7 +955,7 @@ fn pair(values: &[Value]) -> Result<Reply, Error> {
             flag: *flag,
         })
     } else {
-        Err(Error::Abi("body/restart reply must be (value, flag)"))
+        Err(Error::Abi("restart reply must be (value, flag)"))
     }
 }
 

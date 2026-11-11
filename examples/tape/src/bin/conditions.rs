@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A language-layer condition/restart protocol using typed VM callbacks and scoped exits.
+//! A language-layer condition/restart protocol on guest exceptions and VM callbacks.
 
 #[path = "conditions/language.rs"]
 mod language;

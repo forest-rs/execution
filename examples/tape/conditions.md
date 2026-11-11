@@ -24,11 +24,22 @@ disassembly to construct its map. The static browser and recorded explorer use t
 
 ## What the frontend emits
 
-A handler binding is a call to the example service `condition.handle`, carrying the protected
-body closure, handler closure, condition class and handler-return policy. Closures capture a
-verified four-integer environment. Body and restart functions return `(i64, bool)`; handler
-functions return `(accepted: bool, value: i64, flag: bool)`; cleanup functions return no values.
-The acceptance flag is separate from the user's secondary result.
+Handler, restart and protected bodies compile inline. A handler binding calls the example
+service `condition.push_handler` with the handler closure, condition class and handler-return
+policy; a restart binding calls `condition.push_restart` with the restart closure, name, mode and
+applicable class. Each returns a scope number, and the body that follows runs inside a protected
+region whose `catch_all_ref` clause calls `condition.pop` and rethrows with `throw_ref`. The
+normal path pops the scope too, so the runtime's dynamic stack always matches the guest's.
+
+A restart scope's region also catches the `condition.exit(scope, value, flag)` tag. When the
+exit names this scope, the region returns `(value, flag)` as the restart expression's result;
+otherwise it pops and rethrows. A protected body's `catch_all_ref` clause calls the cleanup
+function and rethrows, and its normal path calls the same cleanup function before continuing.
+An exception raised by cleanup, including another exit, replaces the one being unwound.
+
+Closures capture a verified four-integer environment. Restart functions return `(i64, bool)`;
+handler functions return `(accepted: bool, value: i64, flag: bool)`; cleanup functions return no
+values. The acceptance flag is separate from the user's secondary result.
 
 The frontend uses `ProgramBuilder::declare_closure` to describe the captured context and exposed
 signature once. `load_captures` gives the body meaningful local names, `argument` excludes the
@@ -36,45 +47,35 @@ hidden environment, and `instantiate` emits the matching closure construction. T
 generate ordinary tape instructions; the language runtime still supplies handler and restart policy.
 
 `recovery` explicitly signals a `DivisionByZero` condition through the ordinary calls
-`compute` and `divide`; it does not execute a division instruction. Its signal site is:
-
-```text
-000016: const.i64 r6 ; 4
-000019: const.i64 r7 ; 5
-000022: host_call eff_out=r0, host_sig#3("condition.signal"), eff_in=r0,
-          args=[r6, r7], rets=[r8, r9]
-000032: ret eff=r0, rets=[r8, r9]
-```
-
-Class `4` means `DivisionByZero` and `5` is its example payload. Neither integer has intrinsic
-meaning to execution_tape. The handler captures `40`, awaits native work, adds `2` and returns
-`(true, 42, true)`. The language service must interpret that reply before completing the signal
-with `(42, true)`. A restart binding similarly passes body and restart closures to
-`condition.restart_bind`; a protected body passes body and cleanup closures to
-`condition.protect`. Conditional handler bodies use ordinary typed branches and block joins.
+`compute` and `divide`; it does not execute a division instruction. Its signal site is an ordinary
+`host_call` to `condition.signal` with class `4` (`DivisionByZero`) and payload `5`. Neither
+integer has intrinsic meaning to execution_tape. The handler captures `40`, awaits native work,
+adds `2` and returns `(true, 42, true)`. The language service interprets that reply and completes
+the signal with `(42, true)`.
 
 ## Which stack belongs where?
 
 Core execution_tape maintains guest call frames, pending host requests, callback ancestry,
-exact activation identities and typed result contracts. It has no condition-class hierarchy,
-handler stack, restart lookup policy or automatic protected-cleanup registry.
+protected regions and the unwinder. It has no condition-class hierarchy, handler stack or restart
+lookup policy.
 
-A language runtime supplies those meanings. At a pending host request it can use `call_guest`
-to run a handler, restart or cleanup closure in the same invocation. The original host request
-and its callers remain suspended. A callback's own typed return goes back to that service;
-it does not implicitly complete the original host request. An explicit `return_from` can
-instead return values from an exact live guest activation and abandon its callees. Core checks
-the target's ownership, lifetime, result contracts and resource budgets.
+The language runtime keeps the dynamic stack of handler and restart bindings. Handlers run on top
+of the signaling stack: at the pending `condition.signal` request the runtime uses `call_guest`
+to run a handler closure, and a restart function runs the same way at `condition.invoke` or at an
+unhandled signal. A callback's typed return goes back to the runtime; it does not complete the
+original request implicitly.
 
-A condition runtime can therefore maintain its logical dynamic extents above the VM. For
-an exit, it must restore the language environment and run the required cleanup callbacks
-before requesting the final physical transfer. Arbitrary core traps, fuel exhaustion,
-cancellation and dropping an invocation do not execute guest cleanup. A language that wants
-recoverable arithmetic failure must signal it explicitly rather than relying on a core trap.
+An exiting restart becomes a guest exception. After the restart function returns its values, the
+runtime completes the pending request with `PendingHostCall::throw`, raising `condition.exit` at
+that `host_call`. The VM unwinds the abandoned callbacks, requests and frames; each crossed binding
+pops itself and each crossed protected body runs its cleanup in guest code, which may itself wait
+for native work, signal again or exit elsewhere. The runtime forgets callbacks and masks whose
+frames the exception abandoned. Arbitrary traps, fuel exhaustion, cancellation and dropping an
+invocation do not execute guest cleanup. A language that wants recoverable arithmetic failure must
+signal it explicitly rather than relying on a core trap.
 
 This example's ABI and compiler are private development tooling. They establish no language,
-source-format or portable recording compatibility promise, add no production dependencies,
-and change neither core opcodes nor the wire format.
+source-format or portable recording compatibility promise and add no production dependencies.
 
 ## Run the language protocol
 
@@ -88,7 +89,8 @@ cargo test -p execution_tape_examples --bin conditions
 ```
 
 `recovery` stops at native work inside a guest handler. The printed explanation separates
-logical dynamic bindings from physical guest frames, including the retained signaling calls.
+the runtime's dynamic bindings from the guest frames, including the signaling calls beneath the
+handler.
 The command-line driver supplies an empty reply to the demo wait, then the handler recovers
 with `(42, true)`. It prints the language policy events with authored source, verifies a fresh
 guest replay, and optionally opens the recorded Observatory view. The latter shows VM evidence;
@@ -102,22 +104,21 @@ The example runtime owns these semantics:
 | Handler search | Applicable bindings are tried innermost first. While a handler runs, existing bindings at and inside that binding are masked; newly established bindings remain visible. |
 | Normal handler return | Under `CommonLisp`, a normal return declines. Under `Dylan`, `accepted` chooses recovery or decline. These are two policies, not complete implementations of either language. |
 | Function restart | An ordinary callable result returns to its invoker. Calling it does not itself resolve the signal, and it may be called repeatedly. |
-| Exiting restart | The runtime runs the restart function, processes crossed cleanup and transfers its typed results from the selected body activation. |
+| Exiting restart | The runtime runs the restart function, then raises `condition.exit` at the pending request; the restart scope's region receives its typed results. |
 | Restart token | An opaque identity belongs to one runtime and one dynamic extent. A same-name binding cannot revive an expired token. |
-| Protected body | Normal completion and an explicit exit both run cleanup in LIFO order. Each binding is consumed before entering cleanup. |
+| Protected body | Normal completion and every exception run cleanup in LIFO order, in guest code. Crossed bindings pop before outer cleanup runs. |
 | Unhandled condition | The embedding receives the condition and applicable restart tokens. It can invoke a restart or explicitly supply recovery values. |
 
 `cleanup` demonstrates an exit across two protected bodies. Inner cleanup emits `20`, awaits
-external work and returns; outer cleanup emits `10`; only then does the VM transfer `(42, true)`.
-During that wait, the inner protection has already expired logically, while the physical
-signaling stack is still retained. Handler masks are restored to the cleanup owner's logical
-environment before cleanup executes.
+external work and rethrows; outer cleanup emits `10`; only then does the restart scope receive
+`(42, true)`. During that wait the signaling frames and the abandoned handler callback are
+already gone, so the handler binding is no longer masked when cleanup runs.
 
 In `cleanup-replaces`, cleanup selects another exit. The original intent to return `42` is
-replaced with `99`. There are two language exit-selection events, one abandoned cleanup and
-one final VM transfer. The consumed cleanup does not start again. In `cleanup-local-exit`,
-an exit confined to a nested cleanup scope leaves the original pending transfer intact.
-`cleanup-signals` exercises a new signal during cleanup using the restored outer handler.
+replaced with `99`: there are two exit selections and two raised exits, and the replaced cleanup
+does not run again. In `cleanup-local-exit`, an exit confined to a nested cleanup scope is caught
+there, after which the original exit continues. `cleanup-signals` exercises a new signal during
+cleanup using the outer handler.
 
 Other cases cover nested signals and new handler bindings, explicit decline and normal-return
 decline, repeated restart functions, returning to an unhandled-condition debugger, expired
@@ -128,12 +129,12 @@ deliberately small and private, not a proposed core object model.
 
 ## Ownership, resource limits and evidence
 
-The pending structured-service request keeps its borrowed body/handler/cleanup arguments alive
-while guest callbacks execute. The runtime records exact body activation identities, rather
-than deriving scope identity from function IDs or PCs. Retiring a binding releases its borrowed
-guest closure handles; a retired restart keeps only a token tombstone for expiry diagnostics.
-An exit prunes native continuations using the VM's surviving activations. A malformed external
-reply traps and retires language state. It cannot be used to bypass an unhandled condition.
+Scope numbers come from the runtime and are returned to the guest, so identity never depends on
+function IDs or PCs. Retiring a binding releases its guest closure handles; a retired restart
+keeps only a token tombstone for expiry diagnostics. The runtime forgets callbacks and handler
+masks whose frames are no longer live, using the VM's own activation identities. A malformed
+external reply traps and retires language state. It cannot be used to bypass an unhandled
+condition.
 
 All callbacks and cleanup execute in the original invocation with cumulative VM fuel, host-call,
 call-depth, contract and data-work limits. Polling a native wait does not spend additional guest
@@ -147,10 +148,10 @@ guaranteed native resource release must provide it independently of guest execut
 
 A finished session owns two distinct kinds of evidence after the runtime is gone:
 
-* The bounded native policy log records selected handlers, scope retirement, exit intentions
-  and cleanup decisions, with its own truncation flag and returned/trapped/cancelled status.
-* The VM recording owns observed values, actual callback returns, admitted transfer commands
-  and instruction history, with independent capture-completeness checks.
+* The bounded native policy log records selected handlers, scope entry and retirement and exit
+  intentions, with its own truncation flag and returned/trapped/cancelled status.
+* The VM recording owns observed values, callback commands and returns, raised and caught
+  exceptions and instruction history, with independent capture-completeness checks.
 
 Checked replay reexecutes guest handlers, restarts and cleanup under the **recorded embedding
 choices**. It does not rerun native handler selection, masking policy, debugger decisions or
@@ -159,6 +160,5 @@ check guest replay after the original runtime has been dropped. A successful rep
 does not certify the native policy log. Neither evidence stream is a portable session archive.
 
 Every retained policy location, VM command, callback return, host outcome and instruction maps
-to the exact authored AST snapshot. A transfer's initiating instruction and the target frame's
-suspended instruction retain separate locations. Source mapping and UI rendering remain
-explicit tooling work; they are not added to ordinary verification or execution.
+to the exact authored AST snapshot. Source mapping and UI rendering remain explicit tooling work;
+they are not added to ordinary verification or execution.
