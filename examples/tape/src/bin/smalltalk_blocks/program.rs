@@ -3,12 +3,17 @@
 
 //! Hand-lowering of the accompanying Smalltalk-style story, with exact source snapshots.
 //! This is a control-flow fixture, not a Smalltalk parser or general object representation.
+//!
+//! `ensure:` compiles inline into protected regions whose `catch_all_ref` clauses run the
+//! cleanup block and rethrow. Each method with a lexical home catches the `Block.nonLocal`
+//! exception addressed to its home and answers its boxed value; the language runtime raises
+//! that exception when a block's `^` finds its home still active.
 
 use execution_tape::{
-    asm::{Asm, CallTarget, ClosureLayout, FunctionAbi, FunctionSig, ProgramBuilder},
+    asm::{Asm, CallTarget, Catch, ClosureLayout, FunctionAbi, FunctionSig, ProgramBuilder},
     contract::Contract,
     host::HostSig,
-    program::{HostSigId, HostTypeId, ValueType},
+    program::{HostSigId, HostTypeId, TagId, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     value::FuncId,
     verifier::VerifiedProgram,
@@ -17,7 +22,8 @@ use std::{ops::Range, sync::Arc};
 
 pub(super) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub(super) const CELL: HostTypeId = HostTypeId(1);
-pub(super) const HOME: HostTypeId = HostTypeId(2);
+/// The exception a runtime raises to answer a value from a block's lexical home.
+pub(super) const NON_LOCAL: &str = "Block.nonLocal";
 const STORY: &str = include_str!("story.st");
 
 pub(super) struct Fixture {
@@ -34,8 +40,19 @@ struct Imports {
     wait: HostSigId,
     after_ensure: HostSigId,
     home: HostSigId,
-    ensure: HostSigId,
     return_home: HostSigId,
+}
+#[derive(Clone, Copy)]
+struct HomeRegion {
+    label: execution_tape::asm::Label,
+    target: u32,
+    boxed: u32,
+    other: u32,
+}
+#[derive(Clone, Copy)]
+struct EnsureRegion {
+    label: execution_tape::asm::Label,
+    unwound: u32,
 }
 struct Author {
     program: ProgramBuilder,
@@ -85,7 +102,7 @@ impl Author {
         non_local: bool,
     ) -> Result<ClosureLayout> {
         let block = self.program.declare_closure(
-            &[ValueType::Obj(HOME).into(), ValueType::Obj(CELL).into()],
+            &[ValueType::I64.into(), ValueType::Obj(CELL).into()],
             FunctionSig {
                 arg_types: vec![],
                 ret_types: vec![ValueType::I64],
@@ -120,6 +137,63 @@ impl Author {
             body,
         )?;
         Ok(block)
+    }
+    /// Opens a method's home region, which catches non-local returns addressed to this home.
+    fn home(&mut self, body: &mut Asm, non_local: TagId) -> HomeRegion {
+        let target = body.alloc_register(ValueType::I64);
+        let boxed = body.alloc_register(ValueType::Agg);
+        let other = body.alloc_register(ValueType::Exn);
+        let label = body.block(&[target, boxed, other]);
+        body.begin_region(&[Catch::TagRef(non_local, label)]);
+        HomeRegion {
+            label,
+            target,
+            boxed,
+            other,
+        }
+    }
+    /// Closes the home region and answers a non-local return addressed to `home`.
+    fn answer_from_home(&mut self, body: &mut Asm, region: HomeRegion, home: u32) -> Result<()> {
+        body.end_region();
+        body.place(region.label)?;
+        let mine = body.alloc_register(ValueType::Bool);
+        let (here, onward) = (body.label(), body.label());
+        body.i64_eq(mine, region.target, home)
+            .br(mine, here, onward);
+        body.place(here)?;
+        body.ret(0, &[region.boxed]);
+        body.place(onward)?;
+        body.throw_ref(0, region.other);
+        Ok(())
+    }
+    /// Opens an `ensure:` region; [`Self::cleanup_on_exit`] closes it.
+    fn ensure(&mut self, body: &mut Asm) -> EnsureRegion {
+        let unwound = body.alloc_register(ValueType::Exn);
+        let label = body.block(&[unwound]);
+        body.begin_region(&[Catch::AllRef(label)]);
+        EnsureRegion { label, unwound }
+    }
+    /// Runs `cleanup` after the protected code, on normal completion and before rethrowing.
+    fn cleanup_on_exit(
+        &mut self,
+        body: &mut Asm,
+        region: EnsureRegion,
+        layout: &ClosureLayout,
+        cleanup: u32,
+    ) -> Result<()> {
+        body.end_region();
+        let target = CallTarget::Indirect {
+            signature: layout.call_signature(),
+            callee: cleanup,
+        };
+        let [] = self.program.emit_call(body, target, &[])?;
+        let after = body.label();
+        body.jmp(after);
+        body.place(region.label)?;
+        let [] = self.program.emit_call(body, target, &[])?;
+        body.throw_ref(0, region.unwound);
+        body.place(after)?;
+        Ok(())
     }
     fn cleanup(&mut self, imports: &Imports, tag: i64, waits: bool) -> Result<ClosureLayout> {
         let cleanup = self.program.declare_closure(
@@ -198,15 +272,10 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
         cleaned: import("Cell.cleaned", &[ValueType::Obj(CELL), ValueType::I64], &[]),
         wait: import("Demo.wait", &[], &[]),
         after_ensure: import("Demo.afterEnsure", &[], &[]),
-        home: import("Block.home", &[], &[ValueType::Obj(HOME)]),
-        ensure: import(
-            "Block.ensure",
-            &[ValueType::Closure, ValueType::Closure],
-            &[ValueType::I64],
-        ),
+        home: import("Block.home", &[], &[ValueType::I64]),
         return_home: import(
             "Block.return",
-            &[ValueType::Obj(HOME), ValueType::I64],
+            &[ValueType::I64, ValueType::I64],
             &[ValueType::I64],
         ),
     };
@@ -216,6 +285,9 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     let answers = author
         .program
         .contract(Contract::Tuple(&[Some(integer); 4]))?;
+    let non_local_tag = author
+        .program
+        .declare_tag(NON_LOCAL, &[ValueType::I64.into(), object_box.into()])?;
 
     // A closure factory runs twice. Distinct environments retain the same mutable cell identity.
     let increment = author.program.declare_closure(
@@ -262,30 +334,10 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     body.ret(0, &[block]);
     author.define(factory, "makeIncrement:", body)?;
 
-    // Both normal and non-local completion must pass through the same nested ensure protocol.
+    // Both normal and non-local completion pass through the same nested ensure regions.
     let return_block = author.return_block(&imports, "answerUsing: counter", non_local)?;
     let inner_cleanup = author.cleanup(&imports, 2, true)?;
     let outer_cleanup = author.cleanup(&imports, 1, false)?;
-    let outer_body = author.program.declare_closure(
-        &[ValueType::Closure.into(); 2],
-        FunctionSig {
-            arg_types: vec![],
-            ret_types: vec![ValueType::I64],
-        },
-    )?;
-    let mut body = author.program.function_asm(outer_body.function())?;
-    author.at(
-        &mut body,
-        "answerUsing: counter",
-        "ensure: [ Demo wait. counter cleaned: 2 ]",
-    );
-    let [protected_block, cleanup] = outer_body.load_captures(&mut body)?;
-    let [answer] =
-        author
-            .program
-            .emit_call(&mut body, imports.ensure, &[protected_block, cleanup])?;
-    body.ret(0, &[answer]);
-    author.define(outer_body.function(), "ensure / outer body", body)?;
 
     // Method result boxes give both scalar and block objects the same aggregate storage kind.
     // makeEscaped: can answer either a block normally or an integer via its lexical return.
@@ -298,18 +350,36 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     let counter = author.program.argument(answer_method, 0)?;
     let [home] = author.program.emit_call(&mut body, imports.home, &[])?;
     let protected_block = return_block.instantiate(&mut body, &[home, counter])?;
-    let inner_cleanup = inner_cleanup.instantiate(&mut body, &[counter])?;
-    let outer_cleanup = outer_cleanup.instantiate(&mut body, &[counter])?;
-    let protected = outer_body.instantiate(&mut body, &[protected_block, inner_cleanup])?;
+    let inner_cleanup_block = inner_cleanup.instantiate(&mut body, &[counter])?;
+    let outer_cleanup_block = outer_cleanup.instantiate(&mut body, &[counter])?;
+    let returned = author.home(&mut body, non_local_tag);
     author.at(
         &mut body,
         "answerUsing: counter",
         "ensure: [ counter cleaned: 1 ]",
     );
-    let [answer] =
-        author
-            .program
-            .emit_call(&mut body, imports.ensure, &[protected, outer_cleanup])?;
+    let outer = author.ensure(&mut body);
+    author.at(
+        &mut body,
+        "answerUsing: counter",
+        "ensure: [ Demo wait. counter cleaned: 2 ]",
+    );
+    let inner = author.ensure(&mut body);
+    let [answer] = author.program.emit_call(
+        &mut body,
+        CallTarget::Indirect {
+            signature: return_block.call_signature(),
+            callee: protected_block,
+        },
+        &[],
+    )?;
+    author.cleanup_on_exit(&mut body, inner, &inner_cleanup, inner_cleanup_block)?;
+    author.at(
+        &mut body,
+        "answerUsing: counter",
+        "ensure: [ counter cleaned: 1 ]",
+    );
+    author.cleanup_on_exit(&mut body, outer, &outer_cleanup, outer_cleanup_block)?;
     author.at(&mut body, "answerUsing: counter", "Demo afterEnsure");
     let [] = author
         .program
@@ -317,6 +387,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     author.at(&mut body, "answerUsing: counter", "^ answer");
     let boxed = body.alloc_register(ValueType::Agg);
     body.tuple_new(boxed, &[answer]).ret(0, &[boxed]);
+    author.answer_from_home(&mut body, returned, home)?;
     author.define(answer_method, "answerUsing:", body)?;
 
     let escaped = author.return_block(&imports, "makeEscaped: counter", true)?;
@@ -328,10 +399,13 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
     author.at(&mut body, "makeEscaped: counter", "makeEscaped: counter");
     let counter = author.program.argument(make_escaped, 0)?;
     let [home] = author.program.emit_call(&mut body, imports.home, &[])?;
+    let returned = author.home(&mut body, non_local_tag);
     author.at(&mut body, "makeEscaped: counter", "^ [ ^ counter value ]");
     let block = escaped.instantiate(&mut body, &[home, counter])?;
     let boxed = body.alloc_register(ValueType::Agg);
     body.tuple_new(boxed, &[block]).ret(0, &[boxed]);
+    author.at(&mut body, "makeEscaped: counter", "makeEscaped: counter");
+    author.answer_from_home(&mut body, returned, home)?;
     author.define(make_escaped, "makeEscaped:", body)?;
 
     let entry = author.program.declare_function(FunctionAbi {

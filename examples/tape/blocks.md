@@ -40,10 +40,10 @@ answerUsing: counter
 ```
 
 The inner `^` returns `42` from **the method that created the block**. It does not return from
-its immediate block caller. The language service consumes the inner cleanup binding, runs its
-cleanup block and waits for native work. Its outer cleanup then runs. The observed order is
-`[2, 1]`, once each. Only after cleanup does core perform the typed activation transfer;
-`Demo afterEnsure` is skipped.
+its immediate block caller. The language runtime raises a `Block.nonLocal` exception addressed
+to that home; unwinding runs the inner cleanup block, which waits for native work, then the
+outer cleanup block. The observed order is `[2, 1]`, once each. The method's home region then
+answers `42`, and `Demo afterEnsure` is skipped.
 
 `--normal-return` removes that first block's `^`. Both cleanup blocks still execute in order,
 but the block returns to its caller and the method reaches `Demo afterEnsure`. Both modes
@@ -89,7 +89,7 @@ signature. Body emission remains detached from the program builder. `emit_call` 
 register kinds and supplies the call convention. Ordinary arithmetic and typed control flow use
 `Asm` directly; there is no parallel family of arithmetic APIs.
 
-The fixture uses typed integers, opaque cell/home identities and aggregate method-result boxes.
+The fixture uses typed integers, opaque cells, numbered lexical homes and aggregate method-result boxes.
 The result representation matters for lexical returns: `makeEscaped:` normally answers a block,
 but its inner `^ counter value` would answer an integer to the same method while that home was
 active. A one-member aggregate permits both values in that method's declared return kind;
@@ -99,19 +99,20 @@ member contract. Because an unconstrained member does not prove that a value is 
 These are private fixture conventions, not a general Smalltalk object ABI. The root returns one
 four-member tuple for the final report.
 
-## Keep physical and language control distinct
+## Keep guest control and language policy distinct
 
-`runtime.rs` owns the lexical-home table, ensure bindings and native continuations. A home token
-refers to an exact `ActivationId`, so recursion or a later activation of the same function cannot
-revive an expired home. Tokens do not wrap or reuse identities. The example caps registered homes
-at 64 per invocation. Cells belong to the invocation's host; no shared-state or garbage-collection
-policy is installed in core.
+`ensure:` compiles inline. Its protected code runs inside a region whose `catch_all_ref` clause
+calls the cleanup block and rethrows; normal completion calls the same cleanup block. Each method
+with a lexical home runs inside a region that catches `Block.nonLocal(home, boxed)` and answers
+the boxed value when the home matches; otherwise it rethrows.
 
-The original `Block.ensure` host request leases its body/cleanup handles while callbacks run.
-Normal completion consumes the scope before starting cleanup. A non-local return retires crossed
-scopes in LIFO order, then uses the core's checked `return_from`. Native continuations belonging
-to abandoned activations are discarded. During a cleanup wait, logical retirement has occurred
-while the VM still retains the physical return/signaling frames.
+`runtime.rs` owns only the lexical-home table. `Block.home` records the exact `ActivationId` of
+the creating method, so recursion or a later activation of the same function cannot revive an
+expired home. `Block.return` checks that activation is still live: if so, it boxes the value and
+completes the pending request with `PendingHostCall::throw`; if not, it reports
+`BlockCannotReturn`. Home numbers are never reused. The example caps registered homes at 64 per
+invocation. Cells belong to the invocation's host; no shared-state or garbage-collection policy is
+installed in core. During a cleanup wait, the returning block's frame has already been unwound.
 
 Every block and cleanup shares the invocation's existing hard budgets. Repeated polls at a native
 wait or an expired return do not spend guest fuel or data work. Hard VM failure and cancellation
@@ -126,18 +127,17 @@ separately exercises cleanup that signals or replaces a selected exit.
 
 ## Inspect what the evidence actually says
 
-`--explain` prints language decisions at their **pending service sites** and shows the physical
-frames retained during cleanup. A cleanup-completed policy event therefore refers to the service
-whose continuation received the result. Its actual guest return instruction is a separate event
-in the VM recording. The policy log is native evidence, not a new guest instruction stream.
+`--explain` prints language decisions at their **pending service sites** and shows the guest
+frames during cleanup. The policy log is native evidence, not a new guest instruction stream; the
+raised return, its catch and the cleanup instructions are VM evidence in the recording.
 
 The authored source is a snapshot of `story.st`, labelled `story.st (assembled fixture)` in the
 viewer. `Asm::source` records exact locations during emission, including generated capture loads,
 closure construction and returns. Source attachment checks the exact encoded program identity;
 switching between lexical and normal returns rejects a stale map.
 
-Checked replay runs the guest blocks and cleanup again, under the recorded control choices and
-host outcomes. It does not rerun the native lexical-home table, cell mutations, debugger fallback
-or cleanup policy. Tests check those live semantics separately, then replay after the original
+Checked replay runs the guest blocks and cleanup again, under the recorded host outcomes,
+including the raised return. It does not rerun the native lexical-home table, cell mutations or
+debugger fallback. Tests check those live semantics separately, then replay after the original
 runtime is gone. Cancellation leaves an explicitly incomplete recording that replay rejects.
 The session is an in-memory development artifact, not a portable image or recording archive.

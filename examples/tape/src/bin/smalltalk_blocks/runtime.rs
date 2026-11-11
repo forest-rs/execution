@@ -1,22 +1,20 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Language-owned lexical homes and cooperative ensure scopes over one VM invocation.
+//! Language-owned lexical homes over one VM invocation. `ensure:` cleanup is ordinary guest code
+//! in protected regions; a non-local return is a guest exception this runtime raises.
 
-use super::program::{CELL, Fixture, HOME, Result};
+use super::program::{CELL, Fixture, NON_LOCAL, Result};
 use execution_tape::{
     callable::Callable,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
+    program::TagId,
     recording::{InstructionCapture, RecordLimits, Recorder, Recording},
     trace::{TraceLocation, TraceSink},
     value::{Obj, ObjHandle, Value},
     vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, Vm},
 };
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{cell::RefCell, rc::Rc};
 
 fn cell() -> Obj {
     Obj {
@@ -24,7 +22,6 @@ fn cell() -> Obj {
         handle: ObjHandle(1),
     }
 }
-static NEXT_HOME: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct ProtocolFailure(String);
@@ -91,31 +88,9 @@ struct Site {
 }
 #[derive(Clone, Debug)]
 struct Home {
-    token: Obj,
+    id: i64,
     site: Site,
     name: String,
-}
-struct Protection {
-    body: ActivationId,
-    depth: usize,
-    // Borrowed guest handle: the original Block.ensure request remains pending through cleanup.
-    cleanup: Value,
-}
-struct Transfer {
-    home: Home,
-    value: i64,
-    depth: usize,
-}
-enum After {
-    Body(ActivationId),
-    Cleanup {
-        body: ActivationId,
-        normal_results: Option<Vec<Value>>,
-    },
-}
-struct Waiting {
-    site: Site,
-    after: After,
 }
 
 /// A language diagnostic with the attempted return and its expired lexical home kept distinct.
@@ -140,9 +115,6 @@ impl std::fmt::Display for CannotReturn {
 #[derive(Clone, Debug)]
 pub(super) enum Policy {
     HomeCaptured { activation: u64 },
-    EnsureEntered { body: u64 },
-    CleanupStarted { body: u64 },
-    CleanupFinished { body: u64 },
     ReturnSelected { home: u64, value: i64 },
     CannotReturn(CannotReturn),
     ReturnFallback { value: i64 },
@@ -169,16 +141,19 @@ pub(super) struct Session {
 pub(super) struct Runtime {
     run: Invocation<'static, Cells>,
     recorder: Rc<RefCell<Recorder>>,
+    non_local: TagId,
     homes: Vec<Home>,
-    protections: Vec<Protection>,
-    waiting: Vec<Waiting>,
-    transfer: Option<Transfer>,
     cannot_return: Option<CannotReturn>,
     native_wait: bool,
     events: Vec<Event>,
 }
 impl Runtime {
     pub(super) fn new(fixture: &Fixture, limits: Limits) -> Result<Self> {
+        let code = fixture.program.program();
+        let non_local = (0..code.tags.len())
+            .map(|index| TagId(u32::try_from(index).expect("bounded tag table")))
+            .find(|&tag| code.tag_name(tag) == Some(NON_LOCAL))
+            .ok_or("story declares no non-local return tag")?;
         let recorder = Rc::new(RefCell::new(
             Recorder::new(fixture.program.clone(), RecordLimits::default())
                 .with_instructions(InstructionCapture::default()),
@@ -194,10 +169,8 @@ impl Runtime {
         Ok(Self {
             run,
             recorder,
+            non_local,
             homes: vec![],
-            protections: vec![],
-            waiting: vec![],
-            transfer: None,
             cannot_return: None,
             native_wait: false,
             events: vec![],
@@ -225,14 +198,6 @@ impl Runtime {
             .complete(&mut values, Ok(0))?;
         Ok(())
     }
-    fn guest(&mut self, site: Site, block: Value, after: After) -> Result<()> {
-        self.run
-            .pending_host_call()
-            .ok_or("no pending request for block activation")?
-            .call_guest(block, vec![])?;
-        self.waiting.push(Waiting { site, after });
-        Ok(())
-    }
     pub(super) fn poll(&mut self, quantum: u64) -> Result<Status> {
         if let Some(error) = &self.cannot_return {
             return Ok(Status::CannotReturn(error.clone()));
@@ -243,9 +208,6 @@ impl Runtime {
         let result = self.step(quantum);
         if let Err(error) = &result {
             // Hard failures retire native bookkeeping without executing guest cleanup.
-            self.protections.clear();
-            self.waiting.clear();
-            self.transfer = None;
             self.cannot_return = None;
             self.native_wait = false;
             if let Some(request) = self.run.pending_host_call() {
@@ -262,82 +224,19 @@ impl Runtime {
             RunStatus::AwaitingHost => {}
         }
         let site = self.site()?;
-        let mut request = self
+        let request = self
             .run
             .pending_host_call()
             .ok_or("missing admitted host request")?;
-        if let Some(values) = request.take_callback_results() {
-            drop(request);
-            let index = self
-                .waiting
-                .iter()
-                .rposition(|waiting| {
-                    waiting.site.activation == site.activation
-                        && waiting.site.location == site.location
-                })
-                .ok_or("block returned without its language continuation")?;
-            match self.waiting.remove(index).after {
-                After::Body(body) => {
-                    let protection = self
-                        .protections
-                        .pop()
-                        .ok_or("protected body left without an ensure scope")?;
-                    if protection.body != body {
-                        return Err("ensure scopes left out of order".into());
-                    }
-                    self.event(
-                        site.location,
-                        Policy::CleanupStarted {
-                            body: protection.body.ordinal(),
-                        },
-                    );
-                    self.guest(
-                        site,
-                        protection.cleanup,
-                        After::Cleanup {
-                            body: protection.body,
-                            normal_results: Some(values),
-                        },
-                    )?;
-                }
-                After::Cleanup {
-                    body,
-                    normal_results,
-                } => {
-                    if !values.is_empty() {
-                        return Err("cleanup must return no values".into());
-                    }
-                    self.event(
-                        site.location,
-                        Policy::CleanupFinished {
-                            body: body.ordinal(),
-                        },
-                    );
-                    if let Some(values) = normal_results {
-                        self.complete(values)?;
-                    } else {
-                        self.unwind(site)?;
-                    }
-                }
-            }
-            return Ok(Status::Running);
-        }
         let symbol = request.symbol().to_string();
         let args: Vec<_> = request.arguments().map(|value| value.to_value()).collect();
         drop(request);
-        match symbol.as_str() {
-            "Block.home" => {
+        match (symbol.as_str(), args.as_slice()) {
+            ("Block.home", []) => {
                 if self.homes.len() >= 64 {
                     return Err("example lexical-home budget exhausted".into());
                 }
-                #[allow(deprecated, reason = "fetch_update supports the workspace MSRV")]
-                let id = NEXT_HOME
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                    .map_err(|_| "lexical home identity space exhausted")?;
-                let token = Obj {
-                    host_type: HOME,
-                    handle: ObjHandle(id),
-                };
+                let id = i64::try_from(self.homes.len())? + 1;
                 let name = self
                     .run
                     .program()
@@ -351,59 +250,22 @@ impl Runtime {
                         activation: site.activation.ordinal(),
                     },
                 );
-                self.homes.push(Home { token, site, name });
-                self.complete(vec![Value::Obj(token)])?;
+                self.homes.push(Home { id, site, name });
+                self.complete(vec![Value::I64(id)])?;
             }
-            "Block.ensure" => {
-                let [body, cleanup] = args.as_slice() else {
-                    return Err("ensure expects body and cleanup closures".into());
-                };
-                self.run
-                    .pending_host_call()
-                    .ok_or("ensure request disappeared")?
-                    .call_guest(body.clone(), vec![])?;
-                let inspection = self.run.inspect();
-                let frame = inspection
-                    .frames()
-                    .next()
-                    .ok_or("protected block did not enter")?;
-                let depth = inspection.frames().len();
-                let body = frame.activation;
-                drop(inspection);
-                self.event(
-                    site.location,
-                    Policy::EnsureEntered {
-                        body: body.ordinal(),
-                    },
-                );
-                self.protections.push(Protection {
-                    body: body.clone(),
-                    depth,
-                    cleanup: cleanup.clone(),
-                });
-                self.waiting.push(Waiting {
-                    site,
-                    after: After::Body(body),
-                });
-            }
-            "Block.return" => {
-                let [Value::Obj(token), Value::I64(value)] = args.as_slice() else {
-                    return Err("block return expects home and integer value".into());
-                };
+            ("Block.return", [Value::I64(id), Value::I64(value)]) => {
                 let home = self
                     .homes
                     .iter()
-                    .find(|home| home.token == *token)
+                    .find(|home| home.id == *id)
                     .cloned()
-                    .ok_or("foreign lexical home token")?;
-                let inspection = self.run.inspect();
-                let depth = inspection
+                    .ok_or("foreign lexical home")?;
+                let live = self
+                    .run
+                    .inspect()
                     .frames()
-                    .enumerate()
-                    .find(|(_, frame)| frame.activation == home.site.activation)
-                    .map(|(index, _)| inspection.frames().len() - index);
-                drop(inspection);
-                if let Some(depth) = depth {
+                    .any(|frame| frame.activation == home.site.activation);
+                if live {
                     self.event(
                         site.location,
                         Policy::ReturnSelected {
@@ -411,12 +273,21 @@ impl Runtime {
                             value: *value,
                         },
                     );
-                    self.transfer = Some(Transfer {
-                        home,
-                        value: *value,
-                        depth,
-                    });
-                    self.unwind(site)?;
+                    // The home method's region answers the boxed value; cleanup runs on the way.
+                    let mut request = self
+                        .run
+                        .pending_host_call()
+                        .ok_or("non-local return requires a pending request")?;
+                    let boxed = match request.context().tuple_new(vec![Value::I64(*value)]) {
+                        Ok(boxed) => boxed,
+                        Err(error) => {
+                            return request
+                                .complete(&mut [], Err(error))
+                                .map_err(Into::into)
+                                .map(|()| Status::Running);
+                        }
+                    };
+                    request.throw(self.non_local, vec![Value::I64(home.id), Value::Agg(boxed)])?;
                 } else {
                     let error = CannotReturn {
                         block: site.location,
@@ -430,7 +301,7 @@ impl Runtime {
                     return Ok(Status::CannotReturn(error));
                 }
             }
-            "Demo.wait" => {
+            ("Demo.wait", []) => {
                 self.native_wait = true;
                 return Ok(Status::Waiting);
             }
@@ -441,55 +312,6 @@ impl Runtime {
                 .dispatch()?,
         }
         Ok(Status::Running)
-    }
-    fn unwind(&mut self, site: Site) -> Result<()> {
-        let depth = self
-            .transfer
-            .as_ref()
-            .ok_or("no selected non-local return")?
-            .depth;
-        // Consume first: cleanup cannot execute twice if control leaves while it runs.
-        if let Some(protection) = self
-            .protections
-            .pop_if(|protection| protection.depth >= depth)
-        {
-            self.event(
-                site.location,
-                Policy::CleanupStarted {
-                    body: protection.body.ordinal(),
-                },
-            );
-            return self.guest(
-                site,
-                protection.cleanup,
-                After::Cleanup {
-                    body: protection.body,
-                    normal_results: None,
-                },
-            );
-        }
-        let transfer = self.transfer.take().ok_or("non-local return disappeared")?;
-        let mut request = self
-            .run
-            .pending_host_call()
-            .ok_or("non-local return requires pending request")?;
-        let boxed = match request
-            .context()
-            .tuple_new(vec![Value::I64(transfer.value)])
-        {
-            Ok(boxed) => boxed,
-            Err(error) => return request.complete(&mut [], Err(error)).map_err(Into::into),
-        };
-        request.return_from(&transfer.home.site.activation, vec![Value::Agg(boxed)])?;
-        let live: Vec<_> = self
-            .run
-            .inspect()
-            .frames()
-            .map(|frame| frame.activation)
-            .collect();
-        self.waiting
-            .retain(|waiting| live.contains(&waiting.site.activation));
-        Ok(())
     }
     pub(super) fn finish_native_wait(&mut self) -> Result<()> {
         if !self.native_wait {
