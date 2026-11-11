@@ -458,6 +458,7 @@ pub mod callable;
 pub mod codec;
 pub(crate) mod codec_primitives;
 pub mod contract;
+mod decimal;
 pub mod disasm;
 mod float;
 pub mod format;

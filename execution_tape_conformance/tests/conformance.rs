@@ -1531,7 +1531,7 @@ fn roundtrip_verify_run_decimal_ops() {
 }
 
 #[test]
-fn vm_traps_decimal_scale_mismatch() {
+fn vm_aligns_decimal_scales_for_addition() {
     let mut a = Asm::new();
     a.set_register_types(vec![
         ValueType::Unit,
@@ -1556,10 +1556,9 @@ fn vm_traps_decimal_scale_mismatch() {
     let p = pb.build_verified().unwrap();
 
     let mut vm = Vm::new(TestHost, Limits::default());
-    let err = vm
-        .run(&p, FuncId(0), &[], TraceMask::NONE, None)
-        .unwrap_err();
-    assert!(matches!(err.trap, Trap::DecimalScaleMismatch));
+    // 1 + 0.1 = 1.1 at the larger scale, exactly.
+    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    assert_eq!(out, vec![Value::Decimal(Decimal::new(11, 1))]);
 }
 
 #[test]

@@ -49,8 +49,9 @@ pub struct Closure {
 /// Exact decimal with a signed 128-bit mantissa and per-value scale.
 ///
 /// Its numeric value is `mantissa × 10^(-scale)`. Construction preserves both parts:
-/// equality and hashing distinguish `1.0` from `1.00`. Addition and subtraction require
-/// equal scales; multiplication adds scales. Rounding and division remain host policies.
+/// equality and hashing distinguish `1.0` from `1.00`. Addition and subtraction are exact at
+/// the larger operand scale; multiplication adds scales. Rounding and division remain host
+/// policies.
 ///
 /// The mantissa uses byte-aligned storage to avoid imposing 16-byte alignment on
 /// [`Value`] and inspection records. This is an implementation detail, not a stable ABI.
