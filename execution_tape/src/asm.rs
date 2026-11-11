@@ -1377,7 +1377,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `dec_add dst, a, b`.
+    /// Encodes `dec_add dst, a, b` (exact, at the larger of the operand scales).
     pub fn dec_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::DecAdd);
         self.reg(dst);
@@ -1386,7 +1386,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `dec_sub dst, a, b`.
+    /// Encodes `dec_sub dst, a, b` (exact, at the larger of the operand scales).
     pub fn dec_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::DecSub);
         self.reg(dst);

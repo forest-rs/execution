@@ -16,6 +16,7 @@ use core::fmt;
 use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
 use crate::contract::{Contract, ContractPosition, ContractViolation};
+use crate::decimal;
 use crate::float;
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
@@ -243,7 +244,7 @@ pub enum Trap {
     HostCallAbandoned,
     /// Integer cast overflow (e.g. `u64_to_i64` out of range).
     IntCastOverflow,
-    /// Decimal scales did not match where required (e.g. `dec_add`/`dec_sub`).
+    /// A decimal did not have the scale an operation requires (`dec_to_i64`/`dec_to_u64` need scale 0).
     DecimalScaleMismatch,
     /// Decimal arithmetic overflowed (`mantissa` or `scale`).
     DecimalOverflow,
@@ -1600,29 +1601,15 @@ impl<H: Host> Vm<H> {
                 }
 
                 ExecInstr::DecAdd { dst, a, b } => {
-                    let da = ctx.read_decimal(base, *a);
-                    let db = ctx.read_decimal(base, *b);
-                    if da.scale() != db.scale() {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
-                    }
-                    let mantissa = da
-                        .mantissa()
-                        .checked_add(db.mantissa())
+                    let out = decimal::add(ctx.read_decimal(base, *a), ctx.read_decimal(base, *b))
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, da.scale()));
+                    ctx.write_decimal(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::DecSub { dst, a, b } => {
-                    let da = ctx.read_decimal(base, *a);
-                    let db = ctx.read_decimal(base, *b);
-                    if da.scale() != db.scale() {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::DecimalScaleMismatch));
-                    }
-                    let mantissa = da
-                        .mantissa()
-                        .checked_sub(db.mantissa())
+                    let out = decimal::sub(ctx.read_decimal(base, *a), ctx.read_decimal(base, *b))
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
-                    ctx.write_decimal(base, *dst, Decimal::new(mantissa, da.scale()));
+                    ctx.write_decimal(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::DecMul { dst, a, b } => {

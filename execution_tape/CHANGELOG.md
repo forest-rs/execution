@@ -119,6 +119,11 @@ This release has an [MSRV][] of 1.88.
   Migration: regenerate serialized programs from their producer; 0.6 readers reject 0.5 headers
   with `DecodeError::UnsupportedVersion`, and 0.1.0 readers reject 0.6 headers.
 
+- `dec.add` and `dec.sub` accept operands with different scales: the result is exact at the
+  larger scale (`1.5 + 0.25 = 1.75` at scale 2) instead of trapping with
+  `DecimalScaleMismatch`. Results for equal scales are unchanged, and overflow still traps.
+  Migration: programs that relied on the trap must compare scales explicitly.
+
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include
   the added event field in explicit patterns. Remove provisional `CaptureFault::UnsupportedTransfer`:

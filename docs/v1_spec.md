@@ -80,7 +80,10 @@ typed operands. Unit/effect registers have no runtime payload bank.
   The in-memory constant pool packs each decimal into 17 bytes in the shared blob arena;
   `Program::const_decimal` reads it without growing other constant entries.
 - Arithmetic:
-  - `dec_add`, `dec_sub`, `dec_mul` are defined only when the result scale is well-defined (e.g. add/sub require equal scale; mul defines scale = a.scale + b.scale).
+  - `dec_add`/`dec_sub` are exact at scale `max(a.scale, b.scale)`: the operand with the smaller
+    scale is multiplied by a power of ten first. `dec_mul` is exact at scale `a.scale + b.scale`.
+  - Each traps with `DecimalOverflow` when its exact result mantissa is outside `i128` or its
+    result scale exceeds 255.
   - Division and rounding are host-provided.
 
 ### Host objects (`Obj`)

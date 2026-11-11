@@ -182,6 +182,47 @@ fn decimal_arithmetic_matches_checked_i128_at_boundaries() {
     }
 }
 
+fn dec(mantissa: i128, scale: u8) -> Value {
+    Value::Decimal(Decimal::new(mantissa, scale))
+}
+
+/// `f(a, b) -> (a + b, a - b)`.
+fn add_sub_program() -> VerifiedProgram {
+    function(
+        &[ValueType::Decimal, ValueType::Decimal],
+        &[ValueType::Decimal, ValueType::Decimal],
+        |body, _| {
+            let sum = body.alloc_register(ValueType::Decimal);
+            let difference = body.alloc_register(ValueType::Decimal);
+            body.dec_add(sum, 1, 2)
+                .dec_sub(difference, 1, 2)
+                .ret(0, &[sum, difference]);
+        },
+    )
+}
+
+#[test]
+fn addition_aligns_differing_scales_exactly() {
+    let program = add_sub_program();
+    // 19.99 + 1.6491 = 21.6391; 19.99 - 1.6491 = 18.3409 (scale 4, no rounding).
+    assert_eq!(
+        run(&program, &[dec(1999, 2), dec(16491, 4)]).unwrap(),
+        [dec(216_391, 4), dec(183_409, 4)]
+    );
+    assert_eq!(
+        run(&program, &[dec(-5, 0), dec(25, 1)]).unwrap(),
+        [dec(-25, 1), dec(-75, 1)]
+    );
+    // Equal scales are unchanged, and zero keeps the larger scale.
+    assert_eq!(
+        run(&program, &[dec(0, 0), dec(0, 255)]).unwrap(),
+        [dec(0, 255), dec(0, 255)]
+    );
+    // Aligning `i128::MAX` to a larger scale cannot be represented.
+    let error = run(&program, &[dec(i128::MAX, 0), dec(0, 1)]).unwrap_err();
+    assert!(matches!(error.trap, Trap::DecimalOverflow));
+}
+
 #[test]
 fn decimal_integer_narrowing_is_checked_and_requires_zero_scale() {
     for unsigned in [false, true] {
