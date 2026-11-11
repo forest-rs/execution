@@ -380,6 +380,8 @@ impl<'a> InstrView<'a> {
     }
 
     /// Primary destination register, when the instruction has a clear single `dst`.
+    ///
+    /// Overflow-checked arithmetic also writes a `bool` flag; [`Self::writes`] yields both.
     #[must_use]
     pub fn dst(&self) -> Option<u32> {
         self.decoded.instr.writes().next()
@@ -785,6 +787,15 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         Instr::DecScale { dst, a } => {
             view.dst = Some(dst);
             view.srcs = vec![a];
+        }
+        Instr::I64AddOvf { dst, a, b, .. }
+        | Instr::I64SubOvf { dst, a, b, .. }
+        | Instr::I64MulOvf { dst, a, b, .. }
+        | Instr::U64AddOvf { dst, a, b, .. }
+        | Instr::U64SubOvf { dst, a, b, .. }
+        | Instr::U64MulOvf { dst, a, b, .. } => {
+            view.dst = Some(dst);
+            view.srcs = vec![a, b];
         }
         Instr::DecRescale {
             dst,
@@ -1310,9 +1321,15 @@ fn fmt_instr_with_labels(
             args,
         } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, label_pcs)?,
         Operands::Simple => {
-            if let Some(dst) = iv.dst() {
+            // Most instructions write one register; overflow-checked arithmetic writes two.
+            let mut writes = iv.writes();
+            if let Some(dst) = writes.next() {
                 write!(f, " ")?;
                 fmt_reg(f, dst)?;
+                for extra in writes {
+                    write!(f, ", ")?;
+                    fmt_reg(f, extra)?;
+                }
             }
             let reads = iv.reads();
             if reads.clone().next().is_some() {
@@ -1465,9 +1482,15 @@ impl fmt::Display for InstrView<'_> {
                 args,
             } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, &[])?,
             Operands::Simple => {
-                if let Some(dst) = self.dst() {
+                // Most instructions write one register; overflow-checked arithmetic writes two.
+                let mut writes = self.writes();
+                if let Some(dst) = writes.next() {
                     write!(f, " ")?;
                     fmt_reg(f, dst)?;
+                    for extra in writes {
+                        write!(f, ", ")?;
+                        fmt_reg(f, extra)?;
+                    }
                 }
                 let reads = self.reads();
                 if reads.clone().next().is_some() {

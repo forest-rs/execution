@@ -130,6 +130,12 @@ impl Instr {
             Self::DecScale { .. } => Opcode::DecScale,
             Self::DecRescale { .. } => Opcode::DecRescale,
             Self::DecDiv { .. } => Opcode::DecDiv,
+            Self::I64AddOvf { .. } => Opcode::I64AddOvf,
+            Self::I64SubOvf { .. } => Opcode::I64SubOvf,
+            Self::I64MulOvf { .. } => Opcode::I64MulOvf,
+            Self::U64AddOvf { .. } => Opcode::U64AddOvf,
+            Self::U64SubOvf { .. } => Opcode::U64SubOvf,
+            Self::U64MulOvf { .. } => Opcode::U64MulOvf,
         }
     }
 

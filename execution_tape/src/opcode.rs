@@ -40,6 +40,8 @@ mod tests {
         assert_eq!(Opcode::F64Ne as u8, 0x9C);
         assert_eq!(Opcode::DecCmp as u8, 0x9D);
         assert_eq!(Opcode::DecDiv as u8, 0xA0);
+        assert_eq!(Opcode::I64AddOvf as u8, 0xA1);
+        assert_eq!(Opcode::U64MulOvf as u8, 0xA6);
     }
 
     #[test]

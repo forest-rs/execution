@@ -1649,6 +1649,39 @@ impl Asm {
         self
     }
 
+    /// Encodes `i64_add_ovf dst, overflow, a, b`: the wrapped sum in `dst` (`i64`) and whether
+    /// the signed result overflowed in `overflow` (`bool`).
+    pub fn i64_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I64AddOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i64_sub_ovf dst, overflow, a, b`: the wrapped difference in `dst` (`i64`) and whether
+    /// the signed result overflowed in `overflow` (`bool`).
+    pub fn i64_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I64SubOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i64_mul_ovf dst, overflow, a, b`: the wrapped product in `dst` (`i64`) and whether
+    /// the signed result overflowed in `overflow` (`bool`).
+    pub fn i64_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I64MulOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
     /// Encodes `u64_add dst, a, b`.
     pub fn u64_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::U64Add);
@@ -1671,6 +1704,39 @@ impl Asm {
     pub fn u64_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::U64Mul);
         self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u64_add_ovf dst, overflow, a, b`: the wrapped sum in `dst` (`u64`) and whether
+    /// the sum carried out in `overflow` (`bool`).
+    pub fn u64_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U64AddOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u64_sub_ovf dst, overflow, a, b`: the wrapped difference in `dst` (`u64`) and whether
+    /// the difference borrowed in `overflow` (`bool`).
+    pub fn u64_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U64SubOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u64_mul_ovf dst, overflow, a, b`: the wrapped product in `dst` (`u64`) and whether
+    /// the product overflowed in `overflow` (`bool`).
+    pub fn u64_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U64MulOvf);
+        self.reg(dst);
+        self.reg(overflow);
         self.reg(a);
         self.reg(b);
         self

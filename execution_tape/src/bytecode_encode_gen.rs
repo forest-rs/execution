@@ -826,5 +826,53 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_u8_raw(out, *rounding);
             Ok(())
         },
+        Instr::I64AddOvf { a, b, dst, overflow } => {
+            out.push(Opcode::I64AddOvf as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *overflow);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::I64SubOvf { a, b, dst, overflow } => {
+            out.push(Opcode::I64SubOvf as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *overflow);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::I64MulOvf { a, b, dst, overflow } => {
+            out.push(Opcode::I64MulOvf as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *overflow);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::U64AddOvf { a, b, dst, overflow } => {
+            out.push(Opcode::U64AddOvf as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *overflow);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::U64SubOvf { a, b, dst, overflow } => {
+            out.push(Opcode::U64SubOvf as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *overflow);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::U64MulOvf { a, b, dst, overflow } => {
+            out.push(Opcode::U64MulOvf as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *overflow);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
     }
 }

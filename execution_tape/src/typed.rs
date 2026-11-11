@@ -403,6 +403,24 @@ pub(crate) enum ExecInstr {
         a: I64Reg,
         b: I64Reg,
     },
+    I64AddOvf {
+        dst: I64Reg,
+        overflow: BoolReg,
+        a: I64Reg,
+        b: I64Reg,
+    },
+    I64SubOvf {
+        dst: I64Reg,
+        overflow: BoolReg,
+        a: I64Reg,
+        b: I64Reg,
+    },
+    I64MulOvf {
+        dst: I64Reg,
+        overflow: BoolReg,
+        a: I64Reg,
+        b: I64Reg,
+    },
     I64And {
         dst: I64Reg,
         a: I64Reg,
@@ -441,6 +459,24 @@ pub(crate) enum ExecInstr {
     },
     U64Mul {
         dst: U64Reg,
+        a: U64Reg,
+        b: U64Reg,
+    },
+    U64AddOvf {
+        dst: U64Reg,
+        overflow: BoolReg,
+        a: U64Reg,
+        b: U64Reg,
+    },
+    U64SubOvf {
+        dst: U64Reg,
+        overflow: BoolReg,
+        a: U64Reg,
+        b: U64Reg,
+    },
+    U64MulOvf {
+        dst: U64Reg,
+        overflow: BoolReg,
         a: U64Reg,
         b: U64Reg,
     },
