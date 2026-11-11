@@ -101,15 +101,6 @@ fn main() -> program::Result<()> {
                 Policy::HomeCaptured { activation } => {
                     format!("capture lexical home activation #{activation}")
                 }
-                Policy::EnsureEntered { body } => {
-                    format!("enter ensure for body activation #{body}")
-                }
-                Policy::CleanupStarted { body } => {
-                    format!("start cleanup for consumed body activation #{body}")
-                }
-                Policy::CleanupFinished { body } => {
-                    format!("cleanup for body activation #{body} returned")
-                }
                 Policy::ReturnSelected { home, value } => {
                     format!("select return of {value} from home activation #{home}")
                 }

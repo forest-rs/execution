@@ -4,10 +4,21 @@
 use super::super::program;
 use super::*;
 use execution_tape::{
-    recording::{CaptureFault, ControlAction, InstructionStatus, ReplayError, ReplayOutcome},
+    recording::{
+        CaptureFault, ControlAction, HostOutcome, InstructionStatus, Recording, ReplayError,
+        ReplayOutcome,
+    },
     source::SourceError,
-    vm::{ControlError, Trap, TrapInfo},
+    vm::{Trap, TrapInfo},
 };
+
+/// Non-local returns the runtime raised as guest exceptions.
+fn returns(record: &Recording) -> usize {
+    record
+        .host_calls()
+        .filter(|call| matches!(call.outcome, HostOutcome::Threw { .. }))
+        .count()
+}
 
 fn until_wait(runtime: &mut Runtime) {
     for _ in 0..10_000 {
@@ -79,15 +90,12 @@ fn assert_session(session: &Session, fixture: &program::Fixture, expected: [i64;
     }
     for command in session.recording.control_commands() {
         check(command.location);
-        match command.action {
-            ControlAction::ReturnFrom {
-                target_location, ..
-            } => check(target_location),
-            ControlAction::CallGuest {
-                returned: Some(returned),
-                ..
-            } => check(returned.location),
-            _ => {}
+        if let ControlAction::CallGuest {
+            returned: Some(returned),
+            ..
+        } = command.action
+        {
+            check(returned.location);
         }
     }
 }
@@ -101,9 +109,6 @@ fn shared_escaping_blocks_and_lexical_returns_compose_with_ensure_and_checked_re
             drive(&mut runtime, quantum, -1);
             assert_eq!(runtime.outputs().unwrap(), [41, 42, 42, -1]);
             assert_eq!(runtime.run.host().value, Some(42));
-            assert!(runtime.protections.is_empty());
-            assert!(runtime.waiting.is_empty());
-            assert!(runtime.transfer.is_none());
             let session = runtime.into_session();
             assert_eq!(
                 session.cleanups,
@@ -114,30 +119,17 @@ fn shared_escaping_blocks_and_lexical_returns_compose_with_ensure_and_checked_re
                 session.after_ensure, !non_local,
                 "only ^ leaves the lexical home"
             );
-            assert_eq!(
-                session
-                    .recording
-                    .control_commands()
-                    .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
-                    .count(),
-                usize::from(non_local)
-            );
+            assert_eq!(returns(&session.recording), usize::from(non_local));
             assert_session(&session, &fixture, [41, 42, 42, -1]);
         }
     }
 }
 
 #[test]
-fn suspended_cleanup_retires_its_binding_but_keeps_physical_signaling_frames() {
+fn cleanup_waits_after_the_return_has_unwound_the_block() {
     let fixture = program::compile(true).unwrap();
     let mut runtime = Runtime::new(&fixture, Limits::default()).unwrap();
     until_wait(&mut runtime);
-    assert_eq!(
-        runtime.protections.len(),
-        1,
-        "inner ensure is consumed before cleanup starts"
-    );
-    assert_eq!(runtime.transfer.as_ref().unwrap().value, 42);
     assert!(
         runtime.run.host().cleanups.is_empty(),
         "wait precedes inner cleanup effect"
@@ -148,13 +140,20 @@ fn suspended_cleanup_retires_its_binding_but_keeps_physical_signaling_frames() {
         sources.lookup(frames[0].location).unwrap().text(),
         "Demo wait"
     );
-    assert!(frames.iter().any(|frame| {
+    let name = |frame: &execution_tape::vm::PausedFrame| {
         fixture
             .program
             .program()
             .function_name(frame.location.func.0)
-            .is_some_and(|name| name == "answerUsing: / return block")
-    }));
+            .unwrap_or_default()
+    };
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| name(frame) == "answerUsing: / return block"),
+        "the returning block has already been unwound"
+    );
+    assert!(frames.iter().any(|frame| name(frame) == "answerUsing:"));
     let fuel = runtime.run.remaining_fuel();
     let work = runtime.run.data_work();
     for _ in 0..5 {
@@ -186,27 +185,15 @@ fn expired_home_is_a_recoverable_language_condition_with_both_source_locations()
         sources.lookup(error.home).unwrap().text(),
         "makeEscaped: counter"
     );
-    let target = runtime
-        .homes
-        .iter()
-        .find(|home| home.site.activation.ordinal() == error.home_activation)
-        .unwrap()
-        .site
-        .activation
-        .clone();
+    assert!(
+        !runtime
+            .paused_frames()
+            .iter()
+            .any(|frame| frame.activation.ordinal() == error.home_activation),
+        "the home activation has returned"
+    );
     let fuel = runtime.run.remaining_fuel();
     let work = runtime.run.data_work();
-    assert!(
-        matches!(
-            runtime
-                .run
-                .pending_host_call()
-                .unwrap()
-                .return_from(&target, vec![]),
-            Err(ControlError::ExpiredActivation)
-        ),
-        "core independently rejects the expired home before admitting values"
-    );
     assert!(
         runtime.finish_native_wait().is_err(),
         "a native completion cannot bypass the condition"
@@ -251,8 +238,6 @@ fn callbacks_and_cleanup_share_the_original_hard_fuel_budget() {
         .downcast::<TrapInfo>()
         .unwrap();
     assert!(matches!(failure.trap, Trap::FuelExceeded));
-    assert!(limited.protections.is_empty());
-    assert!(limited.waiting.is_empty());
     let session = limited.into_session();
     assert!(
         session.cleanups.is_empty(),
@@ -276,13 +261,7 @@ fn cancellation_during_cleanup_runs_no_guest_code_and_leaves_incomplete_evidence
         session
             .events
             .iter()
-            .any(|event| matches!(event.policy, Policy::CleanupStarted { .. }))
-    );
-    assert!(
-        !session
-            .events
-            .iter()
-            .any(|event| matches!(event.policy, Policy::CleanupFinished { .. }))
+            .any(|event| matches!(event.policy, Policy::ReturnSelected { .. }))
     );
     assert!(matches!(
         session.recording.status(),
@@ -350,17 +329,16 @@ fn nonlocal_return_boxing_preserves_the_owned_aggregate_budget_failure() {
     let fixture = program::compile(true).unwrap();
     let mut baseline = Runtime::new(&fixture, Limits::default()).unwrap();
     until_wait(&mut baseline);
+    // The return boxes its value before any cleanup runs; deny exactly that construction.
     let spent = baseline.run.data_work().aggregate;
     let mut limited = Runtime::new(
         &fixture,
         Limits {
-            max_aggregate_work: spent,
+            max_aggregate_work: spent - 1,
             ..Limits::default()
         },
     )
     .unwrap();
-    until_wait(&mut limited);
-    limited.finish_native_wait().unwrap();
     let failure = loop {
         match limited.poll(128) {
             Ok(Status::Running) => {}
@@ -383,16 +361,14 @@ fn nonlocal_return_boxing_preserves_the_owned_aggregate_budget_failure() {
     };
     check(&failure);
     let session = limited.into_session();
-    assert_eq!(
-        session.cleanups,
-        [2, 1],
-        "the denied final return does not repeat cleanup"
-    );
     assert!(
-        session
-            .recording
-            .control_commands()
-            .all(|command| !matches!(command.action, ControlAction::ReturnFrom { .. }))
+        session.cleanups.is_empty(),
+        "a hard failure while selecting the return runs no guest cleanup"
+    );
+    assert_eq!(
+        returns(&session.recording),
+        0,
+        "the denied return raises nothing"
     );
     session.recording.status().unwrap();
     let ReplayOutcome::Trapped(replayed) = session.recording.replay().unwrap() else {
