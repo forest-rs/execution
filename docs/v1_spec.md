@@ -1,6 +1,6 @@
 # `execution_tape` bytecode and execution specification
 
-This document describes wire format 0.5 and the execution contract of the Rust 0.1 API.
+This document describes wire format 0.6 and the execution contract of the Rust 0.1 API.
 The filename is historical: it does not name a 1.0 format or promise durable interchange.
 Decoding requires an exact wire-version match; regenerate compiled programs when upgrading
 from an older format. The core remains `no_std + alloc`.
@@ -267,7 +267,7 @@ The serialized program is:
   - `len: ULEB128`
   - `payload[len]`
 
-The header must match version 0.5 exactly. Within that version, unknown section tags are skipped;
+The header must match version 0.6 exactly. Within that version, unknown section tags are skipped;
 this does not imply compatibility with future wire versions. Known sections are rejected if duplicated.
 
 ## Tracing (hooks)
@@ -388,7 +388,7 @@ Stores per-function metadata and references into blob sections:
   - `bytecode_index: ULEB128`
   - `span_table_index: ULEB128`
 
-The current wire version is 0.5. Older versions are rejected; rebuild serialized programs
+The current wire version is 0.6. Older versions are rejected; rebuild serialized programs
 from their producer. Each declaration is authoritative for the register's entire function lifetime.
 Every instruction definition and operand must match, including inactive instructions and unused
 results. A declaration does not initialize a register or supply a projection's aggregate shape proof.

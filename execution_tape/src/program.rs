@@ -24,7 +24,7 @@ use crate::verifier;
 /// The `execution_tape` binary format version supported by this crate (draft).
 pub const VERSION_MAJOR: u16 = 0;
 /// The `execution_tape` binary format version supported by this crate (draft).
-pub const VERSION_MINOR: u16 = 5;
+pub const VERSION_MINOR: u16 = 6;
 
 const MAGIC: &[u8; 8] = b"EXTAPE\0\0";
 

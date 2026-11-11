@@ -501,10 +501,10 @@ fn golden_program_bytes_v0_5() {
         0x45,
         0x00,
         0x00,
-        // version_major=0, version_minor=5
+        // version_major=0, version_minor=6
         0x00,
         0x00,
-        0x05,
+        0x06,
         0x00, // symbols: tag=1, len=2, payload=[count=1, sym0_len=0]
         0x01,
         0x02,

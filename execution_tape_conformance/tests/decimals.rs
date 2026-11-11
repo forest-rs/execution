@@ -325,9 +325,14 @@ fn malformed_unused_decimal_ranges_are_rejected_before_preparation() {
 #[test]
 fn previous_wire_version_is_rejected_explicitly() {
     let mut bytes = ProgramBuilder::new().build().encode();
-    bytes[10..12].copy_from_slice(&4_u16.to_le_bytes());
-    assert!(matches!(
-        Program::decode(&bytes),
-        Err(DecodeError::UnsupportedVersion { major: 0, minor: 4 })
-    ));
+    for minor in [4_u16, 5] {
+        bytes[10..12].copy_from_slice(&minor.to_le_bytes());
+        assert!(
+            matches!(
+                Program::decode(&bytes),
+                Err(DecodeError::UnsupportedVersion { major: 0, minor: m }) if m == minor
+            ),
+            "wire version 0.{minor} must be rejected"
+        );
+    }
 }
