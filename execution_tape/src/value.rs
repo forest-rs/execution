@@ -49,9 +49,10 @@ pub struct Closure {
 /// Exact decimal with a signed 128-bit mantissa and per-value scale.
 ///
 /// Its numeric value is `mantissa × 10^(-scale)`. Construction preserves both parts:
-/// equality and hashing distinguish `1.0` from `1.00`. Addition and subtraction are exact at
-/// the larger operand scale; multiplication adds scales. Rounding and division remain host
-/// policies.
+/// equality and hashing distinguish `1.0` from `1.00`; the `dec.cmp` opcode compares numeric
+/// values instead. Addition and subtraction are exact at the larger operand scale;
+/// multiplication adds scales. Only `dec.rescale` and `dec.div` round, at an explicit scale and
+/// [`DecimalRounding`] mode.
 ///
 /// The mantissa uses byte-aligned storage to avoid imposing 16-byte alignment on
 /// [`Value`] and inspection records. This is an implementation detail, not a stable ABI.
@@ -105,6 +106,70 @@ impl core::fmt::Debug for Decimal {
             .field("mantissa", &self.mantissa())
             .field("scale", &self.scale())
             .finish()
+    }
+}
+
+/// How a decimal operation rounds when its result has fewer fractional digits than the exact
+/// value (`dec.rescale` to a smaller scale, and `dec.div`).
+///
+/// Bytecode encodes the mode as a one-byte immediate ([`Self::byte`]); the verifier rejects
+/// other byte values. Every mode rounds the exact value once: no intermediate result is rounded.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DecimalRounding {
+    /// To the nearest representable value; exact ties go to the even neighbor
+    /// (`2.5 -> 2`, `3.5 -> 4`, `-2.5 -> -2`). IEEE 754 `roundTiesToEven`, "banker's rounding".
+    HalfEven = 0,
+    /// To the nearest representable value; exact ties go away from zero
+    /// (`2.5 -> 3`, `-2.5 -> -3`). IEEE 754 `roundTiesToAway`, common commercial rounding.
+    HalfAwayFromZero = 1,
+    /// Toward zero, discarding the excess digits (`2.7 -> 2`, `-2.7 -> -2`).
+    TowardZero = 2,
+    /// Toward negative infinity (`2.7 -> 2`, `-2.1 -> -3`).
+    Floor = 3,
+    /// Toward positive infinity (`2.1 -> 3`, `-2.7 -> -2`).
+    Ceiling = 4,
+}
+
+impl DecimalRounding {
+    /// Every mode, in byte order.
+    pub const ALL: [Self; 5] = [
+        Self::HalfEven,
+        Self::HalfAwayFromZero,
+        Self::TowardZero,
+        Self::Floor,
+        Self::Ceiling,
+    ];
+
+    /// Returns the bytecode immediate for this mode.
+    #[must_use]
+    pub const fn byte(self) -> u8 {
+        self as u8
+    }
+
+    /// Parses a bytecode immediate, returning `None` for bytes that name no mode.
+    #[must_use]
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        Some(match byte {
+            0 => Self::HalfEven,
+            1 => Self::HalfAwayFromZero,
+            2 => Self::TowardZero,
+            3 => Self::Floor,
+            4 => Self::Ceiling,
+            _ => return None,
+        })
+    }
+
+    /// Returns the mode's stable lowercase name, as used in disassembly (e.g. `half_even`).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::HalfEven => "half_even",
+            Self::HalfAwayFromZero => "half_away_from_zero",
+            Self::TowardZero => "toward_zero",
+            Self::Floor => "floor",
+            Self::Ceiling => "ceiling",
+        }
     }
 }
 

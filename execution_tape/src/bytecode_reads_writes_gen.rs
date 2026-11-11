@@ -132,6 +132,10 @@ impl Instr {
             Self::F64ToI64Sat { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
             Self::F64ToU64Sat { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
             Self::F64Ne { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
+            Self::DecCmp { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
+            Self::DecScale { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::DecRescale { a, scale, .. } => ReadsIter::from_parts([*a, *scale, 0], 2, [&[]]),
+            Self::DecDiv { a, b, scale, .. } => ReadsIter::from_parts([*a, *b, *scale], 3, [&[]]),
         }
     }
     /// Iterates virtual registers write by this instruction without allocation.
@@ -256,6 +260,10 @@ impl Instr {
             Self::F64ToI64Sat { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
             Self::F64ToU64Sat { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
             Self::F64Ne { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::DecCmp { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::DecScale { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::DecRescale { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::DecDiv { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
         }
     }
 }

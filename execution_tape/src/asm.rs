@@ -29,8 +29,8 @@ use crate::program::{
     GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry,
     SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
 };
-use crate::value::Decimal;
 use crate::value::FuncId;
+use crate::value::{Decimal, DecimalRounding};
 use crate::verifier::{
     VerifiedProgram, VerifyConfig, VerifyError, verify_program, verify_program_owned,
 };
@@ -1398,6 +1398,62 @@ impl Asm {
     /// Encodes `dec_mul dst, a, b`.
     pub fn dec_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::DecMul);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `dec_div dst, a, b, scale, rounding`: `a / b` at the `u64` scale held in register
+    /// `scale`, rounded once from the exact quotient (traps on a zero divisor, a scale above 255
+    /// or overflow).
+    pub fn dec_div(
+        &mut self,
+        dst: u32,
+        a: u32,
+        b: u32,
+        scale: u32,
+        rounding: DecimalRounding,
+    ) -> &mut Self {
+        self.opcode(Opcode::DecDiv);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self.reg(scale);
+        self.bytes.push(rounding.byte());
+        self
+    }
+
+    /// Encodes `dec_rescale dst, a, scale, rounding`: `a` at the `u64` scale held in register
+    /// `scale`, exact when the scale grows and rounded when it shrinks (traps on a scale above 255
+    /// or overflow).
+    pub fn dec_rescale(
+        &mut self,
+        dst: u32,
+        a: u32,
+        scale: u32,
+        rounding: DecimalRounding,
+    ) -> &mut Self {
+        self.opcode(Opcode::DecRescale);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(scale);
+        self.bytes.push(rounding.byte());
+        self
+    }
+
+    /// Encodes `dec_scale dst, a` (the scale of `a` as a `u64`).
+    pub fn dec_scale(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::DecScale);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `dec_cmp dst, a, b` (`-1`, `0` or `1` as an `i64`, comparing numeric values
+    /// regardless of scale).
+    pub fn dec_cmp(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::DecCmp);
         self.reg(dst);
         self.reg(a);
         self.reg(b);

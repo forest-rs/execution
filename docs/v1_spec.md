@@ -75,16 +75,19 @@ typed operands. Unit/effect registers have no runtime payload bank.
 ### `Decimal`
 - Per-value scale (`u8`) and mantissa (`i128`), including the full signed range.
 - Construction preserves scale; equality distinguishes `1.0` and `1.00` (including differently
-  scaled zeros). No implicit normalization, division, or rounding is performed.
+  scaled zeros). No implicit normalization or rounding is performed; `dec_cmp` compares numeric
+  values instead.
 - Decimal literal mantissas use signed LEB128, bounded to 19 bytes. Scale is one raw byte.
   The in-memory constant pool packs each decimal into 17 bytes in the shared blob arena;
   `Program::const_decimal` reads it without growing other constant entries.
 - Arithmetic:
   - `dec_add`/`dec_sub` are exact at scale `max(a.scale, b.scale)`: the operand with the smaller
     scale is multiplied by a power of ten first. `dec_mul` is exact at scale `a.scale + b.scale`.
-  - Each traps with `DecimalOverflow` when its exact result mantissa is outside `i128` or its
-    result scale exceeds 255.
-  - Division and rounding are host-provided.
+  - `dec_rescale` and `dec_div` produce a caller-chosen scale and are the only operations that
+    round, by an explicit rounding mode (see "Decimal semantics").
+  - Every operation traps with `DecimalOverflow` when its exact (or correctly rounded) result
+    mantissa is outside `i128` or its result scale exceeds 255. Other rounding policies, and
+    operations such as square roots, remain host-provided.
 
 ### Host objects (`Obj`)
 `Obj` is an opaque value:
@@ -560,6 +563,27 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `dec_add r_dst, r_a, r_b`
 - `dec_sub r_dst, r_a, r_b`
 - `dec_mul r_dst, r_a, r_b`
+- `dec_div r_dst, r_a, r_b, r_scale, rounding_u8`
+- `dec_rescale r_dst, r_a, r_scale, rounding_u8`
+- `dec_scale r_dst, r_a` -> `U64`
+
+#### Decimal semantics
+- `r_scale` is a `U64` register holding the result scale; a value above 255 traps with
+  `DecimalOverflow`.
+- `rounding_u8` is an immediate rounding mode; the verifier rejects other values:
+  - `0` half-even: to nearest, exact ties to the even neighbor (`2.5 -> 2`, `-3.5 -> -4`);
+  - `1` half-away-from-zero: to nearest, exact ties away from zero (`2.5 -> 3`, `-2.5 -> -3`);
+  - `2` toward-zero: truncate (`2.7 -> 2`, `-2.7 -> -2`);
+  - `3` floor: toward negative infinity (`-2.1 -> -3`);
+  - `4` ceiling: toward positive infinity (`2.1 -> 3`).
+- `dec_div` computes the exact quotient `a / b` and rounds it once, by the mode, to `r_scale`
+  fractional digits. The operand scales do not constrain the result scale (`1.5 / 0.25` at scale
+  0 is `6`). A zero divisor traps with `DivByZero`; a rounded result outside `i128` traps with
+  `DecimalOverflow`.
+- `dec_rescale` returns `a` at `r_scale`: exactly when the scale does not decrease (trapping with
+  `DecimalOverflow` if the mantissa overflows), otherwise rounded once by the mode.
+- `dec_cmp` returns `-1`, `0` or `1` comparing numeric values, ignoring scale (`1.0` and `1.00`
+  compare equal, as do zeros of any scale). `dec_scale` returns `a.scale`.
 
 #### Floating-point semantics
 - `f64_min`/`f64_max` propagate NaN: if either input is NaN, the result is NaN.
@@ -595,6 +619,7 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
 - `i64_lt r_dst, r_a, r_b` -> `Bool`
 - `f64_eq`/`f64_ne`/`f64_lt`/`f64_gt`/`f64_le`/`f64_ge r_dst, r_a, r_b` -> `Bool`
+- `dec_cmp r_dst, r_a, r_b` -> `I64` (`-1`, `0` or `1`, ignoring scale)
 - `bool_not r_dst, r_a`
 - `bool_and r_dst, r_a, r_b`
 - `bool_or r_dst, r_a, r_b`
@@ -703,6 +728,10 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x9A f64_to_i64_sat dst, a` (`f64` -> `i64`, saturating; NaN -> 0)
 - `0x9B f64_to_u64_sat dst, a` (`f64` -> `u64`, saturating; NaN -> 0)
 - `0x9C f64_ne dst, a, b` (IEEE: true if NaN)
+- `0x9D dec_cmp dst, a, b` (`decimal` -> `i64`: -1, 0 or 1, ignoring scale)
+- `0x9E dec_scale dst, a` (`decimal` -> `u64`)
+- `0x9F dec_rescale dst, a, scale, rounding_u8` (`scale` is a `u64` register)
+- `0xA0 dec_div dst, a, b, scale, rounding_u8` (`scale` is a `u64` register; traps on zero divisor)
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`

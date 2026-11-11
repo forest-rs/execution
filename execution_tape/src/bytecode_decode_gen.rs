@@ -1115,5 +1115,49 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 b,
             }
         },
+        Opcode::DecCmp => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::DecCmp {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::DecScale => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::DecScale {
+                dst,
+                a,
+            }
+        },
+        Opcode::DecRescale => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let scale = crate::codec_primitives::read_reg(r)?;
+            let rounding = crate::codec_primitives::read_u8_raw(r)?;
+            Instr::DecRescale {
+                dst,
+                a,
+                scale,
+                rounding,
+            }
+        },
+        Opcode::DecDiv => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            let scale = crate::codec_primitives::read_reg(r)?;
+            let rounding = crate::codec_primitives::read_u8_raw(r)?;
+            Instr::DecDiv {
+                dst,
+                a,
+                b,
+                scale,
+                rounding,
+            }
+        },
     })
 }

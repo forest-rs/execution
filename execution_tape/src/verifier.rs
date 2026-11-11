@@ -43,7 +43,7 @@ use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
     FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, VReg, VRegSlice,
 };
-use crate::value::FuncId;
+use crate::value::{DecimalRounding, FuncId};
 use crate::{analysis::bitset::BitSet, analysis::cfg};
 
 #[cfg(doc)]
@@ -531,6 +531,15 @@ pub enum VerifyError {
         /// Index immediate.
         index: u32,
     },
+    /// A `dec.rescale` or `dec.div` rounding-mode immediate names no [`DecimalRounding`] mode.
+    InvalidDecimalRounding {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Rounding-mode immediate.
+        rounding: u8,
+    },
     /// A `struct_get` field index is out of bounds (when the verifier can statically determine the struct type).
     StructFieldIndexOutOfBounds {
         /// Function index within the program.
@@ -877,6 +886,10 @@ impl fmt::Display for VerifyError {
             } => write!(
                 f,
                 "function {func} pc={pc} struct field_index out of bounds (type_id={type_id}, field_index={field_index})"
+            ),
+            Self::InvalidDecimalRounding { func, pc, rounding } => write!(
+                f,
+                "function {func} pc={pc} invalid decimal rounding mode {rounding}"
             ),
             Self::TupleIndexOutOfBounds {
                 func,
@@ -1982,6 +1995,39 @@ fn verify_function_bytecode(
                 a: map_decimal(*a)?,
                 b: map_decimal(*b)?,
             },
+            Instr::DecDiv {
+                dst,
+                a,
+                b,
+                scale,
+                rounding,
+            } => ExecInstr::DecDiv {
+                dst: map_decimal(*dst)?,
+                a: map_decimal(*a)?,
+                b: map_decimal(*b)?,
+                scale: map_u64(*scale)?,
+                rounding: decimal_rounding(func_id, di.offset, *rounding)?,
+            },
+            Instr::DecRescale {
+                dst,
+                a,
+                scale,
+                rounding,
+            } => ExecInstr::DecRescale {
+                dst: map_decimal(*dst)?,
+                a: map_decimal(*a)?,
+                scale: map_u64(*scale)?,
+                rounding: decimal_rounding(func_id, di.offset, *rounding)?,
+            },
+            Instr::DecScale { dst, a } => ExecInstr::DecScale {
+                dst: map_u64(*dst)?,
+                a: map_decimal(*a)?,
+            },
+            Instr::DecCmp { dst, a, b } => ExecInstr::DecCmp {
+                dst: map_i64(*dst)?,
+                a: map_decimal(*a)?,
+                b: map_decimal(*b)?,
+            },
 
             Instr::F64Add { dst, a, b } => ExecInstr::F64Add {
                 dst: map_f64(*dst)?,
@@ -3015,6 +3061,15 @@ fn const_value_type(c: &ConstEntry) -> ValueType {
     }
 }
 
+/// Decodes a rounding-mode immediate, rejecting bytes that name no mode.
+fn decimal_rounding(func: u32, pc: u32, rounding: u8) -> Result<DecimalRounding, VerifyError> {
+    DecimalRounding::from_byte(rounding).ok_or(VerifyError::InvalidDecimalRounding {
+        func,
+        pc,
+        rounding,
+    })
+}
+
 fn check_expected(
     func: u32,
     pc: u32,
@@ -3067,9 +3122,24 @@ fn validate_instr_types(
         | Instr::ConstDecimal { .. }
         | Instr::ConstFunc { .. } => {}
         Instr::ConstPool { .. } => {}
-        Instr::DecAdd { a, b, .. } | Instr::DecSub { a, b, .. } | Instr::DecMul { a, b, .. } => {
+        Instr::DecAdd { a, b, .. }
+        | Instr::DecSub { a, b, .. }
+        | Instr::DecMul { a, b, .. }
+        | Instr::DecCmp { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::Decimal)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::Decimal)?;
+        }
+        Instr::DecDiv { a, b, scale, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::Decimal)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::Decimal)?;
+            check_expected(func_id, pc, *scale, t(*scale), ValueType::U64)?;
+        }
+        Instr::DecRescale { a, scale, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::Decimal)?;
+            check_expected(func_id, pc, *scale, t(*scale), ValueType::U64)?;
+        }
+        Instr::DecScale { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::Decimal)?;
         }
         Instr::F64Add { a, b, .. }
         | Instr::F64Sub { a, b, .. }

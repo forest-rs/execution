@@ -16,7 +16,7 @@ use core::fmt;
 use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
 use crate::contract::{Contract, ContractPosition, ContractViolation};
-use crate::decimal;
+use crate::decimal::{self, DecimalError};
 use crate::float;
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
@@ -1623,6 +1623,51 @@ impl<H: Host> Vm<H> {
                     let scale = u8::try_from(scale_u16)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     ctx.write_decimal(base, *dst, Decimal::new(mantissa, scale));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::DecDiv {
+                    dst,
+                    a,
+                    b,
+                    scale,
+                    rounding,
+                } => {
+                    let scale = u8::try_from(ctx.read_u64(base, *scale))
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    let da = ctx.read_decimal(base, *a);
+                    let db = ctx.read_decimal(base, *b);
+                    let out = decimal::div(da, db, scale, *rounding).map_err(|error| {
+                        let trap = match error {
+                            DecimalError::Overflow => Trap::DecimalOverflow,
+                            DecimalError::DivisionByZero => Trap::DivByZero,
+                        };
+                        ctx.trap(func_id, pc, span_id, trap)
+                    })?;
+                    ctx.write_decimal(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::DecRescale {
+                    dst,
+                    a,
+                    scale,
+                    rounding,
+                } => {
+                    let scale = u8::try_from(ctx.read_u64(base, *scale))
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    let out = decimal::rescale(ctx.read_decimal(base, *a), scale, *rounding)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
+                    ctx.write_decimal(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::DecScale { dst, a } => {
+                    let scale = ctx.read_decimal(base, *a).scale();
+                    ctx.write_u64(base, *dst, u64::from(scale));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::DecCmp { dst, a, b } => {
+                    let order =
+                        decimal::cmp(ctx.read_decimal(base, *a), ctx.read_decimal(base, *b));
+                    ctx.write_i64(base, *dst, order as i64);
                     ctx.frames[frame_index].pc = next_pc;
                 }
 

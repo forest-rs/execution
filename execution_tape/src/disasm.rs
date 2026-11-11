@@ -23,7 +23,7 @@ use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
 use crate::program::{CallSigId, ConstId, ElemTypeId, HostSigId, Program, TypeId, ValueType};
 pub use crate::register_operands::RegIter;
-use crate::value::{Decimal, FuncId};
+use crate::value::{Decimal, DecimalRounding, FuncId};
 use crate::verifier::VerifiedProgram;
 
 /// Disassembles `program` into a structured view.
@@ -328,6 +328,11 @@ pub enum InputIndex {
     ElemType(ElemTypeId),
     /// Generic immediate index (tuple/struct/array access, decimal scale, etc.).
     Index(u32),
+    /// Rounding-mode byte for [`Opcode::DecRescale`] and [`Opcode::DecDiv`].
+    ///
+    /// Kept raw because disassembly also reads unverified programs; [`DecimalRounding::from_byte`]
+    /// decodes it.
+    Rounding(u8),
 }
 
 /// A single disassembled instruction view.
@@ -447,6 +452,19 @@ impl<'a> InstrView<'a> {
                 _ => return None,
             };
             return Some(InputIndex::Index(ix));
+        }
+        // `dec.rescale`/`dec.div` read their scale from a register; only the rounding mode is an
+        // immediate there.
+        if operands
+            .iter()
+            .any(|o| matches!(o.role, OperandRole::Rounding))
+        {
+            let (Instr::DecRescale { rounding, .. } | Instr::DecDiv { rounding, .. }) =
+                &self.decoded.instr
+            else {
+                return None;
+            };
+            return Some(InputIndex::Rounding(*rounding));
         }
         if operands
             .iter()
@@ -677,6 +695,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         Instr::DecAdd { dst, a, b }
         | Instr::DecSub { dst, a, b }
         | Instr::DecMul { dst, a, b }
+        | Instr::DecCmp { dst, a, b }
         | Instr::F64Add { dst, a, b }
         | Instr::F64Sub { dst, a, b }
         | Instr::F64Mul { dst, a, b }
@@ -762,6 +781,31 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.dst = Some(dst);
             view.srcs = vec![a];
             view.input_index = Some(InputIndex::Index(u32::from(scale)));
+        }
+        Instr::DecScale { dst, a } => {
+            view.dst = Some(dst);
+            view.srcs = vec![a];
+        }
+        Instr::DecRescale {
+            dst,
+            a,
+            scale,
+            rounding,
+        } => {
+            view.dst = Some(dst);
+            view.srcs = vec![a, scale];
+            view.input_index = Some(InputIndex::Rounding(rounding));
+        }
+        Instr::DecDiv {
+            dst,
+            a,
+            b,
+            scale,
+            rounding,
+        } => {
+            view.dst = Some(dst);
+            view.srcs = vec![a, b, scale];
+            view.input_index = Some(InputIndex::Rounding(rounding));
         }
 
         Instr::Select { dst, cond, a, b } => {
@@ -1521,6 +1565,10 @@ impl fmt::Display for InputIndex {
             Self::Type(id) => write!(f, "type#{}", id.0),
             Self::ElemType(id) => write!(f, "elem_type#{}", id.0),
             Self::Index(ix) => write!(f, "index={ix}"),
+            Self::Rounding(byte) => match DecimalRounding::from_byte(byte) {
+                Some(mode) => write!(f, "rounding={}", mode.name()),
+                None => write!(f, "rounding=<invalid {byte}>"),
+            },
         }
     }
 }

@@ -25,6 +25,17 @@ This release has an [MSRV][] of 1.88.
   `f64.to_i64`/`f64.to_u64` conversions are unchanged. Migration: handle the new `Opcode`
   variants in exhaustive matches.
 
+- Compare, inspect, rescale and divide decimals in guest code: `dec.cmp` (`0x9D`, numeric
+  `-1`/`0`/`1` ignoring scale, so `1.0` equals `1.00`), `dec.scale` (`0x9E`), `dec.rescale`
+  (`0x9F`) and `dec.div` (`0xA0`), emitted with `Asm::{dec_cmp, dec_scale, dec_rescale,
+  dec_div}`. Rescale and division take the target scale from a `u64` register and a
+  `DecimalRounding` immediate (half-even, half-away-from-zero, toward-zero, floor, ceiling); they
+  round once from the exact result and trap with `DecimalOverflow` when it does not fit (or the
+  scale exceeds 255), and division traps with `DivByZero` on a zero divisor. The verifier rejects
+  unknown modes with `VerifyError::InvalidDecimalRounding`, and disassembly shows them as
+  `InputIndex::Rounding`. Migration: handle the new `Opcode`, `OperandRole::Rounding`,
+  `InputIndex::Rounding` and `VerifyError::InvalidDecimalRounding` variants in exhaustive matches.
+
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
   provides checked snapshot differences and sums across code domains. This is accounting, not
@@ -122,7 +133,7 @@ This release has an [MSRV][] of 1.88.
 - `dec.add` and `dec.sub` accept operands with different scales: the result is exact at the
   larger scale (`1.5 + 0.25 = 1.75` at scale 2) instead of trapping with
   `DecimalScaleMismatch`. Results for equal scales are unchanged, and overflow still traps.
-  Migration: programs that relied on the trap must compare scales explicitly.
+  Migration: programs that relied on the trap must compare scales with `dec.scale` explicitly.
 
 - Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
   `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include

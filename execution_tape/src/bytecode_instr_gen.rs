@@ -126,6 +126,10 @@ impl Instr {
             Self::F64ToI64Sat { .. } => Opcode::F64ToI64Sat,
             Self::F64ToU64Sat { .. } => Opcode::F64ToU64Sat,
             Self::F64Ne { .. } => Opcode::F64Ne,
+            Self::DecCmp { .. } => Opcode::DecCmp,
+            Self::DecScale { .. } => Opcode::DecScale,
+            Self::DecRescale { .. } => Opcode::DecRescale,
+            Self::DecDiv { .. } => Opcode::DecDiv,
         }
     }
 

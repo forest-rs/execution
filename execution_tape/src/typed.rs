@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use crate::program::{CallSigId, HostSigId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
-use crate::value::{Decimal, FuncId};
+use crate::value::{Decimal, DecimalRounding, FuncId};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RegClass {
@@ -275,6 +275,28 @@ pub(crate) enum ExecInstr {
     },
     DecMul {
         dst: DecimalReg,
+        a: DecimalReg,
+        b: DecimalReg,
+    },
+    DecDiv {
+        dst: DecimalReg,
+        a: DecimalReg,
+        b: DecimalReg,
+        scale: U64Reg,
+        rounding: DecimalRounding,
+    },
+    DecRescale {
+        dst: DecimalReg,
+        a: DecimalReg,
+        scale: U64Reg,
+        rounding: DecimalRounding,
+    },
+    DecScale {
+        dst: U64Reg,
+        a: DecimalReg,
+    },
+    DecCmp {
+        dst: I64Reg,
         a: DecimalReg,
         b: DecimalReg,
     },
