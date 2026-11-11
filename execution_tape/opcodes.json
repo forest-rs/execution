@@ -3151,6 +3151,236 @@
           "access": "read"
         }
       ]
+    },
+    {
+      "name": "F64Floor",
+      "mnemonic": "f64.floor",
+      "byte": "0x94",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = floor(a)` (`f64`, round toward negative infinity).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Ceil",
+      "mnemonic": "f64.ceil",
+      "byte": "0x95",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = ceil(a)` (`f64`, round toward positive infinity).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Trunc",
+      "mnemonic": "f64.trunc",
+      "byte": "0x96",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = trunc(a)` (`f64`, round toward zero).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Nearest",
+      "mnemonic": "f64.nearest",
+      "byte": "0x97",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = nearest(a)` (`f64`, round to nearest integer, ties to even).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Sqrt",
+      "mnemonic": "f64.sqrt",
+      "byte": "0x98",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = sqrt(a)` (`f64`, correctly rounded).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64CopySign",
+      "mnemonic": "f64.copysign",
+      "byte": "0x99",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = copysign(a, b)` (`f64`, magnitude of `a` with the sign of `b`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64ToI64Sat",
+      "mnemonic": "f64.to_i64_sat",
+      "byte": "0x9A",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = trunc_sat(a)` (`f64` to `i64`, saturating; NaN -> 0, never traps).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64ToU64Sat",
+      "mnemonic": "f64.to_u64_sat",
+      "byte": "0x9B",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = trunc_sat(a)` (`f64` to `u64`, saturating; NaN -> 0, never traps).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Ne",
+      "mnemonic": "f64.ne",
+      "byte": "0x9C",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = (a != b)` (`f64` -> `bool`, true if either input is NaN).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
     }
   ]
 }

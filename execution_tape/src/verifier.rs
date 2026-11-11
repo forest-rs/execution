@@ -2011,6 +2011,31 @@ fn verify_function_bytecode(
                 dst: map_f64(*dst)?,
                 a: map_f64(*a)?,
             },
+            Instr::F64Floor { dst, a } => ExecInstr::F64Floor {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Ceil { dst, a } => ExecInstr::F64Ceil {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Trunc { dst, a } => ExecInstr::F64Trunc {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Nearest { dst, a } => ExecInstr::F64Nearest {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Sqrt { dst, a } => ExecInstr::F64Sqrt {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64CopySign { dst, a, b } => ExecInstr::F64CopySign {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
             Instr::F64Min { dst, a, b } => ExecInstr::F64Min {
                 dst: map_f64(*dst)?,
                 a: map_f64(*a)?,
@@ -2175,6 +2200,11 @@ fn verify_function_bytecode(
                 b: map_f64(*b)?,
             },
             Instr::F64Ge { dst, a, b } => ExecInstr::F64Ge {
+                dst: map_bool(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Ne { dst, a, b } => ExecInstr::F64Ne {
                 dst: map_bool(*dst)?,
                 a: map_f64(*a)?,
                 b: map_f64(*b)?,
@@ -2556,6 +2586,14 @@ fn verify_function_bytecode(
                 a: map_f64(*a)?,
             },
             Instr::F64ToU64 { dst, a } => ExecInstr::F64ToU64 {
+                dst: map_u64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToI64Sat { dst, a } => ExecInstr::F64ToI64Sat {
+                dst: map_i64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToU64Sat { dst, a } => ExecInstr::F64ToU64Sat {
                 dst: map_u64(*dst)?,
                 a: map_f64(*a)?,
             },
@@ -3041,11 +3079,19 @@ fn validate_instr_types(
         | Instr::F64Max { a, b, .. }
         | Instr::F64MinNum { a, b, .. }
         | Instr::F64MaxNum { a, b, .. }
-        | Instr::F64Rem { a, b, .. } => {
+        | Instr::F64Rem { a, b, .. }
+        | Instr::F64CopySign { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::F64)?;
         }
-        Instr::F64Neg { a, .. } | Instr::F64Abs { a, .. } | Instr::F64ToBits { a, .. } => {
+        Instr::F64Neg { a, .. }
+        | Instr::F64Abs { a, .. }
+        | Instr::F64Floor { a, .. }
+        | Instr::F64Ceil { a, .. }
+        | Instr::F64Trunc { a, .. }
+        | Instr::F64Nearest { a, .. }
+        | Instr::F64Sqrt { a, .. }
+        | Instr::F64ToBits { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
         }
         Instr::F64FromBits { a, .. } => {
@@ -3102,7 +3148,8 @@ fn validate_instr_types(
         | Instr::F64Lt { a, b, .. }
         | Instr::F64Gt { a, b, .. }
         | Instr::F64Le { a, b, .. }
-        | Instr::F64Ge { a, b, .. } => {
+        | Instr::F64Ge { a, b, .. }
+        | Instr::F64Ne { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::F64)?;
         }
@@ -3126,7 +3173,10 @@ fn validate_instr_types(
         Instr::U64ToF64 { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
         }
-        Instr::F64ToI64 { a, .. } | Instr::F64ToU64 { a, .. } => {
+        Instr::F64ToI64 { a, .. }
+        | Instr::F64ToU64 { a, .. }
+        | Instr::F64ToI64Sat { a, .. }
+        | Instr::F64ToU64Sat { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
         }
         Instr::DecToI64 { a, .. } | Instr::DecToU64 { a, .. } => {

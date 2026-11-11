@@ -1517,6 +1517,55 @@ impl Asm {
         self
     }
 
+    /// Encodes `f64_floor dst, a` (round toward negative infinity).
+    pub fn f64_floor(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Floor);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_ceil dst, a` (round toward positive infinity).
+    pub fn f64_ceil(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Ceil);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_trunc dst, a` (round toward zero).
+    pub fn f64_trunc(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Trunc);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_nearest dst, a` (round to nearest integer, ties to even).
+    pub fn f64_nearest(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Nearest);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_sqrt dst, a` (correctly rounded).
+    pub fn f64_sqrt(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64Sqrt);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_copysign dst, a, b` (magnitude of `a`, sign bit of `b`).
+    pub fn f64_copysign(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64CopySign);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
     /// Encodes `i64_add dst, a, b`.
     pub fn i64_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::I64Add);
@@ -1735,6 +1784,15 @@ impl Asm {
     /// Encodes `f64_ge dst, a, b`.
     pub fn f64_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::F64Ge);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f64_ne dst, a, b` (true if either input is NaN).
+    pub fn f64_ne(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F64Ne);
         self.reg(dst);
         self.reg(a);
         self.reg(b);
@@ -2180,6 +2238,22 @@ impl Asm {
     /// Encodes `f64_to_u64 dst, a` (truncates, traps on NaN/inf/out-of-range/negative).
     pub fn f64_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
         self.opcode(Opcode::F64ToU64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_to_i64_sat dst, a` (truncates and saturates; NaN converts to `0`, never traps).
+    pub fn f64_to_i64_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToI64Sat);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64_to_u64_sat dst, a` (truncates and saturates; NaN converts to `0`, never traps).
+    pub fn f64_to_u64_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToU64Sat);
         self.reg(dst);
         self.reg(a);
         self

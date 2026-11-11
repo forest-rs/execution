@@ -426,6 +426,26 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -609,6 +629,15 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "f64.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 290, len: 3 } }, // 0x91 F64Rem
     OpcodeInfo { mnemonic: "f64.to_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 293, len: 2 } }, // 0x92 F64ToBits
     OpcodeInfo { mnemonic: "f64.from_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 295, len: 2 } }, // 0x93 F64FromBits
+    OpcodeInfo { mnemonic: "f64.floor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 297, len: 2 } }, // 0x94 F64Floor
+    OpcodeInfo { mnemonic: "f64.ceil", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 299, len: 2 } }, // 0x95 F64Ceil
+    OpcodeInfo { mnemonic: "f64.trunc", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 301, len: 2 } }, // 0x96 F64Trunc
+    OpcodeInfo { mnemonic: "f64.nearest", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 303, len: 2 } }, // 0x97 F64Nearest
+    OpcodeInfo { mnemonic: "f64.sqrt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 305, len: 2 } }, // 0x98 F64Sqrt
+    OpcodeInfo { mnemonic: "f64.copysign", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 307, len: 3 } }, // 0x99 F64CopySign
+    OpcodeInfo { mnemonic: "f64.to_i64_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 310, len: 2 } }, // 0x9A F64ToI64Sat
+    OpcodeInfo { mnemonic: "f64.to_u64_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 312, len: 2 } }, // 0x9B F64ToU64Sat
+    OpcodeInfo { mnemonic: "f64.ne", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 314, len: 3 } }, // 0x9C F64Ne
 ];
 
 /// Bytecode opcode byte for the v1 instruction set.
@@ -833,6 +862,24 @@ pub enum Opcode {
     F64ToBits = 0x92,
     /// `dst = f64_from_bits(a)` (`u64` -> `f64`).
     F64FromBits = 0x93,
+    /// `dst = floor(a)` (`f64`, round toward negative infinity).
+    F64Floor = 0x94,
+    /// `dst = ceil(a)` (`f64`, round toward positive infinity).
+    F64Ceil = 0x95,
+    /// `dst = trunc(a)` (`f64`, round toward zero).
+    F64Trunc = 0x96,
+    /// `dst = nearest(a)` (`f64`, round to nearest integer, ties to even).
+    F64Nearest = 0x97,
+    /// `dst = sqrt(a)` (`f64`, correctly rounded).
+    F64Sqrt = 0x98,
+    /// `dst = copysign(a, b)` (`f64`, magnitude of `a` with the sign of `b`).
+    F64CopySign = 0x99,
+    /// `dst = trunc_sat(a)` (`f64` to `i64`, saturating; NaN -> 0, never traps).
+    F64ToI64Sat = 0x9A,
+    /// `dst = trunc_sat(a)` (`f64` to `u64`, saturating; NaN -> 0, never traps).
+    F64ToU64Sat = 0x9B,
+    /// `dst = (a != b)` (`f64` -> `bool`, true if either input is NaN).
+    F64Ne = 0x9C,
 }
 
 impl Opcode {
@@ -949,6 +996,15 @@ impl Opcode {
             0x91 => Self::F64Rem,
             0x92 => Self::F64ToBits,
             0x93 => Self::F64FromBits,
+            0x94 => Self::F64Floor,
+            0x95 => Self::F64Ceil,
+            0x96 => Self::F64Trunc,
+            0x97 => Self::F64Nearest,
+            0x98 => Self::F64Sqrt,
+            0x99 => Self::F64CopySign,
+            0x9A => Self::F64ToI64Sat,
+            0x9B => Self::F64ToU64Sat,
+            0x9C => Self::F64Ne,
             _ => return None,
         })
     }

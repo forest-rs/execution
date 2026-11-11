@@ -1039,5 +1039,81 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 a,
             }
         },
+        Opcode::F64Floor => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Floor {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Ceil => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Ceil {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Trunc => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Trunc {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Nearest => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Nearest {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Sqrt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Sqrt {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64CopySign => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F64CopySign {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F64ToI64Sat => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToI64Sat {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64ToU64Sat => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToU64Sat {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Ne => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Ne {
+                dst,
+                a,
+                b,
+            }
+        },
     })
 }

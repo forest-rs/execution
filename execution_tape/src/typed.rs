@@ -307,6 +307,31 @@ pub(crate) enum ExecInstr {
         dst: F64Reg,
         a: F64Reg,
     },
+    F64Floor {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Ceil {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Trunc {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Nearest {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Sqrt {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64CopySign {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
     F64Min {
         dst: F64Reg,
         a: F64Reg,
@@ -496,6 +521,11 @@ pub(crate) enum ExecInstr {
         b: F64Reg,
     },
     F64Ge {
+        dst: BoolReg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64Ne {
         dst: BoolReg,
         a: F64Reg,
         b: F64Reg,
@@ -735,6 +765,14 @@ pub(crate) enum ExecInstr {
         a: F64Reg,
     },
     F64ToU64 {
+        dst: U64Reg,
+        a: F64Reg,
+    },
+    F64ToI64Sat {
+        dst: I64Reg,
+        a: F64Reg,
+    },
+    F64ToU64Sat {
         dst: U64Reg,
         a: F64Reg,
     },
