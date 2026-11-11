@@ -58,15 +58,18 @@ impl fmt::Display for UncaughtException {
     }
 }
 
+/// A raised exception: its tag and checked payload, independent of any register.
+#[derive(Debug)]
+pub(super) struct Exception {
+    pub(super) tag: TagId,
+    pub(super) payload: Vec<Value>,
+}
+
 impl<H: Host> Vm<H> {
-    /// Raises `tag` at the throwing instruction.
+    /// Raises `tag` at the throwing instruction, then propagates it.
     ///
     /// Payload materialization, observation and contract checks happen at the throw site, so a
-    /// rejected payload reports its own trap there rather than an exception. Then the innermost
-    /// catching clause, searched from the throwing activation outward, receives the payload and
-    /// execution continues at its handler: `Ok(())`. Activations and pending host requests it
-    /// passes through are abandoned. With no catching clause, the returned trap ends the
-    /// invocation with a detached payload snapshot.
+    /// rejected payload reports its own trap there rather than an exception.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -125,12 +128,45 @@ impl<H: Host> Vm<H> {
                 ));
             }
         }
+        let exception = Exception {
+            tag,
+            payload: values,
+        };
+        self.propagate::<P>(
+            ctx, budget, prepared, exception, trace, control, location, span_id,
+        )
+    }
+
+    /// Unwinds `exception`, raised at `location`, to the innermost catching clause.
+    ///
+    /// The search starts at the raising activation and continues outward. A catch abandons the
+    /// activations and pending host requests it passes through, and execution continues at the
+    /// handler: `Ok(())`. With no catching clause, the returned trap ends the invocation with a
+    /// detached payload snapshot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the interpreter state borrowed by other instruction helpers"
+    )]
+    fn propagate<P: TracePolicy>(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        prepared: &VerifiedProgram,
+        exception: Exception,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        location: TraceLocation,
+        span_id: Option<u64>,
+    ) -> Result<(), TrapInfo> {
+        let program = prepared.program();
+        let tag = exception.tag;
         if let Some((frame, catch)) = find_catch(ctx, prepared, tag) {
             return self.catch::<P>(
-                ctx, budget, prepared, tag, values, trace, control, location, span_id, frame, catch,
+                ctx, budget, prepared, exception, trace, control, location, span_id, frame, catch,
             );
         }
-        let payload = match self.memory.aggs().snapshot(&values) {
+        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
+        let payload = match self.memory.aggs().snapshot(&exception.payload) {
             Ok(payload) => payload,
             Err(error) => return Err(fail(ctx, Trap::AggError(error))),
         };
@@ -151,8 +187,7 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         prepared: &VerifiedProgram,
-        tag: TagId,
-        values: Vec<Value>,
+        exception: Exception,
         trace: &mut TraceCtx<'_>,
         control: &mut ExecutionControl,
         location: TraceLocation,
@@ -161,6 +196,7 @@ impl<H: Host> Vm<H> {
         catch: ExecCatch,
     ) -> Result<(), TrapInfo> {
         let program = prepared.program();
+        let tag = exception.tag;
         let catcher = &ctx.frames[frame];
         let body = prepared
             .verified(catcher.func)
@@ -215,7 +251,11 @@ impl<H: Host> Vm<H> {
         catcher.instr_ix = target_ix;
         catcher.pc = handler.pc;
         let base = catcher.base;
-        for (&param, value) in body.vregs(catch.handler.params).iter().zip(values) {
+        for (&param, value) in body
+            .vregs(catch.handler.params)
+            .iter()
+            .zip(exception.payload)
+        {
             ctx.write_owned_value(base, param, value)
                 .map_err(|trap| ctx.trap(location.func, location.pc, span_id, trap))?;
         }
