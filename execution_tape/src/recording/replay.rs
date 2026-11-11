@@ -70,11 +70,6 @@ pub enum Divergence {
         /// Next ordinal in this replay.
         actual: usize,
     },
-    /// A recorded transfer target is no longer an active activation in this replay.
-    ControlTarget {
-        /// Invocation-local ordinal requested by the recording.
-        activation: u64,
-    },
     /// The number of argument/result values differs.
     Arity {
         /// Recorded argument/result/field count.
@@ -400,14 +395,7 @@ impl State {
 }
 
 enum Delivery {
-    ReturnFrom {
-        target: crate::vm::ActivationId,
-        values: Vec<Value>,
-    },
-    CallGuest {
-        callee: Value,
-        args: Vec<Value>,
-    },
+    CallGuest { callee: Value, args: Vec<Value> },
     Host(Result<(Vec<Value>, u64), HostError>),
 }
 fn restore_construction(
@@ -540,24 +528,6 @@ impl RecordedHost<'_> {
                         request.aggregates(),
                     )?;
                     Ok(Delivery::CallGuest { callee, args })
-                }
-                Action::ReturnFrom { target, values, .. } => {
-                    let target = request
-                        .inspect()
-                        .frames()
-                        .find(|frame| frame.activation.ordinal() == *target)
-                        .map(|frame| frame.activation)
-                        .ok_or_else(|| {
-                            state.mismatch(Divergence::ControlTarget {
-                                activation: *target,
-                            })
-                        })?;
-                    let values = state.materialize(
-                        self.record,
-                        self.record.arena.slice(values),
-                        request.aggregates(),
-                    )?;
-                    Ok(Delivery::ReturnFrom { target, values })
                 }
             };
         }
@@ -816,9 +786,6 @@ impl TraceSink for Check<'_> {
         let actual = match outcome {
             TraceOutcome::Ok => crate::recording::InstructionOutcome::Completed,
             TraceOutcome::Trap(_) => crate::recording::InstructionOutcome::Trapped,
-            TraceOutcome::Unwound { target } => {
-                crate::recording::InstructionOutcome::Unwound { target }
-            }
             TraceOutcome::Caught { depth } => {
                 crate::recording::InstructionOutcome::Caught { depth }
             }
@@ -842,74 +809,6 @@ impl TraceSink for Check<'_> {
         }
         let result = (|| -> Result<(), ReplayError> {
             match event {
-                ValueEvent::ReturnFrom {
-                    location,
-                    target,
-                    target_location,
-                    unwound_callbacks,
-                    values,
-                    work,
-                    created,
-                    aggregates,
-                } => {
-                    let index = state.commands;
-                    state.boundary = ReplayBoundary::ControlCommand { index };
-                    state.location = Some(location);
-                    let command = self.record.commands.get(index).ok_or_else(|| {
-                        state.mismatch(Divergence::ControlCommands {
-                            expected: self.record.commands.len(),
-                            actual: index + 1,
-                        })
-                    })?;
-                    check_sequence(&state, command.sequence)?;
-                    if command.location != location {
-                        return Err(state.mismatch(Divergence::Location {
-                            expected: command.location,
-                            actual: Some(location),
-                        }));
-                    }
-                    if !self.record.frames.is_empty() && command.frame != state.top {
-                        return Err(state.mismatch(Divergence::CallStack));
-                    }
-                    let Action::ReturnFrom {
-                        target: expected_target,
-                        target_location: expected_location,
-                        unwound_callbacks: expected_callbacks,
-                        values: expected_values,
-                        work: expected_work,
-                        constructed,
-                    } = &command.action
-                    else {
-                        return Err(state.mismatch(Divergence::Outcome));
-                    };
-                    if target_location != *expected_location {
-                        return Err(state.mismatch(Divergence::Location {
-                            expected: *expected_location,
-                            actual: Some(target_location),
-                        }));
-                    }
-                    if target != *expected_target
-                        || unwound_callbacks != *expected_callbacks
-                        || work != *expected_work
-                    {
-                        return Err(state.mismatch(Divergence::Outcome));
-                    }
-                    check_created(self.record, &mut state, constructed, created)?;
-                    state.matches(
-                        self.record,
-                        self.record.arena.slice(expected_values),
-                        values.iter().map(ValueRef::from_value),
-                        aggregates,
-                    )?;
-                    let active = state
-                        .active_commands
-                        .len()
-                        .checked_sub(unwound_callbacks)
-                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
-                    state.active_commands.truncate(active);
-                    state.commands += 1;
-                    state.sequence += 1;
-                }
                 ValueEvent::Entry { .. } => {}
                 ValueEvent::HostCall {
                     location,
@@ -988,10 +887,7 @@ impl TraceSink for Check<'_> {
                         work: expected_work,
                         constructed,
                         ..
-                    } = &command.action
-                    else {
-                        return Err(state.mismatch(Divergence::Outcome));
-                    };
+                    } = &command.action;
                     if *expected_work != work {
                         return Err(state.mismatch(Divergence::Outcome));
                     }
@@ -1025,9 +921,7 @@ impl TraceSink for Check<'_> {
                     state.boundary = ReplayBoundary::ControlReturn { index };
                     state.location = Some(location);
                     let command = &self.record.commands[index];
-                    let Action::CallGuest { returned, .. } = &command.action else {
-                        return Err(state.mismatch(Divergence::Outcome));
-                    };
+                    let Action::CallGuest { returned, .. } = &command.action;
                     let returned = returned
                         .as_ref()
                         .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
@@ -1248,21 +1142,6 @@ impl Recording {
                                     break Err(error);
                                 }
                                 continue;
-                            }
-                            Delivery::ReturnFrom { target, values } => {
-                                match request.return_from(&target, values) {
-                                    Ok(()) => continue,
-                                    Err(crate::vm::ControlError::Trapped(error)) => {
-                                        break Err(error);
-                                    }
-                                    Err(_) => {
-                                        return Err(state.borrow().mismatch(
-                                            Divergence::ControlTarget {
-                                                activation: target.ordinal(),
-                                            },
-                                        ));
-                                    }
-                                }
                             }
                             Delivery::Host(outcome) => outcome,
                         };
@@ -1567,10 +1446,6 @@ mod tests {
     }
 
     fn callback_recording() -> Recording {
-        control_recording(false)
-    }
-
-    fn control_recording(exit: bool) -> Recording {
         use crate::trace::TraceSink;
         use crate::vm::{InvocationOptions, RunStatus};
         let mut b = ProgramBuilder::new();
@@ -1624,65 +1499,12 @@ mod tests {
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
-        if exit {
-            let target = request.inspect().frames().last().unwrap().activation;
-            request
-                .context()
-                .tuple_new(vec![Value::Bytes(vec![7; 8])])
-                .unwrap();
-            request.return_from(&target, results).unwrap();
-        } else {
-            request.complete(&mut results, Ok(0)).unwrap();
-        }
+        request.complete(&mut results, Ok(0)).unwrap();
         assert_eq!(run.resume(100).unwrap(), RunStatus::Complete);
         drop(run);
         let record = Rc::try_unwrap(recorder).unwrap().into_inner().finish();
         record.replay().unwrap();
         record
-    }
-
-    #[test]
-    fn callback_return_then_root_exit_keeps_a_complete_overlapping_history() {
-        let record = control_recording(true);
-        assert_eq!(
-            record.instruction_status(),
-            Some(crate::recording::InstructionStatus::Complete),
-            "the parent host attempt closes after the callback Ret; last admission is not the terminal attempt"
-        );
-    }
-
-    #[test]
-    fn corrupted_transfer_target_order_values_callback_count_and_work_are_rejected() {
-        for change in 0..8 {
-            let mut record = control_recording(true);
-            let command = record.commands.last_mut().unwrap();
-            let Action::ReturnFrom {
-                target,
-                target_location,
-                unwound_callbacks,
-                values,
-                work,
-                ..
-            } = &mut command.action
-            else {
-                panic!("transfer fixture");
-            };
-            match change {
-                0 => *target = 999,
-                1 => command.sequence += 1,
-                2 => command.location.pc += 1,
-                3 => record.arena.values[values.start] = RecordedValue::I64(99),
-                4 => *unwound_callbacks += 1,
-                5 => work.aggregate = 0,
-                6 => work.payload = 0,
-                7 => target_location.pc += 1,
-                _ => unreachable!(),
-            }
-            assert!(
-                record.replay().is_err(),
-                "corrupted transfer evidence {change} must diverge"
-            );
-        }
     }
 
     #[test]
@@ -1713,24 +1535,17 @@ mod tests {
                 0 => record.commands[0].sequence += 1,
                 1 => record.commands[0].location.pc += 1,
                 2 => {
-                    let Action::CallGuest { callee, .. } = record.commands[0].action else {
-                        panic!("callback fixture");
-                    };
+                    let Action::CallGuest { callee, .. } = record.commands[0].action;
                     record.arena.values[callee] = RecordedValue::Func(FuncId(99));
                 }
                 3 => {
-                    let Action::CallGuest { ref args, .. } = record.commands[0].action else {
-                        panic!("callback fixture");
-                    };
+                    let Action::CallGuest { ref args, .. } = record.commands[0].action;
                     record.arena.values[args.start] = RecordedValue::I64(99);
                 }
                 4 => {
                     let Action::CallGuest {
                         ref mut returned, ..
-                    } = record.commands[0].action
-                    else {
-                        panic!("callback fixture");
-                    };
+                    } = record.commands[0].action;
                     *returned = None;
                 }
                 5 => record.calls[0].sequence += 1,

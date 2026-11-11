@@ -99,26 +99,14 @@ impl Recorder {
             }
             if history.status == InstructionStatus::Complete
                 && matches!(self.end, Some(End::Returned))
-                && !history
-                    .root_exit
-                    .and_then(|index| history.steps.get(index))
-                    .or_else(|| history.steps.last())
-                    .is_some_and(|step| {
-                        (step.outcome == InstructionOutcome::Completed
-                            || (step.outcome == InstructionOutcome::Unwound { target: 0 }
-                                && self.commands.last().is_some_and(|command| {
-                                    command.location == step.location
-                                        && matches!(
-                                            command.action,
-                                            Action::ReturnFrom { target: 0, .. }
-                                        )
-                                })))
-                            && step.next.is_none()
-                            && self
-                                .candidate
-                                .as_ref()
-                                .is_some_and(|(location, _)| *location == step.location)
-                    })
+                && !history.steps.last().is_some_and(|step| {
+                    step.outcome == InstructionOutcome::Completed
+                        && step.next.is_none()
+                        && self
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|(location, _)| *location == step.location)
+                })
             {
                 history.status = InstructionStatus::Incomplete;
             }
@@ -199,60 +187,6 @@ impl Recorder {
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
-            ValueEvent::ReturnFrom {
-                location,
-                target,
-                target_location,
-                unwound_callbacks,
-                values,
-                work,
-                created,
-                aggregates,
-            } => {
-                if self.entry.is_none() || self.end.is_some() || self.candidate.is_some() {
-                    return Err(CaptureFault::InvalidSequence);
-                }
-                if self.commands.len() >= self.builder.limits.control_commands {
-                    return Err(CaptureFault::Budget {
-                        resource: CaptureResource::ControlCommands,
-                        limit: self.builder.limits.control_commands,
-                    });
-                }
-                self.check_location(location)?;
-                self.builder.roots(
-                    created
-                        .clone()
-                        .map(|handle| ValueRef::Agg(crate::value::AggHandle(handle))),
-                    aggregates,
-                )?;
-                let constructed = self.builder.constructed(created.clone())?;
-                let values = self
-                    .builder
-                    .roots(values.iter().map(ValueRef::from_value), aggregates)?;
-                let active = self
-                    .active_commands
-                    .len()
-                    .checked_sub(unwound_callbacks)
-                    .ok_or(CaptureFault::InvalidSequence)?;
-                self.active_commands.truncate(active);
-                self.commands.push(Command {
-                    sequence: self.sequence,
-                    location,
-                    frame: self.top,
-                    action: Action::ReturnFrom {
-                        target,
-                        target_location,
-                        unwound_callbacks,
-                        values,
-                        work,
-                        constructed,
-                    },
-                });
-                self.sequence += 1;
-                if let Some(history) = &mut self.history {
-                    history.begin_transfer(target);
-                }
-            }
             ValueEvent::CallbackEnter {
                 location,
                 callee,
@@ -320,9 +254,7 @@ impl Recorder {
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
-                let Action::CallGuest { returned, .. } = &mut self.commands[index].action else {
-                    return Err(CaptureFault::InvalidSequence);
-                };
+                let Action::CallGuest { returned, .. } = &mut self.commands[index].action;
                 if returned.is_some() {
                     return Err(CaptureFault::InvalidSequence);
                 }
@@ -657,7 +589,6 @@ impl TraceSink for Recorder {
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
-            | ValueEvent::ReturnFrom { location, .. }
             | ValueEvent::ReturnCandidate { location, .. }
             | ValueEvent::Thrown { location, .. }
             | ValueEvent::Rethrown { location, .. }
@@ -792,7 +723,7 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
-            TraceOutcome::Unwound { .. } | TraceOutcome::Caught { .. } => {
+            TraceOutcome::Caught { .. } => {
                 self.fail(CaptureFault::InvalidSequence);
             }
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),

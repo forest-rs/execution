@@ -398,6 +398,59 @@ impl<H: Host> Vm<H> {
     }
 }
 
+// Scope exits for activations and host requests that a catch abandons.
+impl TraceCtx<'_> {
+    fn exit_host(
+        &mut self,
+        program: &Program,
+        location: TraceLocation,
+        span: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
+            let (kind, depth) = self.scopes.pop().expect("entered host scope");
+            if let Some(sink) = self.sink.as_mut() {
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location.func,
+                    location.pc,
+                    span,
+                    outcome,
+                );
+            }
+        }
+    }
+    fn exit_frame(
+        &mut self,
+        program: &Program,
+        depth: usize,
+        location: TraceLocation,
+        span: Option<u64>,
+        outcome: TraceOutcome<'_>,
+    ) {
+        if matches!(self.scopes.last(), Some((ScopeKind::CallFrame { .. }, _))) {
+            let (kind, entered_depth) = self.scopes.pop().expect("entered guest scope");
+            debug_assert_eq!(
+                depth, entered_depth,
+                "exit scopes follow actual guest activations"
+            );
+            if let Some(sink) = self.sink.as_mut() {
+                sink.scope_exit(
+                    program,
+                    kind,
+                    depth,
+                    location.func,
+                    location.pc,
+                    span,
+                    outcome,
+                );
+            }
+        }
+    }
+}
+
 /// Finds the innermost activation whose protected regions catch `tag` at its raising instruction.
 ///
 /// The leaf raised with `throw`; every other activation is suspended at the call or host call

@@ -353,33 +353,18 @@ retains embedding callback commands, promoted staging and actual guest returns i
 order. Checked replay runs those guest bodies again and verifies their results. Optional
 instruction histories link callback attempts to the host instruction that remains pending.
 
-### Typed non-local returns
+### Exceptions and nonlocal exits
 
-`PendingHostCall::return_from` exits an exact live `ActivationId`, using that function's
-declared multiple-value and rich result contracts. Recursive calls have different IDs even
-when their code and call sites match. Returning from the root commits the invocation; a
-callback root restores its original host request with callback results; an ordinary guest
-frame returns to its real caller. Intervening host operations are abandoned without dispatch.
-
-```rust
-use execution_tape::{host::Host, value::Value,
-    vm::{ControlError, Invocation}};
-fn return_from_root<H: Host>(run: &mut Invocation<'_, H>, values: Vec<Value>)
-    -> Result<(), ControlError> {
-    let target = run.inspect().frames().last().expect("active root").activation;
-    run.pending_host_call().expect("AwaitingHost").return_from(&target, values)
-}
-```
-
-Foreign or expired targets return a recoverable `ControlError` before spending guest work;
-the host request remains pending. Admitted invalid results or hard limits trap the invocation.
-One fuel unit and moved immediate payload ingress are charged; staging is promoted with stable
-handles. All work remains cumulative. `ValueEvent::ReturnFrom` retains the real initiating
-host source; abandoned instructions/scopes close with `TraceOutcome::Unwound`. No synthetic
-`Ret` is executed. This primitive does not automatically run protected guest cleanup. Recording
-retains admitted transfer commands and their actual unwinding. Checked replay resolves the
-exact active target and reissues the typed transfer, including promoted staging and budgets.
-Language condition classes, handler selection and restart policy remain above the core VM.
+Nonlocal control is a typed exception. `throw` raises a program tag with its payload, and a
+host raises one at its `host_call` with `HostError::throw` (or `PendingHostCall::throw` for a
+yielded request). Protected regions attach ordered `catch`/`catch_all` clauses to
+instructions; the innermost catching clause receives the payload in a typed block, and every
+activation, guest callback and pending host request in between is abandoned. `catch_ref` and
+`catch_all_ref` also bind the exception as an `Exn` register, which `throw_ref` rethrows with
+its original tag, payload and throw site, so cleanup is ordinary guest code that rethrows.
+Traps, limits and cancellation are never caught and run no guest code. An exception nothing
+catches ends the invocation as `Trap::Uncaught` with a detached payload snapshot. Language
+condition classes, handler selection and restart policy remain above the core VM.
 
 ## Owned executable callables
 

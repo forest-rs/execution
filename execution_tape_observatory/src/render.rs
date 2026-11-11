@@ -81,9 +81,6 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 Divergence::HostCalls { expected, actual } => {
                     format!("calls expected {expected}, got {actual}")
                 }
-                Divergence::ControlTarget { activation } => {
-                    format!("transfer target activation #{activation} is not active")
-                }
                 Divergence::Outcome => "outcome mismatch".into(),
                 Divergence::CallStack => "guest call stack mismatch".into(),
                 Divergence::ControlCommands { expected, actual } => {
@@ -126,9 +123,6 @@ fn step_description(
     use execution_tape::recording::InstructionOutcome;
     match step.outcome {
         InstructionOutcome::Pending => "completion not observed".into(),
-        InstructionOutcome::Unwound { target } => {
-            format!("abandoned by return from activation #{target}")
-        }
         InstructionOutcome::Caught { depth } => {
             format!("abandoned by an exception caught at stack depth {depth}")
         }
@@ -208,14 +202,6 @@ fn title(view: &View<'_>, index: usize) -> String {
                 execution_tape::recording::ControlAction::CallGuest { callee, .. } => {
                     format!("Callback #{i} → {}", describe::value(view.record, callee))
                 }
-                execution_tape::recording::ControlAction::ReturnFrom {
-                    target,
-                    target_location,
-                    ..
-                } => format!(
-                    "Exit → {} [activation #{target}]",
-                    describe::function(view.record.program().program(), target_location.func)
-                ),
             },
             Boundary::CallbackReturn(i) => format!("Callback #{i} returned → embedding"),
         };
@@ -761,34 +747,13 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                             if returned.is_some() {
                                 "normal guest return observed separately"
                             } else {
-                                "no normal return; inspect transfers/outcome"
+                                "no normal return; inspect exceptions/outcome"
                             }
                         ),
                         label: "Input",
                         values: args,
                         base: 0,
                         empty: "No callback arguments.".into(),
-                    },
-                    execution_tape::recording::ControlAction::ReturnFrom {
-                        target,
-                        target_location,
-                        values,
-                        unwound_callbacks,
-                        ..
-                    } => ValueSection {
-                        title: format!(" EXIT VALUES · activation #{target} "),
-                        note: format!(
-                            "To {}:{:06} · {unwound_callbacks} callbacks abandoned · embedding inputs",
-                            describe::function(
-                                view.record.program().program(),
-                                target_location.func
-                            ),
-                            target_location.pc
-                        ),
-                        label: "Exit",
-                        values,
-                        base: 0,
-                        empty: "Exit supplies no values.".into(),
                     },
                 };
                 value_section(frame, view, area, section);

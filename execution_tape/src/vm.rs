@@ -51,7 +51,7 @@ pub use inspection::{
 mod observations;
 mod ownership;
 mod work;
-pub use invocation::{ControlError, Invocation, InvocationOptions, PendingHostCall, RunStatus};
+pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
 use ownership::BorrowedOrOwned;
 pub use work::ExecutionWork;
 #[cfg(test)]

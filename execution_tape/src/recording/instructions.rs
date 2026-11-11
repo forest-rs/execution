@@ -82,11 +82,6 @@ pub enum InstructionOutcome {
     Pending,
     /// The instruction completed, including dispatch into a guest callee.
     Completed,
-    /// The instruction was abandoned by a typed non-local return.
-    Unwound {
-        /// Target activation ordinal within this invocation.
-        target: u64,
-    },
     /// The instruction was abandoned by an exception that a catch clause handled.
     Caught {
         /// Stack depth of the catching activation; the root activation has depth one.
@@ -150,7 +145,6 @@ pub(crate) struct History {
     pub(crate) started: bool,
     pub(crate) finished: bool,
     // An explicit root transfer may close an older host attempt after newer callback steps.
-    pub(crate) root_exit: Option<usize>,
 }
 
 impl History {
@@ -189,7 +183,6 @@ impl History {
             returning_callback: false,
             started: false,
             finished: false,
-            root_exit: None,
         }
     }
 
@@ -227,12 +220,6 @@ impl History {
     }
     pub(crate) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
-    }
-    pub(crate) fn begin_transfer(&mut self, target: u64) {
-        self.control_boundary = true;
-        if target == 0 {
-            self.root_exit = self.current();
-        }
     }
     /// A caught exception resumes at a handler rather than at the abandoned attempts' successors.
     pub(crate) fn begin_catch(&mut self) {
@@ -333,9 +320,6 @@ impl History {
         let actual = match outcome {
             crate::trace::TraceOutcome::Ok => InstructionOutcome::Completed,
             crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
-            crate::trace::TraceOutcome::Unwound { target } => {
-                InstructionOutcome::Unwound { target }
-            }
             crate::trace::TraceOutcome::Caught { depth } => InstructionOutcome::Caught { depth },
             crate::trace::TraceOutcome::Cancelled => {
                 self.status = InstructionStatus::Incomplete;
