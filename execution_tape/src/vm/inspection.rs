@@ -101,19 +101,6 @@ impl ExecutionControl {
             }
         }
     }
-    pub(super) fn target_index(&self, id: &ActivationId) -> Result<usize, ControlError> {
-        if !self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| Arc::ptr_eq(owner, &id.owner))
-        {
-            return Err(ControlError::ForeignInvocation);
-        }
-        self.frames
-            .iter()
-            .position(|frame| frame.ordinal == id.ordinal)
-            .ok_or(ControlError::ExpiredActivation)
-    }
     pub(super) fn enter(&mut self, caller: TraceLocation) {
         // Every call consumes hard fuel, which cannot be replenished in an invocation.
         // Even u64::MAX fuel therefore cannot exhaust ordinals before it is exhausted.

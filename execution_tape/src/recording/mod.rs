@@ -19,12 +19,10 @@
 //! Commands, callback returns and native host outcomes carry a shared observation sequence.
 //! A callback return does not complete its parent host request or publish the root result.
 //!
-//! Typed non-local returns through `PendingHostCall::return_from` retain the exact invocation-local
-//! target ordinal, supplied results, promoted staging and abandoned callback count. Replay resolves
-//! the actual live activation and issues the transfer; it checks target contracts, budgets,
-//! resulting guest execution and `Unwound` instruction outcomes. Supplied exit results are embedding
-//! inputs, whereas normal callback returns are computed again by the guest. Foreign/expired target
-//! denials spend no guest work and are not recorded as admitted commands.
+//! Exceptions retain each raise and its payload once, each catch and its handler, and each
+//! rethrow's link to the exception it rethrows. A host-raised exception is retained as the host
+//! outcome, so replay delivers the same tag and payload instead of running the host again.
+//! Callbacks abandoned by an exception keep no recorded return.
 //!
 //! ```
 //! use std::sync::Arc;

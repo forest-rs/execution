@@ -38,9 +38,7 @@ impl TraceSink for Observe {
 
     fn values(&mut self, _: &Program, event: ValueEvent<'_>) {
         match event {
-            ValueEvent::ReturnFrom { .. }
-            | ValueEvent::CallbackEnter { .. }
-            | ValueEvent::CallbackReturn { .. } => {
+            ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
                 panic!("fixture does not request callbacks")
             }
             ValueEvent::Thrown { .. } | ValueEvent::Rethrown { .. } | ValueEvent::Caught { .. } => {
@@ -110,7 +108,7 @@ impl TraceSink for Observe {
             TraceOutcome::Ok => Ok(()),
             TraceOutcome::Trap(error) => Err(error.clone()),
             TraceOutcome::Cancelled => panic!("run-to-completion cannot cancel"),
-            TraceOutcome::Unwound { .. } | TraceOutcome::Caught { .. } => {
+            TraceOutcome::Caught { .. } => {
                 panic!("run outcome cannot be a control transfer")
             }
         });
@@ -454,9 +452,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                 | ValueEvent::Thrown { .. }
                 | ValueEvent::Rethrown { .. }
                 | ValueEvent::Caught { .. } => return,
-                ValueEvent::ReturnFrom { .. }
-                | ValueEvent::CallbackEnter { .. }
-                | ValueEvent::CallbackReturn { .. } => {
+                ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
                     panic!("fixture does not request callbacks")
                 }
             };

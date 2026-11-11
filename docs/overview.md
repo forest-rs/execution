@@ -441,19 +441,16 @@ actually computes. It does not inject saved callback results. Optional instructi
 attempts by admission and links callback instructions to their outstanding parent host attempt.
 Capture budgets and truncated histories remain independent of the live invocation's budgets.
 
-### Activation-scoped typed exits
+### Exceptions
 
-An embedding can use a pending host request to `return_from` a live activation selected through
-inspection. Identity belongs to the exact invocation and activation, including recursive calls;
-foreign or expired targets are recoverable denials before guest work is spent. Admitted values
-must satisfy the target function's result contracts. A root exit commits; an ordinary frame
-returns to its caller; a callback root restores its parent host request with result slots.
-All intervening pending host operations are abandoned without dispatch. They and their scopes
-are observed as `Unwound` at the actual initiating source, with no fabricated `Ret` instruction.
-Staging is promoted before admission, one fuel unit and immediate payload ingress are charged,
-and existing hard limits never reset. This transfer primitive has no automatic protected cleanup
-registration. Recording retains admitted transfers, ingress, staging and abandoned callback counts;
-checked replay resolves the actual active target and reissues the transfer. Instruction histories
-can end in a checked root transfer rather than an executed `Ret`. Pure foreign/expired denials
-change no guest state and are not recorded as admitted control commands.
+Nonlocal exits are typed exceptions. A guest raises one with `throw`, and a host raises one at
+its `host_call` by returning `HostError::throw` (or completing a yielded request with
+`PendingHostCall::throw`). Protected regions attach ordered catch clauses to instructions; the
+innermost catching clause receives the payload in a typed block. Every activation, guest
+callback and pending host request in between is abandoned and its frame released; their scopes
+and instruction attempts close as `Caught` at the raising instruction. `catch_ref` and
+`catch_all_ref` bind the exception as an `Exn` register, and `throw_ref` rethrows it with its
+original tag, payload and throw site, so protected cleanup is ordinary guest code. An exception
+that nothing catches ends the invocation as `Trap::Uncaught`. Recording retains each raise, its
+catch and each rethrow's link to its original; checked replay re-executes the guest unwinding.
 Condition/restart policy belongs above the VM; hard cancellation still executes no guest code.

@@ -308,8 +308,5 @@ leaves the original host request pending. Optional instruction histories identif
 parent host attempt; a callback `Ret` returns to embedding code rather than completing the root.
 Checked replay reexecutes callback bodies and verifies their results.
 
-Explicit typed exits have their own event rows naming the target function and invocation-local
-activation. Their values are labeled as embedding inputs; they are not presented as computed
-normal callback returns. Target metadata retains the actual suspended call/host source separately
-from the initiating instruction. Unwound instruction attempts are labeled as abandoned, including
-an older parent host attempt that closes after later callback instructions.
+Instruction attempts abandoned by a caught exception are labeled with the stack depth of the
+catching activation, including a parent host attempt that the exception abandons.

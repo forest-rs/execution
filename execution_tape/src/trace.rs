@@ -171,13 +171,6 @@ pub enum TraceOutcome<'a> {
     /// Host effects are not undone; abandoned deliveries produce incomplete evidence.
     /// An interrupted instruction attempt has no successful completion.
     Cancelled,
-    /// This instruction or scope was abandoned by a typed non-local return.
-    /// The target is an activation ordinal in this invocation, not a function ID.
-    /// This is neither a successful instruction completion nor hard cancellation.
-    Unwound {
-        /// Activation whose declared result boundary receives the transfer values.
-        target: u64,
-    },
     /// This instruction or scope was abandoned by an exception that a catch clause handled.
     /// The throw itself and every activation or pending host request it passed through end
     /// this way. This is neither a successful completion nor a trap.
@@ -233,26 +226,6 @@ pub enum HostCallOutcome<'a> {
 /// returned identity, or reuse a handle map across runs.
 #[derive(Copy, Clone)]
 pub enum ValueEvent<'a> {
-    /// An admitted embedding request to return from an exact live guest activation.
-    /// Emitted before result/fuel validation; foreign or expired target denials emit no event.
-    ReturnFrom {
-        /// Pending host instruction that initiated the transfer.
-        location: TraceLocation,
-        /// Target activation ordinal in this invocation.
-        target: u64,
-        /// Target frame's actual suspended instruction, using the same rule as live inspection.
-        target_location: TraceLocation,
-        /// Callback bodies abandoned by this transfer, including a callback-root target.
-        unwound_callbacks: usize,
-        /// Raw supplied results, checked against the target function's result contracts.
-        values: &'a [Value],
-        /// Host construction work promoted before admitting the transfer.
-        work: DataWork,
-        /// Promoted nodes, including otherwise unused staging.
-        created: &'a core::ops::Range<u32>,
-        /// Shared invocation heap after promotion.
-        aggregates: &'a AggHeap,
-    },
     /// Embedding-requested guest reentry while a host instruction remains pending.
     /// Observed before callback target, argument or fuel validation. IDs and handles use this
     /// invocation's original code/heap. Promoted staging keeps its original handle identities.
@@ -383,26 +356,6 @@ impl core::fmt::Debug for ValueEvent<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Inspect selected values without dumping unrelated backing heap contents.
         match self {
-            Self::ReturnFrom {
-                location,
-                target,
-                target_location,
-                unwound_callbacks,
-                values,
-                work,
-                created,
-                aggregates,
-            } => f
-                .debug_struct("ReturnFrom")
-                .field("location", location)
-                .field("target", target)
-                .field("target_location", target_location)
-                .field("unwound_callbacks", unwound_callbacks)
-                .field("values", values)
-                .field("work", work)
-                .field("created", created)
-                .field("aggregate_count", &aggregates.len_u32())
-                .finish(),
             Self::CallbackEnter {
                 location,
                 callee,

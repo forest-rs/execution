@@ -127,17 +127,6 @@ This release has an [MSRV][] of 1.88.
   Contract and call-authoring failures convert into the ordinary `BuildError` error chain.
   Migration: handle `BuildError::Call` in exhaustive matches; existing assembler calls remain supported.
 
-- Record and replay typed non-local returns with exact activation targets, supplied multiple
-  values, target/initiating source locations, promoted staging and callback abandonment. Full and truncated instruction histories
-  preserve unwound attempts and resumed caller execution; root transfers need no synthetic `Ret`.
-  Reconstructed host/control staging must have at least its recorded node/field/payload work.
-
-- Return from an exact live activation through `PendingHostCall::return_from`, with the target
-  function's multiple-value and rich result contracts. Root returns commit outputs; callback
-  roots restore their pending host request; ordinary frames return to their guest caller.
-  Foreign/expired targets are recoverable denials. Admitted transfers preserve heap identity
-  and cumulative fuel, contract, aggregate and payload budgets. No protected cleanup is run yet.
-
 - Capture embedding guest-callback commands and actual guest returns with their source,
   ancestry, promoted host staging and shared observation order. Checked replay reexecutes
   callbacks and verifies results, including nested callbacks and rejected admissions.
@@ -190,6 +179,17 @@ This release has an [MSRV][] of 1.88.
   budgets and ordinary host/value/recording semantics. Dropping an unfinished
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
+### Removed
+
+- `PendingHostCall::return_from` and `ControlError`, along with their evidence:
+  `ValueEvent::ReturnFrom`, `ControlAction::ReturnFrom`, `Divergence::ControlTarget`,
+  `TraceOutcome::Unwound` and `InstructionOutcome::Unwound`. These unreleased typed exits ran
+  no protected cleanup and duplicated the exception path. Migration: raise an exception instead.
+  A guest uses `throw`; a host completes the pending request with `PendingHostCall::throw` (or
+  returns `HostError::throw`), and the target activation catches the tag in a protected region
+  and returns its payload. Cleanup on the way runs as guest code in `catch_all_ref` handlers.
+  Abandoned work now closes with `TraceOutcome::Caught`.
+
 ### Changed
 
 - The tape wire version is now 0.6. Published 0.1.0 reads exactly 0.5, and new opcodes and
@@ -202,18 +202,6 @@ This release has an [MSRV][] of 1.88.
   larger scale (`1.5 + 0.25 = 1.75` at scale 2) instead of trapping with
   `DecimalScaleMismatch`. Results for equal scales are unchanged, and overflow still traps.
   Migration: programs that relied on the trap must compare scales with `dec.scale` explicitly.
-
-- Add `ControlAction::ReturnFrom`, `ValueEvent::ReturnFrom::{target_location,unwound_callbacks}`, and
-  `Divergence::ControlTarget`. Migration: handle the new action/diagnostic variants and include
-  the added event field in explicit patterns. Remove provisional `CaptureFault::UnsupportedTransfer`:
-  complete transfer recordings now support checked replay. Supplied transfer values remain
-  embedding inputs; normal callback returns are recomputed guest results.
-
-- Add `ControlError`, `ValueEvent::ReturnFrom`, `TraceOutcome::Unwound`, and
-  `InstructionOutcome::Unwound`. Migration: handle these variants in exhaustive matches;
-  unwound instructions were abandoned and have no successful writes. Footfall labels scopes
-  as unwound rather than cancelled or trapped. Transfer-command recording/replay is supported
-  as described above.
 
 - Add `RecordLimits::control_commands`, `RecordStats::control_commands`, `HostCall::sequence`,
   `InstructionStep::parent_attempt`, and structured control-command/return inspection.
