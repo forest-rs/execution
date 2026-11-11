@@ -740,5 +740,61 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
+        Instr::F64Floor { a, dst } => {
+            out.push(Opcode::F64Floor as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Ceil { a, dst } => {
+            out.push(Opcode::F64Ceil as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Trunc { a, dst } => {
+            out.push(Opcode::F64Trunc as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Nearest { a, dst } => {
+            out.push(Opcode::F64Nearest as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Sqrt { a, dst } => {
+            out.push(Opcode::F64Sqrt as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64CopySign { a, b, dst } => {
+            out.push(Opcode::F64CopySign as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::F64ToI64Sat { a, dst } => {
+            out.push(Opcode::F64ToI64Sat as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64ToU64Sat { a, dst } => {
+            out.push(Opcode::F64ToU64Sat as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Ne { a, b, dst } => {
+            out.push(Opcode::F64Ne as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
     }
 }

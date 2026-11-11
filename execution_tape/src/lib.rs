@@ -459,6 +459,7 @@ pub mod codec;
 pub(crate) mod codec_primitives;
 pub mod contract;
 pub mod disasm;
+mod float;
 pub mod format;
 pub mod host;
 pub mod host_binding;

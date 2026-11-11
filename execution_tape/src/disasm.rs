@@ -686,6 +686,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::F64MinNum { dst, a, b }
         | Instr::F64MaxNum { dst, a, b }
         | Instr::F64Rem { dst, a, b }
+        | Instr::F64CopySign { dst, a, b }
         | Instr::I64Add { dst, a, b }
         | Instr::I64Sub { dst, a, b }
         | Instr::I64Mul { dst, a, b }
@@ -721,6 +722,7 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::F64Gt { dst, a, b }
         | Instr::F64Le { dst, a, b }
         | Instr::F64Ge { dst, a, b }
+        | Instr::F64Ne { dst, a, b }
         | Instr::BoolAnd { dst, a, b }
         | Instr::BoolOr { dst, a, b }
         | Instr::BoolXor { dst, a, b } => {
@@ -728,7 +730,14 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
             view.srcs = vec![a, b];
         }
 
-        Instr::F64Neg { dst, a } | Instr::F64Abs { dst, a } | Instr::BoolNot { dst, a } => {
+        Instr::F64Neg { dst, a }
+        | Instr::F64Abs { dst, a }
+        | Instr::F64Floor { dst, a }
+        | Instr::F64Ceil { dst, a }
+        | Instr::F64Trunc { dst, a }
+        | Instr::F64Nearest { dst, a }
+        | Instr::F64Sqrt { dst, a }
+        | Instr::BoolNot { dst, a } => {
             view.dst = Some(dst);
             view.srcs = vec![a];
         }
@@ -741,6 +750,8 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::U64ToF64 { dst, a }
         | Instr::F64ToI64 { dst, a }
         | Instr::F64ToU64 { dst, a }
+        | Instr::F64ToI64Sat { dst, a }
+        | Instr::F64ToU64Sat { dst, a }
         | Instr::DecToI64 { dst, a }
         | Instr::DecToU64 { dst, a } => {
             view.dst = Some(dst);

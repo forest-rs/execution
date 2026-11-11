@@ -794,6 +794,429 @@ fn roundtrip_verify_run_f64_ext_ops() {
     assert!(matches!(out[8], Value::F64(v) if v.to_bits() == (-0.0_f64).to_bits()));
 }
 
+/// Builds `f(x) -> (floor(x), ceil(x), trunc(x), nearest(x), sqrt(x))`, roundtripped through
+/// the wire encoding and verified.
+fn f64_rounding_and_sqrt_program() -> execution_tape::verifier::VerifiedProgram {
+    let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+    ]);
+    a.f64_floor(2, 1);
+    a.f64_ceil(3, 1);
+    a.f64_trunc(4, 1);
+    a.f64_nearest(5, 1);
+    a.f64_sqrt(6, 1);
+    a.ret(0, &[2, 3, 4, 5, 6]);
+
+    let mut pb = ProgramBuilder::new();
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![ValueType::F64],
+            ret_types: vec![ValueType::F64; 5],
+        },
+    )
+    .unwrap();
+    let p = pb.build_verified().unwrap();
+
+    let bytes = p.program().encode();
+    verify_owned(Program::decode(&bytes).unwrap())
+}
+
+fn run_f64_rounding_and_sqrt(
+    vm: &mut Vm<TestHost>,
+    program: &execution_tape::verifier::VerifiedProgram,
+    x: f64,
+) -> [f64; 5] {
+    let out = vm
+        .run(program, FuncId(0), &[Value::F64(x)], TraceMask::NONE, None)
+        .unwrap();
+    let mut results = [0.0; 5];
+    assert_eq!(out.len(), results.len(), "one result per operation");
+    for (slot, value) in results.iter_mut().zip(out) {
+        let Value::F64(v) = value else {
+            panic!("expected f64 result, got {value:?}");
+        };
+        *slot = v;
+    }
+    results
+}
+
+#[test]
+fn roundtrip_verify_run_f64_rounding_and_sqrt() {
+    let program = f64_rounding_and_sqrt_program();
+    let mut vm = Vm::new(TestHost, Limits::default());
+
+    let nan = f64::NAN;
+    let inf = f64::INFINITY;
+    // x => [floor, ceil, trunc, nearest, sqrt], compared bit-for-bit (NaN compared as NaN).
+    let cases: &[(f64, [f64; 5])] = &[
+        (0.0, [0.0, 0.0, 0.0, 0.0, 0.0]),
+        (-0.0, [-0.0, -0.0, -0.0, -0.0, -0.0]),
+        (0.5, [0.0, 1.0, 0.0, 0.0, core::f64::consts::FRAC_1_SQRT_2]),
+        (-0.5, [-1.0, -0.0, -0.0, -0.0, nan]),
+        (-0.7, [-1.0, -0.0, -0.0, -1.0, nan]),
+        (
+            0.49999999999999994,
+            [0.0, 1.0, 0.0, 0.0, 0.7071067811865475],
+        ),
+        (1.5, [1.0, 2.0, 1.0, 2.0, 1.224744871391589]),
+        (2.5, [2.0, 3.0, 2.0, 2.0, 1.5811388300841898]),
+        (3.5, [3.0, 4.0, 3.0, 4.0, 1.8708286933869707]),
+        (-2.5, [-3.0, -2.0, -2.0, -2.0, nan]),
+        (4.0, [4.0, 4.0, 4.0, 4.0, 2.0]),
+        (2.0, [2.0, 2.0, 2.0, 2.0, core::f64::consts::SQRT_2]),
+        // 2^52 + 1 is already integral; its root lies just below the midpoint above 2^26.
+        (
+            4503599627370497.0,
+            [
+                4503599627370497.0,
+                4503599627370497.0,
+                4503599627370497.0,
+                4503599627370497.0,
+                67108864.0,
+            ],
+        ),
+        (
+            f64::MAX,
+            [
+                f64::MAX,
+                f64::MAX,
+                f64::MAX,
+                f64::MAX,
+                1.3407807929942596e154,
+            ],
+        ),
+        (
+            f64::from_bits(1),
+            [0.0, 1.0, 0.0, 0.0, f64::from_bits(0x1E60_0000_0000_0000)],
+        ),
+        (inf, [inf, inf, inf, inf, inf]),
+        (-inf, [-inf, -inf, -inf, -inf, nan]),
+        (nan, [nan, nan, nan, nan, nan]),
+    ];
+    for &(x, want) in cases {
+        let got = run_f64_rounding_and_sqrt(&mut vm, &program, x);
+        for (op, (g, w)) in ["floor", "ceil", "trunc", "nearest", "sqrt"]
+            .into_iter()
+            .zip(got.into_iter().zip(want))
+        {
+            assert!(
+                (g.is_nan() && w.is_nan()) || g.to_bits() == w.to_bits(),
+                "{op}({x:e}) = {g:e} ({:#018x}), want {w:e} ({:#018x})",
+                g.to_bits(),
+                w.to_bits()
+            );
+        }
+    }
+}
+
+#[test]
+fn f64_rounding_and_sqrt_match_std_bit_for_bit() {
+    let program = f64_rounding_and_sqrt_program();
+    let mut vm = Vm::new(TestHost, Limits::default());
+
+    // Deterministic SplitMix64 bit patterns: every class of f64, including subnormals.
+    let mut state = 0x00DD_BA11_u64;
+    for _ in 0..4096 {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        let bits = z ^ (z >> 31);
+        // Alternate raw patterns with magnitudes near 1 where rounding matters most.
+        let x = if bits & 1 == 0 {
+            f64::from_bits(bits)
+        } else {
+            f64::from_bits((bits & 0x800F_FFFF_FFFF_FFFF) | ((1010 + (bits >> 56) % 64) << 52))
+        };
+        let got = run_f64_rounding_and_sqrt(&mut vm, &program, x);
+        let want = [
+            x.floor(),
+            x.ceil(),
+            x.trunc(),
+            x.round_ties_even(),
+            x.sqrt(),
+        ];
+        for (g, w) in got.into_iter().zip(want) {
+            assert!(
+                (g.is_nan() && w.is_nan()) || g.to_bits() == w.to_bits(),
+                "x = {x:e} ({bits:#018x}): got {got:?}, want {want:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn f64_rounding_and_sqrt_require_f64_operands() {
+    let emitters: [fn(&mut Asm, u32, u32) -> &mut Asm; 5] = [
+        Asm::f64_floor,
+        Asm::f64_ceil,
+        Asm::f64_trunc,
+        Asm::f64_nearest,
+        Asm::f64_sqrt,
+    ];
+    for emit in emitters {
+        let mut a = Asm::new();
+        a.set_register_types(vec![ValueType::Unit, ValueType::U64, ValueType::F64]);
+        a.const_u64(1, 4);
+        emit(&mut a, 2, 1);
+        a.ret(0, &[2]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::F64],
+            },
+        )
+        .unwrap();
+        let p = pb.build();
+
+        let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
+        assert!(
+            matches!(err, VerifyError::RegisterTypeMismatch { .. }),
+            "unexpected verifier error: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn f64_rounding_and_sqrt_opcodes_and_disassembly() {
+    let ops = [
+        (Opcode::F64Floor, 0x94, "f64.floor"),
+        (Opcode::F64Ceil, 0x95, "f64.ceil"),
+        (Opcode::F64Trunc, 0x96, "f64.trunc"),
+        (Opcode::F64Nearest, 0x97, "f64.nearest"),
+        (Opcode::F64Sqrt, 0x98, "f64.sqrt"),
+    ];
+    for (opcode, byte, mnemonic) in ops {
+        assert_eq!(opcode.byte(), byte, "{mnemonic} byte");
+        assert_eq!(Opcode::from_byte(byte), Some(opcode), "{mnemonic} decode");
+        assert_eq!(opcode.mnemonic(), mnemonic);
+    }
+
+    let program = f64_rounding_and_sqrt_program();
+    let text = execution_tape::disasm::disassemble_verified(&program).to_string();
+    for (_, _, mnemonic) in ops {
+        assert!(
+            text.contains(&format!("{mnemonic} r")),
+            "missing {mnemonic} in disassembly:\n{text}"
+        );
+    }
+}
+
+/// Builds `f(a, b) -> (copysign(a, b), a != b, to_i64_sat(a), to_u64_sat(a))`, roundtripped
+/// through the wire encoding and verified.
+fn f64_wasm_parity_program() -> execution_tape::verifier::VerifiedProgram {
+    let mut a = Asm::new();
+    a.set_register_types(vec![
+        ValueType::Unit,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::F64,
+        ValueType::Bool,
+        ValueType::I64,
+        ValueType::U64,
+    ]);
+    a.f64_copysign(3, 1, 2);
+    a.f64_ne(4, 1, 2);
+    a.f64_to_i64_sat(5, 1);
+    a.f64_to_u64_sat(6, 1);
+    a.ret(0, &[3, 4, 5, 6]);
+
+    let mut pb = ProgramBuilder::new();
+    pb.push_function_checked(
+        a,
+        FunctionSig {
+            arg_types: vec![ValueType::F64, ValueType::F64],
+            ret_types: vec![
+                ValueType::F64,
+                ValueType::Bool,
+                ValueType::I64,
+                ValueType::U64,
+            ],
+        },
+    )
+    .unwrap();
+    let p = pb.build_verified().unwrap();
+
+    let bytes = p.program().encode();
+    verify_owned(Program::decode(&bytes).unwrap())
+}
+
+#[test]
+fn roundtrip_verify_run_f64_copysign_ne_and_saturating_conversions() {
+    let program = f64_wasm_parity_program();
+    let mut vm = Vm::new(TestHost, Limits::default());
+
+    let two63 = 9_223_372_036_854_775_808.0_f64;
+    let two64 = 18_446_744_073_709_551_616.0_f64;
+    let below = |x: f64| f64::from_bits(x.to_bits() - 1);
+    let above = |x: f64| f64::from_bits(x.to_bits() + 1);
+    let signaling = f64::from_bits(0x7FF0_0000_0000_0001);
+    // (a, b) => (copysign(a, b) bits, a != b, to_i64_sat(a), to_u64_sat(a))
+    let cases: &[(f64, f64, u64, bool, i64, u64)] = &[
+        (0.0, -0.0, (-0.0_f64).to_bits(), false, 0, 0),
+        (-0.0, 0.0, 0.0_f64.to_bits(), false, 0, 0),
+        (1.5, -2.0, (-1.5_f64).to_bits(), true, 1, 1),
+        (-1.5, 3.0, 1.5_f64.to_bits(), true, -1, 0),
+        (-0.5, -0.5, (-0.5_f64).to_bits(), false, 0, 0),
+        (2.9, 2.9, 2.9_f64.to_bits(), false, 2, 2),
+        (two63, 1.0, two63.to_bits(), true, i64::MAX, 1 << 63),
+        (
+            below(two63),
+            1.0,
+            below(two63).to_bits(),
+            true,
+            9_223_372_036_854_774_784,
+            9_223_372_036_854_774_784,
+        ),
+        (-two63, 1.0, two63.to_bits(), true, i64::MIN, 0),
+        (
+            -above(two63),
+            1.0,
+            above(two63).to_bits(),
+            true,
+            i64::MIN,
+            0,
+        ),
+        (two64, 1.0, two64.to_bits(), true, i64::MAX, u64::MAX),
+        (
+            below(two64),
+            1.0,
+            below(two64).to_bits(),
+            true,
+            i64::MAX,
+            18_446_744_073_709_549_568,
+        ),
+        (
+            above(two64),
+            1.0,
+            above(two64).to_bits(),
+            true,
+            i64::MAX,
+            u64::MAX,
+        ),
+        (
+            f64::INFINITY,
+            -1.0,
+            f64::NEG_INFINITY.to_bits(),
+            true,
+            i64::MAX,
+            u64::MAX,
+        ),
+        (
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY.to_bits(),
+            false,
+            i64::MIN,
+            0,
+        ),
+        (f64::NAN, f64::NAN, f64::NAN.to_bits(), true, 0, 0),
+        (f64::NAN, -1.0, f64::NAN.to_bits() | 1 << 63, true, 0, 0),
+        (1.0, f64::NAN, 1.0_f64.to_bits(), true, 1, 1),
+        // The signaling NaN payload passes through copysign untouched.
+        (signaling, -1.0, signaling.to_bits() | 1 << 63, true, 0, 0),
+    ];
+    for &(a, b, copysign_bits, ne, to_i64, to_u64) in cases {
+        let out = vm
+            .run(
+                &program,
+                FuncId(0),
+                &[Value::F64(a), Value::F64(b)],
+                TraceMask::NONE,
+                None,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                out.as_slice(),
+                [Value::F64(c), Value::Bool(n), Value::I64(i), Value::U64(u)]
+                    if c.to_bits() == copysign_bits && *n == ne && *i == to_i64 && *u == to_u64
+            ),
+            "a = {a:e}, b = {b:e}: got {out:?}, want ({copysign_bits:#018x}, {ne}, {to_i64}, {to_u64})"
+        );
+    }
+}
+
+#[test]
+fn f64_wasm_parity_ops_require_f64_operands() {
+    // `copysign`/`ne` read two f64 registers; the saturating conversions read one.
+    for (mnemonic, result) in [
+        ("f64.copysign", ValueType::F64),
+        ("f64.ne", ValueType::Bool),
+        ("f64.to_i64_sat", ValueType::I64),
+        ("f64.to_u64_sat", ValueType::U64),
+    ] {
+        let mut a = Asm::new();
+        a.set_register_types(vec![
+            ValueType::Unit,
+            ValueType::I64,
+            ValueType::I64,
+            result,
+        ]);
+        a.const_i64(1, 4);
+        a.const_i64(2, 4);
+        match mnemonic {
+            "f64.copysign" => a.f64_copysign(3, 1, 2),
+            "f64.ne" => a.f64_ne(3, 1, 2),
+            "f64.to_i64_sat" => a.f64_to_i64_sat(3, 1),
+            _ => a.f64_to_u64_sat(3, 1),
+        };
+        a.ret(0, &[3]);
+
+        let mut pb = ProgramBuilder::new();
+        pb.push_function_checked(
+            a,
+            FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![result],
+            },
+        )
+        .unwrap();
+        let p = pb.build();
+
+        let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
+        assert!(
+            matches!(err, VerifyError::RegisterTypeMismatch { .. }),
+            "{mnemonic}: unexpected verifier error: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn f64_wasm_parity_opcodes_and_disassembly() {
+    let ops = [
+        (Opcode::F64CopySign, 0x99, "f64.copysign"),
+        (Opcode::F64ToI64Sat, 0x9A, "f64.to_i64_sat"),
+        (Opcode::F64ToU64Sat, 0x9B, "f64.to_u64_sat"),
+        (Opcode::F64Ne, 0x9C, "f64.ne"),
+    ];
+    for (opcode, byte, mnemonic) in ops {
+        assert_eq!(opcode.byte(), byte, "{mnemonic} byte");
+        assert_eq!(Opcode::from_byte(byte), Some(opcode), "{mnemonic} decode");
+        assert_eq!(opcode.mnemonic(), mnemonic);
+    }
+
+    let program = f64_wasm_parity_program();
+    let text = execution_tape::disasm::disassemble_verified(&program).to_string();
+    for (_, _, mnemonic) in ops {
+        assert!(
+            text.contains(&format!("{mnemonic} r")),
+            "missing {mnemonic} in disassembly:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn roundtrip_verify_run_u64_ops_wrap() {
     // u64 wraps on overflow.

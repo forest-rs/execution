@@ -16,6 +16,7 @@ use core::fmt;
 use crate::aggregates::{AggError, AggHeap, CheckError, ContractScratch};
 use crate::arena::{BytesHandle, PayloadSource, StrHandle, ValueArena, ValueSources};
 use crate::contract::{Contract, ContractPosition, ContractViolation};
+use crate::float;
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
@@ -1662,6 +1663,31 @@ impl<H: Host> Vm<H> {
                     ctx.write_f64(base, *dst, ctx.read_f64(base, *a).abs());
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::F64Floor { dst, a } => {
+                    ctx.write_f64(base, *dst, float::floor(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Ceil { dst, a } => {
+                    ctx.write_f64(base, *dst, float::ceil(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Trunc { dst, a } => {
+                    ctx.write_f64(base, *dst, float::trunc(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Nearest { dst, a } => {
+                    ctx.write_f64(base, *dst, float::nearest(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Sqrt { dst, a } => {
+                    ctx.write_f64(base, *dst, float::sqrt(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64CopySign { dst, a, b } => {
+                    let out = float::copysign(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
                 ExecInstr::F64Min { dst, a, b } => {
                     let out = f64_min(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
@@ -1849,6 +1875,10 @@ impl<H: Host> Vm<H> {
                 }
                 ExecInstr::F64Ge { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_f64(base, *a) >= ctx.read_f64(base, *b));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Ne { dst, a, b } => {
+                    ctx.write_bool(base, *dst, ctx.read_f64(base, *a) != ctx.read_f64(base, *b));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -2952,6 +2982,14 @@ impl<H: Host> Vm<H> {
                     )]
                     let out = a as u64;
                     ctx.write_u64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToI64Sat { dst, a } => {
+                    ctx.write_i64(base, *dst, float::to_i64_sat(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToU64Sat { dst, a } => {
+                    ctx.write_u64(base, *dst, float::to_u64_sat(ctx.read_f64(base, *a)));
                     ctx.frames[frame_index].pc = next_pc;
                 }
 

@@ -546,6 +546,14 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `f64_rem r_dst, r_a, r_b`
 - `f64_to_bits r_dst, r_a` -> `U64`
 - `f64_from_bits r_dst, r_a` -> `F64`
+- `f64_floor r_dst, r_a` (round toward negative infinity)
+- `f64_ceil r_dst, r_a` (round toward positive infinity)
+- `f64_trunc r_dst, r_a` (round toward zero)
+- `f64_nearest r_dst, r_a` (round to nearest integer, ties to even)
+- `f64_sqrt r_dst, r_a`
+- `f64_copysign r_dst, r_a, r_b` (magnitude of `a`, sign of `b`)
+- `f64_to_i64_sat r_dst, r_a` -> `I64` (saturating; never traps)
+- `f64_to_u64_sat r_dst, r_a` -> `U64` (saturating; never traps)
 - `dec_add r_dst, r_a, r_b`
 - `dec_sub r_dst, r_a, r_b`
 - `dec_mul r_dst, r_a, r_b`
@@ -556,11 +564,34 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - For `f64_min`/`f64_max`/`f64_min_num`/`f64_max_num`, when both inputs are zero with different signs, `min` returns `-0.0` and `max` returns `+0.0`.
 - `f64_rem` uses Rust's `%` semantics (remainder with a truncated quotient).
 - `f64_to_bits`/`f64_from_bits` preserve IEEE 754 bit patterns (including NaN payloads).
-- Rounding and transcendental functions are host-provided (e.g. `f64_round_even`, `f64_round_away`, `f64_floor`, `f64_ceil`, `f64_trunc`, `f64_sqrt`, `f64_log`, `f64_exp`).
+- `f64_floor`/`f64_ceil`/`f64_trunc`/`f64_nearest` round to an integral value toward negative
+  infinity, toward positive infinity, toward zero, and to the nearest integer with ties to even,
+  matching IEEE 754 `roundToIntegral*` and WebAssembly `f64.floor`/`f64.ceil`/`f64.trunc`/`f64.nearest`.
+  They are exact. A zero result keeps the input's sign (`f64_ceil(-0.5) = -0.0`,
+  `f64_nearest(-0.5) = -0.0`); infinities and values with magnitude at least 2^52 are returned unchanged.
+- `f64_sqrt` is the IEEE 754 correctly rounded square root (round to nearest, ties to even), matching
+  WebAssembly `f64.sqrt`: `f64_sqrt(-0.0) = -0.0`, `f64_sqrt(+inf) = +inf`, and the square root of any
+  other negative value (including `-inf`) is the canonical quiet NaN `0x7FF8_0000_0000_0000`.
+- For the five operations above, a NaN input produces the same NaN with its quiet bit set (sign and
+  payload preserved). Results are bit-for-bit identical on every platform; the core implements them
+  without `std` or `libm`.
+- `f64_copysign` returns the bits of `a` with the sign bit of `b` (WebAssembly `f64.copysign`). It
+  inspects no other bits: NaN payloads (including signaling NaNs) pass through unchanged, and a NaN
+  `b` contributes only its sign.
+- `f64_to_i64_sat`/`f64_to_u64_sat` truncate toward zero and saturate, matching WebAssembly
+  `i64.trunc_sat_f64_s`/`i64.trunc_sat_f64_u`: values below the target range (including `-inf`, and
+  any negative value for `u64`) produce the minimum (`i64::MIN` or `0`), values at or above 2^63
+  (`i64`) or 2^64 (`u64`) (including `+inf`) produce the maximum, and NaN produces `0`. They never
+  trap, unlike `f64_to_i64`/`f64_to_u64`.
+- `f64_ne` is `!f64_eq`: it is true when the inputs are unordered (either is NaN), matching
+  WebAssembly `f64.ne`.
+- Other rounding modes (e.g. `f64_round_away`) and transcendental functions (e.g. `f64_log`,
+  `f64_exp`) are host-provided.
 
 ### Comparisons + branching
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
 - `i64_lt r_dst, r_a, r_b` -> `Bool`
+- `f64_eq`/`f64_ne`/`f64_lt`/`f64_gt`/`f64_le`/`f64_ge r_dst, r_a, r_b` -> `Bool`
 - `bool_not r_dst, r_a`
 - `bool_and r_dst, r_a, r_b`
 - `bool_or r_dst, r_a, r_b`
@@ -660,6 +691,15 @@ All register indices and small integers are ULEB128 unless noted.
 - `0x91 f64_rem dst, a, b`
 - `0x92 f64_to_bits dst, a` (`f64` -> `u64`)
 - `0x93 f64_from_bits dst, a` (`u64` -> `f64`)
+- `0x94 f64_floor dst, a`
+- `0x95 f64_ceil dst, a`
+- `0x96 f64_trunc dst, a`
+- `0x97 f64_nearest dst, a` (ties to even)
+- `0x98 f64_sqrt dst, a` (correctly rounded)
+- `0x99 f64_copysign dst, a, b`
+- `0x9A f64_to_i64_sat dst, a` (`f64` -> `i64`, saturating; NaN -> 0)
+- `0x9B f64_to_u64_sat dst, a` (`f64` -> `u64`, saturating; NaN -> 0)
+- `0x9C f64_ne dst, a, b` (IEEE: true if NaN)
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`

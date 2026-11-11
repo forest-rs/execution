@@ -123,6 +123,15 @@ impl Instr {
             Self::F64Rem { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
             Self::F64ToBits { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
             Self::F64FromBits { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64Floor { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64Ceil { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64Trunc { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64Nearest { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64Sqrt { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64CopySign { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
+            Self::F64ToI64Sat { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64ToU64Sat { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64Ne { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
         }
     }
     /// Iterates virtual registers write by this instruction without allocation.
@@ -238,6 +247,15 @@ impl Instr {
             Self::F64Rem { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
             Self::F64ToBits { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
             Self::F64FromBits { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64Floor { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64Ceil { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64Trunc { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64Nearest { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64Sqrt { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64CopySign { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64ToI64Sat { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64ToU64Sat { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
+            Self::F64Ne { dst, .. } => WritesIter::from_parts([*dst], 1, [&[]]),
         }
     }
 }

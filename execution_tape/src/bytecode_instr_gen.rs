@@ -117,6 +117,15 @@ impl Instr {
             Self::F64Rem { .. } => Opcode::F64Rem,
             Self::F64ToBits { .. } => Opcode::F64ToBits,
             Self::F64FromBits { .. } => Opcode::F64FromBits,
+            Self::F64Floor { .. } => Opcode::F64Floor,
+            Self::F64Ceil { .. } => Opcode::F64Ceil,
+            Self::F64Trunc { .. } => Opcode::F64Trunc,
+            Self::F64Nearest { .. } => Opcode::F64Nearest,
+            Self::F64Sqrt { .. } => Opcode::F64Sqrt,
+            Self::F64CopySign { .. } => Opcode::F64CopySign,
+            Self::F64ToI64Sat { .. } => Opcode::F64ToI64Sat,
+            Self::F64ToU64Sat { .. } => Opcode::F64ToU64Sat,
+            Self::F64Ne { .. } => Opcode::F64Ne,
         }
     }
 

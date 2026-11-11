@@ -34,6 +34,10 @@ mod tests {
         assert_eq!(Opcode::BoolNot as u8, 0x30);
         assert_eq!(Opcode::BoolAnd as u8, 0x88);
         assert_eq!(Opcode::F64Neg as u8, 0x8B);
+        assert_eq!(Opcode::F64Floor as u8, 0x94);
+        assert_eq!(Opcode::F64Sqrt as u8, 0x98);
+        assert_eq!(Opcode::F64CopySign as u8, 0x99);
+        assert_eq!(Opcode::F64Ne as u8, 0x9C);
     }
 
     #[test]

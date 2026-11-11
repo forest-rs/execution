@@ -16,6 +16,15 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Complete WebAssembly scalar `f64` parity with `f64.floor` (`0x94`), `f64.ceil` (`0x95`),
+  `f64.trunc` (`0x96`), `f64.nearest` (`0x97`, ties to even), `f64.sqrt` (`0x98`, correctly
+  rounded), `f64.copysign` (`0x99`), the saturating conversions `f64.to_i64_sat` (`0x9A`) and
+  `f64.to_u64_sat` (`0x9B`), and `f64.ne` (`0x9C`), emitted with the matching `Asm` methods.
+  They are exact and implemented in the `no_std` core without `libm`, so results are
+  bit-identical across platforms; NaN handling follows WebAssembly. The trapping
+  `f64.to_i64`/`f64.to_u64` conversions are unchanged. Migration: handle the new `Opcode`
+  variants in exhaustive matches.
+
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
   provides checked snapshot differences and sums across code domains. This is accounting, not

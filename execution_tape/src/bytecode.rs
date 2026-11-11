@@ -159,6 +159,18 @@ pub(crate) enum Instr {
     F64ToBits { dst: u32, a: u32 },
     /// `dst = f64_from_bits(a)` (`u64` -> `f64`).
     F64FromBits { dst: u32, a: u32 },
+    /// `dst = copysign(a, b)` (`f64`, magnitude of `a` with the sign of `b`).
+    F64CopySign { dst: u32, a: u32, b: u32 },
+    /// `dst = floor(a)` (`f64`, round toward negative infinity).
+    F64Floor { dst: u32, a: u32 },
+    /// `dst = ceil(a)` (`f64`, round toward positive infinity).
+    F64Ceil { dst: u32, a: u32 },
+    /// `dst = trunc(a)` (`f64`, round toward zero).
+    F64Trunc { dst: u32, a: u32 },
+    /// `dst = nearest(a)` (`f64`, round to nearest integer, ties to even).
+    F64Nearest { dst: u32, a: u32 },
+    /// `dst = sqrt(a)` (`f64`, correctly rounded).
+    F64Sqrt { dst: u32, a: u32 },
 
     /// `dst = a + b` (`i64`).
     I64Add { dst: u32, a: u32, b: u32 },
@@ -236,6 +248,8 @@ pub(crate) enum Instr {
     F64Le { dst: u32, a: u32, b: u32 },
     /// `dst = (a >= b)` (`f64` -> `bool`).
     F64Ge { dst: u32, a: u32, b: u32 },
+    /// `dst = (a != b)` (`f64` -> `bool`, true if either input is NaN).
+    F64Ne { dst: u32, a: u32, b: u32 },
 
     /// `dst = u64_to_i64(a)` (traps on overflow).
     U64ToI64 { dst: u32, a: u32 },
@@ -345,6 +359,10 @@ pub(crate) enum Instr {
     F64ToI64 { dst: u32, a: u32 },
     /// `dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).
     F64ToU64 { dst: u32, a: u32 },
+    /// `dst = trunc_sat(a)` (`f64` to `i64`, saturating; NaN -> 0, never traps).
+    F64ToI64Sat { dst: u32, a: u32 },
+    /// `dst = trunc_sat(a)` (`f64` to `u64`, saturating; NaN -> 0, never traps).
+    F64ToU64Sat { dst: u32, a: u32 },
 
     /// `dst = a.mantissa` ([`Decimal`] to `i64`, traps if `scale != 0` or outside `i64`).
     DecToI64 { dst: u32, a: u32 },
