@@ -4,13 +4,18 @@
 //! A tiny expression frontend for the language protocol. It compiles an authored Rust AST and
 //! supplies its formatted expression source as a sidecar; it does not parse a language or map
 //! guest operations to this compiler's Rust implementation source.
+//!
+//! Handler, restart and protected bodies compile inline inside protected regions. Each binding
+//! scope pops itself from the runtime on every exit through a `catch_all_ref` clause that
+//! rethrows; restart scopes also catch the `exit` tag addressed to them. Protected cleanup runs
+//! on normal completion and before rethrowing, so the VM's unwinder is the only exit path.
 
 use super::language::{Class, Policy, RESTART_TOKEN, RestartMode};
 use execution_tape::{
-    asm::{Asm, CallTarget, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
+    asm::{Asm, CallTarget, Catch, ClosureLayout, ContractRef, FunctionAbi, ProgramBuilder},
     contract::{Contract, ContractId},
     host::HostSig,
-    program::{HostSigId, ValueType},
+    program::{HostSigId, TagId, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     value::FuncId,
     verifier::VerifiedProgram,
@@ -142,6 +147,8 @@ impl Expr {
         }
     }
 }
+/// The tag a runtime throws to exit to a restart scope.
+pub(super) const EXIT_TAG: &str = "condition.exit";
 pub(super) fn restart_name(name: i64) -> String {
     match name {
         1 => "use-value".into(),
@@ -175,7 +182,7 @@ struct Context {
 struct Services {
     handle: HostSigId,
     restart: HostSigId,
-    protect: HostSigId,
+    pop: HostSigId,
     signal: HostSigId,
     find: HostSigId,
     invoke: HostSigId,
@@ -190,6 +197,7 @@ struct Compiler {
     integer: ContractId,
     boolean: ContractId,
     services: Services,
+    exit: TagId,
     source: String,
     mappings: Vec<SourceMapping>,
     capture: i64,
@@ -212,31 +220,21 @@ impl Compiler {
         };
         let services = Services {
             handle: service(
-                "condition.handle",
-                &[
-                    ValueType::Closure,
-                    ValueType::Closure,
-                    ValueType::I64,
-                    ValueType::U64,
-                ],
-                &pair,
+                "condition.push_handler",
+                &[ValueType::Closure, ValueType::I64, ValueType::U64],
+                &[ValueType::I64],
             ),
             restart: service(
-                "condition.restart_bind",
+                "condition.push_restart",
                 &[
-                    ValueType::Closure,
                     ValueType::Closure,
                     ValueType::I64,
                     ValueType::U64,
                     ValueType::I64,
                 ],
-                &pair,
+                &[ValueType::I64],
             ),
-            protect: service(
-                "condition.protect",
-                &[ValueType::Closure, ValueType::Closure],
-                &pair,
-            ),
+            pop: service("condition.pop", &[ValueType::I64], &[]),
             signal: service("condition.signal", &[ValueType::I64, ValueType::I64], &pair),
             find: service(
                 "condition.find",
@@ -253,12 +251,16 @@ impl Compiler {
             save: service("demo.save_restart", &[ValueType::Obj(RESTART_TOKEN)], &[]),
             load: service("demo.load_restart", &[], &[ValueType::Obj(RESTART_TOKEN)]),
         };
+        // `exit(scope, value, flag)` transfers a restart's result to the scope that bound it.
+        let exit =
+            builder.declare_tag(EXIT_TAG, &[integer.into(), integer.into(), boolean.into()])?;
         Ok(Self {
             builder,
             closures: BTreeMap::new(),
             integer,
             boolean,
             services,
+            exit,
             source: String::new(),
             mappings: Vec::new(),
             capture,
@@ -431,6 +433,61 @@ impl Compiler {
         let [value, flag] = self.builder.emit_call(body, target, args)?;
         Ok((value, flag))
     }
+    /// Compiles `inner` inline in a region that pops runtime `scope` on every exit.
+    ///
+    /// Restart scopes also catch `exit` and return its values when it names this scope; an exit
+    /// for another scope continues outward after this one is popped.
+    #[allow(clippy::too_many_arguments, reason = "compiler state plus one scope")]
+    fn scoped(
+        &mut self,
+        body: &mut Asm,
+        context: Context,
+        inner: &Expr,
+        indent: usize,
+        scope: u32,
+        range: &Range<usize>,
+        exits: bool,
+    ) -> Result<(u32, u32)> {
+        let answer = body.alloc_register(ValueType::I64);
+        let flag = body.alloc_register(ValueType::Bool);
+        let join = body.block(&[answer, flag]);
+        let unwound = body.alloc_register(ValueType::Exn);
+        let popped = body.block(&[unwound]);
+        let exit = exits.then(|| {
+            let target = body.alloc_register(ValueType::I64);
+            let value = body.alloc_register(ValueType::I64);
+            let exit_flag = body.alloc_register(ValueType::Bool);
+            let other = body.alloc_register(ValueType::Exn);
+            let label = body.block(&[target, value, exit_flag, other]);
+            (label, target, value, exit_flag, other)
+        });
+        let mut clauses = vec![Catch::AllRef(popped)];
+        if let Some((label, ..)) = exit {
+            clauses.insert(0, Catch::TagRef(self.exit, label));
+        }
+        body.begin_region(&clauses);
+        let (value, result_flag) = self.expression(body, context, inner, indent + 1)?;
+        body.end_region();
+        self.mark(body, range);
+        let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
+        body.jmp(join.with_args(&[value, result_flag]));
+        body.place(popped)?;
+        let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
+        body.throw_ref(0, unwound);
+        if let Some((label, target, value, exit_flag, other)) = exit {
+            body.place(label)?;
+            let [] = self.builder.emit_call(body, self.services.pop, &[scope])?;
+            let mine = body.alloc_register(ValueType::Bool);
+            let (here, onward) = (body.label(), body.label());
+            body.i64_eq(mine, target, scope).br(mine, here, onward);
+            body.place(here)?;
+            body.jmp(join.with_args(&[value, exit_flag]));
+            body.place(onward)?;
+            body.throw_ref(0, other);
+        }
+        body.place(join)?;
+        Ok((answer, flag))
+    }
     fn value_pair(body: &mut Asm, value: u32, flag: bool) -> (u32, u32) {
         let result_flag = body.alloc_register(ValueType::Bool);
         body.const_bool(result_flag, flag);
@@ -491,18 +548,17 @@ impl Compiler {
                     handler,
                     indent + 1,
                 )?;
-                let protected = self.function("handler_body", Kind::Body, protected, indent + 1)?;
                 let handler = self.closure(body, context, handler)?;
-                let protected = self.closure(body, context, protected)?;
                 let class = Self::integer(body, class.code());
                 let policy_register = body.alloc_register(ValueType::U64);
                 body.const_u64(policy_register, *policy as u64);
-                self.pair_call(
+                self.mark(body, &range);
+                let [scope] = self.builder.emit_call(
                     body,
                     self.services.handle,
-                    &[protected, handler, class, policy_register],
-                    &range,
-                )
+                    &[handler, class, policy_register],
+                )?;
+                self.scoped(body, context, protected, indent, scope, &range, false)
             }
             Expr::Restart {
                 name,
@@ -513,30 +569,43 @@ impl Compiler {
             } => {
                 let function =
                     self.function(&restart_name(*name), Kind::Restart, function, indent + 1)?;
-                let protected = self.function("restart_body", Kind::Body, protected, indent + 1)?;
                 let function = self.closure(body, context, function)?;
-                let protected = self.closure(body, context, protected)?;
                 let name = Self::integer(body, *name);
                 let mode_register = body.alloc_register(ValueType::U64);
                 body.const_u64(mode_register, *mode as u64);
                 let class = Self::integer(body, class.code());
-                self.pair_call(
+                self.mark(body, &range);
+                let [scope] = self.builder.emit_call(
                     body,
                     self.services.restart,
-                    &[protected, function, name, mode_register, class],
-                    &range,
-                )
+                    &[function, name, mode_register, class],
+                )?;
+                self.scoped(body, context, protected, indent, scope, &range, true)
             }
             Expr::Protect {
                 cleanup,
                 body: protected,
             } => {
                 let cleanup = self.function("cleanup", Kind::Cleanup, cleanup, indent + 1)?;
-                let protected =
-                    self.function("protected_body", Kind::Body, protected, indent + 1)?;
-                let cleanup = self.closure(body, context, cleanup)?;
-                let protected = self.closure(body, context, protected)?;
-                self.pair_call(body, self.services.protect, &[protected, cleanup], &range)
+                let answer = body.alloc_register(ValueType::I64);
+                let flag = body.alloc_register(ValueType::Bool);
+                let join = body.block(&[answer, flag]);
+                let unwound = body.alloc_register(ValueType::Exn);
+                let handler = body.block(&[unwound]);
+                body.begin_region(&[Catch::AllRef(handler)]);
+                let (value, result_flag) = self.expression(body, context, protected, indent + 1)?;
+                body.end_region();
+                self.mark(body, &range);
+                let environment = Self::environment(body, context);
+                let [] = self.builder.emit_call(body, cleanup, &[environment])?;
+                body.jmp(join.with_args(&[value, result_flag]));
+                // Cleanup also runs for every exception; one raised by cleanup replaces it.
+                body.place(handler)?;
+                let environment = Self::environment(body, context);
+                let [] = self.builder.emit_call(body, cleanup, &[environment])?;
+                body.throw_ref(0, unwound);
+                body.place(join)?;
+                Ok((answer, flag))
             }
             Expr::Invoke(name, argument) => {
                 let token = self.lookup(body, context, *name, &range)?;

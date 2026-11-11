@@ -4,7 +4,9 @@
 use super::*;
 use crate::program::{self, Expr, Term};
 use execution_tape::{
-    recording::{CaptureFault, ControlAction, InstructionStatus, ReplayError, ReplayOutcome},
+    recording::{
+        CaptureFault, ControlAction, HostOutcome, InstructionStatus, ReplayError, ReplayOutcome,
+    },
     vm::Trap,
 };
 
@@ -53,7 +55,7 @@ fn assert_replay(runtime: Runtime, expected: &[Value]) -> Recording {
         runtime
             .scopes
             .iter()
-            .all(|scope| matches!(scope.binding, Binding::Retired { .. })),
+            .all(|scope| matches!(scope, Binding::Retired { .. })),
         "retired extents retain token tombstones, never borrowed guest captures"
     );
     let record = runtime.into_session().recording;
@@ -82,6 +84,13 @@ fn native(runtime: &Runtime) -> Vec<i64> {
             _ => None,
         })
         .collect()
+}
+/// Exits the runtime raised as guest exceptions at pending requests.
+fn exits(record: &Recording) -> usize {
+    record
+        .host_calls()
+        .filter(|call| matches!(call.outcome, HostOutcome::Threw { .. }))
+        .count()
 }
 fn until_wait(runtime: &mut Runtime) {
     for _ in 0..10000 {
@@ -193,10 +202,10 @@ fn restart_functions_are_repeatable_and_do_not_imply_an_exit() {
         2
     );
     let record = assert_replay(runtime, &[Value::I64(42), Value::Bool(true)]);
-    assert!(
-        !record
-            .control_commands()
-            .any(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
+    assert_eq!(
+        exits(&record),
+        0,
+        "function restarts return to their invoker"
     );
 }
 
@@ -232,28 +241,13 @@ fn protected_cleanup_is_lifo_exactly_once_on_normal_and_nonlocal_completion() {
         let mut runtime = runtime(case, Limits::default());
         drive(&mut runtime, 100);
         assert_eq!(native(&runtime), [20, 10], "case {case}");
-        assert_eq!(
-            runtime
-                .events
-                .iter()
-                .filter(|event| matches!(event.action, Action::CleanupStarted(_)))
-                .count(),
-            2
-        );
-        assert_eq!(
-            runtime
-                .events
-                .iter()
-                .filter(|event| matches!(event.action, Action::CleanupFinished(_)))
-                .count(),
-            2
-        );
-        assert_replay(runtime, &[Value::I64(value), Value::Bool(true)]);
+        let record = assert_replay(runtime, &[Value::I64(value), Value::Bool(true)]);
+        assert_eq!(exits(&record), usize::from(case == "cleanup"));
     }
 }
 
 #[test]
-fn cleanup_wait_preserves_signaling_stack_but_restores_logical_extent() {
+fn cleanup_runs_after_the_exit_unwinds_the_signaling_frames() {
     let fixture = program::scenario("cleanup").unwrap();
     let mut runtime =
         Runtime::new(fixture.program.clone(), fixture.entry, Limits::default()).unwrap();
@@ -261,15 +255,15 @@ fn cleanup_wait_preserves_signaling_stack_but_restores_logical_extent() {
     assert_eq!(native(&runtime), [20]);
     assert_eq!(
         runtime.active.len(),
-        3,
-        "crossed inner protection has already retired logically"
+        2,
+        "handler and restart scopes outside the protection remain bound"
+    );
+    assert!(
+        runtime.masks.is_empty() && runtime.waiting.is_empty(),
+        "the abandoned handler callback no longer masks or waits"
     );
     let inspection = runtime.run.inspect();
     let frames: Vec<_> = inspection.frames().collect();
-    assert!(
-        frames.len() > runtime.active.len(),
-        "physical signaling frames remain retained through cooperative cleanup"
-    );
     let leaf = &frames[0];
     assert!(
         fixture
@@ -287,11 +281,14 @@ fn cleanup_wait_preserves_signaling_stack_but_restores_logical_extent() {
         bound.lookup(leaf.location).unwrap().text(),
         "await host work"
     );
-    assert!(frames.iter().any(|frame| {
-        bound
-            .lookup(frame.location)
-            .is_some_and(|source| source.text().starts_with("signal DivisionByZero"))
-    }));
+    assert!(
+        !frames.iter().any(|frame| {
+            bound
+                .lookup(frame.location)
+                .is_some_and(|source| source.text().starts_with("signal DivisionByZero"))
+        }),
+        "cleanup runs after the exit has unwound the signaling frames"
+    );
     drop(inspection);
     let fuel = runtime.run.remaining_fuel();
     let work = runtime.run.data_work();
@@ -309,32 +306,17 @@ fn cleanup_wait_preserves_signaling_stack_but_restores_logical_extent() {
 fn cleanup_can_replace_an_exit_without_rerunning_itself() {
     let mut runtime = runtime("cleanup-replaces", Limits::default());
     drive(&mut runtime, 100);
-    assert_eq!(native(&runtime), [20]);
     assert_eq!(
-        runtime
-            .events
-            .iter()
-            .filter(|event| matches!(event.action, Action::CleanupStarted(_)))
-            .count(),
-        1
+        native(&runtime),
+        [20],
+        "the replaced cleanup never runs again"
     );
+    let record = assert_replay(runtime, &[Value::I64(99), Value::Bool(true)]);
     assert_eq!(
-        runtime
-            .events
-            .iter()
-            .filter(|event| matches!(event.action, Action::CleanupFinished(_)))
-            .count(),
-        0
+        exits(&record),
+        2,
+        "cleanup's exit replaces the original one"
     );
-    assert_eq!(
-        runtime
-            .events
-            .iter()
-            .filter(|event| matches!(event.action, Action::CleanupAbandoned(_)))
-            .count(),
-        1
-    );
-    assert_replay(runtime, &[Value::I64(99), Value::Bool(true)]);
 }
 
 #[test]
@@ -342,20 +324,8 @@ fn local_exit_inside_cleanup_preserves_the_original_pending_transfer() {
     let mut runtime = runtime("cleanup-local-exit", Limits::default());
     drive(&mut runtime, 100);
     assert_eq!(native(&runtime), [20, 21]);
-    assert!(
-        !runtime
-            .events
-            .iter()
-            .any(|event| matches!(event.action, Action::CleanupAbandoned(_)))
-    );
     let record = assert_replay(runtime, &[Value::I64(42), Value::Bool(true)]);
-    assert_eq!(
-        record
-            .control_commands()
-            .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
-            .count(),
-        2
-    );
+    assert_eq!(exits(&record), 2, "the local exit and the original exit");
 }
 
 #[test]
@@ -374,7 +344,7 @@ fn cleanup_restores_outer_handler_masks_before_signaling_again() {
     assert_eq!(
         handlers,
         [(1, Class::DivisionByZero), (1, Class::Warning)],
-        "same logical binding can handle cleanup's nested signal after its abandoned invocation is masked out"
+        "the same binding handles cleanup's signal once its abandoned invocation stops masking it"
     );
     assert_replay(runtime, &[Value::I64(42), Value::Bool(true)]);
 }
@@ -448,24 +418,12 @@ fn cancellation_during_cleanup_does_not_finish_cleanup_or_run_outer_cleanup_on_d
     let mut runtime = runtime("cleanup", Limits::default());
     until_wait(&mut runtime);
     assert_eq!(native(&runtime), [20]);
-    assert!(
-        !runtime
-            .events
-            .iter()
-            .any(|event| matches!(event.action, Action::CleanupFinished(_)))
-    );
     let record = runtime.into_session().recording;
     assert!(matches!(
         record.status(),
         Err(CaptureFault::MissingCompletion)
     ));
     assert!(matches!(record.replay(), Err(ReplayError::Incomplete(_))));
-    assert!(
-        !record
-            .control_commands()
-            .any(|command| matches!(command.action, ControlAction::ReturnFrom { .. })),
-        "final physical transfer has not been issued while cleanup waits"
-    );
 }
 
 #[test]
@@ -531,7 +489,7 @@ fn malformed_native_reply_traps_and_retires_borrowed_language_state() {
         runtime
             .scopes
             .iter()
-            .all(|scope| matches!(scope.binding, Binding::Retired { .. }))
+            .all(|scope| matches!(scope, Binding::Retired { .. }))
     );
     assert!(runtime.native_wait.is_none());
     assert!(runtime.complete_native(vec![]).is_err());
@@ -551,7 +509,7 @@ fn malformed_native_reply_traps_and_retires_borrowed_language_state() {
 }
 
 #[test]
-fn owned_policy_evidence_distinguishes_replaced_intents_from_actual_vm_transfers() {
+fn owned_policy_evidence_records_each_selected_exit() {
     let mut runtime = runtime("cleanup-replaces", Limits::default());
     drive(&mut runtime, 100);
     let session = runtime.into_session();
@@ -566,20 +524,7 @@ fn owned_policy_evidence_distinguishes_replaced_intents_from_actual_vm_transfers
         })
         .collect();
     assert_eq!(intents, [42, 99]);
-    assert_eq!(
-        session
-            .recording
-            .control_commands()
-            .filter(|command| matches!(command.action, ControlAction::ReturnFrom { .. }))
-            .count(),
-        1
-    );
-    assert!(
-        session
-            .policy
-            .iter()
-            .any(|event| matches!(event.action, Action::CleanupAbandoned(_)))
-    );
+    assert_eq!(exits(&session.recording), 2);
     assert!(
         matches!(session.recording.replay().unwrap(), ReplayOutcome::Returned(values)
         if values.values() == [Value::I64(99), Value::Bool(true)])
@@ -615,15 +560,12 @@ fn authored_source_covers_policy_and_actual_vm_boundaries_without_invented_locat
         }
         for command in session.recording.control_commands() {
             check(command.location);
-            match command.action {
-                ControlAction::ReturnFrom {
-                    target_location, ..
-                } => check(target_location),
-                ControlAction::CallGuest {
-                    returned: Some(returned),
-                    ..
-                } => check(returned.location),
-                _ => {}
+            if let ControlAction::CallGuest {
+                returned: Some(returned),
+                ..
+            } = command.action
+            {
+                check(returned.location);
             }
         }
     }
