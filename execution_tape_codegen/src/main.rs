@@ -277,6 +277,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    End,\n");
     out.push_str("    Bytes,\n");
     out.push_str("    S,\n");
+    out.push_str("    Rounding,\n");
     out.push_str("}\n\n");
 
     out.push_str("/// Operand encodings used by the bytecode codec.\n");

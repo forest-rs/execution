@@ -74,6 +74,7 @@ pub enum OperandRole {
     End,
     Bytes,
     S,
+    Rounding,
 }
 
 /// Operand encodings used by the bytecode codec.
@@ -446,6 +447,20 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Scale, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::ImmU8, OperandRole::Rounding, OperandEncoding::U8Raw, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Scale, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::ImmU8, OperandRole::Rounding, OperandEncoding::U8Raw, None),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -638,6 +653,10 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "f64.to_i64_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 310, len: 2 } }, // 0x9A F64ToI64Sat
     OpcodeInfo { mnemonic: "f64.to_u64_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 312, len: 2 } }, // 0x9B F64ToU64Sat
     OpcodeInfo { mnemonic: "f64.ne", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 314, len: 3 } }, // 0x9C F64Ne
+    OpcodeInfo { mnemonic: "dec.cmp", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 317, len: 3 } }, // 0x9D DecCmp
+    OpcodeInfo { mnemonic: "dec.scale", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 320, len: 2 } }, // 0x9E DecScale
+    OpcodeInfo { mnemonic: "dec.rescale", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 322, len: 4 } }, // 0x9F DecRescale
+    OpcodeInfo { mnemonic: "dec.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 326, len: 5 } }, // 0xA0 DecDiv
 ];
 
 /// Bytecode opcode byte for the v1 instruction set.
@@ -880,6 +899,14 @@ pub enum Opcode {
     F64ToU64Sat = 0x9B,
     /// `dst = (a != b)` (`f64` -> `bool`, true if either input is NaN).
     F64Ne = 0x9C,
+    /// `dst = cmp(a, b)` (`Decimal` -> `i64`: -1, 0 or 1 by numeric value, ignoring scale).
+    DecCmp = 0x9D,
+    /// `dst = a.scale` (`Decimal` -> `u64`).
+    DecScale = 0x9E,
+    /// `dst = rescale(a, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; exact when widening, rounded when narrowing; traps on overflow).
+    DecRescale = 0x9F,
+    /// `dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow).
+    DecDiv = 0xA0,
 }
 
 impl Opcode {
@@ -1005,6 +1032,10 @@ impl Opcode {
             0x9A => Self::F64ToI64Sat,
             0x9B => Self::F64ToU64Sat,
             0x9C => Self::F64Ne,
+            0x9D => Self::DecCmp,
+            0x9E => Self::DecScale,
+            0x9F => Self::DecRescale,
+            0xA0 => Self::DecDiv,
             _ => return None,
         })
     }

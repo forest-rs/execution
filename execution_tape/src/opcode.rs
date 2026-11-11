@@ -38,6 +38,8 @@ mod tests {
         assert_eq!(Opcode::F64Sqrt as u8, 0x98);
         assert_eq!(Opcode::F64CopySign as u8, 0x99);
         assert_eq!(Opcode::F64Ne as u8, 0x9C);
+        assert_eq!(Opcode::DecCmp as u8, 0x9D);
+        assert_eq!(Opcode::DecDiv as u8, 0xA0);
     }
 
     #[test]

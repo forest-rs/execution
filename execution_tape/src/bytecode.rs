@@ -132,6 +132,27 @@ pub(crate) enum Instr {
     DecSub { dst: u32, a: u32, b: u32 },
     /// `dst = a * b` ([`Decimal`]).
     DecMul { dst: u32, a: u32, b: u32 },
+    /// `dst = a / b` ([`Decimal`] at the `u64` scale in register `scale`, rounded by the
+    /// `rounding` immediate; traps on a zero divisor or overflow).
+    DecDiv {
+        dst: u32,
+        a: u32,
+        b: u32,
+        scale: u32,
+        rounding: u8,
+    },
+    /// `dst = a` rescaled ([`Decimal`] at the `u64` scale in register `scale`; exact when
+    /// widening, rounded by the `rounding` immediate when narrowing; traps on overflow).
+    DecRescale {
+        dst: u32,
+        a: u32,
+        scale: u32,
+        rounding: u8,
+    },
+    /// `dst = a.scale` ([`Decimal`] to `u64`).
+    DecScale { dst: u32, a: u32 },
+    /// `dst = cmp(a, b)` ([`Decimal`] to `i64`: -1, 0 or 1 by numeric value, ignoring scale).
+    DecCmp { dst: u32, a: u32, b: u32 },
 
     /// `dst = a + b` (`f64`).
     F64Add { dst: u32, a: u32, b: u32 },

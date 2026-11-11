@@ -48,6 +48,7 @@ impl VerifyError {
             | Self::ArrayElemTypeOutOfBounds { func, .. }
             | Self::ArrayLenMismatch { func, .. }
             | Self::AggKindMismatch { func, .. }
+            | Self::InvalidDecimalRounding { func, .. }
             | Self::TupleIndexOutOfBounds { func, .. }
             | Self::StructFieldIndexOutOfBounds { func, .. }
             | Self::HostSigOutOfBounds { func, .. }
@@ -99,6 +100,7 @@ impl VerifyError {
             | Self::ArrayElemTypeOutOfBounds { pc, .. }
             | Self::ArrayLenMismatch { pc, .. }
             | Self::AggKindMismatch { pc, .. }
+            | Self::InvalidDecimalRounding { pc, .. }
             | Self::TupleIndexOutOfBounds { pc, .. }
             | Self::StructFieldIndexOutOfBounds { pc, .. }
             | Self::HostSigOutOfBounds { pc, .. }

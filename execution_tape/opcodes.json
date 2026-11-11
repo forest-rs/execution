@@ -3381,6 +3381,142 @@
           "access": "read"
         }
       ]
+    },
+    {
+      "name": "DecCmp",
+      "mnemonic": "dec.cmp",
+      "byte": "0x9D",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = cmp(a, b)` (`Decimal` -> `i64`: -1, 0 or 1 by numeric value, ignoring scale).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "DecScale",
+      "mnemonic": "dec.scale",
+      "byte": "0x9E",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a.scale` (`Decimal` -> `u64`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "DecRescale",
+      "mnemonic": "dec.rescale",
+      "byte": "0x9F",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = rescale(a, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; exact when widening, rounded when narrowing; traps on overflow).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "scale",
+          "encoding": "reg_u32_uleb",
+          "field": "scale",
+          "access": "read"
+        },
+        {
+          "kind": "imm_u8",
+          "role": "rounding",
+          "encoding": "u8_raw",
+          "field": "rounding"
+        }
+      ]
+    },
+    {
+      "name": "DecDiv",
+      "mnemonic": "dec.div",
+      "byte": "0xA0",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "scale",
+          "encoding": "reg_u32_uleb",
+          "field": "scale",
+          "access": "read"
+        },
+        {
+          "kind": "imm_u8",
+          "role": "rounding",
+          "encoding": "u8_raw",
+          "field": "rounding"
+        }
+      ]
     }
   ]
 }

@@ -158,7 +158,7 @@ reported buffer bytes are layout measurements, not allocator traffic or RSS.
 ## Values and types
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
-- `Decimal::new(mantissa: i128, scale: u8)` (per-value scale; rounding/division are host policies)
+- `Decimal::new(mantissa: i128, scale: u8)` (per-value scale; `dec.rescale`/`dec.div` round by an explicit `DecimalRounding` mode)
 - `Bytes` and `Str` (owned public values; runtime registers use handles to owned or borrowed payloads)
 
 Within a run, byte/string handles resolve to immutable program constants, entry arguments,

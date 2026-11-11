@@ -796,5 +796,35 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
+        Instr::DecCmp { a, b, dst } => {
+            out.push(Opcode::DecCmp as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::DecScale { a, dst } => {
+            out.push(Opcode::DecScale as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::DecRescale { a, dst, rounding, scale } => {
+            out.push(Opcode::DecRescale as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *scale);
+            crate::codec_primitives::write_u8_raw(out, *rounding);
+            Ok(())
+        },
+        Instr::DecDiv { a, b, dst, rounding, scale } => {
+            out.push(Opcode::DecDiv as u8);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            crate::codec_primitives::write_reg(out, *scale);
+            crate::codec_primitives::write_u8_raw(out, *rounding);
+            Ok(())
+        },
     }
 }
