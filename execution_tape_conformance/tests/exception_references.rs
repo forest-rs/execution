@@ -250,7 +250,7 @@ fn catch_ref_binds_the_payload_and_the_reference() {
         text.contains(": catch_ref tag#0(\"failed\") -> @L"),
         "{text}"
     );
-    assert!(text.contains("throw_ref"), "{text}");
+    assert!(text.contains("throw_ref eff=r0, exn=r"), "{text}");
 }
 
 #[test]

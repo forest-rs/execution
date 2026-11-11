@@ -323,6 +323,13 @@ pub enum Operands<'a> {
         /// Payload registers in tag order.
         payload: &'a [u32],
     },
+    /// `throw_ref eff_in, exn`.
+    ThrowRef {
+        /// Effect register.
+        eff: u32,
+        /// Exception reference register.
+        exn: u32,
+    },
 }
 
 /// A borrowed source control-flow edge.
@@ -623,6 +630,10 @@ impl<'a> InstrView<'a> {
                 tag: TagId(*tag),
                 name: self.program.tag_name(TagId(*tag)),
                 payload: args,
+            },
+            Instr::ThrowRef { eff_in, exn } => Operands::ThrowRef {
+                eff: *eff_in,
+                exn: *exn,
             },
             _ => Operands::Simple,
         }
@@ -1233,6 +1244,13 @@ fn fmt_throw(
     fmt_tag_payload_annotation(w, program, tag)
 }
 
+fn fmt_throw_ref(w: &mut fmt::Formatter<'_>, eff: u32, exn: u32) -> fmt::Result {
+    write!(w, " eff=")?;
+    fmt_reg(w, eff)?;
+    write!(w, ", exn=")?;
+    fmt_reg(w, exn)
+}
+
 fn fmt_tag_payload_annotation(
     w: &mut fmt::Formatter<'_>,
     program: &Program,
@@ -1560,6 +1578,7 @@ fn fmt_instr_with_labels(
             name,
             payload,
         } => fmt_throw(f, iv.program, eff, tag, name, payload)?,
+        Operands::ThrowRef { eff, exn } => fmt_throw_ref(f, eff, exn)?,
     }
     Ok(())
 }
@@ -1719,6 +1738,7 @@ impl fmt::Display for InstrView<'_> {
                 name,
                 payload,
             } => fmt_throw(f, self.program, eff, tag, name, payload)?,
+            Operands::ThrowRef { eff, exn } => fmt_throw_ref(f, eff, exn)?,
         }
         Ok(())
     }

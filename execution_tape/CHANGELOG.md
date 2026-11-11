@@ -63,8 +63,9 @@ This release has an [MSRV][] of 1.88.
   exception, and recordings store each payload once; replay checks the link at
   `ReplayBoundary::Rethrown`. `Value` is unchanged.
   Migration: handle `ValueType::Exn`, `CatchClause::TagRef`/`AllRef`, `Catch::TagRef`/`AllRef`,
-  `ValueEvent::Rethrown`, `ReplayBoundary::Rethrown`, `Trap::ExceptionBoundary`,
-  `VerifyError::ExceptionReference` and `RegionError::ClauseException` in exhaustive matches.
+  `ValueEvent::Rethrown`, `ReplayBoundary::Rethrown`, `disasm::Operands::ThrowRef`,
+  `Trap::ExceptionBoundary`, `VerifyError::ExceptionReference` and
+  `RegionError::ClauseException` in exhaustive matches.
 
 - Catch exceptions in protected regions. `Asm::begin_region`, `end_region` and `resume_region`
   attribute emitted instructions to a region tree with ordered `Catch::Tag` and `Catch::All`

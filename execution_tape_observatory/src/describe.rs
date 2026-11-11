@@ -497,6 +497,7 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
             )
         }
         Operands::Ret { rets, .. } => format!("return {}", registers(rets.iter().copied())),
+        Operands::ThrowRef { exn, .. } => format!("rethrow r{exn}"),
         Operands::Throw { tag, payload, .. } => format!(
             "throw {}({})",
             exception_tag(program, tag),
