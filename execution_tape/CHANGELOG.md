@@ -43,6 +43,13 @@ This release has an [MSRV][] of 1.88.
   Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
   Migration: handle the new `Opcode` variants in exhaustive matches.
 
+- Declare nominal exception tags with `ProgramBuilder::declare_tag`. Tags live in an optional
+  `tags` program section, are identified by `TagId` and carry payload contracts; equal payloads
+  never make two tags the same exception. Names are unique, appear in disassembly, and the
+  verifier rejects duplicates with `DuplicateTagName` and malformed entries under
+  `MetadataTable::Tags`. Migration: handle `BuildError::Tag` and `VerifyError::DuplicateTagName`
+  in exhaustive matches. Code constructing `Program` directly must initialize `Program::tags`.
+
 - Inspect cumulative invocation work with `Invocation::work`: debited fuel, admitted host calls,
   contract checks and aggregate/payload work, including pending host staging. `ExecutionWork`
   provides checked snapshot differences and sums across code domains. This is accounting, not

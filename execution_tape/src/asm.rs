@@ -14,6 +14,8 @@ pub use calls::{CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
 mod sources;
+mod tags;
+pub use tags::TagBuildError;
 
 use alloc::string::String;
 use alloc::vec;
@@ -27,7 +29,7 @@ use crate::opcode::Opcode;
 use crate::program::{
     ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
     GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, SpanEntry,
-    SpanId, StructTypeDef, SymbolId, TypeId, TypeTableDef, ValueType,
+    SpanId, StructTypeDef, SymbolId, TagEntry, TagId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::FuncId;
 use crate::value::{Decimal, DecimalRounding};
@@ -170,6 +172,8 @@ pub enum BuildError {
     Call(CallBuildError),
     /// Closure capture emission was denied before mutation.
     Closure(ClosureBuildError),
+    /// Exception tag declaration was denied before mutation.
+    Tag(TagBuildError),
     /// A function id was out of range for the builder.
     BadFuncId {
         /// The invalid function id.
@@ -210,6 +214,7 @@ impl fmt::Display for BuildError {
             Self::Contract(error) => error.fmt(f),
             Self::Call(error) => error.fmt(f),
             Self::Closure(error) => error.fmt(f),
+            Self::Tag(error) => error.fmt(f),
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
             Self::BadArgIndex {
                 func,
@@ -261,6 +266,7 @@ impl core::error::Error for BuildError {
             Self::Contract(error) => Some(error),
             Self::Call(error) => Some(error),
             Self::Closure(error) => Some(error),
+            Self::Tag(error) => Some(error),
             _ => None,
         }
     }
@@ -286,6 +292,12 @@ impl From<CallBuildError> for BuildError {
 impl From<ClosureBuildError> for BuildError {
     fn from(error: ClosureBuildError) -> Self {
         Self::Closure(error)
+    }
+}
+
+impl From<TagBuildError> for BuildError {
+    fn from(error: TagBuildError) -> Self {
+        Self::Tag(error)
     }
 }
 
@@ -445,6 +457,7 @@ pub struct ProgramBuilder {
     symbols: Vec<HostSymbol>,
     const_pool: Vec<Const>,
     call_sigs: Vec<CallSigDef>,
+    tags: Vec<TagDef>,
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
     functions: Vec<GuestFunctionDef>,
@@ -474,6 +487,12 @@ struct FunctionOutputNameDef {
 struct CallSigDef {
     args: Vec<ContractId>,
     rets: Vec<ContractId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TagDef {
+    name: SymbolId,
+    payload: Vec<ContractId>,
 }
 
 impl ProgramBuilder {
@@ -890,6 +909,16 @@ impl ProgramBuilder {
                     offset: rets_off,
                     len: rets_len,
                 },
+            });
+        }
+        // Tags follow call signatures in the contract arena, matching decoding.
+        for tag in self.tags {
+            let offset = u32::try_from(p.contract_ids.len()).unwrap_or(u32::MAX);
+            p.contract_ids.extend_from_slice(&tag.payload);
+            let len = u32::try_from(tag.payload.len()).unwrap_or(u32::MAX);
+            p.tags.push(TagEntry {
+                name: tag.name,
+                payload: ByteRange { offset, len },
             });
         }
         p.program_name = self.program_name;
