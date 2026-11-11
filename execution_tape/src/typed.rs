@@ -10,7 +10,7 @@
 
 use alloc::vec::Vec;
 
-use crate::program::{CallSigId, HostSigId, TagId};
+use crate::program::{CallSigId, HostSigId, RegionId, TagId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
 use crate::value::{Decimal, DecimalRounding, FuncId};
@@ -926,6 +926,68 @@ pub(crate) struct ExecFunc {
     /// O(1) span lookup in hot paths.
     ///
     pub(crate) span_by_instr_ix: Vec<Option<SpanId>>,
+    /// Protected regions in execution-index form; `None` for unprotected functions.
+    pub(crate) protection: Option<alloc::boxed::Box<ExecProtection>>,
+}
+
+/// Protected regions prepared for unwinding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExecProtection {
+    /// Sorted, disjoint execution-index ranges and their innermost region.
+    pub(crate) runs: Vec<(u32, u32, RegionId)>,
+    /// Parent and clause range for each region.
+    pub(crate) regions: Vec<(Option<RegionId>, core::ops::Range<u32>)>,
+    pub(crate) clauses: Vec<ExecClause>,
+}
+
+/// A catch clause with its handler entry and parameter registers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExecClause {
+    /// Caught tag; `None` catches everything.
+    pub(crate) tag: Option<TagId>,
+    /// First executable instruction of the handler block.
+    pub(crate) target_ix: u32,
+    /// Handler block parameters receiving the payload, in payload order.
+    pub(crate) params: VRegSlice,
+}
+
+/// A clause selected for an exception raised at one instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExecCatch {
+    pub(crate) region: RegionId,
+    pub(crate) clause: u32,
+    pub(crate) handler: ExecClause,
+}
+
+impl ExecProtection {
+    /// Selects the first clause catching `tag` for an exception raised by instruction `ix`.
+    pub(crate) fn catch(&self, ix: usize, tag: TagId) -> Option<ExecCatch> {
+        let ix = u32::try_from(ix).ok()?;
+        let run = self
+            .runs
+            .partition_point(|&(start, _, _)| start <= ix)
+            .checked_sub(1)?;
+        let (_, end, mut region) = self.runs[run];
+        if ix >= end {
+            return None;
+        }
+        loop {
+            let (parent, clauses) = &self.regions[region.0 as usize];
+            for (offset, clause) in self.clauses[clauses.start as usize..clauses.end as usize]
+                .iter()
+                .enumerate()
+            {
+                if clause.tag.is_none_or(|caught| caught == tag) {
+                    return Some(ExecCatch {
+                        region,
+                        clause: u32::try_from(offset).expect("verified clause count"),
+                        handler: *clause,
+                    });
+                }
+            }
+            region = (*parent)?;
+        }
+    }
 }
 
 impl ExecFunc {

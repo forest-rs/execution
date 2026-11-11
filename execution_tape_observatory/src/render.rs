@@ -41,7 +41,8 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 ReplayBoundary::InitialState => "initial state".into(),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
-                ReplayBoundary::Thrown => "thrown exception".into(),
+                ReplayBoundary::Thrown { index } => format!("thrown exception #{index}"),
+                ReplayBoundary::Caught { index } => format!("caught exception #{index}"),
                 ReplayBoundary::ControlCommand { index } => format!("control command {index}"),
                 ReplayBoundary::ControlReturn { index } => {
                     format!("guest return for command {index}")
@@ -126,6 +127,9 @@ fn step_description(
         InstructionOutcome::Pending => "completion not observed".into(),
         InstructionOutcome::Unwound { target } => {
             format!("abandoned by return from activation #{target}")
+        }
+        InstructionOutcome::Caught { depth } => {
+            format!("abandoned by an exception caught at stack depth {depth}")
         }
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
         InstructionOutcome::Completed => match Opcode::from_byte(step.opcode) {

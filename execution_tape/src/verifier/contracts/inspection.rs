@@ -4,7 +4,7 @@
 //! Optional source-level facts. Execution artifacts never retain this data.
 
 use super::*;
-use crate::analysis::{bitset::BitSet, cfg};
+use crate::analysis::{bitset::BitSet, cfg, protection::Protection};
 use crate::contract::{ContractTable, ContractTableBuilder};
 use crate::opcode::Opcode;
 use crate::verifier::{
@@ -184,6 +184,7 @@ impl<'a> FunctionAnalysis<'a> {
             u32::try_from(bytes.len()).expect("verified code size"),
             &decoded,
             &cfg::compute_boundaries(bytes.len(), &decoded),
+            &Protection::new(program, definition, &decoded),
         )
         .expect("verified control flow");
         let reachable = cfg::compute_reachable(&blocks);

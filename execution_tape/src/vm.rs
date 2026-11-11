@@ -1455,18 +1455,21 @@ impl<H: Host> Vm<H> {
                     return Err(ctx.trap(func_id, pc, span_id, Trap::TrapCode(*code)));
                 }
                 ExecInstr::Throw { tag, args } => {
-                    return Err(self.raise::<P>(
+                    self.raise::<P>(
                         ctx,
                         budget,
-                        program_ref,
+                        program,
                         *tag,
                         vf.vregs(*args),
                         base,
                         sources,
                         trace,
+                        control,
                         TraceLocation { func: func_id, pc },
                         span_id,
-                    ));
+                    )?;
+                    // The handler's instruction attempt starts on the next iteration.
+                    continue;
                 }
 
                 ExecInstr::MovBool { dst, src } => {

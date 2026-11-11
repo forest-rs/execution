@@ -138,7 +138,8 @@ impl<'a> FunctionDisassembly<'a> {
 
     /// Computes label indices for this function.
     ///
-    /// Labels are derived from control-flow targets (`br`/`jmp`) plus the function entry (`pc=0`).
+    /// Labels are derived from control-flow targets (`br`/`jmp`), block declarations, catch
+    /// clause targets, plus the function entry (`pc=0`).
     /// If the function failed to decode, this returns an empty label set.
     #[must_use]
     pub fn labels(&self) -> Labels {
@@ -153,6 +154,15 @@ impl<'a> FunctionDisassembly<'a> {
                 pcs.push(iv.pc());
             }
             crate::instr_operands::visit_pcs(&iv.decoded.instr, |pc| pcs.push(pc));
+        }
+        if let Some(function) = self.program.functions.get(self.func.0 as usize)
+            && let Ok(regions) = function.regions(self.program)
+        {
+            for region in regions {
+                if let Ok(clauses) = self.program.region_clauses(region) {
+                    pcs.extend(clauses.iter().map(|clause| clause.target()));
+                }
+            }
         }
         pcs.sort_unstable();
         pcs.dedup();
@@ -1295,6 +1305,7 @@ impl fmt::Display for Disassembly<'_> {
             }
 
             let labels = fd.labels();
+            fmt_regions(f, self.program, fd.func(), labels.pcs())?;
 
             for iv in fd.instrs() {
                 let pc = iv.pc();
@@ -1311,6 +1322,56 @@ impl fmt::Display for Disassembly<'_> {
         }
         Ok(())
     }
+}
+
+/// Lists each protected region with the instruction ranges it covers and its clauses.
+fn fmt_regions(
+    f: &mut fmt::Formatter<'_>,
+    program: &Program,
+    func: FuncId,
+    label_pcs: &[u32],
+) -> fmt::Result {
+    let Some(function) = program.functions.get(func.0 as usize) else {
+        return Ok(());
+    };
+    let (Ok(regions), Ok(runs)) = (function.regions(program), function.region_runs(program)) else {
+        return writeln!(f, "  <malformed regions>");
+    };
+    for (index, region) in regions.iter().enumerate() {
+        write!(f, "  region#{index}")?;
+        if let Some(parent) = region.parent {
+            write!(f, " in region#{}", parent.0)?;
+        }
+        write!(f, " covers")?;
+        let mut covered = false;
+        for run in runs.iter().filter(|run| run.region.0 as usize == index) {
+            write!(f, " [{:06}, {:06})", run.start_pc, run.end_pc)?;
+            covered = true;
+        }
+        if !covered {
+            write!(f, " nothing")?;
+        }
+        let Ok(clauses) = program.region_clauses(region) else {
+            writeln!(f, " <malformed clauses>")?;
+            continue;
+        };
+        for (clause, catch) in clauses.iter().enumerate() {
+            write!(f, "{} ", if clause == 0 { ":" } else { "," })?;
+            match catch.tag() {
+                Some(tag) => {
+                    write!(f, "catch tag#{}", tag.0)?;
+                    if let Some(name) = program.tag_name(tag) {
+                        write!(f, "(\"{name}\")")?;
+                    }
+                }
+                None => write!(f, "catch_all")?,
+            }
+            write!(f, " -> ")?;
+            fmt_label_ref(f, catch.target(), label_pcs)?;
+        }
+        writeln!(f)?;
+    }
+    Ok(())
 }
 
 fn fmt_label_ref(f: &mut fmt::Formatter<'_>, pc: u32, label_pcs: &[u32]) -> fmt::Result {

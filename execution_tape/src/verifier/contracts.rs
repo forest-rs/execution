@@ -9,6 +9,7 @@ use super::*;
 use crate::contract::{
     Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
 };
+use crate::program::CatchClause;
 use crate::value::AggType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -1124,8 +1125,37 @@ fn solve_flow<'a>(
             facts: Vec::new(),
         },
         |pred, arm, _, acc, incoming| {
-            let branch = &decoded[blocks[pred].instr_end - 1].instr;
-            let incoming = if let Some((target, args)) =
+            let block = &blocks[pred];
+            let normal = block.normal_arms();
+            let branch = &decoded[block.instr_end - 1].instr;
+            let incoming = if arm >= normal {
+                // The raising instruction may follow rewrites in this block: keep only facts
+                // that no instruction of the block replaces, then bind the caught payload.
+                let raise = &block.raises[arm - normal];
+                let scratch = edge_scratch.get_or_insert_with(|| incoming.clone());
+                scratch.clone_from(incoming);
+                for di in &decoded[block.instr_start..block.instr_end] {
+                    for reg in di.instr.writes() {
+                        scratch.set_refinement(reg as usize, None);
+                    }
+                }
+                if let CatchClause::Tag { tag, target } = raise.handler.catch {
+                    let params = blocks::declaration(decoded, target).unwrap_or(&[]);
+                    let entry = program.tag(tag).expect("verified tag");
+                    let contracts = program
+                        .tag_payload_contracts(entry)
+                        .expect("verified tag payload");
+                    let mut arena = arena.borrow_mut();
+                    for (&param, &contract) in params.iter().zip(contracts) {
+                        let fact = match arena.import(contract) {
+                            Fact::Refined(shape) => Some(shape),
+                            _ => None,
+                        };
+                        scratch.set_refinement(param as usize, fact);
+                    }
+                }
+                &*scratch
+            } else if let Some((target, args)) =
                 branch.edge(arm).filter(|(_, args)| !args.is_empty())
             {
                 let params = blocks::declaration(decoded, target).expect("validated target");

@@ -28,7 +28,10 @@ use crate::analysis::cfg::BasicBlock;
 /// - `entry`: initial state at block 0 (only used if block 0 is reachable)
 /// - `bottom`: initial state for all other blocks (usually "uninitialized" / "top")
 /// - `meet_into`: source block, arm index, target block, accumulator, and incoming state;
-///   transforms the edge and meets into the accumulator, returning whether it changed
+///   transforms the edge and meets into the accumulator, returning whether it changed.
+///   Ordinary arms receive the source's OUT state. Exceptional arms (those after
+///   [`BasicBlock::normal_arms`]) receive its IN state: their raising instruction has not
+///   completed, so the callback adds whatever earlier instructions definitely established.
 /// - `transfer_block`: in-place transfer function for a single basic block
 ///
 /// The meet over an empty predecessor set is the current `bottom` value. (For analyses that want
@@ -75,24 +78,36 @@ where
 
     // Reuse the previous OUT allocation after each update. State implementations can preserve
     // their backing buffers with `clone_from`; propagation itself never needs a snapshot of OUT.
-    let mut scratch = bottom;
+    let mut scratch = bottom.clone();
+    // Exceptional arms read the source's IN, which a self-loop arm may also be updating.
+    let mut raised = bottom;
     while let Some(b_idx) = work.pop_front() {
         if !reachable.get(b_idx).copied().unwrap_or(false) {
             continue;
         }
 
-        // Re-propagate this block's OUT to its successors.
+        // Re-propagate this block's OUT (or IN, for exceptional arms) to its successors.
+        let normal = blocks[b_idx].normal_arms();
+        if normal < blocks[b_idx].succs.iter().len() {
+            raised.clone_from(&in_states[b_idx]);
+        }
         for (arm, succ) in blocks[b_idx].succs.iter().copied().enumerate() {
             if !reachable.get(succ).copied().unwrap_or(false) {
                 continue;
             }
 
-            // IN_succ = meet(IN_succ, OUT_pred) for each predecessor.
-            if meet_into(b_idx, arm, succ, &mut in_states[succ], &out_states[b_idx]) {
+            // IN_succ = meet(IN_succ, OUT_pred or IN_pred) for each predecessor.
+            let incoming = if arm < normal {
+                &out_states[b_idx]
+            } else {
+                &raised
+            };
+            if meet_into(b_idx, arm, succ, &mut in_states[succ], incoming) {
                 // OUT_succ is derived purely from IN_succ via the per-block transfer.
                 scratch.clone_from(&in_states[succ]);
                 transfer_block(succ, &blocks[succ], &mut scratch);
-                if scratch != out_states[succ] {
+                // A changed IN must also reach the successor's own exceptional arms.
+                if scratch != out_states[succ] || !blocks[succ].raises.is_empty() {
                     core::mem::swap(&mut out_states[succ], &mut scratch);
                     work.push_back(succ);
                 }
@@ -209,6 +224,7 @@ mod tests {
                 instr_start: 0,
                 instr_end: 0,
                 succs: targets.into_iter().collect(),
+                raises: Vec::new(),
             })
             .collect();
         let reachable = crate::analysis::cfg::compute_reachable(&blocks);
@@ -246,6 +262,7 @@ mod tests {
                 instr_start: 0,
                 instr_end: 0,
                 succs: succs.into_iter().flatten().collect(),
+                raises: Vec::new(),
             })
             .collect();
         let (inputs, outputs) = solve_forward(

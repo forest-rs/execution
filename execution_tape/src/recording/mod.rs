@@ -129,7 +129,7 @@ mod replay;
 mod values;
 
 use crate::host::HostError;
-use crate::program::{HostSigId, TagId};
+use crate::program::{HostSigId, RegionId, TagId};
 use crate::trace::TraceLocation;
 use crate::value::FuncId;
 use crate::verifier::VerifiedProgram;
@@ -341,12 +341,22 @@ enum End {
     Returned,
     Trapped(TrapInfo),
 }
-/// Payload of the invocation's single raised exception, captured before rollback.
+/// One raised exception in raise order, with its payload captured at the throw.
 #[derive(Debug)]
 struct Thrown {
     location: TraceLocation,
     tag: TagId,
     values: Range<usize>,
+    caught: Option<Caught>,
+}
+/// The clause that handled an exception and where execution resumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Caught {
+    handler: TraceLocation,
+    depth: usize,
+    region: RegionId,
+    clause: u32,
+    unwound_callbacks: usize,
 }
 
 /// Immutable observations of one invocation, including an explicit completeness result.
@@ -365,7 +375,7 @@ pub struct Recording {
     frames: Vec<frames::Frame>,
     outcome_frame: Option<frames::FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
-    thrown: Option<Thrown>,
+    thrown: Vec<Thrown>,
     end: Option<End>,
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,

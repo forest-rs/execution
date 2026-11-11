@@ -134,6 +134,88 @@ pub struct CallSigId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TagId(pub u32);
 
+/// Function-local protected region identifier (index into the function's
+/// [`Function::regions`] range).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RegionId(pub u32);
+
+/// One handler clause of a protected region. Clauses are tried in order.
+///
+/// Targets are byte offsets of block headers in the same function. A tag clause's target
+/// declares one parameter per payload value; a catch-all target declares none.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CatchClause {
+    /// Catches exactly one tag, binding its payload to the target's block parameters.
+    Tag {
+        /// Caught tag.
+        tag: TagId,
+        /// Handler block header.
+        target: u32,
+    },
+    /// Catches every exception, binding nothing.
+    All {
+        /// Handler block header.
+        target: u32,
+    },
+}
+
+impl CatchClause {
+    /// Handler block header.
+    #[must_use]
+    pub fn target(self) -> u32 {
+        match self {
+            Self::Tag { target, .. } | Self::All { target } => target,
+        }
+    }
+
+    /// Caught tag, or `None` for a catch-all clause.
+    #[must_use]
+    pub fn tag(self) -> Option<TagId> {
+        match self {
+            Self::Tag { tag, .. } => Some(tag),
+            Self::All { .. } => None,
+        }
+    }
+
+    /// Whether this clause catches an exception raised with `tag`.
+    #[must_use]
+    pub fn catches(self, tag: TagId) -> bool {
+        self.tag().is_none_or(|caught| caught == tag)
+    }
+}
+
+/// A protected region: its enclosing region and its ordered handler clauses.
+///
+/// An exception raised in a region that no clause catches continues to the parent region,
+/// then to the calling activation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionEntry {
+    /// Enclosing region; it must be an earlier region of the same function.
+    pub parent: Option<RegionId>,
+    /// Clause range (into [`Program::catch_clauses`]).
+    pub clauses: ByteRange,
+}
+
+/// A byte range of instructions whose innermost protected region is `region`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RegionRun {
+    /// First covered instruction.
+    pub start_pc: u32,
+    /// End of the covered range: the next instruction boundary or the bytecode length.
+    pub end_pc: u32,
+    /// Innermost region for these instructions.
+    pub region: RegionId,
+}
+
+/// An input protected region used by [`crate::asm::ProgramBuilder`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionDef {
+    /// Enclosing region of the same function.
+    pub parent: Option<RegionId>,
+    /// Handler clauses in match order.
+    pub clauses: Vec<CatchClause>,
+}
+
 /// A byte range (offset/length) into a per-program arena buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ByteRange {
@@ -183,9 +265,23 @@ pub struct Function {
     ///
     /// If this range is empty, no return names are present for the function.
     pub ret_name_ids: ByteRange,
+    /// Protected regions range (into [`Program::regions`]); empty for unprotected code.
+    pub regions: ByteRange,
+    /// Region runs range (into [`Program::region_runs`]), sorted by `start_pc`.
+    pub region_runs: ByteRange,
 }
 
 impl Function {
+    /// Borrows this function's protected regions, indexed by [`RegionId`].
+    pub fn regions<'a>(&self, program: &'a Program) -> Result<&'a [RegionEntry], DecodeError> {
+        slice_range(&program.regions, self.regions)
+    }
+
+    /// Borrows this function's region runs, sorted by start offset.
+    pub fn region_runs<'a>(&self, program: &'a Program) -> Result<&'a [RegionRun], DecodeError> {
+        slice_range(&program.region_runs, self.region_runs)
+    }
+
     /// Returns one declared register kind without expanding or scanning the ledger.
     pub fn register_type(&self, program: &Program, reg: u32) -> Result<ValueType, DecodeError> {
         if reg >= self.reg_count || self.register_types.len != self.reg_count {
@@ -367,6 +463,8 @@ pub(crate) struct GuestFunctionDef {
     pub(crate) register_types: Vec<ValueType>,
     pub(crate) bytecode: Vec<u8>,
     pub(crate) spans: Vec<SpanEntry>,
+    pub(crate) regions: Vec<RegionDef>,
+    pub(crate) region_runs: Vec<RegionRun>,
 }
 
 /// An input host signature definition used to construct a [`Program`].
@@ -397,6 +495,12 @@ pub struct Program {
     pub call_sigs: Vec<CallSigEntry>,
     /// Program-owned exception tags, indexed by [`TagId`].
     pub tags: Vec<TagEntry>,
+    /// Packed protected regions; functions reference slices by [`Function::regions`].
+    pub regions: Vec<RegionEntry>,
+    /// Packed handler clauses; regions reference slices by [`RegionEntry::clauses`].
+    pub catch_clauses: Vec<CatchClause>,
+    /// Packed region runs; functions reference slices by [`Function::region_runs`].
+    pub region_runs: Vec<RegionRun>,
     /// Host signature table.
     pub host_sigs: Vec<HostSigEntry>,
     /// Type table (struct layouts and well-known ids).
@@ -742,6 +846,8 @@ impl Program {
                     register_types: function.register_types,
                     bytecode: function.bytecode,
                     spans: function.spans,
+                    regions: Vec::new(),
+                    region_runs: Vec::new(),
                 }
             })
             .collect();
@@ -881,6 +987,8 @@ impl Program {
                 },
                 arg_name_ids: ByteRange { offset: 0, len: 0 },
                 ret_name_ids: ByteRange { offset: 0, len: 0 },
+                regions: ByteRange { offset: 0, len: 0 },
+                region_runs: ByteRange { offset: 0, len: 0 },
             });
         }
 
@@ -911,6 +1019,9 @@ impl Program {
             const_str_data,
             call_sigs: Vec::new(),
             tags: Vec::new(),
+            regions: Vec::new(),
+            catch_clauses: Vec::new(),
+            region_runs: Vec::new(),
             host_sigs: packed_host_sigs,
             contracts: contracts.finish(),
             contract_ids,
@@ -1107,6 +1218,44 @@ impl Program {
         Ok(self.contracts.kinds(self.tag_payload_contracts(entry)?))
     }
 
+    /// Borrows a protected region's handler clauses, in match order.
+    pub fn region_clauses(&self, region: &RegionEntry) -> Result<&[CatchClause], DecodeError> {
+        slice_range(&self.catch_clauses, region.clauses)
+    }
+
+    /// Appends `regions` and `runs` to `function`, replacing its protection.
+    ///
+    /// Empty protection is stored as empty ranges at offset zero, matching decoding.
+    pub(crate) fn set_protection(
+        &mut self,
+        function: usize,
+        regions: Vec<RegionDef>,
+        runs: Vec<RegionRun>,
+    ) {
+        let mut range = ByteRange { offset: 0, len: 0 };
+        if !regions.is_empty() {
+            range.offset = u32::try_from(self.regions.len()).unwrap_or(u32::MAX);
+            range.len = u32::try_from(regions.len()).unwrap_or(u32::MAX);
+            for region in regions {
+                let offset = u32::try_from(self.catch_clauses.len()).unwrap_or(u32::MAX);
+                let len = u32::try_from(region.clauses.len()).unwrap_or(u32::MAX);
+                self.catch_clauses.extend(region.clauses);
+                self.regions.push(RegionEntry {
+                    parent: region.parent,
+                    clauses: ByteRange { offset, len },
+                });
+            }
+        }
+        let mut run_range = ByteRange { offset: 0, len: 0 };
+        if !runs.is_empty() {
+            run_range.offset = u32::try_from(self.region_runs.len()).unwrap_or(u32::MAX);
+            run_range.len = u32::try_from(runs.len()).unwrap_or(u32::MAX);
+            self.region_runs.extend(runs);
+        }
+        self.functions[function].regions = range;
+        self.functions[function].region_runs = run_range;
+    }
+
     /// Returns the name of exception tag `id`, if both the tag and its symbol exist.
     pub fn tag_name(&self, id: TagId) -> Option<&str> {
         self.symbol_str(self.tag(id)?.name).ok()
@@ -1209,6 +1358,7 @@ impl Program {
         // 10 = call_sigs (optional)
         // 11 = retired argument-shape metadata; 12 = compositional contracts (mandatory)
         // 13 = exception tags (optional)
+        // 14 = protected regions (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1398,6 +1548,53 @@ impl Program {
             write_section(&mut w, SectionTag::Tags, payload.as_slice());
         }
 
+        // protected region section (optional; functions without protection are omitted)
+        if self
+            .functions
+            .iter()
+            .any(|f| f.regions.len != 0 || f.region_runs.len != 0)
+        {
+            let mut payload = Writer::new();
+            let protected: Vec<_> = self
+                .functions
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.regions.len != 0 || f.region_runs.len != 0)
+                .collect();
+            payload.write_uleb128_u64(protected.len() as u64);
+            for (func, f) in protected {
+                payload.write_uleb128_u64(func as u64);
+                let regions = f.regions(self).expect("valid regions");
+                payload.write_uleb128_u64(regions.len() as u64);
+                for region in regions {
+                    payload.write_uleb128_u32(region.parent.map_or(0, |parent| parent.0 + 1));
+                    let clauses = self.region_clauses(region).expect("valid clauses");
+                    payload.write_uleb128_u64(clauses.len() as u64);
+                    for clause in clauses {
+                        match *clause {
+                            CatchClause::Tag { tag, target } => {
+                                payload.write_u8(0);
+                                payload.write_uleb128_u32(tag.0);
+                                payload.write_uleb128_u32(target);
+                            }
+                            CatchClause::All { target } => {
+                                payload.write_u8(1);
+                                payload.write_uleb128_u32(target);
+                            }
+                        }
+                    }
+                }
+                let runs = f.region_runs(self).expect("valid region runs");
+                payload.write_uleb128_u64(runs.len() as u64);
+                for run in runs {
+                    payload.write_uleb128_u32(run.start_pc);
+                    payload.write_uleb128_u32(run.end_pc);
+                    payload.write_uleb128_u32(run.region.0);
+                }
+            }
+            write_section(&mut w, SectionTag::Regions, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1477,6 +1674,7 @@ enum SectionTag {
     CallSigs = 10,
     Contracts = 12,
     Tags = 13,
+    Regions = 14,
 }
 
 impl SectionTag {
@@ -1494,6 +1692,7 @@ impl SectionTag {
             10 => Some(Self::CallSigs),
             12 => Some(Self::Contracts),
             13 => Some(Self::Tags),
+            14 => Some(Self::Regions),
             _ => None,
         }
     }
@@ -1589,6 +1788,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut const_str_data: String = String::new();
     let mut call_sig_defs: Vec<DecodedCallSig> = Vec::new();
     let mut tag_defs: Vec<DecodedTag> = Vec::new();
+    let mut region_defs: Vec<DecodedProtection> = Vec::new();
     let mut host_sig_defs: Vec<(SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>)> = Vec::new();
     let mut types: TypeTableDef = TypeTableDef::default();
     let mut function_table: Vec<FunctionTableEntry<'_>> = Vec::new();
@@ -1604,6 +1804,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_const_pool = false;
     let mut saw_call_sigs = false;
     let mut saw_tags = false;
+    let mut saw_regions = false;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -1687,6 +1888,13 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_tags = true;
                 tag_defs = decode_tags(payload)?;
+            }
+            Some(SectionTag::Regions) => {
+                if saw_regions {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                saw_regions = true;
+                region_defs = decode_regions(payload)?;
             }
             Some(SectionTag::Contracts) => {
                 if contract_table.is_some() {
@@ -1856,6 +2064,8 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
             },
             arg_name_ids: arg_name_range,
             ret_name_ids: ret_name_range,
+            regions: ByteRange { offset: 0, len: 0 },
+            region_runs: ByteRange { offset: 0, len: 0 },
         });
     }
 
@@ -1935,6 +2145,43 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         });
     }
 
+    let mut regions = Vec::new();
+    let mut catch_clauses = Vec::new();
+    let mut region_runs = Vec::new();
+    let mut previous: Option<u32> = None;
+    for (func, defs, runs) in region_defs {
+        if previous.is_some_and(|previous| func <= previous) {
+            return Err(DecodeError::OutOfBounds);
+        }
+        previous = Some(func);
+        let function = functions
+            .get_mut(func as usize)
+            .ok_or(DecodeError::OutOfBounds)?;
+        if !defs.is_empty() {
+            function.regions = ByteRange {
+                offset: u32::try_from(regions.len()).map_err(|_| DecodeError::OutOfBounds)?,
+                len: u32::try_from(defs.len()).map_err(|_| DecodeError::OutOfBounds)?,
+            };
+            for def in defs {
+                let offset =
+                    u32::try_from(catch_clauses.len()).map_err(|_| DecodeError::OutOfBounds)?;
+                let len = u32::try_from(def.clauses.len()).map_err(|_| DecodeError::OutOfBounds)?;
+                catch_clauses.extend(def.clauses);
+                regions.push(RegionEntry {
+                    parent: def.parent,
+                    clauses: ByteRange { offset, len },
+                });
+            }
+        }
+        if !runs.is_empty() {
+            function.region_runs = ByteRange {
+                offset: u32::try_from(region_runs.len()).map_err(|_| DecodeError::OutOfBounds)?,
+                len: u32::try_from(runs.len()).map_err(|_| DecodeError::OutOfBounds)?,
+            };
+            region_runs.extend(runs);
+        }
+    }
+
     // Validate optional name metadata.
     if let Some(name) = names.program_name
         && symbols.get(name.index() as usize).is_none()
@@ -1995,6 +2242,9 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         const_str_data,
         call_sigs,
         tags,
+        regions,
+        catch_clauses,
+        region_runs,
         host_sigs,
         contracts,
         contract_ids,
@@ -2351,6 +2601,7 @@ type DecodedFunctionSig = (Vec<ContractId>, Vec<ContractId>, Vec<u32>, Vec<u32>)
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
 type DecodedCallSig = (Vec<ContractId>, Vec<ContractId>);
 type DecodedTag = (SymbolId, Vec<ContractId>);
+type DecodedProtection = (u32, Vec<RegionDef>, Vec<RegionRun>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
     let mut r = Reader::new(payload);
@@ -2453,6 +2704,49 @@ fn decode_tags(payload: &[u8]) -> Result<Vec<DecodedTag>, DecodeError> {
             contracts.push(ContractId(r.read_uleb128_u32()?));
         }
         out.push((name, contracts));
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok(out)
+}
+
+fn decode_regions(payload: &[u8]) -> Result<Vec<DecodedProtection>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_count(&mut r)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let func = r.read_uleb128_u32()?;
+        let region_count = read_count(&mut r)?;
+        let mut regions = Vec::with_capacity(region_count);
+        for _ in 0..region_count {
+            let parent = r.read_uleb128_u32()?.checked_sub(1).map(RegionId);
+            let clause_count = read_count(&mut r)?;
+            let mut clauses = Vec::with_capacity(clause_count);
+            for _ in 0..clause_count {
+                clauses.push(match r.read_u8()? {
+                    0 => CatchClause::Tag {
+                        tag: TagId(r.read_uleb128_u32()?),
+                        target: r.read_uleb128_u32()?,
+                    },
+                    1 => CatchClause::All {
+                        target: r.read_uleb128_u32()?,
+                    },
+                    _ => return Err(DecodeError::OutOfBounds),
+                });
+            }
+            regions.push(RegionDef { parent, clauses });
+        }
+        let run_count = read_count(&mut r)?;
+        let mut runs = Vec::with_capacity(run_count);
+        for _ in 0..run_count {
+            runs.push(RegionRun {
+                start_pc: r.read_uleb128_u32()?,
+                end_pc: r.read_uleb128_u32()?,
+                region: RegionId(r.read_uleb128_u32()?),
+            });
+        }
+        out.push((func, regions, runs));
     }
     if r.remaining() != 0 {
         return Err(DecodeError::OutOfBounds);

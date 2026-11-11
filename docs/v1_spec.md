@@ -310,9 +310,10 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `11` is retired
 - `12 = contracts`
 - `13 = tags` (optional)
+- `14 = regions` (optional)
 
-Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs` and `13 = tags` are optional
-(each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
+Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs`, `13 = tags` and
+`14 = regions` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -508,6 +509,30 @@ omitted when the program declares no tags:
 Payload contracts use the shared contract table, like call signatures. Decoding packs them into
 `Program::contract_ids` after call signatures.
 
+## Regions (optional)
+Protected regions attach catch clauses to instructions. Each function owns a region tree and a
+table of runs that assigns instruction ranges to their innermost region. Runs need not be
+contiguous per region, so frontends may lay out protected code freely. Functions without
+protection are omitted:
+- `count: ULEB128` (functions with protection, in strictly ascending `func_id` order)
+- repeated `count` times:
+  - `func_id: ULEB128`
+  - `region_count: ULEB128`
+  - repeated `region_count` times:
+    - `parent_plus_one: ULEB128` (`0` for a root region; otherwise an earlier region + 1)
+    - `clause_count: ULEB128`
+    - repeated `clause_count` times:
+      - `kind: u8` (`0 = catch tag`, `1 = catch_all`)
+      - `tag_id: ULEB128` (only for `catch tag`)
+      - `target_pc: ULEB128` (handler block header)
+  - `run_count: ULEB128`
+  - repeated `run_count` times:
+    - `start_pc: ULEB128`, `end_pc: ULEB128`, `region: ULEB128`
+
+Runs are sorted, disjoint, non-empty and start and end at instruction boundaries (or the
+bytecode end). A `catch tag` target declares one block parameter per payload value, with matching
+kinds; a `catch_all` target declares none.
+
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
 
@@ -683,14 +708,27 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - The payload is materialized at the throw site and observed as `ValueEvent::Thrown`, then
     checked against the tag's payload contracts. A refined contract that the verifier could not
     prove traps there as `ContractMismatch` at position `Payload { tag, index }`.
-  - Unwinding abandons every active activation, including guest callbacks entered from a pending
-    host request and that request itself. Protected regions do not exist yet, so the exception
-    always leaves the invocation as `Trap::Uncaught`, located at the `throw`. Call scopes close with
-    that trap outcome at the throwing instruction.
-  - Uncaught payloads are detached into a `ValueSnapshot` before rollback discards the
-    invocation's aggregates. Host objects stay host-owned handles; function IDs still name the
-    throwing program.
+  - The exception then searches for a catching clause. Each activation, innermost first, is
+    considered at its raising instruction: the `throw` itself, or the `call`, `call.indirect` or
+    `host_call` that entered the activation above it. Within an activation, the clauses of the
+    instruction's innermost region are tried in order, then its parent's, and so on. A
+    `catch tag` clause catches only that tag; `catch_all` catches every exception.
+  - A catch abandons every activation above the catching one, including guest callbacks entered
+    from a pending host request and that request itself, releasing their frames. The payload is
+    written to the handler block's parameters and execution continues at the handler.
+    `ValueEvent::Caught` reports the clause before unwinding; the throw, the abandoned
+    activations and the abandoned host requests close with `TraceOutcome::Caught { depth }`,
+    where `depth` is the catching activation's stack depth.
+  - An exception that no clause catches leaves the invocation as `Trap::Uncaught`, located at
+    the `throw`, and call scopes close with that trap outcome. Its payload is detached into a
+    `ValueSnapshot` before rollback discards the invocation's aggregates. Host objects stay
+    host-owned handles; function IDs still name the throwing program.
   - Traps (fuel, limits, arithmetic, contract failures) are not exceptions and cannot be caught.
+  - Verification adds an exceptional edge from each raising instruction to every clause it can
+    reach. The edge leaves before the raising instruction completes: registers written earlier in
+    its basic block are initialized at the handler, but its results are not. Refinement facts of
+    registers rewritten anywhere in that block are widened to their kind; handler parameters
+    receive the tag's payload contracts.
 
 ### Host calls
 - `host_call r_eff_out, host_sig_id, r_eff_in, args... -> rets...`
@@ -942,6 +980,10 @@ These checks apply alongside the structural and contract rules described above.
   unique, including tags that no instruction throws.
 - **Throw**: `throw` must reference an in-bounds `tag_id`. Diagnostics name the tag
   (`ThrowArityMismatch`, `ThrowPayloadMismatch`).
+- **Regions**: parents precede their children; clause tags are in bounds and targets are block
+  headers whose parameters receive the payload (`InvalidRegion` names the region and clause);
+  runs are sorted, disjoint and on instruction boundaries (`InvalidRegionRun`). Initialization
+  and refinement facts flow along exceptional edges as described under [Exceptions](#exceptions).
 
 ## Implementation authority
 

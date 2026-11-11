@@ -13,6 +13,8 @@ use contracts::RefinementState;
 mod diagnostic;
 mod inspection;
 mod metadata;
+mod regions;
+pub use regions::{RegionError, RegionRunError};
 mod tags;
 pub use blocks::{BlockDeclarationError, BlockEdgeError};
 
@@ -31,6 +33,7 @@ use core::fmt;
 use crate::analysis::cfg::BasicBlock;
 use crate::analysis::dataflow;
 use crate::analysis::liveness;
+use crate::analysis::protection::Protection;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::contract::{Contract, ContractKinds, ContractPosition, ContractViolation};
 use crate::format::DecodeError;
@@ -42,8 +45,9 @@ use crate::program::{
     SymbolId, TagId, TypeId, ValueType,
 };
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecDecoded, ExecFunc, ExecInstr, F64Reg,
-    FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout, StrReg, U64Reg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
+    ExecInstr, ExecProtection, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts, RegLayout,
+    StrReg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{DecimalRounding, FuncId};
 use crate::{analysis::bitset::BitSet, analysis::cfg};
@@ -622,6 +626,24 @@ pub enum VerifyError {
         /// The repeated name.
         name: Box<str>,
     },
+    /// A protected region or one of its catch clauses is invalid.
+    InvalidRegion {
+        /// Function index within the program.
+        func: u32,
+        /// Function-local region.
+        region: u32,
+        /// What is wrong with the region or which clause is wrong.
+        error: RegionError,
+    },
+    /// A region run is invalid.
+    InvalidRegionRun {
+        /// Function index within the program.
+        func: u32,
+        /// Index of the run within the function's sorted run table.
+        run: u32,
+        /// What is wrong with the run.
+        error: RegionRunError,
+    },
     /// A `throw` references an exception tag outside the program's tag table.
     TagOutOfBounds {
         /// Function index within the program.
@@ -991,6 +1013,14 @@ impl fmt::Display for VerifyError {
                 f,
                 "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
             ),
+            Self::InvalidRegion {
+                func,
+                region,
+                error,
+            } => write!(f, "function {func} region#{region}: {error}"),
+            Self::InvalidRegionRun { func, run, error } => {
+                write!(f, "function {func} region run {run}: {error}")
+            }
             Self::TagOutOfBounds { func, pc, tag } => {
                 write!(f, "function {func} pc={pc} throw: tag#{tag} out of bounds")
             }
@@ -1671,19 +1701,22 @@ fn verify_function_bytecode(
     // Build CFG blocks and reachability.
     let byte_len =
         u32::try_from(bytecode.len()).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
-    let blocks = cfg::build_basic_blocks(byte_len, decoded, &boundaries).map_err(|e| {
-        let reason = if e.out_of_range {
-            InvalidJumpTargetReason::OutOfRange
-        } else {
-            InvalidJumpTargetReason::NotInstructionBoundary
-        };
-        VerifyError::InvalidJumpTarget {
-            func: func_id,
-            pc: e.src_pc,
-            target: e.target_pc,
-            reason,
-        }
-    })?;
+    regions::verify(program, func_id, func, decoded, byte_len)?;
+    let protection = Protection::new(program, func, decoded);
+    let blocks =
+        cfg::build_basic_blocks(byte_len, decoded, &boundaries, &protection).map_err(|e| {
+            let reason = if e.out_of_range {
+                InvalidJumpTargetReason::OutOfRange
+            } else {
+                InvalidJumpTargetReason::NotInstructionBoundary
+            };
+            VerifyError::InvalidJumpTarget {
+                func: func_id,
+                pc: e.src_pc,
+                target: e.target_pc,
+                reason,
+            }
+        })?;
     let reachable = cfg::compute_reachable(&blocks);
 
     // Reject implicit fallthrough between basic blocks: every reachable block must end in an
@@ -2936,6 +2969,15 @@ fn verify_function_bytecode(
             });
         }
     }
+    let protection = prepare_protection(
+        program,
+        func,
+        decoded,
+        &source_to_exec,
+        execution_count,
+        &reg_map,
+        &mut operands,
+    );
     drop(reg_map);
     let span_by_instr_ix = build_span_by_instr_ix(decoded, spans, execution_count);
 
@@ -2948,9 +2990,64 @@ fn verify_function_bytecode(
             operands,
             instrs: execution_instrs,
             span_by_instr_ix,
+            protection,
         },
         lints,
     })
+}
+
+/// Translates validated regions into execution indexes and mapped parameter registers.
+fn prepare_protection(
+    program: &Program,
+    func: &Function,
+    decoded: &[DecodedInstr],
+    source_to_exec: &[u32],
+    execution_count: usize,
+    reg_map: &[VReg],
+    operands: &mut Vec<VReg>,
+) -> Option<Box<ExecProtection>> {
+    let regions = func.regions(program).expect("verified regions");
+    let runs = func.region_runs(program).expect("verified region runs");
+    if runs.is_empty() {
+        return None;
+    }
+    let exec_ix = |pc: u32| -> u32 {
+        match decoded.binary_search_by_key(&pc, |di| di.offset) {
+            Ok(ix) => source_to_exec
+                .get(ix)
+                .copied()
+                .unwrap_or(u32::try_from(ix).expect("instruction index bounded by bytecode")),
+            Err(_) => u32::try_from(execution_count).expect("instruction count bounded"),
+        }
+    };
+    let mut clauses = Vec::new();
+    let mut prepared = Vec::with_capacity(regions.len());
+    for region in regions {
+        let start = u32::try_from(clauses.len()).expect("verified clause count");
+        for &catch in program.region_clauses(region).expect("verified clauses") {
+            let params = blocks::declaration(decoded, catch.target()).unwrap_or(&[]);
+            let slice = VRegSlice {
+                start: operands.len(),
+                len: params.len(),
+            };
+            operands.extend(params.iter().map(|&reg| reg_map[reg as usize]));
+            clauses.push(ExecClause {
+                tag: catch.tag(),
+                target_ix: exec_ix(catch.target()),
+                params: slice,
+            });
+        }
+        let end = u32::try_from(clauses.len()).expect("verified clause count");
+        prepared.push((region.parent, start..end));
+    }
+    Some(Box::new(ExecProtection {
+        runs: runs
+            .iter()
+            .map(|run| (exec_ix(run.start_pc), exec_ix(run.end_pc), run.region))
+            .collect(),
+        regions: prepared,
+        clauses,
+    }))
 }
 
 fn lint_function_bytecode(
@@ -3706,13 +3803,44 @@ fn compute_must_init(
     // OUT = IN ∪ WRITES(block).
     let top = BitSet::new_full(reg_count);
     let writes = compute_block_writes(blocks, reachable, reg_count, decoded)?;
+    // An exceptional arm leaves before its raising instruction completes. Instructions earlier
+    // in the block have completed, so their writes are definitely initialized at the handler.
+    let raised: Vec<Vec<BitSet>> = blocks
+        .iter()
+        .map(|block| {
+            block
+                .raises
+                .iter()
+                .map(|raise| {
+                    let mut prefix = BitSet::new_empty(reg_count);
+                    for di in &decoded[block.instr_start..raise.first] {
+                        for w in di.instr.writes() {
+                            if (w as usize) < reg_count {
+                                prefix.set(w as usize);
+                            }
+                        }
+                    }
+                    prefix
+                })
+                .collect()
+        })
+        .collect();
+    let mut edge = top.clone();
 
     let (in_sets, out_sets) = dataflow::solve_forward(
         blocks,
         reachable,
         entry_init.clone(),
         top,
-        |_, _, _, acc, incoming| acc.intersect_with(incoming),
+        |pred, arm, _, acc, incoming| {
+            let normal = blocks[pred].normal_arms();
+            if arm < normal {
+                return acc.intersect_with(incoming);
+            }
+            edge.clone_from(incoming);
+            edge.union_with(&raised[pred][arm - normal]);
+            acc.intersect_with(&edge)
+        },
         |b_idx, _b, state| {
             state.union_with(&writes[b_idx]);
         },

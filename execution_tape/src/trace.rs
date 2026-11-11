@@ -17,7 +17,7 @@ use crate::vm::Vm;
 use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
-use crate::program::{HostSigId, SymbolId, TagId};
+use crate::program::{HostSigId, RegionId, SymbolId, TagId};
 use crate::value::{FuncId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo};
 
@@ -178,6 +178,13 @@ pub enum TraceOutcome<'a> {
         /// Activation whose declared result boundary receives the transfer values.
         target: u64,
     },
+    /// This instruction or scope was abandoned by an exception that a catch clause handled.
+    /// The throw itself and every activation or pending host request it passed through end
+    /// this way. This is neither a successful completion nor a trap.
+    Caught {
+        /// Stack depth of the catching activation; the root activation has depth one.
+        depth: usize,
+    },
     /// Trapped.
     Trap(&'a TrapInfo),
 }
@@ -315,9 +322,10 @@ pub enum ValueEvent<'a> {
     },
     /// A `throw` materialized its payload, before payload contracts are checked.
     ///
-    /// A rejected payload ends with its contract trap instead. An uncaught exception then ends
-    /// the run with [`crate::vm::Trap::Uncaught`]; its rollback invalidates these handles, but
-    /// the trap retains a detached snapshot of the same payload.
+    /// A rejected payload ends with its contract trap instead. A caught exception is followed by
+    /// [`Self::Caught`]. An uncaught exception ends the run with
+    /// [`crate::vm::Trap::Uncaught`]; its rollback invalidates these handles, but the trap
+    /// retains a detached snapshot of the same payload.
     Thrown {
         /// Throwing instruction.
         location: TraceLocation,
@@ -327,6 +335,25 @@ pub enum ValueEvent<'a> {
         values: &'a [Value],
         /// Storage containing payload aggregates at the throw site.
         aggregates: &'a AggHeap,
+    },
+    /// A catch clause selected the preceding [`Self::Thrown`] exception, before unwinding.
+    ///
+    /// Scopes and instruction attempts it abandons then close with [`TraceOutcome::Caught`].
+    Caught {
+        /// Throwing instruction.
+        location: TraceLocation,
+        /// Caught tag.
+        tag: TagId,
+        /// First executable instruction of the handler, in the catching activation.
+        handler: TraceLocation,
+        /// Stack depth of the catching activation; the root activation has depth one.
+        depth: usize,
+        /// Function-local region declaring the clause.
+        region: RegionId,
+        /// Clause index within its region.
+        clause: u32,
+        /// Guest callbacks abandoned with their pending host requests.
+        unwound_callbacks: usize,
     },
 }
 
@@ -435,6 +462,24 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("tag", tag)
                 .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::Caught {
+                location,
+                tag,
+                handler,
+                depth,
+                region,
+                clause,
+                unwound_callbacks,
+            } => f
+                .debug_struct("Caught")
+                .field("location", location)
+                .field("tag", tag)
+                .field("handler", handler)
+                .field("depth", depth)
+                .field("region", region)
+                .field("clause", clause)
+                .field("unwound_callbacks", unwound_callbacks)
                 .finish(),
         }
     }
