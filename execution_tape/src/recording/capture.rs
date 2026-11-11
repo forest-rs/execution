@@ -5,7 +5,7 @@ use crate::host::ValueRef;
 use crate::program::Program;
 use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, End, Entry, InstructionCapture,
-    InstructionOutcome, InstructionStatus, RecordLimits, Recording,
+    InstructionOutcome, InstructionStatus, RecordLimits, Recording, Thrown,
     control::{Action, Command, Returned},
     frames::{Frame, FrameId},
     instructions::History,
@@ -41,6 +41,7 @@ pub struct Recorder {
     top: Option<FrameId>,
     outcome_frame: Option<FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
+    thrown: Option<Thrown>,
     end: Option<End>,
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
@@ -63,6 +64,7 @@ impl Recorder {
             top: None,
             outcome_frame: None,
             candidate: None,
+            thrown: None,
             end: None,
             fault: None,
             fault_location: None,
@@ -141,6 +143,7 @@ impl Recorder {
                 None
             },
             candidate: self.candidate,
+            thrown: self.thrown,
             end: self.end,
             fault: self.fault,
             fault_location: self.fault_location,
@@ -394,6 +397,29 @@ impl Recorder {
                 self.outcome_frame = self.top;
                 self.candidate = Some((location, values));
             }
+            ValueEvent::Thrown {
+                location,
+                tag,
+                values,
+                aggregates,
+            } => {
+                if self.entry.is_none()
+                    || self.end.is_some()
+                    || self.candidate.is_some()
+                    || self.thrown.is_some()
+                {
+                    return Err(CaptureFault::InvalidSequence);
+                }
+                let values = self
+                    .builder
+                    .roots(values.iter().map(ValueRef::from_value), aggregates)?;
+                self.check_location(location)?;
+                self.thrown = Some(Thrown {
+                    location,
+                    tag,
+                    values,
+                });
+            }
         }
         Ok(())
     }
@@ -552,7 +578,8 @@ impl TraceSink for Recorder {
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
             | ValueEvent::ReturnFrom { location, .. }
-            | ValueEvent::ReturnCandidate { location, .. } => Some(location),
+            | ValueEvent::ReturnCandidate { location, .. }
+            | ValueEvent::Thrown { location, .. } => Some(location),
         };
         if self.check(program)
             && let Err(error) = self.capture(event)
@@ -697,10 +724,21 @@ impl TraceSink for Recorder {
                 self.end = Some(End::Returned);
             }
             TraceOutcome::Trap(error) => {
+                // An uncaught payload was charged when its `Thrown` event was captured.
                 let bytes = match &error.trap {
                     Trap::HostCallFailed { symbol, .. } => symbol.len(),
+                    Trap::Uncaught(exception) => exception.name().len(),
                     _ => 0,
                 };
+                if let Trap::Uncaught(exception) = &error.trap
+                    && !self.thrown.as_ref().is_some_and(|thrown| {
+                        thrown.tag == exception.local_tag()
+                            && thrown.location.func == error.func
+                            && thrown.location.pc == error.pc
+                    })
+                {
+                    self.fail(CaptureFault::InvalidSequence);
+                }
                 if let Err(fault) = self.builder.charge(bytes) {
                     self.fail_at(
                         fault,

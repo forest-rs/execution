@@ -17,7 +17,7 @@ use crate::vm::Vm;
 use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
-use crate::program::{HostSigId, SymbolId};
+use crate::program::{HostSigId, SymbolId, TagId};
 use crate::value::{FuncId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo};
 
@@ -313,6 +313,21 @@ pub enum ValueEvent<'a> {
         /// Storage before return compaction changes run-local aggregate handles.
         aggregates: &'a AggHeap,
     },
+    /// A `throw` materialized its payload, before payload contracts are checked.
+    ///
+    /// A rejected payload ends with its contract trap instead. An uncaught exception then ends
+    /// the run with [`crate::vm::Trap::Uncaught`]; its rollback invalidates these handles, but
+    /// the trap retains a detached snapshot of the same payload.
+    Thrown {
+        /// Throwing instruction.
+        location: TraceLocation,
+        /// Program-local tag being raised.
+        tag: TagId,
+        /// Payload values in tag order.
+        values: &'a [Value],
+        /// Storage containing payload aggregates at the throw site.
+        aggregates: &'a AggHeap,
+    },
 }
 
 impl core::fmt::Debug for ValueEvent<'_> {
@@ -406,6 +421,18 @@ impl core::fmt::Debug for ValueEvent<'_> {
             } => f
                 .debug_struct("ReturnCandidate")
                 .field("location", location)
+                .field("values", values)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::Thrown {
+                location,
+                tag,
+                values,
+                aggregates,
+            } => f
+                .debug_struct("Thrown")
+                .field("location", location)
+                .field("tag", tag)
                 .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),

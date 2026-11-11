@@ -5,7 +5,7 @@
 
 use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands};
 use execution_tape::host::HostError;
-use execution_tape::program::{HostSigId, Program, ValueType};
+use execution_tape::program::{HostSigId, Program, TagId, ValueType};
 use execution_tape::recording::{AggregateId, RecordedValue, Recording};
 use execution_tape::value::{AggType, FuncId};
 
@@ -52,6 +52,20 @@ pub(super) fn verification(
             program
                 .call_sig(signature)
                 .and_then(|entry| program.call_sig_arg_contracts(entry).ok())
+                .and_then(|ids| ids.get(index as usize))
+                .copied(),
+        ),
+        ContractPosition::Payload { tag, index } => (
+            format!("Throw of {}", exception_tag(program, tag)),
+            format!("payload[{index}]"),
+            format!(
+                "Payload {} of {}",
+                u64::from(index) + 1,
+                exception_tag(program, tag)
+            ),
+            program
+                .tag(tag)
+                .and_then(|entry| program.tag_payload_contracts(entry).ok())
                 .and_then(|ids| ids.get(index as usize))
                 .copied(),
         ),
@@ -145,6 +159,12 @@ pub(super) fn host(program: &Program, id: HostSigId) -> String {
         .host_sig(id)
         .and_then(|entry| program.symbol_str(entry.symbol).ok())
         .map_or_else(|| format!("host #{}", id.0), |name| preview(name, 28))
+}
+
+pub(super) fn exception_tag(program: &Program, id: TagId) -> String {
+    program
+        .tag_name(id)
+        .map_or_else(|| format!("tag #{}", id.0), |name| preview(name, 28))
 }
 
 pub(super) fn type_name(kind: ValueType) -> String {
@@ -475,6 +495,11 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
             )
         }
         Operands::Ret { rets, .. } => format!("return {}", registers(rets.iter().copied())),
+        Operands::Throw { tag, payload, .. } => format!(
+            "throw {}({})",
+            exception_tag(program, tag),
+            registers(payload.iter().copied())
+        ),
         Operands::Jmp { pc_target } => format!("goto {pc_target:06}"),
         Operands::Br {
             cond,

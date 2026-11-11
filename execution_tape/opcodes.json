@@ -68,6 +68,36 @@
       ]
     },
     {
+      "name": "Throw",
+      "mnemonic": "throw",
+      "byte": "0x04",
+      "terminator": true,
+      "flags": [],
+      "doc": "Raise a typed exception carrying the tag's payload values.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "tag"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "ConstUnit",
       "mnemonic": "const.unit",
       "byte": "0x10",

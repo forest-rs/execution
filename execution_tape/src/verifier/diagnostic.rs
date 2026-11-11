@@ -53,6 +53,9 @@ impl VerifyError {
             | Self::StructFieldIndexOutOfBounds { func, .. }
             | Self::HostSigOutOfBounds { func, .. }
             | Self::CallSigOutOfBounds { func, .. }
+            | Self::TagOutOfBounds { func, .. }
+            | Self::ThrowArityMismatch { func, .. }
+            | Self::ThrowPayloadMismatch { func, .. }
             | Self::ConstOutOfBounds { func, .. }
             | Self::HostCallSigMalformed { func, .. }
             | Self::CallIndirectContractMismatch { func, .. }
@@ -106,6 +109,9 @@ impl VerifyError {
             | Self::StructFieldIndexOutOfBounds { pc, .. }
             | Self::HostSigOutOfBounds { pc, .. }
             | Self::CallSigOutOfBounds { pc, .. }
+            | Self::TagOutOfBounds { pc, .. }
+            | Self::ThrowArityMismatch { pc, .. }
+            | Self::ThrowPayloadMismatch { pc, .. }
             | Self::ConstOutOfBounds { pc, .. }
             | Self::HostCallSigMalformed { pc, .. }
             | Self::CallIndirectContractMismatch { pc, .. }

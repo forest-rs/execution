@@ -172,7 +172,7 @@ pub enum BuildError {
     Call(CallBuildError),
     /// Closure capture emission was denied before mutation.
     Closure(ClosureBuildError),
-    /// Exception tag declaration was denied before mutation.
+    /// Exception tag declaration or `throw` emission was denied before mutation.
     Tag(TagBuildError),
     /// A function id was out of range for the builder.
     BadFuncId {
@@ -1329,6 +1329,21 @@ impl Asm {
     pub fn trap(&mut self, code: u32) -> &mut Self {
         self.opcode(Opcode::Trap);
         self.uleb(code);
+        self
+    }
+
+    /// Encodes `throw eff_in, tag, payload...`.
+    ///
+    /// Prefer [`ProgramBuilder::emit_throw`], which checks the payload against the tag's
+    /// declaration before emitting.
+    pub fn throw(&mut self, eff_in: u32, tag: TagId, payload: &[u32]) -> &mut Self {
+        self.opcode(Opcode::Throw);
+        self.reg(eff_in);
+        self.uleb(tag.0);
+        self.uleb(u32::try_from(payload.len()).unwrap_or(u32::MAX));
+        for &r in payload {
+            self.reg(r);
+        }
         self
     }
 

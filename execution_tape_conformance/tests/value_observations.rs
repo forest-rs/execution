@@ -43,6 +43,7 @@ impl TraceSink for Observe {
             | ValueEvent::CallbackReturn { .. } => {
                 panic!("fixture does not request callbacks")
             }
+            ValueEvent::Thrown { .. } => panic!("fixture raises no exceptions"),
             ValueEvent::Entry {
                 entry,
                 args,
@@ -444,7 +445,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                     };
                     s.as_ptr() as usize
                 }
-                ValueEvent::ReturnCandidate { .. } => return,
+                ValueEvent::ReturnCandidate { .. } | ValueEvent::Thrown { .. } => return,
                 ValueEvent::ReturnFrom { .. }
                 | ValueEvent::CallbackEnter { .. }
                 | ValueEvent::CallbackReturn { .. } => {

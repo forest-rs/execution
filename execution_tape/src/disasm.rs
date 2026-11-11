@@ -302,6 +302,17 @@ pub enum Operands<'a> {
         /// Return registers.
         rets: &'a [u32],
     },
+    /// `throw eff_in, tag, payload...`.
+    Throw {
+        /// Effect register.
+        eff: u32,
+        /// Raised exception tag.
+        tag: TagId,
+        /// Best-effort resolved tag name.
+        name: Option<&'a str>,
+        /// Payload registers in tag order.
+        payload: &'a [u32],
+    },
 }
 
 /// A borrowed source control-flow edge.
@@ -328,6 +339,8 @@ pub enum InputIndex {
     Type(TypeId),
     /// Array element type index for [`Opcode::ArrayNew`].
     ElemType(ElemTypeId),
+    /// Exception tag index for [`Opcode::Throw`].
+    Tag(TagId),
     /// Generic immediate index (tuple/struct/array access, decimal scale, etc.).
     Index(u32),
     /// Rounding-mode byte for [`Opcode::DecRescale`] and [`Opcode::DecDiv`].
@@ -392,6 +405,9 @@ impl<'a> InstrView<'a> {
     /// Optional index-like immediate operand (const pool, host sig table, type ids, etc.).
     #[must_use]
     pub fn input_index(&self) -> Option<InputIndex> {
+        if let Instr::Throw { tag, .. } = &self.decoded.instr {
+            return Some(InputIndex::Tag(TagId(*tag)));
+        }
         let operands = self.opcode().operands();
         // Keep the behavior stable: if there are multiple index-like roles, prefer the first one.
         if operands
@@ -591,6 +607,12 @@ impl<'a> InstrView<'a> {
             },
             Instr::Jmp { pc_target } => Operands::Jmp {
                 pc_target: *pc_target,
+            },
+            Instr::Throw { eff_in, tag, args } => Operands::Throw {
+                eff: *eff_in,
+                tag: TagId(*tag),
+                name: self.program.tag_name(TagId(*tag)),
+                payload: args,
             },
             _ => Operands::Simple,
         }
@@ -1181,6 +1203,25 @@ fn fmt_value_type_list<'a>(
     write!(w, "]")
 }
 
+fn fmt_throw(
+    w: &mut fmt::Formatter<'_>,
+    program: &Program,
+    eff: u32,
+    tag: TagId,
+    name: Option<&str>,
+    payload: &[u32],
+) -> fmt::Result {
+    write!(w, " eff=")?;
+    fmt_reg(w, eff)?;
+    write!(w, ", tag#{}", tag.0)?;
+    if let Some(name) = name {
+        write!(w, "(\"{name}\")")?;
+    }
+    write!(w, ", payload=")?;
+    fmt_reg_list(w, payload)?;
+    fmt_tag_payload_annotation(w, program, tag)
+}
+
 fn fmt_tag_payload_annotation(
     w: &mut fmt::Formatter<'_>,
     program: &Program,
@@ -1450,6 +1491,12 @@ fn fmt_instr_with_labels(
             write!(f, ", rets=")?;
             fmt_named_ret_list(f, iv.program, iv.func(), rets)?;
         }
+        Operands::Throw {
+            eff,
+            tag,
+            name,
+            payload,
+        } => fmt_throw(f, iv.program, eff, tag, name, payload)?,
     }
     Ok(())
 }
@@ -1603,6 +1650,12 @@ impl fmt::Display for InstrView<'_> {
                 write!(f, ", rets=")?;
                 fmt_named_ret_list(f, self.program, self.func, rets)?;
             }
+            Operands::Throw {
+                eff,
+                tag,
+                name,
+                payload,
+            } => fmt_throw(f, self.program, eff, tag, name, payload)?,
         }
         Ok(())
     }
@@ -1617,6 +1670,7 @@ impl fmt::Display for InputIndex {
             Self::Func(id) => write!(f, "func#{}", id.0),
             Self::Type(id) => write!(f, "type#{}", id.0),
             Self::ElemType(id) => write!(f, "elem_type#{}", id.0),
+            Self::Tag(id) => write!(f, "tag#{}", id.0),
             Self::Index(ix) => write!(f, "index={ix}"),
             Self::Rounding(byte) => match DecimalRounding::from_byte(byte) {
                 Some(mode) => write!(f, "rounding={}", mode.name()),

@@ -10,7 +10,7 @@
 
 use alloc::vec::Vec;
 
-use crate::program::{CallSigId, HostSigId};
+use crate::program::{CallSigId, HostSigId, TagId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
 use crate::value::{Decimal, DecimalRounding, FuncId};
@@ -166,6 +166,11 @@ pub(crate) enum ExecInstr {
     /// Trap unconditionally with a trap code.
     Trap {
         code: u32,
+    },
+    /// Raise `tag` with its payload registers in tag order.
+    Throw {
+        tag: TagId,
+        args: VRegSlice,
     },
 
     MovBool {
