@@ -494,7 +494,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             return Ok(());
         }
         let values = core::mem::take(&mut self.results);
-        let heap = core::mem::take(self.vm.aggregates_mut());
+        let heap = self.vm.aggregates_mut().take_nodes();
         let origins = core::mem::take(&mut self.importer.origins);
         TapeValue::publish(heap, values, Arc::clone(&node.program), origins, outputs)?;
         Ok(())

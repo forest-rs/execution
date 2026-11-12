@@ -195,6 +195,13 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             .get_or_insert_with(|| inv.budget.host_results())
             .prepaid(work)
     }
+    pub(crate) fn intern_shape(
+        &mut self,
+        shape: crate::aggregates::AggShape,
+    ) -> Result<crate::value::ShapeId, AggError> {
+        self.running.vm.memory.aggs_mut().intern_shape(shape)
+    }
+
     pub(crate) fn restore_host_node(
         &mut self,
         kind: crate::value::AggType,
@@ -217,7 +224,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let import = self.import();
         let inv = &mut self.running;
         HostContext::new(
-            inv.continuation.program.program(),
+            inv.vm.units.unit(inv.continuation.unit),
             import,
             inv.vm.memory.aggs(),
             inv.continuation
@@ -368,7 +375,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             &mut ret_vec
         };
         let context = HostContext::new(
-            self.continuation.program.program(),
+            vm.units.unit(self.continuation.unit),
             site.import,
             vm.memory.aggs(),
             self.continuation

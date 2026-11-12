@@ -1011,8 +1011,9 @@ fn recursive_functions_use_declared_finite_result_contracts() {
 }
 
 #[test]
-fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
-    use execution_tape::program::{ElemTypeId, StructTypeDef, TypeId};
+fn struct_and_array_identity_is_structural_and_empty_arrays_are_vacuous() {
+    use execution_tape::aggregates::AggShape;
+    use execution_tape::program::StructTypeDef;
     let mut b = ProgramBuilder::new();
     let integer = integer(&mut b);
     let leaf = tuple(&mut b, &[Some(integer)]);
@@ -1053,34 +1054,42 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
             },
         )
         .unwrap();
+    // A second, identical struct and array type in the same program are the same shape.
     let mut source = b.build();
     source.types.structs.push(source.types.structs[0].clone());
     source.types.array_elems.push(ValueType::Agg);
     let program = verify_program_owned(source, &VerifyConfig::default()).unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
-    let empty = vm.aggregates_mut().array_new(elem, vec![]).unwrap();
-    let unit = vm.install(program.clone()).unwrap();
-    vm.run(
-        FuncRef::new(unit, check_array),
-        &[Value::Agg(empty)],
-        TraceMask::NONE,
-        None,
-    )
-    .unwrap();
+    let unit = vm.install(program).unwrap();
+    let run = |vm: &mut Vm<TestHost>, entry, value| {
+        vm.run(FuncRef::new(unit, entry), &[value], TraceMask::NONE, None)
+    };
+    let shape = |heap: &mut execution_tape::aggregates::AggHeap, name: &str| {
+        heap.intern_shape(AggShape::Struct(StructTypeDef {
+            field_names: vec![name.into()],
+            field_types: vec![ValueType::Agg],
+        }))
+        .unwrap()
+    };
+    let elements = vm
+        .aggregates_mut()
+        .intern_shape(AggShape::Array(ValueType::Agg))
+        .unwrap();
+    let empty = vm.aggregates_mut().array_new(elements, vec![]).unwrap();
+    run(&mut vm, check_array, Value::Agg(empty)).unwrap();
     let child = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let same = shape(vm.aggregates_mut(), "value");
+    let equal = vm
+        .aggregates_mut()
+        .struct_new(same, vec![Value::Agg(child)])
+        .unwrap();
+    run(&mut vm, check_struct, Value::Agg(equal)).unwrap();
+    let renamed = shape(vm.aggregates_mut(), "other");
     let wrong = vm
         .aggregates_mut()
-        .struct_new(TypeId(1), vec![Value::Agg(child)])
+        .struct_new(renamed, vec![Value::Agg(child)])
         .unwrap();
-    let unit = vm.install(program.clone()).unwrap();
-    let error = vm
-        .run(
-            FuncRef::new(unit, check_struct),
-            &[Value::Agg(wrong)],
-            TraceMask::NONE,
-            None,
-        )
-        .unwrap_err();
+    let error = run(&mut vm, check_struct, Value::Agg(wrong)).unwrap_err();
     assert!(matches!(
         error.trap,
         Trap::ContractMismatch {
@@ -1091,20 +1100,15 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
             ..
         }
     ));
-    let wrong = vm
+    let booleans = vm
         .aggregates_mut()
-        .array_new(ElemTypeId(1), vec![])
+        .intern_shape(AggShape::Array(ValueType::Bool))
         .unwrap();
-    let unit = vm.install(program.clone()).unwrap();
+    let wrong = vm.aggregates_mut().array_new(booleans, vec![]).unwrap();
     assert!(matches!(
-        vm.run(
-            FuncRef::new(unit, check_array),
-            &[Value::Agg(wrong)],
-            TraceMask::NONE,
-            None
-        )
-        .unwrap_err()
-        .trap,
+        run(&mut vm, check_array, Value::Agg(wrong))
+            .unwrap_err()
+            .trap,
         Trap::ContractMismatch { .. }
     ));
 }

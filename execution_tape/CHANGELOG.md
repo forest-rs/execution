@@ -188,6 +188,14 @@ This release has an [MSRV][] of 1.88.
   installed from a different program traps with `Trap::UnitProgramMismatch`. `Invocation::unit`
   reports the entry unit.
 
+- Struct and array types are structural shapes interned in the VM heap. `AggHeap::intern_shape`,
+  `AggHeap::shape`, `AggHeap::import_shape`, `AggHeap::shape_count` and `AggHeap::take_nodes`
+  manage them, `AggShape` describes one, and `Recording::shape` resolves recorded shapes.
+  Installing a program interns its `TypeId`s and `ElemTypeId`s, so equal layouts from independently
+  compiled programs are one type and colliding local IDs no longer alias. `Units::metadata_bytes`
+  reports per-unit metadata. Static verification diagnostics use the new program-local
+  `AggDescriptor` through `ContractMismatch::Schema`.
+
 ### Removed
 
 - `Invocation::program_owner`. Every invocation now retains its entry unit's program; use
@@ -213,6 +221,19 @@ This release has an [MSRV][] of 1.88.
   `let unit = vm.install(program)?; vm.run(FuncRef::new(unit, entry), args, mask, trace)`. For a
   callable, install `Arc::clone(callable.program())` and pass that unit. Install outside hot
   loops: installing is not a cache, and each call adds a unit the VM keeps.
+
+- `AggType::Struct` and `AggType::Array` carry a heap `ShapeId` instead of a program `TypeId` or
+  `ElemTypeId`, and `AggHeap::struct_new`, `AggHeap::array_new` and their `AggOverlay` forms take a
+  `ShapeId`, rejecting unknown shapes with `AggError::UnknownShape` and wrong struct field counts
+  with `AggError::BadArity`. Snapshots carry their shapes and `AggHeap::import` translates them.
+  Recorded aggregates name recording-local shapes. Runtime contract checks compare shapes, so a
+  struct with an equal layout satisfies a struct contract; verification still distinguishes
+  program-local IDs. `HostContext::struct_new`/`array_new` still take the calling program's IDs.
+  Migration: obtain a shape with `vm.aggregates_mut().intern_shape(AggShape::Struct(def))` (or
+  `AggShape::Array(kind)`) before building aggregates directly, match `AggType` by `shape`, resolve
+  shapes with `AggHeap::shape` or `Recording::shape`, and handle `AggError::UnknownShape` and
+  `ContractMismatch::Schema` in exhaustive matches. Release heap nodes with `AggHeap::clear` or
+  `take_nodes`; replacing a VM's heap discards the shapes its units use.
 
 - The tape wire version is now 0.6. Published 0.1.0 reads exactly 0.5, and new opcodes and
   program sections are about to land, so the version is advanced ahead of them. The wire version

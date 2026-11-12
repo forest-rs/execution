@@ -9,7 +9,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::program::{ElemTypeId, HostTypeId, TypeId};
+use crate::program::HostTypeId;
 
 /// An opaque handle to a host-owned object.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -234,6 +234,14 @@ pub enum Value {
     Closure(Closure),
 }
 
+/// A struct or array shape interned in one aggregate heap.
+///
+/// Like an [`AggHandle`], it belongs to its heap: [`crate::aggregates::AggHeap::shape`] resolves
+/// it to the structural [`crate::aggregates::AggShape`]. A VM interns each installed program's
+/// struct and array types in its heap, so equal shapes from different units compare equal.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShapeId(pub u32);
+
 /// Aggregate type descriptor for host signatures and reflection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AggType {
@@ -242,14 +250,14 @@ pub enum AggType {
         /// Number of elements.
         arity: u32,
     },
-    /// Struct type by [`TypeId`].
+    /// Struct of an interned shape.
     Struct {
-        /// Struct type id.
-        type_id: TypeId,
+        /// The struct's shape in its heap.
+        shape: ShapeId,
     },
-    /// Array type by [`ElemTypeId`].
+    /// Array of an interned shape.
     Array {
-        /// Element type id.
-        elem_type_id: ElemTypeId,
+        /// The array's shape in its heap.
+        shape: ShapeId,
     },
 }

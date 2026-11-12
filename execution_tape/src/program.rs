@@ -689,7 +689,7 @@ pub struct TagEntry {
 }
 
 /// An input struct type definition used to construct a [`TypeTable`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StructTypeDef {
     /// Field names in stable order.
     pub field_names: Vec<String>,

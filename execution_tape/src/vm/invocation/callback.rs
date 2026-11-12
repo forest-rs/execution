@@ -219,10 +219,11 @@ impl<H: Host> Running<'_, '_, H> {
                 .ctx
                 .write_owned_value(base, register, value)?;
         }
+        let unit = self.continuation.unit;
         self.vm.check_arg_contracts(
             &mut self.continuation.ctx,
             self.budget,
-            program,
+            unit,
             function,
             prepared,
             base,
@@ -234,7 +235,7 @@ impl<H: Host> Running<'_, '_, H> {
                 self.budget
                     .contract_scratch
                     .check_value(
-                        program,
+                        self.vm.units.unit(unit),
                         self.vm.memory.aggs(),
                         &Value::Agg(environment),
                         contract,
@@ -254,6 +255,7 @@ impl<H: Host> Running<'_, '_, H> {
         }
         self.budget.frames += 1;
         self.continuation.ctx.frames.push(Frame {
+            unit,
             func: function,
             pc: prepared.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
@@ -314,7 +316,8 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     base: RegBase,
 ) -> Result<(), TrapInfo> {
     let program = prepared.program();
-    vm.check_result_contracts(ctx, budget, program, location.func, body, base, rets)
+    let unit = ctx.frames.last().expect("returning callback").unit;
+    vm.check_result_contracts(ctx, budget, unit, location.func, body, base, rets)
         .map_err(|trap| ctx.trap(location.func, location.pc, span, trap))?;
     let mut values = Vec::with_capacity(rets.len());
     for &reg in rets {

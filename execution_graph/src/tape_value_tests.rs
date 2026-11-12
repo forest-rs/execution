@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::{ExecutionGraph, TapeExecutor};
+use execution_tape::aggregates::AggShape;
 use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
@@ -374,8 +375,19 @@ fn nested_scoped_ids_require_program_and_reject_foreign_owners() {
                     env,
                 })
             }
-            2 => Value::Agg(heap.struct_new(TypeId(0), vec![Value::I64(7)]).unwrap()),
-            _ => Value::Agg(heap.array_new(ElemTypeId(0), vec![Value::I64(7)]).unwrap()),
+            2 => {
+                let shape = heap
+                    .intern_shape(AggShape::Struct(StructTypeDef {
+                        field_names: vec!["x".into()],
+                        field_types: vec![ValueType::I64],
+                    }))
+                    .unwrap();
+                Value::Agg(heap.struct_new(shape, vec![Value::I64(7)]).unwrap())
+            }
+            _ => {
+                let shape = heap.intern_shape(AggShape::Array(ValueType::I64)).unwrap();
+                Value::Agg(heap.array_new(shape, vec![Value::I64(7)]).unwrap())
+            }
         };
         let root = heap.tuple_new(vec![leaf]).unwrap();
         let (snapshot, _) = heap.into_snapshot(vec![Value::Agg(root)]).unwrap();

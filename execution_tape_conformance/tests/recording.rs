@@ -3,9 +3,10 @@
 
 //! Real recording -> drop original VM/host -> fresh interpreter replay through public APIs.
 
+use execution_tape::aggregates::AggShape;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::{ElemTypeId, HostTypeId, TypeId, ValueType};
+use execution_tape::program::{HostTypeId, StructTypeDef, ValueType};
 use execution_tape::recording::{
     CaptureFault, CaptureResource, HostOutcome, Outcome, RecordLimits, RecordedValue, Recorder,
     Recording, ReplayError, ReplayOutcome,
@@ -471,10 +472,26 @@ fn shared_nodes_distinct_equal_nodes_and_interned_payloads_keep_their_meaning() 
 fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_replay() {
     let p = identity(ValueType::Closure);
     let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
+    let elements = vm
+        .aggregates_mut()
+        .intern_shape(AggShape::Array(ValueType::Agg))
+        .unwrap();
+    let fields = StructTypeDef {
+        field_names: vec!["inner".into(), "object".into(), "function".into()],
+        field_types: vec![
+            ValueType::Closure,
+            ValueType::Obj(HostTypeId(123)),
+            ValueType::Func,
+        ],
+    };
+    let environment = vm
+        .aggregates_mut()
+        .intern_shape(AggShape::Struct(fields.clone()))
+        .unwrap();
     let array = vm
         .aggregates_mut()
         .array_new(
-            ElemTypeId(55),
+            elements,
             vec![
                 Value::F64(-0.0),
                 Value::F64(f64::from_bits(0x7ff8_0000_0000_0042)),
@@ -490,7 +507,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
     let env = vm
         .aggregates_mut()
         .struct_new(
-            TypeId(77),
+            environment,
             vec![
                 Value::Closure(inner),
                 Value::Obj(Obj {
@@ -514,11 +531,13 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
     let Value::Closure(outer) = output.values()[0] else {
         panic!("closure");
     };
+    let AggType::Struct { shape } = output.aggregates().agg_type(outer.env).unwrap() else {
+        panic!("struct environment");
+    };
     assert_eq!(
-        output.aggregates().agg_type(outer.env).unwrap(),
-        AggType::Struct {
-            type_id: TypeId(77)
-        }
+        output.aggregates().shape(shape),
+        Some(&AggShape::Struct(fields)),
+        "replay rebuilds the recorded shape"
     );
     let Value::Closure(inner) = output.aggregates().struct_get(outer.env, 0).unwrap() else {
         panic!("nested closure");

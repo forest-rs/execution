@@ -510,12 +510,19 @@ pub enum ContractMismatch {
         /// Observed ABI kind.
         actual: ValueType,
     },
-    /// The aggregate kind, nominal identity, or tuple length differs.
+    /// A runtime aggregate's kind, shape, or tuple length differs.
     Aggregate {
-        /// Required descriptor.
+        /// Required descriptor, with shapes of the checked VM heap.
         expected: crate::value::AggType,
         /// Observed descriptor.
         actual: crate::value::AggType,
+    },
+    /// A statically known aggregate's kind, type, or tuple length differs during verification.
+    Schema {
+        /// Required descriptor, in the verified program's types.
+        expected: AggDescriptor,
+        /// Proven descriptor.
+        actual: AggDescriptor,
     },
     /// A fixed-length aggregate has an invalid member count.
     Arity {
@@ -554,6 +561,12 @@ impl fmt::Display for ContractMismatch {
                 AggregateName(*expected),
                 AggregateName(*actual)
             ),
+            Self::Schema { expected, actual } => write!(
+                f,
+                "expected {}, found {}",
+                DescriptorName(*expected),
+                DescriptorName(*actual)
+            ),
             Self::Arity { expected, actual } => {
                 write!(f, "expected {expected} members, found {actual}")
             }
@@ -583,14 +596,48 @@ impl fmt::Display for KindName {
     }
 }
 
+/// A program-local aggregate descriptor: nominal types are one program's own IDs.
+///
+/// Verification reasons about one program, so its diagnostics use these. Runtime values name
+/// heap shapes instead; see [`crate::value::AggType`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AggDescriptor {
+    /// Tuple with fixed arity.
+    Tuple {
+        /// Number of elements.
+        arity: u32,
+    },
+    /// Struct of a program type.
+    Struct {
+        /// Program-local struct type.
+        type_id: TypeId,
+    },
+    /// Array of a program element type.
+    Array {
+        /// Program-local element type.
+        elem_type_id: ElemTypeId,
+    },
+}
+
+struct DescriptorName(AggDescriptor);
+impl fmt::Display for DescriptorName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            AggDescriptor::Tuple { arity } => write!(f, "tuple with {arity} elements"),
+            AggDescriptor::Struct { type_id } => write!(f, "struct #{}", type_id.0),
+            AggDescriptor::Array { elem_type_id } => write!(f, "array type #{}", elem_type_id.0),
+        }
+    }
+}
+
 struct AggregateName(crate::value::AggType);
 impl fmt::Display for AggregateName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::value::AggType;
         match self.0 {
             AggType::Tuple { arity } => write!(f, "tuple with {arity} elements"),
-            AggType::Struct { type_id } => write!(f, "struct #{}", type_id.0),
-            AggType::Array { elem_type_id } => write!(f, "array type #{}", elem_type_id.0),
+            AggType::Struct { shape } => write!(f, "struct shape #{}", shape.0),
+            AggType::Array { shape } => write!(f, "array shape #{}", shape.0),
         }
     }
 }
@@ -784,10 +831,12 @@ mod tests {
                 "{}",
                 ContractMismatch::Aggregate {
                     expected: crate::value::AggType::Tuple { arity: 2 },
-                    actual: crate::value::AggType::Struct { type_id: TypeId(3) },
+                    actual: crate::value::AggType::Struct {
+                        shape: crate::value::ShapeId(3)
+                    },
                 }
             ),
-            "expected tuple with 2 elements, found struct #3"
+            "expected tuple with 2 elements, found struct shape #3"
         );
         assert_eq!(
             format!(

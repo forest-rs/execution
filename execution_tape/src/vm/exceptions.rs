@@ -204,7 +204,8 @@ impl<H: Host> Vm<H> {
                 continue;
             }
             if let Err(error) = budget.contract_scratch.check_value(
-                program,
+                self.units
+                    .unit(ctx.frames.last().expect("raising activation").unit),
                 self.memory.aggs(),
                 value,
                 contract,

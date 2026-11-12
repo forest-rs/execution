@@ -213,8 +213,9 @@ and variance/subtyping are separate capabilities.
   `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
   only the caller-visible arguments (see the [specification](v1_spec.md)).
 
-Function references and nominal type IDs belong to their program; aggregate handles belong to
-one heap. Raw `Value`s do not encode those ownership domains. The graph's `TapeValue` adapter owns
+Function references belong to their program, and struct/array type IDs are resolved to shapes
+interned in the VM heap when a program is installed, so equal layouts are the same runtime type
+across programs. Aggregate handles belong to one heap. Raw `Value`s do not encode those ownership domains. The graph's `TapeValue` adapter owns
 snapshots and rejects program-local values transferred to a different program. It does not provide
 cross-program guest calls.
 

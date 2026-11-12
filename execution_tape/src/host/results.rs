@@ -8,6 +8,19 @@ use crate::aggregates::AggDelta;
 use crate::vm::{DataWork, Trap};
 use core::ops::Range;
 
+/// A requested host aggregate: its heap shape and the storage kinds it requires.
+pub(crate) enum Layout<'a> {
+    Tuple,
+    Struct {
+        shape: crate::value::ShapeId,
+        fields: &'a [ValueType],
+    },
+    Array {
+        shape: crate::value::ShapeId,
+        element: ValueType,
+    },
+}
+
 pub(crate) struct HostResults {
     pub(crate) delta: Option<AggDelta>,
     pub(crate) work: DataWork,
@@ -61,8 +74,7 @@ impl HostResults {
     pub(crate) fn allocate(
         &mut self,
         base: &AggHeap,
-        program: &Program,
-        kind: AggType,
+        layout: Layout<'_>,
         values: Vec<Value>,
     ) -> Result<AggHandle, HostError> {
         let aggregate = u64::try_from(values.len())
@@ -88,35 +100,26 @@ impl HostResults {
             .ok_or_else(|| HostError::custom(Trap::PayloadSizeOverflow))?;
         let work = DataWork { aggregate, payload };
         self.check(work).map_err(HostError::custom)?;
-        match kind {
-            AggType::Tuple { .. } => {}
-            AggType::Struct { type_id } => {
-                let table = &program.types;
-                let ty = table
-                    .structs
-                    .get(type_id.0 as usize)
-                    .ok_or_else(|| HostError::custom(Trap::TypeIdOutOfBounds))?;
-                let types = table
-                    .struct_field_types(ty)
-                    .map_err(|_| HostError::custom(Trap::TypeIdOutOfBounds))?;
-                if types.len() != values.len() {
+        let kind = match layout {
+            Layout::Tuple => AggType::Tuple {
+                arity: u32::try_from(values.len()).unwrap_or(u32::MAX),
+            },
+            Layout::Struct { shape, fields } => {
+                if fields.len() != values.len() {
                     return Err(HostError::custom(Trap::ArityMismatch));
                 }
-                for (value, ty) in values.iter().zip(types) {
+                for (value, ty) in values.iter().zip(fields) {
                     value.check_type(*ty).map_err(HostError::custom)?;
                 }
+                AggType::Struct { shape }
             }
-            AggType::Array { elem_type_id } => {
-                let ty = program
-                    .types
-                    .array_elems
-                    .get(elem_type_id.0 as usize)
-                    .ok_or_else(|| HostError::custom(Trap::TypeIdOutOfBounds))?;
+            Layout::Array { shape, element } => {
                 for value in &values {
-                    value.check_type(*ty).map_err(HostError::custom)?;
+                    value.check_type(element).map_err(HostError::custom)?;
                 }
+                AggType::Array { shape }
             }
-        }
+        };
         let handle = self
             .restore_node(base, kind, values)
             .map_err(HostError::custom)?;
@@ -135,8 +138,8 @@ impl HostResults {
         let mut overlay = delta.overlay(base);
         match kind {
             AggType::Tuple { .. } => overlay.tuple_new(values),
-            AggType::Struct { type_id } => overlay.struct_new(type_id, values),
-            AggType::Array { elem_type_id } => overlay.array_new(elem_type_id, values),
+            AggType::Struct { shape } => overlay.struct_new(shape, values),
+            AggType::Array { shape } => overlay.array_new(shape, values),
         }
     }
     // Keep only the empty check inline. It also proves staging is gone before HostResults
@@ -191,14 +194,8 @@ impl HostContext<'_, '_> {
     /// are outside those limits. A denial allocates no node and can be handled by the host.
     /// Errors preserve an `AggError` or VM `Trap` as the typed `HostError` source.
     pub fn tuple_new(&mut self, values: Vec<Value>) -> Result<AggHandle, HostError> {
-        self.results.allocate(
-            self.aggregates,
-            self.program,
-            AggType::Tuple {
-                arity: u32::try_from(values.len()).unwrap_or(u32::MAX),
-            },
-            values,
-        )
+        self.results
+            .allocate(self.aggregates, Layout::Tuple, values)
     }
     /// Constructs a struct using a nominal type from this call's program.
     /// Field arity and declared storage kinds are checked before allocation; nested contracts
@@ -208,12 +205,16 @@ impl HostContext<'_, '_> {
         type_id: crate::program::TypeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, HostError> {
-        self.results.allocate(
-            self.aggregates,
-            self.program,
-            AggType::Struct { type_id },
-            values,
-        )
+        let out_of_bounds = || HostError::custom(Trap::TypeIdOutOfBounds);
+        let shape = self.unit.struct_shape(type_id).ok_or_else(out_of_bounds)?;
+        let table = &self.program.types;
+        let st = table
+            .structs
+            .get(type_id.0 as usize)
+            .ok_or_else(out_of_bounds)?;
+        let fields = table.struct_field_types(st).map_err(|_| out_of_bounds())?;
+        self.results
+            .allocate(self.aggregates, Layout::Struct { shape, fields }, values)
     }
     /// Constructs an array using an element type from this call's program.
     /// Element storage kinds are checked before allocation; other semantics match `tuple_new`.
@@ -222,12 +223,19 @@ impl HostContext<'_, '_> {
         elem_type_id: crate::program::ElemTypeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, HostError> {
-        self.results.allocate(
-            self.aggregates,
-            self.program,
-            AggType::Array { elem_type_id },
-            values,
-        )
+        let out_of_bounds = || HostError::custom(Trap::TypeIdOutOfBounds);
+        let shape = self
+            .unit
+            .array_shape(elem_type_id)
+            .ok_or_else(out_of_bounds)?;
+        let element = *self
+            .program
+            .types
+            .array_elems
+            .get(elem_type_id.0 as usize)
+            .ok_or_else(out_of_bounds)?;
+        self.results
+            .allocate(self.aggregates, Layout::Array { shape, element }, values)
     }
     pub(super) fn resolve(&self, handle: AggHandle) -> (&AggHeap, AggHandle) {
         self.results.resolve(self.aggregates, handle)

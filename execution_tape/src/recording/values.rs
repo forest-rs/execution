@@ -63,7 +63,8 @@ pub enum RecordedValue {
 pub struct Aggregate<'a> {
     /// Recording-local identity.
     pub id: AggregateId,
-    /// Tuple/struct/array descriptor in the source program's type domain.
+    /// Tuple/struct/array descriptor. Struct and array shapes are this recording's own;
+    /// resolve them with [`super::Recording::shape`].
     pub kind: AggType,
     /// Immediate values in authored order.
     pub values: &'a [RecordedValue],
@@ -83,6 +84,8 @@ pub(crate) struct Node {
 pub(crate) struct Arena {
     pub values: Vec<RecordedValue>,
     pub nodes: Vec<Node>,
+    /// Shapes of recorded struct/array nodes, independent of the recorded VM heap.
+    pub shapes: crate::aggregates::ShapeTable,
     pub payload_bytes: usize,
 }
 
@@ -141,9 +144,20 @@ impl Builder {
             cursor += 1;
             let id = self.handles[&handle];
             let handle = AggHandle(handle);
-            let kind = heap
-                .agg_type(handle)
-                .map_err(|_| CaptureFault::InvalidAggregate { handle: handle.0 })?;
+            let invalid = || CaptureFault::InvalidAggregate { handle: handle.0 };
+            let kind = heap.agg_type(handle).map_err(|_| invalid())?;
+            // Record the structural shape, so the recording keeps its meaning without the heap.
+            let recorded = match kind {
+                AggType::Tuple { .. } => kind,
+                AggType::Struct { shape } | AggType::Array { shape } => {
+                    let shape = heap.shape(shape).ok_or_else(invalid)?;
+                    let shape = self.arena.shapes.intern(shape).ok_or_else(invalid)?;
+                    match kind {
+                        AggType::Struct { .. } => AggType::Struct { shape },
+                        _ => AggType::Array { shape },
+                    }
+                }
+            };
             let count = match kind {
                 AggType::Tuple { .. } => heap.tuple_len(handle),
                 AggType::Struct { .. } => heap.struct_field_count(handle),
@@ -162,7 +176,7 @@ impl Builder {
                 self.push(value)?;
             }
             let node = &mut self.arena.nodes[id.0 as usize];
-            node.kind = Some(kind);
+            node.kind = Some(recorded);
             node.fields = start..self.arena.values.len();
         }
         self.pending.clear();
