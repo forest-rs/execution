@@ -173,7 +173,7 @@ fn a_rethrow_keeps_the_original_tag_payload_and_throw_site() {
     let Trap::Uncaught(exception) = &error.trap else {
         panic!("expected an uncaught exception, got {error}");
     };
-    assert_eq!(exception.local_tag(), f.failed);
+    assert_eq!(exception.local_tag(), Some(f.failed));
     assert_eq!(exception.payload().values(), &[Value::I64(7)]);
     assert_eq!(
         exception.origin(),
@@ -198,7 +198,7 @@ fn an_exception_raised_during_cleanup_replaces_the_original() {
     let Trap::Uncaught(exception) = &error.trap else {
         panic!("expected an uncaught exception, got {error}");
     };
-    assert_eq!(exception.local_tag(), f.other);
+    assert_eq!(exception.local_tag(), Some(f.other));
     assert_eq!(exception.payload().values(), &[Value::I64(9)]);
     let cleanup = TraceLocation {
         unit: UnitId(0),
@@ -209,7 +209,7 @@ fn an_exception_raised_during_cleanup_replaces_the_original() {
     assert_eq!((error.func, error.pc), (cleanup.func, cleanup.pc));
     // `outer` only catches `failed`, so the replacement still escapes.
     let error = run(&f, f.outer, 7, true).unwrap_err();
-    assert!(matches!(&error.trap, Trap::Uncaught(e) if e.local_tag() == f.other));
+    assert!(matches!(&error.trap, Trap::Uncaught(e) if e.local_tag() == Some(f.other)));
 }
 
 #[test]

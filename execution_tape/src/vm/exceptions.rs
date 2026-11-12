@@ -6,10 +6,10 @@
 //! `throw` materializes its payload, checks the tag's payload contracts and then unwinds to the
 //! innermost catching clause of a protected region. A `*_ref` clause also binds a shared
 //! reference to the exception, which `throw_ref` propagates again with its original tag, payload
-//! and throw site. Tags are local to the program that declares them: until units share tag
-//! identities, a tagged clause catches only exceptions raised by its own unit, and an exception
-//! from another unit is reachable only through `catch_all`/`catch_all_ref`. An exception no clause
-//! catches leaves the invocation as [`Trap::Uncaught`];
+//! and throw site. Exceptions carry a VM [`TagRef`]: each frame's clauses compare the tags their
+//! own unit binds, so units that import one tag catch each other's exceptions, while a tag that
+//! a unit neither defines nor imports reaches only its `catch_all`/`catch_all_ref` clauses. An
+//! exception no clause catches leaves the invocation as [`Trap::Uncaught`];
 //! its payload is detached into an owned [`ValueSnapshot`] before the failed invocation rolls
 //! back its aggregates, so the embedding can inspect it.
 
@@ -18,6 +18,7 @@ use crate::aggregates::ValueSnapshot;
 use crate::host::HostThrow;
 use crate::program::TagId;
 use crate::typed::ExecCatch;
+use crate::value::TagRef;
 
 /// A guest exception that no protected region caught before it left the invocation.
 ///
@@ -26,23 +27,27 @@ use crate::typed::ExecCatch;
 /// allocations. Host objects remain host-owned handles; function references keep their units.
 #[derive(Clone, Debug)]
 pub struct UncaughtException {
-    tag: TagId,
+    tag: TagRef,
+    local: Option<TagId>,
     name: Box<str>,
     payload: ValueSnapshot,
     origin: TraceLocation,
 }
 
 impl UncaughtException {
-    /// Identity of the thrown tag, local to the program of [`Self::unit`].
+    /// The thrown VM tag.
     #[must_use]
-    pub fn local_tag(&self) -> TagId {
+    pub fn tag(&self) -> TagRef {
         self.tag
     }
 
-    /// The unit whose program declares the thrown tag: the unit of [`Self::origin`].
+    /// The tag's ID in the program of [`Self::origin`]'s unit.
+    ///
+    /// A guest `throw` always names its tag locally; a host may raise a tag the calling
+    /// program neither declares nor imports, which gives `None`.
     #[must_use]
-    pub fn unit(&self) -> UnitId {
-        self.origin.unit
+    pub fn local_tag(&self) -> Option<TagId> {
+        self.local
     }
 
     /// The thrown tag's declared name.
@@ -78,11 +83,10 @@ impl fmt::Display for UncaughtException {
 
 /// A raised exception: its tag, checked payload and original throw site.
 ///
-/// The tag is local to the program of `origin.unit`. Exception reference registers share one
-/// record; rethrowing never copies or rechecks it.
+/// Exception reference registers share one record; rethrowing never copies or rechecks it.
 #[derive(Debug)]
 pub(crate) struct Exception {
-    tag: TagId,
+    tag: TagRef,
     payload: Vec<Value>,
     origin: TraceLocation,
     /// Invocation-local raise ordinal, linking rethrows to the original in evidence.
@@ -120,16 +124,31 @@ impl<H: Host> Vm<H> {
                 Err(trap) => return Err(fail(ctx, trap)),
             }
         }
+        let bound = self
+            .units
+            .unit(location.unit)
+            .tag(tag)
+            .expect("verified tag");
         self.raise_values::<P>(
-            ctx, budget, prepared, tag, values, trace, control, location, span_id,
+            ctx,
+            budget,
+            prepared,
+            bound,
+            Some((location.unit, tag)),
+            values,
+            trace,
+            control,
+            location,
+            span_id,
         )
     }
 
     /// Raises a host's [`HostThrow`] at its `host_call`.
     ///
-    /// The tag must belong to the calling program and the payload must match its declared
-    /// kinds; otherwise the call traps, as an invalid host return does. Payload bytes are charged
-    /// as host ingress before the exception is observed and checked like a guest `throw`.
+    /// The tag must be a tag of this VM and the payload must match its declared kinds;
+    /// otherwise the call traps, as an invalid host return does. Payload bytes are charged as
+    /// host ingress before the exception is observed. Refined payload contracts are checked like
+    /// a guest `throw`'s, through the calling unit's binding or the defining unit.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -145,12 +164,11 @@ impl<H: Host> Vm<H> {
         location: TraceLocation,
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
-        let program = prepared.program();
         let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
-        let Some(entry) = program.tag(thrown.tag) else {
-            return Err(fail(ctx, Trap::TagOutOfBounds { tag: thrown.tag }));
+        let Some(tag) = self.units.tag(thrown.tag) else {
+            return Err(fail(ctx, Trap::UnknownTag { tag: thrown.tag }));
         };
-        let kinds = program.tag_payload(entry).expect("verified tag payload");
+        let kinds = tag.kinds();
         if kinds.len() != thrown.payload.len() {
             return Err(fail(ctx, Trap::ArityMismatch));
         }
@@ -166,11 +184,18 @@ impl<H: Host> Vm<H> {
         budget
             .charge_payload_bytes(bytes, 1)
             .map_err(|trap| fail(ctx, trap))?;
+        let checked_by = self
+            .units
+            .unit(location.unit)
+            .local_tag(thrown.tag)
+            .map(|local| (location.unit, local))
+            .or(tag.definer);
         self.raise_values::<P>(
             ctx,
             budget,
             prepared,
             thrown.tag,
+            checked_by,
             thrown.payload,
             trace,
             control,
@@ -180,6 +205,9 @@ impl<H: Host> Vm<H> {
     }
 
     /// Observes and checks a materialized payload, then propagates the new exception.
+    ///
+    /// `checked_by` names a unit and its local tag whose payload contracts apply; a tag defined
+    /// by the VM alone declares storage kinds only, which the caller already checked.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -189,7 +217,8 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         prepared: &VerifiedProgram,
-        tag: TagId,
+        tag: TagRef,
+        checked_by: Option<(UnitId, TagId)>,
         values: Vec<Value>,
         trace: &mut TraceCtx<'_>,
         control: &mut ExecutionControl,
@@ -201,33 +230,41 @@ impl<H: Host> Vm<H> {
         P::values(trace, program, || ValueEvent::Thrown {
             location,
             tag,
+            local: self.units.unit(location.unit).local_tag(tag),
             values: &values,
             aggregates: self.memory.aggs(),
         });
-        let entry = program.tag(tag).expect("verified tag");
-        let contracts = program
-            .tag_payload_contracts(entry)
-            .expect("verified tag payload");
-        for (index, (value, &contract)) in values.iter().zip(contracts).enumerate() {
-            if matches!(program.contracts.get(contract), Some(Contract::Kind(_))) {
-                continue;
-            }
-            if let Err(error) = budget.contract_scratch.check_value(
-                &self.units,
-                location.unit,
-                self.memory.aggs(),
-                value,
-                contract,
-                self.limits.max_contract_work,
-            ) {
-                let position = ContractPosition::Payload {
-                    tag,
-                    index: u32::try_from(index).expect("verified payload arity"),
-                };
-                return Err(fail(
-                    ctx,
-                    self.contract_trap(FuncRef::new(location.unit, location.func), position, error),
-                ));
+        if let Some((unit, local)) = checked_by {
+            let program = self.units.unit(unit).program.program();
+            let entry = program.tag(local).expect("verified tag");
+            let contracts = program
+                .tag_payload_contracts(entry)
+                .expect("verified tag payload");
+            for (index, (value, &contract)) in values.iter().zip(contracts).enumerate() {
+                if matches!(program.contracts.get(contract), Some(Contract::Kind(_))) {
+                    continue;
+                }
+                if let Err(error) = budget.contract_scratch.check_value(
+                    &self.units,
+                    unit,
+                    self.memory.aggs(),
+                    value,
+                    contract,
+                    self.limits.max_contract_work,
+                ) {
+                    let position = ContractPosition::Payload {
+                        tag: local,
+                        index: u32::try_from(index).expect("verified payload arity"),
+                    };
+                    return Err(fail(
+                        ctx,
+                        self.contract_trap(
+                            FuncRef::new(location.unit, location.func),
+                            position,
+                            error,
+                        ),
+                    ));
+                }
             }
         }
         let exception = Arc::new(Exception {
@@ -261,6 +298,7 @@ impl<H: Host> Vm<H> {
         P::values(trace, prepared.program(), || ValueEvent::Rethrown {
             location,
             tag: exception.tag,
+            local: self.units.unit(location.unit).local_tag(exception.tag),
             exception: exception.ordinal,
             origin: exception.origin,
         });
@@ -291,22 +329,22 @@ impl<H: Host> Vm<H> {
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
         let tag = exception.tag;
-        if let Some((frame, catch)) = find_catch(ctx, &self.units, exception.origin.unit, tag) {
+        if let Some((frame, catch)) = find_catch(ctx, &self.units, tag) {
             return self.catch::<P>(
                 ctx, budget, prepared, exception, trace, control, location, span_id, frame, catch,
             );
         }
-        let program = self.units.unit(exception.origin.unit).program.program();
+        let name = self.units.tag(tag).map_or("", |tag| tag.name()).into();
         let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
         let payload = match self.memory.aggs().snapshot(&exception.payload) {
             Ok(payload) => payload,
             Err(error) => return Err(fail(ctx, Trap::AggError(error))),
         };
-        let name = program.tag_name(tag).unwrap_or_default().into();
         Err(fail(
             ctx,
             Trap::Uncaught(Box::new(UncaughtException {
                 tag,
+                local: self.units.unit(exception.origin.unit).local_tag(tag),
                 name,
                 payload,
                 origin: exception.origin,
@@ -353,6 +391,7 @@ impl<H: Host> Vm<H> {
         P::values(trace, program, || ValueEvent::Caught {
             location,
             tag,
+            local: self.units.unit(handler.unit).local_tag(tag),
             handler,
             depth,
             region: catch.region,
@@ -475,24 +514,18 @@ impl TraceCtx<'_> {
 /// The leaf raised with `throw`; every other activation is suspended at the call or host call
 /// that entered the activation above it. Each frame has already advanced past that instruction.
 ///
-/// Each frame consults its own unit's regions. `tag` is local to `unit`: a frame of another unit
-/// cannot name it, so only that frame's catch-all clauses apply.
-fn find_catch(
-    ctx: &Registers,
-    units: &UnitTable,
-    unit: UnitId,
-    tag: TagId,
-) -> Option<(usize, ExecCatch)> {
+/// Each frame consults its own unit's regions, whose clauses name the tags that unit binds.
+fn find_catch(ctx: &Registers, units: &UnitTable, tag: TagRef) -> Option<(usize, ExecCatch)> {
     ctx.frames
         .iter()
         .enumerate()
         .rev()
         .find_map(|(index, frame)| {
-            let program = &units.unit(frame.unit).program;
-            let protection = program.verified(frame.func)?.protection.as_deref()?;
+            let unit = units.unit(frame.unit);
+            let protection = unit.program.verified(frame.func)?.protection.as_deref()?;
             let raising = frame.instr_ix.checked_sub(1)?;
-            let tag = (frame.unit == unit).then_some(tag);
-            Some((index, protection.catch(raising, tag)?))
+            let catch = protection.catch(raising, |local| unit.tag(local) == Some(tag))?;
+            Some((index, catch))
         })
 }
 

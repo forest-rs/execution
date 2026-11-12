@@ -4,7 +4,7 @@
 //! Exceptions raised by hosts at their `host_call`.
 
 use execution_tape::value::FuncRef;
-use execution_tape::value::UnitId;
+use execution_tape::value::{TagRef, UnitId};
 use execution_tape::{
     asm::{Catch, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -33,12 +33,15 @@ impl Host for Raising {
         let ValueRef::I64(code) = args[0] else {
             unreachable!("verified argument kind")
         };
+        let tag = ctx
+            .tag(self.tag)
+            .expect("the calling program declares the tag");
         match code {
-            -1 => Err(HostError::throw(TagId(9), vec![])),
-            -2 => Err(HostError::throw(self.tag, vec![])),
+            -1 => Err(HostError::throw(TagRef(9), vec![])),
+            -2 => Err(HostError::throw(tag, vec![])),
             code => {
                 let tuple = ctx.tuple_new(vec![Value::I64(code)]).unwrap();
-                Err(HostError::throw(self.tag, vec![Value::Agg(tuple)]))
+                Err(HostError::throw(tag, vec![Value::Agg(tuple)]))
             }
         }
     }
@@ -149,7 +152,7 @@ fn an_uncaught_host_throw_reports_the_host_call() {
     let Trap::Uncaught(exception) = &error.trap else {
         panic!("expected an uncaught exception, got {error}");
     };
-    assert_eq!(exception.local_tag(), f.failed);
+    assert_eq!(exception.local_tag(), Some(f.failed));
     assert_eq!(
         exception.origin(),
         TraceLocation {
@@ -176,7 +179,7 @@ fn invalid_host_throws_trap_instead_of_raising() {
     let f = fixture();
     assert!(matches!(
         run(&f, f.protected, -1),
-        Err(Trap::TagOutOfBounds { tag: TagId(9) })
+        Err(Trap::UnknownTag { tag: TagRef(9) })
     ));
     assert!(matches!(run(&f, f.protected, -2), Err(Trap::ArityMismatch)));
 }
@@ -197,7 +200,8 @@ fn a_yielded_request_can_complete_by_throwing() {
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();
     let tuple = request.context().tuple_new(vec![Value::I64(7)]).unwrap();
-    request.throw(f.failed, vec![Value::Agg(tuple)]).unwrap();
+    let tag = request.context().tag(f.failed).unwrap();
+    request.throw(tag, vec![Value::Agg(tuple)]).unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
     assert!(matches!(run.result(), Some(Ok(values)) if values == [Value::I64(107)]));
 }

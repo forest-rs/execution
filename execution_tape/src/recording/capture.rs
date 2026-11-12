@@ -337,8 +337,8 @@ impl Recorder {
                         fuel: extra_fuel,
                     },
                     HostCallOutcome::Failed(error) => CallOutcome::Failed(error.clone()),
-                    HostCallOutcome::Threw { tag, payload } => CallOutcome::Threw {
-                        tag,
+                    HostCallOutcome::Threw { local, payload, .. } => CallOutcome::Threw {
+                        tag: local.ok_or(CaptureFault::ForeignTag)?,
                         payload: self
                             .builder
                             .roots(payload.iter().map(ValueRef::from_value), aggregates)?,
@@ -375,11 +375,13 @@ impl Recorder {
             }
             ValueEvent::Thrown {
                 location,
-                tag,
+                local,
                 values,
                 aggregates,
+                ..
             } => {
                 self.check_raise()?;
+                let tag = local.ok_or(CaptureFault::ForeignTag)?;
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
@@ -397,10 +399,12 @@ impl Recorder {
             }
             ValueEvent::Rethrown {
                 location,
-                tag,
+                local,
                 exception,
                 origin,
+                ..
             } => {
+                let tag = local.ok_or(CaptureFault::ForeignTag)?;
                 self.check_raise()?;
                 // A rethrow links to its original throw; the payload is never recorded twice.
                 if !self
@@ -419,13 +423,15 @@ impl Recorder {
             }
             ValueEvent::Caught {
                 location,
-                tag,
+                local,
                 handler,
                 depth,
                 region,
                 clause,
                 unwound_callbacks,
+                ..
             } => {
+                let tag = local.ok_or(CaptureFault::ForeignTag)?;
                 let thrown = &self.thrown;
                 let Some(last) = self.propagations.last_mut().filter(|last| {
                     last.caught.is_none()
@@ -796,7 +802,7 @@ impl TraceSink for Recorder {
                 if let Trap::Uncaught(exception) = &error.trap
                     && !self.propagations.last().is_some_and(|last| {
                         last.caught.is_none()
-                            && self.thrown[last.exception].tag == exception.local_tag()
+                            && Some(self.thrown[last.exception].tag) == exception.local_tag()
                             && self.thrown[last.exception].location
                                 == TraceLocation {
                                     unit: RECORDED_UNIT,

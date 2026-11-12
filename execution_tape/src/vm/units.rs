@@ -16,8 +16,8 @@
 use super::*;
 use crate::aggregates::AggShape;
 use crate::contract::{ContractId, ContractTableBuilder};
-use crate::program::{CallSigId, ElemTypeId, StructTypeDef, TypeId};
-use crate::value::ShapeId;
+use crate::program::{CallSigId, ElemTypeId, StructTypeDef, TagId, TypeId};
+use crate::value::{ShapeId, TagRef};
 use alloc::collections::BTreeMap;
 
 /// A signature of canonical contracts interned once per VM, so indirect calls compare one integer.
@@ -70,6 +70,8 @@ pub(crate) struct Unit {
     closure: Box<[Option<SigId>]>,
     /// Kind signature of each indirect call site signature.
     call_sigs: Box<[SigId]>,
+    /// VM tag of each program [`crate::program::TagId`].
+    tags: Box<[TagRef]>,
 }
 
 impl Unit {
@@ -83,6 +85,20 @@ impl Unit {
     #[inline]
     pub(crate) fn array_shape(&self, ty: ElemTypeId) -> Option<ShapeId> {
         self.arrays.get(ty.0 as usize).copied()
+    }
+
+    /// The VM tag a tag of this unit's program is bound to.
+    #[inline]
+    pub(crate) fn tag(&self, tag: TagId) -> Option<TagRef> {
+        self.tags.get(tag.0 as usize).copied()
+    }
+
+    /// This unit's own name for a VM tag, if its program declares or imports it.
+    pub(crate) fn local_tag(&self, tag: TagRef) -> Option<TagId> {
+        self.tags
+            .iter()
+            .position(|&bound| bound == tag)
+            .map(|index| TagId(u32::try_from(index).expect("verified tag count")))
     }
 
     /// The store-canonical identity of a verified contract of this unit's program.
@@ -116,6 +132,7 @@ impl Unit {
             + size_of_val(&*self.direct)
             + size_of_val(&*self.closure)
             + size_of_val(&*self.call_sigs)
+            + size_of_val(&*self.tags)
     }
 
     /// Interns `program`'s struct and array types in `heap`, and its contracts and signatures
@@ -200,6 +217,7 @@ impl Unit {
             direct: direct.into(),
             closure: closure.into(),
             call_sigs,
+            tags: Box::default(),
         })
     }
 }
@@ -258,11 +276,43 @@ fn canonical_contracts(
     Ok(ids.into())
 }
 
+/// One exception tag of a VM.
+pub(crate) struct Tag {
+    name: Box<str>,
+    /// Payload storage kinds.
+    kinds: Box<[ValueType]>,
+    /// Canonical payload contracts, compared when a unit imports the tag.
+    payload: Box<[ContractId]>,
+    /// The unit and local tag that define it, whose contracts check host payloads.
+    pub(crate) definer: Option<(UnitId, TagId)>,
+}
+
+impl Tag {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn kinds(&self) -> &[ValueType] {
+        &self.kinds
+    }
+}
+
+/// How installation binds a program's imported tags.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Imports {
+    /// Each import must name a defined VM tag with an equal payload.
+    Require,
+    /// Unresolved imports define their tag from the program's declaration, as replay needs.
+    DefineMissing,
+}
+
 /// The VM's append-only table of installed units.
 #[derive(Default)]
 pub(crate) struct UnitTable {
     units: Vec<Unit>,
     canon: Canon,
+    tags: Vec<Tag>,
+    /// Tags that programs can import, by name.
+    defined: BTreeMap<Box<str>, TagRef>,
 }
 
 impl fmt::Debug for UnitTable {
@@ -286,20 +336,171 @@ impl UnitTable {
         &self.units[unit.0 as usize]
     }
 
+    /// A tag this VM issued, or `None`.
+    #[inline]
+    pub(crate) fn tag(&self, tag: TagRef) -> Option<&Tag> {
+        self.tags.get(tag.0 as usize)
+    }
+
+    /// Installs `program`, requiring every imported tag to be defined.
     pub(crate) fn install(
         &mut self,
         program: Arc<VerifiedProgram>,
         heap: &mut AggHeap,
     ) -> Result<UnitId, InstallError> {
+        self.install_with(program, heap, Imports::Require)
+    }
+
+    pub(crate) fn install_with(
+        &mut self,
+        program: Arc<VerifiedProgram>,
+        heap: &mut AggHeap,
+        imports: Imports,
+    ) -> Result<UnitId, InstallError> {
         let id = u32::try_from(self.units.len())
             .ok()
             .filter(|&id| id < u32::MAX)
+            .map(UnitId)
             .ok_or(InstallError::CapacityExceeded)?;
-        let unit = Unit::new(program, heap, &mut self.canon)?;
+        let mut unit = Unit::new(program, heap, &mut self.canon)?;
+        unit.tags = self.bind_tags(id, &unit, imports)?;
         self.units.push(unit);
-        Ok(UnitId(id))
+        Ok(id)
+    }
+
+    /// Binds every tag of `unit`'s program: imports to defined tags, others to new tags.
+    ///
+    /// Imports are resolved before any tag is created, so a rejected install creates no tag.
+    fn bind_tags(
+        &mut self,
+        id: UnitId,
+        unit: &Unit,
+        imports: Imports,
+    ) -> Result<Box<[TagRef]>, InstallError> {
+        let program = unit.program.program();
+        let declared = |tag: TagId| {
+            let entry = program.tag(tag).expect("verified tag");
+            let name = program.tag_name(tag).expect("verified tag name");
+            let payload: Box<[ContractId]> = program
+                .tag_payload_contracts(entry)
+                .expect("verified tag payload")
+                .iter()
+                .map(|&contract| unit.canonical(contract))
+                .collect();
+            let kinds: Box<[ValueType]> = program
+                .tag_payload(entry)
+                .expect("verified tag payload")
+                .iter()
+                .copied()
+                .collect();
+            (name, payload, kinds)
+        };
+        let mut bound: Vec<Option<TagRef>> = vec![None; program.tags.len()];
+        let mut missing = Vec::new();
+        for &import in &program.tag_imports {
+            let (name, payload, _) = declared(import);
+            match self.defined.get(name) {
+                Some(&tag) if self.tags[tag.0 as usize].payload == payload => {
+                    bound[import.0 as usize] = Some(tag);
+                }
+                Some(_) => return Err(InstallError::TagPayloadMismatch { name: name.into() }),
+                None if imports == Imports::DefineMissing => missing.push(import),
+                None => return Err(InstallError::UnresolvedTag { name: name.into() }),
+            }
+        }
+        self.tags
+            .len()
+            .checked_add(program.tags.len())
+            .filter(|&end| u32::try_from(end).is_ok())
+            .ok_or(InstallError::CapacityExceeded)?;
+        for (index, slot) in bound.iter_mut().enumerate() {
+            if slot.is_some() {
+                continue;
+            }
+            let local = TagId(u32::try_from(index).expect("verified tag count"));
+            let (name, payload, kinds) = declared(local);
+            let tag = TagRef(u32::try_from(self.tags.len()).expect("checked tag capacity"));
+            let import = missing.contains(&local);
+            if import {
+                self.defined.insert(name.into(), tag);
+            }
+            self.tags.push(Tag {
+                name: name.into(),
+                kinds,
+                payload,
+                definer: Some((id, local)),
+            });
+            *slot = Some(tag);
+        }
+        Ok(bound
+            .into_iter()
+            .map(|tag| tag.expect("bound tag"))
+            .collect())
+    }
+
+    /// Defines a tag that programs import by `name`.
+    pub(crate) fn define_tag(
+        &mut self,
+        name: &str,
+        kinds: &[ValueType],
+    ) -> Result<TagRef, TagError> {
+        if self.defined.contains_key(name) {
+            return Err(TagError::DuplicateName { name: name.into() });
+        }
+        if kinds.contains(&ValueType::Exn) {
+            return Err(TagError::ExceptionPayload);
+        }
+        let tag = u32::try_from(self.tags.len())
+            .map(TagRef)
+            .map_err(|_| TagError::CapacityExceeded)?;
+        let payload = kinds
+            .iter()
+            .map(|&kind| {
+                self.canon
+                    .contracts
+                    .intern(Contract::Kind(kind))
+                    .map_err(|_| TagError::CapacityExceeded)
+            })
+            .collect::<Result<_, _>>()?;
+        self.tags.push(Tag {
+            name: name.into(),
+            kinds: kinds.into(),
+            payload,
+            definer: None,
+        });
+        self.defined.insert(name.into(), tag);
+        Ok(tag)
     }
 }
+
+/// Why a tag could not be defined.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TagError {
+    /// A tag with this name is already defined in the VM.
+    DuplicateName {
+        /// The requested name.
+        name: Box<str>,
+    },
+    /// An exception reference cannot be part of a payload.
+    ExceptionPayload,
+    /// The VM cannot represent another tag.
+    CapacityExceeded,
+}
+
+impl fmt::Display for TagError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateName { name } => write!(f, "tag \"{name}\" is already defined"),
+            Self::ExceptionPayload => {
+                f.write_str("a tag payload cannot hold an exception reference")
+            }
+            Self::CapacityExceeded => f.write_str("VM tag capacity exhausted"),
+        }
+    }
+}
+
+impl core::error::Error for TagError {}
 
 /// Why a program could not be installed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,12 +508,26 @@ impl UnitTable {
 pub enum InstallError {
     /// The VM cannot represent another unit.
     CapacityExceeded,
+    /// The program imports a tag that is not defined in the VM.
+    UnresolvedTag {
+        /// The imported tag name.
+        name: Box<str>,
+    },
+    /// The program imports a defined tag but declares a different payload for it.
+    TagPayloadMismatch {
+        /// The imported tag name.
+        name: Box<str>,
+    },
 }
 
 impl fmt::Display for InstallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CapacityExceeded => f.write_str("VM unit capacity exhausted"),
+            Self::UnresolvedTag { name } => write!(f, "imported tag \"{name}\" is not defined"),
+            Self::TagPayloadMismatch { name } => {
+                write!(f, "imported tag \"{name}\" declares a different payload")
+            }
         }
     }
 }
@@ -360,6 +575,30 @@ impl<'a> Units<'a> {
         self.table.units.iter().map(Unit::metadata_bytes).sum()
     }
 
+    /// The VM tag bound to `tag` of `unit`'s program.
+    #[must_use]
+    pub fn tag(&self, unit: UnitId, tag: TagId) -> Option<TagRef> {
+        self.table.get(unit)?.tag(tag)
+    }
+
+    /// The name of a VM tag.
+    #[must_use]
+    pub fn tag_name(&self, tag: TagRef) -> Option<&'a str> {
+        self.table.tag(tag).map(Tag::name)
+    }
+
+    /// The payload storage kinds of a VM tag.
+    #[must_use]
+    pub fn tag_payload(&self, tag: TagRef) -> Option<&'a [ValueType]> {
+        self.table.tag(tag).map(Tag::kinds)
+    }
+
+    /// The defined tag that programs import by `name`.
+    #[must_use]
+    pub fn defined_tag(&self, name: &str) -> Option<TagRef> {
+        self.table.defined.get(name).copied()
+    }
+
     /// Installed units in installation order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (UnitId, &'a Arc<VerifiedProgram>)> + 'a {
         self.table.units.iter().enumerate().map(|(index, unit)| {
@@ -377,11 +616,37 @@ impl<H: Host> Vm<H> {
     /// including for a program that is already installed. The VM retains the
     /// program until the VM is dropped; no unit is ever removed. Already running or suspended
     /// frames keep the units they entered, so installing replacement code never changes them.
+    ///
+    /// Each tag the program declares becomes a new VM tag, so two installs of one program throw
+    /// distinct exceptions. Each tag it imports binds to the tag defined under that name with
+    /// [`Self::define_tag`]; an undefined name or a different payload rejects the install, which
+    /// then creates no unit and no tag. Shapes it interned stay in the heap, as shapes always do.
     pub fn install(
         &mut self,
         program: impl Into<Arc<VerifiedProgram>>,
     ) -> Result<UnitId, InstallError> {
         self.units.install(program.into(), self.memory.aggs_mut())
+    }
+
+    /// Installs `program`, defining each unresolved import from the program's own declaration.
+    ///
+    /// Replay installs a recorded program into a fresh VM this way: the recording names tags
+    /// locally, so their definitions need only agree with the program.
+    pub(crate) fn install_defining_imports(
+        &mut self,
+        program: Arc<VerifiedProgram>,
+    ) -> Result<UnitId, InstallError> {
+        self.units
+            .install_with(program, self.memory.aggs_mut(), Imports::DefineMissing)
+    }
+
+    /// Defines a tag that installed programs can import by `name`.
+    ///
+    /// The payload has these storage kinds and no further contracts; a program importing the
+    /// tag must declare exactly that payload. Names are unique among defined tags, and tags are
+    /// never removed. Hosts throw the returned tag with [`crate::host::HostError::throw`].
+    pub fn define_tag(&mut self, name: &str, payload: &[ValueType]) -> Result<TagRef, TagError> {
+        self.units.define_tag(name, payload)
     }
 
     /// Inspects the units installed in this VM.

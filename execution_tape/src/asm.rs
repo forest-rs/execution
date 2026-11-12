@@ -500,6 +500,7 @@ struct CallSigDef {
 struct TagDef {
     name: SymbolId,
     payload: Vec<ContractId>,
+    import: bool,
 }
 
 impl ProgramBuilder {
@@ -940,7 +941,11 @@ impl ProgramBuilder {
             p.set_protection(function, regions, runs);
         }
         // Tags follow call signatures in the contract arena, matching decoding.
-        for tag in self.tags {
+        for (index, tag) in self.tags.into_iter().enumerate() {
+            if tag.import {
+                p.tag_imports
+                    .push(TagId(u32::try_from(index).unwrap_or(u32::MAX)));
+            }
             let offset = u32::try_from(p.contract_ids.len()).unwrap_or(u32::MAX);
             p.contract_ids.extend_from_slice(&tag.payload);
             let len = u32::try_from(tag.payload.len()).unwrap_or(u32::MAX);

@@ -15,12 +15,13 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
-use crate::program::{HostSigId, Program, TagId, ValueType};
+use crate::program::{HostSigId, Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
 use crate::value::Decimal;
 use crate::value::Obj;
+use crate::value::TagRef;
 use crate::value::Value;
 
 /// Sink for recording resource accesses during execution.
@@ -309,6 +310,14 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
         self.program
     }
 
+    /// The VM tag the calling program's `tag` is bound to, for [`HostError::throw`].
+    ///
+    /// `None` if the program declares no such tag.
+    #[must_use]
+    pub fn tag(&self, tag: crate::program::TagId) -> Option<TagRef> {
+        self.unit.tag(tag)
+    }
+
     /// Returns the declared host import being called in [`Self::program`].
     ///
     /// The ID is local to that program. It allows a prepared host adapter to dispatch through
@@ -541,14 +550,15 @@ pub enum HostError {
     Throw(Box<HostThrow>),
 }
 
-/// A guest exception raised by a host call: a program tag and its payload, in tag order.
+/// A guest exception raised by a host call: a VM tag and its payload, in tag order.
 ///
 /// Aggregate payload values may be built with the call's [`HostContext`]; they are adopted
 /// like returned values. Other handles must belong to the calling invocation.
 #[derive(Clone, Debug)]
 pub struct HostThrow {
-    /// Program-local tag of the calling program.
-    pub tag: TagId,
+    /// The raised VM tag: one the host defined with [`crate::vm::Vm::define_tag`], or a
+    /// program's tag found through [`crate::vm::Units::tag`].
+    pub tag: TagRef,
     /// Payload values in tag order.
     pub payload: Vec<Value>,
 }
@@ -565,7 +575,7 @@ impl HostError {
 
     /// Raises `tag` with `payload` as a guest exception at the calling `host_call`.
     #[must_use]
-    pub fn throw(tag: TagId, payload: Vec<Value>) -> Self {
+    pub fn throw(tag: TagRef, payload: Vec<Value>) -> Self {
         Self::Throw(Box::new(HostThrow { tag, payload }))
     }
 }

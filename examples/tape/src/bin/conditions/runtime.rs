@@ -794,17 +794,22 @@ impl Runtime {
                 if mode == RestartMode::Exit {
                     // The guest unwinds to the restart's region, running cleanup on the way.
                     self.event(&key, Action::ExitSelected { scope, reply });
-                    self.run
+                    let mut request = self
+                        .run
                         .pending_host_call()
-                        .ok_or(Error::Abi("exit requires a pending request"))?
-                        .throw(
-                            self.exit,
-                            vec![
-                                Value::I64(scope_value(scope)),
-                                Value::I64(reply.value),
-                                Value::Bool(reply.flag),
-                            ],
-                        )?;
+                        .ok_or(Error::Abi("exit requires a pending request"))?;
+                    let exit = request
+                        .context()
+                        .tag(self.exit)
+                        .ok_or(Error::Abi("the program declares the exit tag"))?;
+                    request.throw(
+                        exit,
+                        vec![
+                            Value::I64(scope_value(scope)),
+                            Value::I64(reply.value),
+                            Value::Bool(reply.flag),
+                        ],
+                    )?;
                 } else {
                     match after {
                         AfterRestart::Guest => self.complete(values)?,

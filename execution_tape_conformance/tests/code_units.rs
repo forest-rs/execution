@@ -595,8 +595,9 @@ fn a_host_request_can_call_back_into_another_unit() {
 /// a region catching `boom` or anything, returning the payload or `-1`.
 struct Exceptions {
     program: Arc<VerifiedProgram>,
+    /// `fail(x)` throws `boom(x)`.
     fail: FuncId,
-    typed: FuncId,
+    /// `all(f)` returns `f(7)`, or -1 for any caught exception.
     all: FuncId,
 }
 
@@ -613,84 +614,34 @@ fn exceptions() -> Exceptions {
     let x = b.argument(fail, 0).unwrap();
     b.emit_throw(&mut a, boom, &[x]).unwrap();
     b.define_function(fail, a).unwrap();
-    let mut protect = |typed: bool| {
-        let f = b
-            .declare_function(sig(&[ValueType::Func], &[ValueType::I64]))
-            .unwrap();
-        let mut a = b.function_asm(f).unwrap();
-        let callee = b.argument(f, 0).unwrap();
-        let start = a.label();
-        a.jmp(start);
-        let caught = a.alloc_register(ValueType::I64);
-        let handler = if typed {
-            a.block(&[caught])
-        } else {
-            a.block(&[])
-        };
-        a.place(handler).unwrap();
-        if !typed {
-            a.const_i64(caught, -1);
-        }
-        a.ret(0, &[caught]);
-        a.place(start).unwrap();
-        let seven = a.alloc_register(ValueType::I64);
-        a.const_i64(seven, 7);
-        a.begin_region(&[if typed {
-            Catch::Tag(boom, handler)
-        } else {
-            Catch::All(handler)
-        }]);
-        let [result] = b
-            .emit_call(&mut a, CallTarget::Indirect { signature, callee }, &[seven])
-            .unwrap();
-        a.end_region();
-        a.ret(0, &[result]);
-        b.define_function(f, a).unwrap();
-        f
-    };
-    let typed = protect(true);
-    let all = protect(false);
+
+    let all = b
+        .declare_function(sig(&[ValueType::Func], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(all).unwrap();
+    let callee = b.argument(all, 0).unwrap();
+    let start = a.label();
+    a.jmp(start);
+    let handler = a.block(&[]);
+    a.place(handler).unwrap();
+    let minus = a.alloc_register(ValueType::I64);
+    a.const_i64(minus, -1);
+    a.ret(0, &[minus]);
+    a.place(start).unwrap();
+    let seven = a.alloc_register(ValueType::I64);
+    a.const_i64(seven, 7);
+    a.begin_region(&[Catch::All(handler)]);
+    let [result] = b
+        .emit_call(&mut a, CallTarget::Indirect { signature, callee }, &[seven])
+        .unwrap();
+    a.end_region();
+    a.ret(0, &[result]);
+    b.define_function(all, a).unwrap();
     Exceptions {
         program: Arc::new(b.build_verified().unwrap()),
         fail,
-        typed,
         all,
     }
-}
-
-#[test]
-fn clause_tags_catch_only_their_own_unit_and_catch_all_catches_any() {
-    let fixture = exceptions();
-    let mut vm = Vm::new(NoHost, Limits::default());
-    // Two units of the same program: equal tag declarations, distinct units.
-    let thrower = vm.install(Arc::clone(&fixture.program)).unwrap();
-    let catcher = vm.install(Arc::clone(&fixture.program)).unwrap();
-    let run = |vm: &mut Vm<NoHost>, unit, entry, target: UnitId| {
-        vm.run(
-            FuncRef::new(unit, entry),
-            &[Value::Func(FuncRef::new(target, fixture.fail))],
-            TraceMask::NONE,
-            None,
-        )
-    };
-    assert_eq!(
-        run(&mut vm, catcher, fixture.typed, catcher).unwrap(),
-        [Value::I64(7)],
-        "a unit's clause catches its own tag"
-    );
-    let error = run(&mut vm, catcher, fixture.typed, thrower).unwrap_err();
-    let Trap::Uncaught(exception) = &error.trap else {
-        panic!("another unit's tag is not this unit's `boom`: {error}");
-    };
-    assert_eq!(exception.unit(), thrower);
-    assert_eq!(exception.origin().unit, thrower);
-    assert_eq!(exception.name(), "boom");
-    assert_eq!(error.unit, thrower, "the trap is located at the throw");
-    assert_eq!(
-        run(&mut vm, catcher, fixture.all, thrower).unwrap(),
-        [Value::I64(-1)],
-        "catch-all reaches exceptions from any unit"
-    );
 }
 
 #[test]

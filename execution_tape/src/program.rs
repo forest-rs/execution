@@ -518,6 +518,11 @@ pub struct Program {
     pub call_sigs: Vec<CallSigEntry>,
     /// Program-owned exception tags, indexed by [`TagId`].
     pub tags: Vec<TagEntry>,
+    /// Tags imported rather than defined, in increasing order.
+    ///
+    /// Installing the program binds each to the VM tag defined under its name; every other tag
+    /// becomes a new tag of the installed unit.
+    pub tag_imports: Vec<TagId>,
     /// Packed protected regions; functions reference slices by [`Function::regions`].
     pub regions: Vec<RegionEntry>,
     /// Packed handler clauses; regions reference slices by [`RegionEntry::clauses`].
@@ -1048,6 +1053,7 @@ impl Program {
             const_str_data,
             call_sigs: Vec::new(),
             tags: Vec::new(),
+            tag_imports: Vec::new(),
             regions: Vec::new(),
             catch_clauses: Vec::new(),
             region_runs: Vec::new(),
@@ -1388,6 +1394,7 @@ impl Program {
         // 11 = retired argument-shape metadata; 12 = compositional contracts (mandatory)
         // 13 = exception tags (optional)
         // 14 = protected regions (optional)
+        // 15 = tag imports (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1624,6 +1631,16 @@ impl Program {
             write_section(&mut w, SectionTag::Regions, payload.as_slice());
         }
 
+        // tag import section (optional; omitted when every tag is defined by this program)
+        if !self.tag_imports.is_empty() {
+            let mut payload = Writer::new();
+            payload.write_uleb128_u64(self.tag_imports.len() as u64);
+            for tag in &self.tag_imports {
+                payload.write_uleb128_u32(tag.0);
+            }
+            write_section(&mut w, SectionTag::TagImports, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1704,6 +1721,7 @@ enum SectionTag {
     Contracts = 12,
     Tags = 13,
     Regions = 14,
+    TagImports = 15,
 }
 
 impl SectionTag {
@@ -1722,6 +1740,7 @@ impl SectionTag {
             12 => Some(Self::Contracts),
             13 => Some(Self::Tags),
             14 => Some(Self::Regions),
+            15 => Some(Self::TagImports),
             _ => None,
         }
     }
@@ -1834,6 +1853,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_call_sigs = false;
     let mut saw_tags = false;
     let mut saw_regions = false;
+    let mut tag_imports: Option<Vec<TagId>> = None;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -1917,6 +1937,12 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                 }
                 saw_tags = true;
                 tag_defs = decode_tags(payload)?;
+            }
+            Some(SectionTag::TagImports) => {
+                if tag_imports.is_some() {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                tag_imports = Some(decode_tag_imports(payload)?);
             }
             Some(SectionTag::Regions) => {
                 if saw_regions {
@@ -2271,6 +2297,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         const_str_data,
         call_sigs,
         tags,
+        tag_imports: tag_imports.unwrap_or_default(),
         regions,
         catch_clauses,
         region_runs,
@@ -2738,6 +2765,19 @@ fn decode_tags(payload: &[u8]) -> Result<Vec<DecodedTag>, DecodeError> {
             contracts.push(ContractId(r.read_uleb128_u32()?));
         }
         out.push((name, contracts));
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok(out)
+}
+
+fn decode_tag_imports(payload: &[u8]) -> Result<Vec<TagId>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_count(&mut r)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(TagId(r.read_uleb128_u32()?));
     }
     if r.remaining() != 0 {
         return Err(DecodeError::OutOfBounds);

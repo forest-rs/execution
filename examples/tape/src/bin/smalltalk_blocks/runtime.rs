@@ -290,7 +290,11 @@ impl Runtime {
                                 .map(|()| Status::Running);
                         }
                     };
-                    request.throw(self.non_local, vec![Value::I64(home.id), Value::Agg(boxed)])?;
+                    let non_local = request
+                        .context()
+                        .tag(self.non_local)
+                        .expect("the runtime program declares the non-local return tag");
+                    request.throw(non_local, vec![Value::I64(home.id), Value::Agg(boxed)])?;
                 } else {
                     let error = CannotReturn {
                         block: site.location,
