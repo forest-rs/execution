@@ -9,10 +9,11 @@ use super::*;
 use crate::contract::{
     Contract, ContractHasher, ContractId, ContractMismatch, ContractPath, ContractViolation,
 };
-use crate::value::AggType;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
+
+use crate::contract::AggDescriptor as AggType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Fact {
@@ -617,7 +618,7 @@ impl<'a> Arena<'a> {
                         return Err(ContractViolation {
                             contract: frame.expected,
                             path: path.clone(),
-                            mismatch: ContractMismatch::Aggregate {
+                            mismatch: ContractMismatch::Schema {
                                 expected: expected_descriptor,
                                 actual: match actual.descriptor {
                                     Descriptor::Aggregate(value) => value,

@@ -251,6 +251,7 @@ impl<S: AccessSink + ?Sized> AccessSink for alloc::rc::Rc<core::cell::RefCell<S>
 /// The context also carries the optional incremental-execution access sink for hosts whose results
 /// depend on external state.
 pub struct HostContext<'vm, 'access> {
+    unit: &'vm crate::vm::Unit,
     program: &'vm Program,
     host_sig_id: HostSigId,
     aggregates: &'vm AggHeap,
@@ -273,14 +274,15 @@ impl fmt::Debug for HostContext<'_, '_> {
 impl<'vm, 'access> HostContext<'vm, 'access> {
     /// Creates a host context for one VM host call.
     pub(crate) fn new(
-        program: &'vm Program,
+        unit: &'vm crate::vm::Unit,
         host_sig_id: HostSigId,
         aggregates: &'vm AggHeap,
         results: &'access mut HostResults,
         access: Option<&'access mut dyn AccessSink>,
     ) -> Self {
         Self {
-            program,
+            unit,
+            program: unit.program.program(),
             host_sig_id,
             aggregates,
             results,
@@ -785,8 +787,12 @@ mod tests {
 
     #[test]
     fn retained_arguments_are_independent_of_the_source_heap() {
-        let program = crate::asm::ProgramBuilder::new().build();
         let mut heap = AggHeap::new();
+        let unit = crate::vm::Unit::new(
+            Arc::new(crate::asm::ProgramBuilder::new().build_verified().unwrap()),
+            &mut heap,
+        )
+        .unwrap();
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
             .unwrap();
@@ -794,7 +800,7 @@ mod tests {
             crate::vm::DataWork::default(),
             crate::vm::DataWork::default(),
         );
-        let snapshot = HostContext::new(&program, HostSigId(0), &heap, &mut results, None)
+        let snapshot = HostContext::new(&unit, HostSigId(0), &heap, &mut results, None)
             .retain(&[ValueRef::Agg(root)])
             .unwrap();
         heap.clear();

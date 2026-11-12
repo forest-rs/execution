@@ -54,8 +54,8 @@ mod units;
 mod work;
 pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
 use ownership::BorrowedOrOwned;
-pub(crate) use units::UnitTable;
 pub use units::{InstallError, Units};
+pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
 mod payload_tests;
@@ -472,6 +472,8 @@ struct RegBase {
 
 #[derive(Clone, Debug)]
 struct Frame {
+    /// Installed unit whose program this activation runs. It never changes.
+    unit: UnitId,
     /// Current function id.
     func: FuncId,
     /// Current program counter (byte offset).
@@ -1249,6 +1251,7 @@ impl<H: Host> Vm<H> {
         } = scratch;
         let program = Arc::clone(self.entry_program(entry.unit)?);
         let program = &*program;
+        let unit = entry.unit;
         let entry = entry.func;
         budget.reset(&self.limits);
         let original_len = outputs.len();
@@ -1270,11 +1273,11 @@ impl<H: Host> Vm<H> {
                 work: DataWork::default(),
             });
             self.run_body::<WithTracePolicy>(
-                ctx, budget, program, entry, args, outputs, checkpoint, &mut trace, access,
+                ctx, budget, program, unit, entry, args, outputs, checkpoint, &mut trace, access,
             )
         } else {
             self.run_body::<NoTracePolicy>(
-                ctx, budget, program, entry, args, outputs, checkpoint, &mut trace, access,
+                ctx, budget, program, unit, entry, args, outputs, checkpoint, &mut trace, access,
             )
         };
 
@@ -1313,6 +1316,7 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         program: &VerifiedProgram,
+        unit: UnitId,
         entry: FuncId,
         args: &[Value],
         outputs: &mut Vec<Value>,
@@ -1320,7 +1324,7 @@ impl<H: Host> Vm<H> {
         trace: &mut TraceCtx<'_>,
         access: Option<&mut dyn AccessSink>,
     ) -> Result<(), TrapInfo> {
-        self.initialize_run::<P>(ctx, budget, program, entry, args, trace)?;
+        self.initialize_run::<P>(ctx, budget, program, unit, entry, args, trace)?;
         let mut register_state = P::RegisterState::default();
         let first_output = outputs.len();
         let progress = self.execute_loop::<P, false>(
@@ -1355,6 +1359,7 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         program: &VerifiedProgram,
+        unit: UnitId,
         entry: FuncId,
         args: &[Value],
         trace: &mut TraceCtx<'_>,
@@ -1384,10 +1389,11 @@ impl<H: Host> Vm<H> {
         let entry_base = ctx.alloc_frame(entry_vf);
         ctx.init_args(entry_base, entry_vf, args)
             .map_err(|t| ctx.trap(entry, 0, None, t))?;
-        self.check_arg_contracts(ctx, budget, program_ref, entry, entry_vf, entry_base)
+        self.check_arg_contracts(ctx, budget, unit, entry, entry_vf, entry_base)
             .map_err(|t| ctx.trap(entry, 0, entry_vf.span_at_ix(0).map(|id| id.get()), t))?;
         budget.frames += 1;
         ctx.frames.push(Frame {
+            unit,
             func: entry,
             pc: entry_vf.pc_at_ix(0).unwrap_or(0),
             instr_ix: 0,
@@ -1451,9 +1457,9 @@ impl<H: Host> Vm<H> {
                 .checked_sub(1)
                 .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
 
-            let (func_id, pc, instr_ix, base, _byte_len) = {
+            let (unit_id, func_id, pc, instr_ix, base, _byte_len) = {
                 let f = &ctx.frames[frame_index];
-                (f.func, f.pc, f.instr_ix, f.base, f.byte_len)
+                (f.unit, f.func, f.pc, f.instr_ix, f.base, f.byte_len)
             };
 
             let vf = program.verified(func_id).ok_or_else(|| {
@@ -2308,18 +2314,12 @@ impl<H: Host> Vm<H> {
                             .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     }
 
-                    self.check_arg_contracts(
-                        ctx,
-                        budget,
-                        program_ref,
-                        *callee,
-                        callee_vf,
-                        callee_base,
-                    )
-                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    self.check_arg_contracts(ctx, budget, unit_id, *callee, callee_vf, callee_base)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
+                        unit: unit_id,
                         func: *callee,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
@@ -2381,16 +2381,8 @@ impl<H: Host> Vm<H> {
                             values: &outputs[output_start..],
                             aggregates: self.memory.aggs(),
                         });
-                        self.check_result_contracts(
-                            ctx,
-                            budget,
-                            program_ref,
-                            func_id,
-                            vf,
-                            base,
-                            rets,
-                        )
-                        .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
+                        self.check_result_contracts(ctx, budget, unit_id, func_id, vf, base, rets)
+                            .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
                         return Ok(Progress::Returned(ReturnSite {
                             location: TraceLocation { func: func_id, pc },
                             span: span_id,
@@ -2400,7 +2392,7 @@ impl<H: Host> Vm<H> {
                     self.check_result_contracts(
                         ctx,
                         budget,
-                        program_ref,
+                        unit_id,
                         func_id,
                         vf,
                         base,
@@ -2544,7 +2536,7 @@ impl<H: Host> Vm<H> {
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
                     let host_ctx = HostContext::new(
-                        program_ref,
+                        self.units.unit(unit_id),
                         *host_sig,
                         self.memory.aggs(),
                         &mut host_results,
@@ -2683,7 +2675,7 @@ impl<H: Host> Vm<H> {
                     self.check_arg_contracts(
                         ctx,
                         budget,
-                        program_ref,
+                        unit_id,
                         callee_func,
                         callee_vf,
                         callee_base,
@@ -2692,6 +2684,7 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
+                        unit: unit_id,
                         func: callee_func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
@@ -2771,7 +2764,7 @@ impl<H: Host> Vm<H> {
                     self.check_arg_contracts(
                         ctx,
                         budget,
-                        program_ref,
+                        unit_id,
                         callee.func,
                         callee_vf,
                         callee_base,
@@ -2788,7 +2781,7 @@ impl<H: Host> Vm<H> {
                         budget
                             .contract_scratch
                             .check_value(
-                                program_ref,
+                                self.units.unit(unit_id),
                                 self.memory.aggs(),
                                 &Value::Agg(callee.env),
                                 environment_contract,
@@ -2813,6 +2806,7 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
+                        unit: unit_id,
                         func: callee.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
@@ -2868,7 +2862,7 @@ impl<H: Host> Vm<H> {
                     budget
                         .contract_scratch
                         .check_value(
-                            program_ref,
+                            self.units.unit(unit_id),
                             self.memory.aggs(),
                             &Value::Agg(closure.env),
                             env_contract,
@@ -2961,10 +2955,15 @@ impl<H: Host> Vm<H> {
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
+                    let shape = self
+                        .units
+                        .unit(unit_id)
+                        .struct_shape(*type_id)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::TypeIdOutOfBounds))?;
                     let h = self
                         .memory
                         .aggs_mut()
-                        .struct_new(*type_id, vals)
+                        .struct_new(shape, vals)
                         .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
@@ -3022,10 +3021,17 @@ impl<H: Host> Vm<H> {
                                 .map_err(|t| ctx.trap(func_id, pc, span_id, t))?,
                         );
                     }
+                    let shape = self
+                        .units
+                        .unit(unit_id)
+                        .array_shape(*elem_type_id)
+                        .ok_or_else(|| {
+                            ctx.trap(func_id, pc, span_id, Trap::ElemTypeIdOutOfBounds)
+                        })?;
                     let h = self
                         .memory
                         .aggs_mut()
-                        .array_new(*elem_type_id, vals)
+                        .array_new(shape, vals)
                         .map_err(|error| ctx.trap(func_id, pc, span_id, Trap::AggError(error)))?;
                     ctx.write_agg_handle(base, AggReg(dst.0), h);
                     ctx.frames[frame_index].pc = next_pc;
@@ -3547,18 +3553,19 @@ impl<H: Host> Vm<H> {
         &self,
         ctx: &mut Registers,
         budget: &mut Budget,
-        program: &Program,
+        unit: UnitId,
         callee: FuncId,
         vf: &ExecFunc,
         base: RegBase,
     ) -> Result<(), Trap> {
+        let unit = self.units.unit(unit);
         for check in &vf.contract_checks[..vf.arg_check_count as usize] {
             let value =
                 Self::contract_value(ctx, base, vf.reg_layout.arg_regs[check.index as usize]);
             budget
                 .contract_scratch
                 .check_value(
-                    program,
+                    unit,
                     self.memory.aggs(),
                     &value,
                     check.contract,
@@ -3582,18 +3589,19 @@ impl<H: Host> Vm<H> {
         &self,
         ctx: &mut Registers,
         budget: &mut Budget,
-        program: &Program,
+        unit: UnitId,
         function: FuncId,
         vf: &ExecFunc,
         base: RegBase,
         rets: &[VReg],
     ) -> Result<(), Trap> {
+        let unit = self.units.unit(unit);
         for check in &vf.contract_checks[vf.arg_check_count as usize..] {
             let value = Self::contract_value(ctx, base, rets[check.index as usize]);
             budget
                 .contract_scratch
                 .check_value(
-                    program,
+                    unit,
                     self.memory.aggs(),
                     &value,
                     check.contract,
@@ -3647,6 +3655,10 @@ impl<H: Host> Vm<H> {
     }
 
     /// Returns a mutable reference to the aggregate heap.
+    ///
+    /// The heap also holds the shapes that installed units use. Use [`AggHeap::clear`] or
+    /// [`AggHeap::take_nodes`] to release nodes; replacing the whole heap discards those shapes,
+    /// after which installed units can no longer build or check structs and arrays.
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {
         self.memory.aggs_mut()
     }

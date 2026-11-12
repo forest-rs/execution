@@ -520,6 +520,12 @@ impl Recording {
         self.arena.aggregate(id)
     }
 
+    /// Resolves a struct or array shape named by a recorded [`Aggregate::kind`].
+    #[must_use]
+    pub fn shape(&self, id: crate::value::ShapeId) -> Option<&crate::aggregates::AggShape> {
+        self.arena.shapes.get(id)
+    }
+
     /// Borrows the authoritative VM outcome, when it was retained.
     ///
     /// A capture fault can coexist with a VM trap. Inspect [`Self::status`] separately.

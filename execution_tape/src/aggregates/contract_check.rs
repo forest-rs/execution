@@ -7,6 +7,7 @@ use super::*;
 use crate::contract::{Contract, ContractId, ContractMismatch, ContractPath, ContractViolation};
 use crate::program::ValueType;
 use crate::value::FuncId;
+use crate::vm::Unit;
 use alloc::collections::BTreeSet;
 
 #[derive(Debug)]
@@ -96,22 +97,25 @@ impl ContractScratch {
     #[cfg(test)]
     pub(crate) fn check(
         &mut self,
-        program: &Program,
+        unit: &Unit,
         heap: &AggHeap,
         handle: AggHandle,
         contract: ContractId,
         limit: u64,
     ) -> Result<(), CheckError> {
-        self.check_value(program, heap, &Value::Agg(handle), contract, limit)
+        self.check_value(unit, heap, &Value::Agg(handle), contract, limit)
     }
+    /// Checks `value` against `contract` of `unit`'s program, resolving nominal types through
+    /// the unit's interned shapes in `heap`.
     pub(crate) fn check_value(
         &mut self,
-        program: &Program,
+        unit: &Unit,
         heap: &AggHeap,
         value: &Value,
         contract: ContractId,
         limit: u64,
     ) -> Result<(), CheckError> {
+        let program = unit.program.program();
         self.frames.clear();
         // A kind obligation needs no graph traversal or successful-proof entry. In particular,
         // opaque closure environments must resolve, but do not need a traversal frame to do so.
@@ -282,12 +286,18 @@ impl ContractScratch {
                             },
                             Some(members.len()),
                         ),
-                        Contract::Struct { type_id, fields } => {
-                            (AggType::Struct { type_id }, Some(fields.len()))
-                        }
-                        Contract::Array { elem_type_id, .. } => {
-                            (AggType::Array { elem_type_id }, None)
-                        }
+                        Contract::Struct { type_id, fields } => (
+                            AggType::Struct {
+                                shape: unit.struct_shape(type_id).expect("verified type"),
+                            },
+                            Some(fields.len()),
+                        ),
+                        Contract::Array { elem_type_id, .. } => (
+                            AggType::Array {
+                                shape: unit.array_shape(elem_type_id).expect("verified type"),
+                            },
+                            None,
+                        ),
                         _ => unreachable!(),
                     };
                     if !frame.entered {
@@ -380,8 +390,8 @@ mod tests {
         let closure = builder
             .contract(Contract::Kind(ValueType::Closure))
             .unwrap();
-        let program = builder.build_checked().unwrap();
         let mut heap = AggHeap::new();
+        let program = Unit::new(Arc::new(builder.build_verified().unwrap()), &mut heap).unwrap();
         let handle = heap.tuple_new(vec![]).unwrap();
         let mut scratch = ContractScratch::default();
         // Opaque callable kinds do not promise target identity or a valid captured environment.

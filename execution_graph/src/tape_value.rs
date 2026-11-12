@@ -11,8 +11,7 @@ use core::fmt;
 
 use execution_tape::aggregates::{AggError, AggHeap, AggRemap, ValueSnapshot};
 use execution_tape::callable::{Callable, CallableError};
-use execution_tape::program::{ElemTypeId, TypeId};
-use execution_tape::value::{AggHandle, AggType, Value};
+use execution_tape::value::{AggHandle, AggType, ShapeId, Value};
 use execution_tape::verifier::VerifiedProgram;
 
 use crate::TapeError;
@@ -431,16 +430,16 @@ fn aggregate(value: &Value) -> Option<AggHandle> {
 #[derive(Clone, Copy)]
 enum Shape {
     Tuple(usize),
-    Struct(TypeId, usize),
-    Array(ElemTypeId, usize),
+    Struct(ShapeId, usize),
+    Array(ShapeId, usize),
 }
 
 impl Shape {
     fn read(heap: &AggHeap, handle: AggHandle) -> Result<Self, AggError> {
         Ok(match heap.agg_type(handle)? {
             AggType::Tuple { arity } => Self::Tuple(arity as usize),
-            AggType::Struct { type_id } => Self::Struct(type_id, heap.struct_field_count(handle)?),
-            AggType::Array { elem_type_id } => Self::Array(elem_type_id, heap.array_len(handle)?),
+            AggType::Struct { shape } => Self::Struct(shape, heap.struct_field_count(handle)?),
+            AggType::Array { shape } => Self::Array(shape, heap.array_len(handle)?),
         })
     }
     fn len(self) -> usize {
@@ -556,8 +555,14 @@ impl Importer {
             }
             let imported = match shape {
                 Shape::Tuple(_) => target.tuple_new(values)?,
-                Shape::Struct(id, _) => target.struct_new(id, values)?,
-                Shape::Array(id, _) => target.array_new(id, values)?,
+                Shape::Struct(id, _) => {
+                    let id = target.import_shape(source, id)?;
+                    target.struct_new(id, values)?
+                }
+                Shape::Array(id, _) => {
+                    let id = target.import_shape(source, id)?;
+                    target.array_new(id, values)?
+                }
             };
             let original = bundle.origins.nodes[handle.0 as usize];
             let domain = *self.domains.entry(key.0).or_insert_with(|| {

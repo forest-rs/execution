@@ -12,12 +12,13 @@ pub(crate) use contract_check::{CheckError, ContractScratch};
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::program::{ElemTypeId, Program, TypeId};
-use crate::value::{AggHandle, AggType, Value};
+use crate::program::{StructTypeDef, ValueType};
+use crate::value::{AggHandle, AggType, ShapeId, Value};
 
 /// An aggregate heap error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +35,8 @@ pub enum AggError {
     HandleOverflow,
     /// Staged-encoded handle does not resolve to any reachable merged mapping.
     UnresolvedStagedHandle,
+    /// A shape is not interned in this heap, or names the other aggregate kind.
+    UnknownShape,
 }
 
 impl fmt::Display for AggError {
@@ -45,6 +48,7 @@ impl fmt::Display for AggError {
             Self::BadArity => write!(f, "arity mismatch"),
             Self::HandleOverflow => write!(f, "aggregate handle overflow"),
             Self::UnresolvedStagedHandle => write!(f, "unresolved staged aggregate handle"),
+            Self::UnknownShape => write!(f, "aggregate shape is not interned in this heap"),
         }
     }
 }
@@ -59,20 +63,54 @@ pub(crate) fn aggregate_handle(value: &Value) -> Option<AggHandle> {
     }
 }
 
+/// The structural identity of a struct or array: what a [`ShapeId`] stands for.
+///
+/// Struct and array types are structural. Programs refer to them with program-local
+/// [`crate::program::TypeId`]s and [`crate::program::ElemTypeId`]s; a heap interns each
+/// distinct shape once, so equal shapes from independently compiled programs are the same
+/// [`ShapeId`] in that heap.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AggShape {
+    /// A struct with these field names and storage kinds.
+    Struct(StructTypeDef),
+    /// An array whose elements have this storage kind.
+    Array(ValueType),
+}
+
+/// Append-only shape interner, shared by heaps copied from one another until one interns more.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ShapeTable {
+    shapes: Vec<AggShape>,
+    ids: BTreeMap<AggShape, ShapeId>,
+}
+
+impl ShapeTable {
+    /// Interns `shape`, or returns `None` when no further ID is representable.
+    pub(crate) fn intern(&mut self, shape: &AggShape) -> Option<ShapeId> {
+        if let Some(&id) = self.ids.get(shape) {
+            return Some(id);
+        }
+        let id = ShapeId(
+            u32::try_from(self.shapes.len())
+                .ok()
+                .filter(|&id| id < u32::MAX)?,
+        );
+        self.shapes.push(shape.clone());
+        self.ids.insert(shape.clone(), id);
+        Some(id)
+    }
+
+    pub(crate) fn get(&self, id: ShapeId) -> Option<&AggShape> {
+        self.shapes.get(id.0 as usize)
+    }
+}
+
 /// A heap node storing an aggregate value.
 #[derive(Clone, Debug, PartialEq)]
 enum AggNode {
-    Tuple {
-        values: Vec<Value>,
-    },
-    Struct {
-        type_id: TypeId,
-        values: Vec<Value>,
-    },
-    Array {
-        elem_type_id: ElemTypeId,
-        values: Vec<Value>,
-    },
+    Tuple { values: Vec<Value> },
+    Struct { shape: ShapeId, values: Vec<Value> },
+    Array { shape: ShapeId, values: Vec<Value> },
 }
 
 impl AggNode {
@@ -93,20 +131,33 @@ impl AggNode {
             }
         }
     }
+
+    #[inline]
+    fn shape_mut(&mut self) -> Option<&mut ShapeId> {
+        match self {
+            Self::Tuple { .. } => None,
+            Self::Struct { shape, .. } | Self::Array { shape, .. } => Some(shape),
+        }
+    }
 }
 
 /// An immutable aggregate heap.
 ///
-/// v1 uses a simple `Vec`-backed store and returns stable handles.
+/// v1 uses a simple `Vec`-backed store and returns stable handles. Struct and array nodes name
+/// their [`AggShape`] by a [`ShapeId`] interned in this heap; shapes are never removed, including
+/// by [`Self::clear`].
 #[derive(Clone, Debug, Default)]
 pub struct AggHeap {
     nodes: Vec<AggNode>,
+    shapes: Arc<ShapeTable>,
 }
 
 /// Owned values and their reachable aggregate graph, independent of the source heap.
 ///
-/// Snapshots retain exact byte/string contents and sharing between aggregate references.
-/// Host objects remain host-owned handles; function IDs still refer to their original program.
+/// Snapshots retain exact byte/string contents and sharing between aggregate references, and
+/// carry the shapes their struct/array nodes use, so importing translates shapes into the
+/// destination heap. Host objects remain host-owned handles; function IDs still refer to their
+/// original program.
 /// Import into a destination heap before passing snapshot aggregate handles to that VM.
 #[derive(Clone, Debug)]
 pub struct ValueSnapshot {
@@ -188,7 +239,8 @@ impl AggDelta {
         base: &AggHeap,
         mut values: Vec<Value>,
     ) -> Result<ValueSnapshot, AggError> {
-        let mut aggregates = AggHeap::new();
+        // Staged nodes use the base heap's shapes, so the snapshot shares them.
+        let mut aggregates = base.empty_with_shapes();
         copy_roots_into(
             |handle| {
                 let (heap, handle) = self.resolve(base, handle);
@@ -196,6 +248,7 @@ impl AggDelta {
             },
             &mut aggregates,
             &mut values,
+            Ok,
         )?;
         Ok(ValueSnapshot { values, aggregates })
     }
@@ -454,12 +507,16 @@ impl<'a> AggOverlay<'a> {
         }
     }
 
-    /// Allocates a struct in staged storage and returns a staged-encoded handle.
+    /// Allocates a struct of a shape interned in the base heap and returns a staged handle.
+    ///
+    /// Rejects an unknown or array shape with [`AggError::UnknownShape`], and a field count that
+    /// differs from the shape with [`AggError::BadArity`].
     pub fn struct_new(
         &mut self,
-        type_id: TypeId,
+        shape: ShapeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, AggError> {
+        self.base.check_struct_shape(shape, values.len())?;
         for value in &values {
             if let Some(handle) = aggregate_handle(value) {
                 self.agg_type(handle)?;
@@ -467,7 +524,7 @@ impl<'a> AggOverlay<'a> {
         }
         self.staged.check_capacity()?;
         let encoded = self.encode_staged_handle(AggHandle(self.staged.len_u32()))?;
-        self.staged.push(AggNode::Struct { type_id, values });
+        self.staged.push(AggNode::Struct { shape, values });
         Ok(encoded)
     }
 
@@ -487,12 +544,11 @@ impl<'a> AggOverlay<'a> {
         }
     }
 
-    /// Allocates an array in staged storage and returns a staged-encoded handle.
-    pub fn array_new(
-        &mut self,
-        elem_type_id: ElemTypeId,
-        values: Vec<Value>,
-    ) -> Result<AggHandle, AggError> {
+    /// Allocates an array of a shape interned in the base heap and returns a staged handle.
+    ///
+    /// Rejects an unknown or struct shape with [`AggError::UnknownShape`].
+    pub fn array_new(&mut self, shape: ShapeId, values: Vec<Value>) -> Result<AggHandle, AggError> {
+        self.base.check_array_shape(shape)?;
         for value in &values {
             if let Some(handle) = aggregate_handle(value) {
                 self.agg_type(handle)?;
@@ -500,10 +556,7 @@ impl<'a> AggOverlay<'a> {
         }
         self.staged.check_capacity()?;
         let encoded = self.encode_staged_handle(AggHandle(self.staged.len_u32()))?;
-        self.staged.push(AggNode::Array {
-            elem_type_id,
-            values,
-        });
+        self.staged.push(AggNode::Array { shape, values });
         Ok(encoded)
     }
 
@@ -571,7 +624,82 @@ impl AggHeap {
     /// Creates an empty heap.
     #[must_use]
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self::default()
+    }
+
+    /// An empty heap sharing this heap's interned shapes.
+    fn empty_with_shapes(&self) -> Self {
+        Self {
+            nodes: Vec::new(),
+            shapes: Arc::clone(&self.shapes),
+        }
+    }
+
+    /// Interns `shape`, returning the existing ID for an equal shape.
+    ///
+    /// Shapes are never removed. A heap shares its table with snapshots taken from it until
+    /// either side interns a new shape, which then copies the table.
+    pub fn intern_shape(&mut self, shape: AggShape) -> Result<ShapeId, AggError> {
+        if let Some(&id) = self.shapes.ids.get(&shape) {
+            return Ok(id);
+        }
+        Arc::make_mut(&mut self.shapes)
+            .intern(&shape)
+            .ok_or(AggError::HandleOverflow)
+    }
+
+    /// Translates a shape of `source` into this heap, interning it if necessary.
+    ///
+    /// Heaps that still share one shape table (a heap and its snapshots) keep the same ID.
+    pub fn import_shape(&mut self, source: &Self, id: ShapeId) -> Result<ShapeId, AggError> {
+        if Arc::ptr_eq(&self.shapes, &source.shapes) {
+            return Ok(id);
+        }
+        let shape = source.shape(id).ok_or(AggError::UnknownShape)?;
+        if let Some(&id) = self.shapes.ids.get(shape) {
+            return Ok(id);
+        }
+        Arc::make_mut(&mut self.shapes)
+            .intern(shape)
+            .ok_or(AggError::HandleOverflow)
+    }
+
+    /// The shape interned as `id` in this heap.
+    #[must_use]
+    pub fn shape(&self, id: ShapeId) -> Option<&AggShape> {
+        self.shapes.get(id)
+    }
+
+    /// Number of shapes interned in this heap.
+    #[must_use]
+    pub fn shape_count(&self) -> usize {
+        self.shapes.shapes.len()
+    }
+
+    /// Moves every node into a new heap, leaving this heap empty but keeping its shapes.
+    ///
+    /// Shape IDs in the returned heap match this heap's, so its values keep their meaning.
+    #[must_use]
+    pub fn take_nodes(&mut self) -> Self {
+        Self {
+            nodes: core::mem::take(&mut self.nodes),
+            shapes: Arc::clone(&self.shapes),
+        }
+    }
+
+    fn check_struct_shape(&self, shape: ShapeId, fields: usize) -> Result<(), AggError> {
+        match self.shape(shape) {
+            Some(AggShape::Struct(def)) if def.field_types.len() == fields => Ok(()),
+            Some(AggShape::Struct(_)) => Err(AggError::BadArity),
+            _ => Err(AggError::UnknownShape),
+        }
+    }
+
+    fn check_array_shape(&self, shape: ShapeId) -> Result<(), AggError> {
+        match self.shape(shape) {
+            Some(AggShape::Array(_)) => Ok(()),
+            _ => Err(AggError::UnknownShape),
+        }
     }
 
     /// Copies roots and their reachable aggregate graph into an independent owned snapshot.
@@ -615,8 +743,8 @@ impl AggHeap {
     }
 
     pub(crate) fn snapshot_owned(&self, mut values: Vec<Value>) -> Result<ValueSnapshot, AggError> {
-        let mut aggregates = Self::new();
-        self.copy_roots_into(&mut aggregates, &mut values)?;
+        let mut aggregates = self.empty_with_shapes();
+        copy_roots_into(|handle| self.node(handle), &mut aggregates, &mut values, Ok)?;
         Ok(ValueSnapshot { values, aggregates })
     }
 
@@ -625,12 +753,33 @@ impl AggHeap {
     /// Import copies reachable contents and preserves sharing. The heap is unchanged on error.
     pub fn import(&mut self, snapshot: &ValueSnapshot) -> Result<Vec<Value>, AggError> {
         let mut values = snapshot.values.clone();
-        snapshot.aggregates.copy_roots_into(self, &mut values)?;
+        let source = &snapshot.aggregates;
+        if Arc::ptr_eq(&source.shapes, &self.shapes) {
+            copy_roots_into(|handle| source.node(handle), self, &mut values, Ok)?;
+            return Ok(values);
+        }
+        // Intern every shape the snapshot uses before copying, so a failure leaves no nodes.
+        let mut translated = BTreeMap::new();
+        for node in &source.nodes {
+            let (AggNode::Struct { shape, .. } | AggNode::Array { shape, .. }) = node else {
+                continue;
+            };
+            if !translated.contains_key(shape) {
+                translated.insert(*shape, self.import_shape(source, *shape)?);
+            }
+        }
+        copy_roots_into(
+            |handle| source.node(handle),
+            self,
+            &mut values,
+            |shape| {
+                translated
+                    .get(&shape)
+                    .copied()
+                    .ok_or(AggError::UnknownShape)
+            },
+        )?;
         Ok(values)
-    }
-
-    fn copy_roots_into(&self, target: &mut Self, roots: &mut [Value]) -> Result<(), AggError> {
-        copy_roots_into(|handle| self.node(handle), target, roots)
     }
 
     /// Returns the current heap length as `u32`.
@@ -693,10 +842,8 @@ impl AggHeap {
             AggNode::Tuple { values } => Ok(AggType::Tuple {
                 arity: u32::try_from(values.len()).unwrap_or(u32::MAX),
             }),
-            AggNode::Struct { type_id, .. } => Ok(AggType::Struct { type_id: *type_id }),
-            AggNode::Array { elem_type_id, .. } => Ok(AggType::Array {
-                elem_type_id: *elem_type_id,
-            }),
+            AggNode::Struct { shape, .. } => Ok(AggType::Struct { shape: *shape }),
+            AggNode::Array { shape, .. } => Ok(AggType::Array { shape: *shape }),
         }
     }
 
@@ -712,30 +859,31 @@ impl AggHeap {
     /// Allocates a struct aggregate.
     ///
     /// Rejects dangling children and handle overflow. Field schemas are checked separately.
+    ///
+    /// `shape` must be a struct shape interned in this heap with one field per value;
+    /// otherwise this returns [`AggError::UnknownShape`] or [`AggError::BadArity`].
     pub fn struct_new(
         &mut self,
-        type_id: TypeId,
+        shape: ShapeId,
         values: Vec<Value>,
     ) -> Result<AggHandle, AggError> {
+        self.check_struct_shape(shape, values.len())?;
         self.check_children(&values)?;
         self.check_capacity()?;
-        Ok(self.push(AggNode::Struct { type_id, values }))
+        Ok(self.push(AggNode::Struct { shape, values }))
     }
 
     /// Allocates an array aggregate.
     ///
     /// Rejects dangling children and handle overflow. Element schemas are checked separately.
-    pub fn array_new(
-        &mut self,
-        elem_type_id: ElemTypeId,
-        values: Vec<Value>,
-    ) -> Result<AggHandle, AggError> {
+    ///
+    /// `shape` must be an array shape interned in this heap; otherwise this returns
+    /// [`AggError::UnknownShape`].
+    pub fn array_new(&mut self, shape: ShapeId, values: Vec<Value>) -> Result<AggHandle, AggError> {
+        self.check_array_shape(shape)?;
         self.check_children(&values)?;
         self.check_capacity()?;
-        Ok(self.push(AggNode::Array {
-            elem_type_id,
-            values,
-        }))
+        Ok(self.push(AggNode::Array { shape, values }))
     }
 
     /// Returns tuple element `index`.
@@ -805,17 +953,12 @@ impl AggHeap {
     pub fn debug_node(&self, handle: AggHandle) -> Result<String, AggError> {
         Ok(match self.node(handle)? {
             AggNode::Tuple { values } => format!("Tuple({})", values.len()),
-            AggNode::Struct { type_id, values } => {
-                format!("Struct(type_id={}, fields={})", type_id.0, values.len())
+            AggNode::Struct { shape, values } => {
+                format!("Struct(shape={}, fields={})", shape.0, values.len())
             }
-            AggNode::Array {
-                elem_type_id,
-                values,
-            } => format!(
-                "Array(elem_type_id={}, len={})",
-                elem_type_id.0,
-                values.len()
-            ),
+            AggNode::Array { shape, values } => {
+                format!("Array(shape={}, len={})", shape.0, values.len())
+            }
         })
     }
 
@@ -859,6 +1002,7 @@ fn copy_roots_into<'a>(
     node: impl Fn(AggHandle) -> Result<&'a AggNode, AggError>,
     target: &mut AggHeap,
     roots: &mut [Value],
+    mut shape: impl FnMut(ShapeId) -> Result<ShapeId, AggError>,
 ) -> Result<(), AggError> {
     let base_len = target.len_u32();
     let mut indices = BTreeMap::new();
@@ -896,6 +1040,9 @@ fn copy_roots_into<'a>(
     let mut cursor = 0;
     while cursor < pending.len() {
         let mut current = node(AggHandle(pending[cursor]))?.clone();
+        if let Some(id) = current.shape_mut() {
+            *id = shape(*id)?;
+        }
         for value in current.values_mut() {
             remap(value, &mut indices, &mut pending)?;
         }
@@ -904,7 +1051,10 @@ fn copy_roots_into<'a>(
     }
     let delta = AggDelta {
         base_len,
-        staged: AggHeap { nodes },
+        staged: AggHeap {
+            nodes,
+            shapes: Arc::clone(&target.shapes),
+        },
     };
     let remap = delta.merge_into(target, roots)?;
     remap.remap_values_in_place(roots)
@@ -914,6 +1064,25 @@ fn copy_roots_into<'a>(
 mod tests {
     use super::*;
     use crate::value::{Closure, FuncId};
+
+    fn struct_shape(heap: &mut AggHeap, fields: usize) -> ShapeId {
+        heap.intern_shape(AggShape::Struct(StructTypeDef {
+            field_names: (0..fields).map(|i| format!("f{i}")).collect(),
+            field_types: vec![ValueType::I64; fields],
+        }))
+        .unwrap()
+    }
+
+    fn shapes_of(fields: usize) -> AggShape {
+        AggShape::Struct(StructTypeDef {
+            field_names: (0..fields).map(|i| format!("f{i}")).collect(),
+            field_types: vec![ValueType::I64; fields],
+        })
+    }
+
+    fn array_shape(heap: &mut AggHeap, element: ValueType) -> ShapeId {
+        heap.intern_shape(AggShape::Array(element)).unwrap()
+    }
 
     #[test]
     fn staging_promotion_keeps_handles_sharing_and_payload_allocations() {
@@ -1155,18 +1324,17 @@ mod tests {
             }),
         ] {
             let mut heap = AggHeap::new();
+            let st = struct_shape(&mut heap, 1);
+            let arr = array_shape(&mut heap, ValueType::Agg);
             assert_eq!(
                 heap.tuple_new(vec![value.clone()]),
                 Err(AggError::BadHandle)
             );
             assert_eq!(
-                heap.struct_new(TypeId(0), vec![value.clone()]),
+                heap.struct_new(st, vec![value.clone()]),
                 Err(AggError::BadHandle)
             );
-            assert_eq!(
-                heap.array_new(ElemTypeId(0), vec![value]),
-                Err(AggError::BadHandle)
-            );
+            assert_eq!(heap.array_new(arr, vec![value]), Err(AggError::BadHandle));
             assert_eq!(heap.len_u32(), 0);
         }
         let mut base = AggHeap::new();
@@ -1208,10 +1376,13 @@ mod tests {
             .unwrap();
         let any_tuple = b.contract(Contract::Tuple(&[None])).unwrap();
         let empty_tuple = b.contract(Contract::Tuple(&[])).unwrap();
-        let p = b.build_checked().unwrap();
+        let p = b.build_verified().unwrap();
         let mut heap = AggHeap::new();
+        let p = crate::vm::Unit::new(Arc::new(p), &mut heap).unwrap();
+        let st_shape = p.struct_shape(st_type).unwrap();
+        let elem_shape = p.array_shape(elem_type).unwrap();
         let mut scratch = ContractScratch::default();
-        let st = heap.struct_new(st_type, vec![Value::Bool(true)]).unwrap();
+        let st = heap.struct_new(st_shape, vec![Value::Bool(true)]).unwrap();
         assert!(matches!(
             scratch.check(&p, &heap, st, st_contract, 100),
             Err(CheckError::Mismatch(crate::contract::ContractViolation {
@@ -1219,16 +1390,10 @@ mod tests {
                 ..
             }))
         ));
-        let short = heap.struct_new(st_type, vec![]).unwrap();
-        assert!(matches!(
-            scratch.check(&p, &heap, short, st_contract, 100),
-            Err(CheckError::Mismatch(crate::contract::ContractViolation {
-                mismatch: ContractMismatch::Arity { .. },
-                ..
-            }))
-        ));
+        // The heap enforces a struct's field count, so contracts never see a short struct.
+        assert_eq!(heap.struct_new(st_shape, vec![]), Err(AggError::BadArity));
         let array = heap
-            .array_new(elem_type, vec![Value::I64(1), Value::Bool(false)])
+            .array_new(elem_shape, vec![Value::I64(1), Value::Bool(false)])
             .unwrap();
         let Err(CheckError::Mismatch(failure)) = scratch.check(&p, &heap, array, arr_contract, 100)
         else {
@@ -1242,7 +1407,8 @@ mod tests {
                 ..
             }))
         ));
-        let wrong = heap.array_new(ElemTypeId(1), vec![]).unwrap();
+        let other = array_shape(&mut heap, ValueType::Bool);
+        let wrong = heap.array_new(other, vec![]).unwrap();
         assert!(scratch.check(&p, &heap, wrong, arr_contract, 100).is_err());
         let tuple = heap.tuple_new(vec![Value::Bool(false)]).unwrap();
         assert!(scratch.check(&p, &heap, tuple, any_tuple, 100).is_ok());
@@ -1263,8 +1429,9 @@ mod tests {
     #[test]
     fn array_len_get() {
         let mut h = AggHeap::new();
+        let shape = array_shape(&mut h, ValueType::U64);
         let a = h
-            .array_new(ElemTypeId(0), vec![Value::U64(7), Value::U64(8)])
+            .array_new(shape, vec![Value::U64(7), Value::U64(8)])
             .unwrap();
         assert_eq!(h.array_len(a), Ok(2));
         assert_eq!(h.array_get(a, 1), Ok(Value::U64(8)));
@@ -1274,8 +1441,9 @@ mod tests {
     #[test]
     fn struct_get_ref_borrows_field() {
         let mut h = AggHeap::new();
+        let shape = struct_shape(&mut h, 1);
         let st = h
-            .struct_new(TypeId(3), vec![Value::Str("name".into())])
+            .struct_new(shape, vec![Value::Str("name".into())])
             .unwrap();
         assert_eq!(h.struct_get_ref(st, 0), Ok(&Value::Str("name".into())));
         assert_eq!(h.struct_get_ref(st, 1), Err(AggError::OutOfBounds));
@@ -1287,7 +1455,8 @@ mod tests {
         assert_eq!(h.len_u32(), 0);
         let _ = h.tuple_new(vec![]).unwrap();
         assert_eq!(h.len_u32(), 1);
-        let _ = h.array_new(ElemTypeId(0), vec![]).unwrap();
+        let shape = array_shape(&mut h, ValueType::U64);
+        let _ = h.array_new(shape, vec![]).unwrap();
         assert_eq!(h.len_u32(), 2);
     }
 
@@ -1295,7 +1464,8 @@ mod tests {
     fn clear_empties_heap_and_preserves_capacity() {
         let mut h = AggHeap::new();
         let _ = h.tuple_new(vec![Value::I64(1)]).unwrap();
-        let _ = h.struct_new(TypeId(7), vec![Value::Bool(true)]).unwrap();
+        let shape = struct_shape(&mut h, 1);
+        let _ = h.struct_new(shape, vec![Value::Bool(true)]).unwrap();
         let cap_before = h.nodes.capacity();
         assert!(cap_before > 0);
 
@@ -1303,14 +1473,16 @@ mod tests {
 
         assert_eq!(h.len_u32(), 0);
         assert_eq!(h.nodes.capacity(), cap_before);
+        assert_eq!(h.shape(shape), Some(&shapes_of(1)), "clearing keeps shapes");
     }
 
     #[test]
     fn overlay_reads_base_and_staged_by_handle_domain() {
         let mut base = AggHeap::new();
+        let shape = array_shape(&mut base, ValueType::U64);
         let base_tuple = base.tuple_new(vec![Value::I64(11)]).unwrap();
         let base_array = base
-            .array_new(ElemTypeId(3), vec![Value::U64(1), Value::U64(2)])
+            .array_new(shape, vec![Value::U64(1), Value::U64(2)])
             .unwrap();
         let base_len = base.len_u32();
         let mut staged = AggHeap::new();
@@ -1320,7 +1492,7 @@ mod tests {
             .tuple_new(vec![Value::I64(22)])
             .expect("tuple alloc should succeed");
         let staged_array = overlay
-            .array_new(ElemTypeId(4), vec![Value::U64(9)])
+            .array_new(shape, vec![Value::U64(9)])
             .expect("array alloc should succeed");
 
         assert!(staged_tuple.0 >= base_len);
@@ -1335,15 +1507,17 @@ mod tests {
     #[test]
     fn overlay_supports_struct_and_agg_type_across_spaces() {
         let mut base = AggHeap::new();
+        let pair = struct_shape(&mut base, 2);
+        let single = struct_shape(&mut base, 1);
         let base_struct = base
-            .struct_new(TypeId(10), vec![Value::Bool(true), Value::I64(8)])
+            .struct_new(pair, vec![Value::Bool(true), Value::I64(8)])
             .unwrap();
         let base_len = base.len_u32();
         let mut staged = AggHeap::new();
         let mut overlay = AggOverlay::new(&base, base_len, &mut staged);
 
         let staged_struct = overlay
-            .struct_new(TypeId(12), vec![Value::I64(33)])
+            .struct_new(single, vec![Value::I64(33)])
             .expect("struct alloc should succeed");
 
         assert_eq!(overlay.struct_field_count(base_struct), Ok(2));
@@ -1353,15 +1527,11 @@ mod tests {
 
         assert_eq!(
             overlay.agg_type(base_struct),
-            Ok(AggType::Struct {
-                type_id: TypeId(10)
-            })
+            Ok(AggType::Struct { shape: pair })
         );
         assert_eq!(
             overlay.agg_type(staged_struct),
-            Ok(AggType::Struct {
-                type_id: TypeId(12)
-            })
+            Ok(AggType::Struct { shape: single })
         );
     }
 
@@ -1386,13 +1556,14 @@ mod tests {
     fn overlay_allocations_round_trip_through_merge() {
         let mut base = AggHeap::new();
         let _ = base.tuple_new(vec![Value::I64(1)]).unwrap(); // base node 0
+        let pair = struct_shape(&mut base, 2);
 
         let mut delta = AggDelta::for_base(&base);
         let root = {
             let mut overlay = delta.overlay(&base);
             let leaf = overlay.tuple_new(vec![Value::I64(42)]).expect("alloc");
             overlay
-                .struct_new(TypeId(3), vec![Value::Agg(leaf), Value::Agg(AggHandle(0))])
+                .struct_new(pair, vec![Value::Agg(leaf), Value::Agg(AggHandle(0))])
                 .expect("alloc")
         };
 
@@ -1427,12 +1598,12 @@ mod tests {
     fn delta_merge_is_deterministic_for_identical_inputs() {
         let mut base_a = AggHeap::new();
         let _ = base_a.tuple_new(vec![Value::I64(7)]).unwrap();
+        let shape = array_shape(&mut base_a, ValueType::Agg);
         let mut base_b = base_a.clone();
 
         let (delta, root) = staged_delta(&base_a, |o| {
             let leaf = o.tuple_new(vec![Value::I64(1)]).expect("alloc");
-            o.array_new(ElemTypeId(9), vec![Value::Agg(leaf)])
-                .expect("alloc")
+            o.array_new(shape, vec![Value::Agg(leaf)]).expect("alloc")
         });
         let roots = vec![Value::Agg(root)];
 
@@ -1522,6 +1693,7 @@ mod tests {
         let delta = AggDelta {
             base_len,
             staged: AggHeap {
+                shapes: Arc::default(),
                 nodes: vec![AggNode::Tuple {
                     values: vec![Value::Agg(AggHandle(base_len + 99))],
                 }],
@@ -1547,6 +1719,7 @@ mod tests {
         let delta = AggDelta {
             base_len,
             staged: AggHeap {
+                shapes: Arc::default(),
                 nodes: vec![
                     AggNode::Tuple {
                         values: vec![Value::Agg(AggHandle(base_len + 1))],

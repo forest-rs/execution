@@ -115,6 +115,11 @@ Kinds:
 - `Struct(TypeId, [Value])` (fields in the order defined by `TypeId`)
 - `Array(ElemTypeId, [Value])` (homogeneous)
 
+Struct and array identity at runtime is structural. Installing a program in a VM interns each
+`TypeId` (field names and kinds) and `ElemTypeId` (element kind) as a shape of that VM's heap, and
+heap nodes record the shape. Equal layouts from independently compiled programs are therefore the
+same runtime type, and a program-local ID never names another program's layout.
+
 Constraints:
 - Construction and snapshot imports validate handles and preserve acyclicity.
 - There are no guest structural equality/hash operations or aggregate serialization opcodes.
@@ -161,8 +166,9 @@ Preparation translates virtual register IDs into class-local operands. Runtime a
 the corresponding bank base and class-local index, not `base + virtual_register_id`. Unit needs
 no payload address. Arguments and results are explicit register lists in bytecode.
 
-Recursion is allowed, subject to `Limits::max_call_depth`. Function references and nominal type
-IDs are program-local; aggregate handles are heap-local. Raw `Value`s carry no ownership domain.
+Recursion is allowed, subject to `Limits::max_call_depth`. Function references are program-local
+and nominal type IDs are resolved through the installed unit; aggregate handles are heap-local. Raw
+`Value`s carry no ownership domain.
 The graph adapter's owned `TapeValue` snapshots preserve that domain and reject incompatible
 program-local transfers; they do not enable cross-program guest invocation.
 
@@ -455,8 +461,9 @@ from this signature and checked against its concrete body's first argument. `Kin
 Child IDs must refer to earlier definitions. Forward/cyclic or missing references are rejected.
 Equivalent duplicate definitions are normalized on decode, including their signature references.
 Struct refinements must preserve schema field count and each field's kind; array refinements must
-preserve the nominal element kind. These rules apply even to unused definitions. Distinct nominal
-IDs remain distinct when their layouts match. Recursive functions can use finite contract DAGs;
+preserve the nominal element kind. These rules apply even to unused definitions. Verification
+keeps distinct IDs distinct even when their layouts match; this is conservative, because runtime
+checks compare interned shapes, under which equal layouts are the same type. Recursive functions can use finite contract DAGs;
 recursive type equations are not supported.
 
 An unconstrained tuple slot is distinct from a slot with `Kind(Agg)`. Neither proves a nested shape.

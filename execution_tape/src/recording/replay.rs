@@ -286,7 +286,7 @@ impl State {
                 .aggregate(id)
                 .ok_or_else(|| self.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
             let actual_kind = heap.agg_type(handle).map_err(ReplayError::Aggregate)?;
-            if node.kind != actual_kind {
+            if !same_kind(record, node.kind, heap, actual_kind) {
                 return Err(self.mismatch(Divergence::Value {
                     aggregate: Some(id),
                     index: 0,
@@ -444,13 +444,40 @@ fn restore_construction(
             .aggregate(id)
             .ok_or_else(|| state.mismatch(Divergence::UnresolvedAggregate { aggregate: id }))?;
         let values = state.materialize(record, node.values, request.aggregates())?;
+        let kind = match node.kind {
+            AggType::Tuple { .. } => node.kind,
+            AggType::Struct { shape } | AggType::Array { shape } => {
+                let shape = record.shape(shape).ok_or_else(|| {
+                    state.mismatch(Divergence::UnresolvedAggregate { aggregate: id })
+                })?;
+                let shape = request
+                    .intern_shape(shape.clone())
+                    .map_err(ReplayError::Aggregate)?;
+                match node.kind {
+                    AggType::Struct { .. } => AggType::Struct { shape },
+                    _ => AggType::Array { shape },
+                }
+            }
+        };
         let handle = request
-            .restore_host_node(node.kind, values)
+            .restore_host_node(kind, values)
             .map_err(ReplayError::Aggregate)?;
         state.bind(id, handle)?;
     }
     Ok(())
 }
+/// Whether a recorded node kind matches a replayed one, comparing shapes structurally.
+fn same_kind(record: &Recording, recorded: AggType, heap: &AggHeap, actual: AggType) -> bool {
+    match (recorded, actual) {
+        (AggType::Tuple { arity: a }, AggType::Tuple { arity: b }) => a == b,
+        (AggType::Struct { shape: a }, AggType::Struct { shape: b })
+        | (AggType::Array { shape: a }, AggType::Array { shape: b }) => {
+            record.shape(a).is_some_and(|a| heap.shape(b) == Some(a))
+        }
+        _ => false,
+    }
+}
+
 fn check_created(
     record: &Recording,
     state: &mut State,
@@ -1085,11 +1112,18 @@ impl Recording {
             let values = state
                 .borrow_mut()
                 .materialize(self, node.values, vm.aggregates())?;
+            let heap = vm.aggregates_mut();
+            let mut shape = |shape| {
+                let shape = self.shape(shape).ok_or(AggError::UnknownShape)?;
+                heap.intern_shape(shape.clone())
+            };
             let handle = match node.kind {
                 AggType::Tuple { .. } => vm.aggregates_mut().tuple_new(values),
-                AggType::Struct { type_id } => vm.aggregates_mut().struct_new(type_id, values),
-                AggType::Array { elem_type_id } => {
-                    vm.aggregates_mut().array_new(elem_type_id, values)
+                AggType::Struct { shape: id } => {
+                    shape(id).and_then(|id| vm.aggregates_mut().struct_new(id, values))
+                }
+                AggType::Array { shape: id } => {
+                    shape(id).and_then(|id| vm.aggregates_mut().array_new(id, values))
                 }
             }
             .map_err(ReplayError::Aggregate)?;

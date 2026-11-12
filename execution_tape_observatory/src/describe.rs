@@ -394,8 +394,8 @@ fn aggregate(record: &Recording, id: AggregateId) -> String {
     }
     match node.kind {
         AggType::Tuple { .. } => format!("({fields})"),
-        AggType::Struct { type_id } => format!("struct #{} {{{fields}}}", type_id.0),
-        AggType::Array { elem_type_id } => format!("array #{} [{fields}]", elem_type_id.0),
+        AggType::Struct { shape } => format!("struct shape #{} {{{fields}}}", shape.0),
+        AggType::Array { shape } => format!("array shape #{} [{fields}]", shape.0),
     }
 }
 
