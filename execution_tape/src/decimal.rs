@@ -8,7 +8,7 @@
 //! - [`add`]/[`sub`] align both operands to the larger scale by multiplying the smaller-scale
 //!   mantissa by a power of ten, which never discards digits;
 //! - [`cmp`] orders numeric values, so `1.0` and `1.00` compare equal;
-//! - [`rescale`] and [`div`] express the result as an integer quotient `n / d` of non-negative
+//! - [`rescale`] and [`Division`] express the result as an integer quotient `n / d` of non-negative
 //!   magnitudes, divide with remainder, and let the [`DecimalRounding`] mode decide from the sign,
 //!   the remainder and the parity of the truncated quotient whether to add one unit in the last
 //!   place.
@@ -127,36 +127,72 @@ pub(crate) fn rescale(a: Decimal, scale: u8, rounding: DecimalRounding) -> Optio
 }
 
 /// Returns `a / b` at `scale`, rounded once from the exact quotient by `rounding`.
+#[cfg(test)]
 pub(crate) fn div(
     a: Decimal,
     b: Decimal,
     scale: u8,
     rounding: DecimalRounding,
 ) -> Result<Decimal, DecimalError> {
-    let (ma, mb) = (a.mantissa(), b.mantissa());
-    if mb == 0 {
-        return Err(DecimalError::DivisionByZero);
+    Division::new(a, b, scale)?.round(rounding)
+}
+
+/// The exact quotient `a / b` at a result scale, prepared but not yet computed.
+///
+/// Preparation aligns the operands so that the caller can charge [`Self::steps`] before the
+/// division runs.
+pub(crate) struct Division {
+    negative: bool,
+    n: U256,
+    d: U256,
+    scale: u8,
+}
+
+impl Division {
+    /// Aligns `a / b` to `scale`, rejecting a zero divisor or a numerator beyond 256 bits.
+    pub(crate) fn new(a: Decimal, b: Decimal, scale: u8) -> Result<Self, DecimalError> {
+        let (ma, mb) = (a.mantissa(), b.mantissa());
+        if mb == 0 {
+            return Err(DecimalError::DivisionByZero);
+        }
+        // (ma × 10^-sa) / (mb × 10^-sb) at `scale` has mantissa ma × 10^e / mb.
+        let e = i32::from(scale) + i32::from(b.scale()) - i32::from(a.scale());
+        let exponent = usize::try_from(e.unsigned_abs()).map_err(|_| DecimalError::Overflow)?;
+        let mut n = U256::from_u128(ma.unsigned_abs());
+        let mut d = U256::from_u128(mb.unsigned_abs());
+        if e >= 0 {
+            // A non-zero numerator beyond 256 bits divided by `d < 2^128` leaves a quotient of at
+            // least `2^128`, so the result overflows.
+            n = n
+                .checked_mul_pow10(exponent)
+                .ok_or(DecimalError::Overflow)?;
+        } else {
+            // `n <= 2^127`. A divisor beyond 256 bits makes the quotient 0 with remainder `n`, less
+            // than half the divisor; saturating it at `U256::MAX` yields the same quotient,
+            // remainder and comparison, so the rounded result is unchanged.
+            d = d.checked_mul_pow10(exponent).unwrap_or(U256::MAX);
+        }
+        Ok(Self {
+            negative: (ma < 0) != (mb < 0),
+            n,
+            d,
+            scale,
+        })
     }
-    // (ma × 10^-sa) / (mb × 10^-sb) at `scale` has mantissa ma × 10^e / mb.
-    let e = i32::from(scale) + i32::from(b.scale()) - i32::from(a.scale());
-    let exponent = usize::try_from(e.unsigned_abs()).map_err(|_| DecimalError::Overflow)?;
-    let mut n = U256::from_u128(ma.unsigned_abs());
-    let mut d = U256::from_u128(mb.unsigned_abs());
-    if e >= 0 {
-        // A non-zero numerator beyond 256 bits divided by `d < 2^128` leaves a quotient of at
-        // least `2^128`, so the result overflows.
-        n = n
-            .checked_mul_pow10(exponent)
+
+    /// Bit steps of long division needed beyond native 128-bit division: zero when both
+    /// magnitudes fit in 128 bits or the quotient is zero, otherwise the numerator's bit length
+    /// (129 to 256).
+    pub(crate) fn steps(&self) -> u32 {
+        self.n.long_division_steps(self.d)
+    }
+
+    /// Computes the quotient and rounds it once by `rounding`.
+    pub(crate) fn round(self, rounding: DecimalRounding) -> Result<Decimal, DecimalError> {
+        let mantissa = round_quotient(self.negative, self.n, self.d, rounding)
             .ok_or(DecimalError::Overflow)?;
-    } else {
-        // `n <= 2^127`. A divisor beyond 256 bits makes the quotient 0 with remainder `n`, less
-        // than half the divisor; saturating it at `U256::MAX` yields the same quotient,
-        // remainder and comparison, so the rounded result is unchanged.
-        d = d.checked_mul_pow10(exponent).unwrap_or(U256::MAX);
+        Ok(Decimal::new(mantissa, self.scale))
     }
-    let negative = (ma < 0) != (mb < 0);
-    let mantissa = round_quotient(negative, n, d, rounding).ok_or(DecimalError::Overflow)?;
-    Ok(Decimal::new(mantissa, scale))
 }
 
 /// Returns `(sign, |m| × 10^(scale - d.scale))`, or `None` if the magnitude exceeds `u128`.
@@ -310,7 +346,18 @@ impl U256 {
         }
     }
 
+    /// Iterations [`Self::div_rem`] runs for `self / d`: none on the native and trivial paths.
+    fn long_division_steps(self, d: Self) -> u32 {
+        if (self.hi == 0 && d.hi == 0) || self < d {
+            0
+        } else {
+            self.bit_len()
+        }
+    }
+
     /// Returns `(self / d, self % d)`. `d` must be non-zero.
+    ///
+    /// Runs [`Self::long_division_steps`] iterations.
     fn div_rem(self, d: Self) -> (Self, Self) {
         debug_assert!(d != Self::ZERO, "division by zero");
         if self.hi == 0 && d.hi == 0 {
@@ -359,7 +406,7 @@ fn widening_mul(a: u128, b: u128) -> (u128, u128) {
 mod tests {
     extern crate std;
 
-    use super::{DecimalError, U256, add, cmp, div, rescale, sub, widening_mul};
+    use super::{DecimalError, Division, U256, add, cmp, div, rescale, sub, widening_mul};
     use crate::value::{Decimal, DecimalRounding};
     use core::cmp::Ordering;
     use std::sync::OnceLock;
@@ -648,6 +695,19 @@ mod tests {
     }
 
     #[track_caller]
+    #[test]
+    fn long_division_steps_count_the_loop_iterations() {
+        let big = U256 { hi: 1 << 72, lo: 5 };
+        assert_eq!(U256::from_u128(u128::MAX).long_division_steps(U256::ONE), 0);
+        assert_eq!(U256::from_u128(7).long_division_steps(big), 0);
+        assert_eq!(big.long_division_steps(U256::from_u128(3)), 128 + 73);
+        assert_eq!(big.long_division_steps(big), 128 + 73);
+        assert_eq!(U256::MAX.long_division_steps(U256::ONE), 256);
+        let ten = Decimal::new(10, 0);
+        assert_eq!(Division::new(ten, ten, 37).unwrap().steps(), 0);
+        assert_eq!(Division::new(ten, ten, 38).unwrap().steps(), 130);
+    }
+
     fn check_div(a: Decimal, b: Decimal, s: u8) {
         for (mode, want) in DecimalRounding::ALL.into_iter().zip(reference_div(a, b, s)) {
             let want = want

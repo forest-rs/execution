@@ -1500,7 +1500,8 @@ impl Asm {
 
     /// Encodes `dec_div dst, a, b, scale, rounding`: `a / b` at the `u64` scale held in register
     /// `scale`, rounded once from the exact quotient (traps on a zero divisor, a scale above 255
-    /// or overflow).
+    /// or overflow). A scaled numerator beyond 128 bits costs one more fuel per long-division
+    /// bit step, up to 256.
     pub fn dec_div(
         &mut self,
         dst: u32,
