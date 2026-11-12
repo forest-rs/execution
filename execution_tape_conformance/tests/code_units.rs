@@ -9,12 +9,13 @@ use execution_tape::{
     callable::Callable,
     contract::{Contract, ContractMismatch, ContractViolation},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
+    host_binding::HostFunctions,
     program::{StructTypeDef, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder},
     trace::{TraceMask, TraceSink},
     value::{AggType, Closure, FuncId, FuncRef, UnitId, Value},
     verifier::VerifiedProgram,
-    vm::{InvocationOptions, Limits, RunStatus, Trap, Vm},
+    vm::{InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm},
 };
 use std::sync::Arc;
 
@@ -728,4 +729,83 @@ fn function_contracts_compare_signatures_of_other_units() {
             ..
         } if function == target
     ));
+}
+
+/// A unit whose `f(x)` returns `bump(x)` from the host.
+fn bumps() -> Arc<VerifiedProgram> {
+    let mut b = ProgramBuilder::new();
+    let bump = b.host_sig_for(
+        "bump",
+        HostSig {
+            args: vec![ValueType::I64],
+            rets: vec![ValueType::I64],
+        },
+    );
+    let f = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut a = b.function_asm(f).unwrap();
+    let x = b.argument(f, 0).unwrap();
+    let [result] = b.emit_call(&mut a, bump, &[x]).unwrap();
+    a.ret(0, &[result]);
+    b.define_function(f, a).unwrap();
+    Arc::new(b.build_verified().unwrap())
+}
+
+fn bump(
+    calls: &mut u32,
+    args: &[ValueRef<'_>],
+    rets: &mut [Value],
+    _: HostContext<'_, '_>,
+) -> Result<u64, HostError> {
+    let [ValueRef::I64(x)] = args else {
+        return Err(HostError::Failed);
+    };
+    *calls += 1;
+    rets[0] = Value::I64(x + 100);
+    Ok(0)
+}
+
+#[test]
+fn one_bound_host_serves_host_calls_from_every_bound_unit() {
+    let (caller, callee) = (bumps(), bumps());
+    let mut functions = HostFunctions::new();
+    functions
+        .register(
+            "bump",
+            HostSig {
+                args: vec![ValueType::I64],
+                rets: vec![ValueType::I64],
+            },
+            bump,
+        )
+        .unwrap();
+    let applies = applies(ValueType::Func);
+    let mut bindings = functions.bind(&caller).unwrap();
+    bindings.bind(&functions, &applies).unwrap();
+    let mut vm = Vm::new(bindings.with_state(0), Limits::default());
+    let apply = vm.install(Arc::clone(&applies)).unwrap();
+    let foreign = vm.install(Arc::clone(&callee)).unwrap();
+    fn run<H: Host>(vm: &mut Vm<H>, apply: UnitId, unit: UnitId) -> Result<Vec<Value>, TrapInfo> {
+        vm.run(
+            FuncRef::new(apply, FuncId(0)),
+            &[Value::Func(FuncRef::new(unit, FuncId(0))), Value::I64(1)],
+            TraceMask::NONE,
+            None,
+        )
+    }
+    let error = run(&mut vm, apply, foreign).unwrap_err();
+    assert!(
+        matches!(&error.trap, Trap::HostCallFailed { error, .. } if matches!(error, HostError::ProgramMismatch)),
+        "an unbound program cannot reach the callbacks: {error}"
+    );
+    drop(vm);
+    bindings.bind(&functions, &callee).unwrap();
+    assert_eq!(bindings.program_count(), 3);
+    let mut vm = Vm::new(bindings.with_state(0), Limits::default());
+    let apply = vm.install(Arc::clone(&applies)).unwrap();
+    let unit = vm.install(Arc::clone(&callee)).unwrap();
+    assert_eq!(apply, UnitId(0));
+    assert_eq!(run(&mut vm, apply, unit).unwrap(), [Value::I64(101)]);
+    assert_eq!(*vm.host().state(), 1, "both units share one host state");
 }

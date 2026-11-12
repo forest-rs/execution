@@ -309,8 +309,10 @@ impl TraceSink for Observe {
             TraceOutcome::Trap(error) if matches!(error.trap, Trap::Uncaught(_)) => "uncaught",
             other => panic!("unexpected scope outcome {other:?}"),
         };
-        self.events
-            .push(format!("exit f{} {outcome} at f{}:{pc}", frame.func.0, func.0));
+        self.events.push(format!(
+            "exit f{} {outcome} at f{}:{pc}",
+            frame.func.0, func.0
+        ));
     }
     fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
         assert!(
