@@ -299,7 +299,13 @@ ordinary boundary checks. Bad admission or a guest trap terminates the whole inv
 
 Reentry first promotes all previous host staging with unchanged handles, avoiding collisions
 with callback allocations. Previously spent work stays charged and future contexts use the
-updated heap/budgets. Unused promoted nodes survive until root commit/rollback. The embedding
+updated heap/budgets. Unused promoted nodes survive until root commit/rollback.
+
+Handles read from any request of an invocation (aggregate, closure and function values among its
+arguments and callback results, and what they reach) stay valid until that invocation commits its
+root or rolls back, so the embedding can keep them and pass them to later `call_guest` or
+`complete` calls. Guest work, callbacks, completions and caught exceptions only append to the
+heap; only root commit compacts it, and a trap or cancellation truncates it. The embedding
 owns scheduling and callback selection; no native Rust stack is captured. Cancellation executes
 no guest code. Exact activation-scoped typed exits are available as described below. Dynamic
 condition dispatch, restart policy and protected cleanup are language-runtime responsibilities;

@@ -348,6 +348,10 @@
 //! Previously staged host aggregates are promoted with unchanged handles before reentry, so
 //! callbacks and later host construction cannot reuse their staged identities. Even unused
 //! promoted nodes remain until root commit/rollback; their existing work stays charged.
+//! Aggregate, closure and function handles read from any request of an invocation (arguments,
+//! callback results and the values they reach) stay valid until the root commits or the
+//! invocation rolls back, so an embedding can keep them and pass them to later `call_guest` or
+//! `complete` calls of the same invocation.
 //!
 //! Invalid callback admission or return traps the whole invocation. Dropping it cancels every
 //! pending level without running guest code. Guest reentry does not capture a native Rust

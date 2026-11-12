@@ -54,8 +54,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ///
     /// The target may belong to any unit of this VM, including one installed while this request
     /// waits; it runs that unit's code, and an unknown unit traps with [`Trap::UnknownUnit`].
-    /// Raw argument handles belong to this VM's heap. Closure arguments exclude the hidden
-    /// environment.
+    /// Raw argument handles belong to this VM's heap; they may be handles read from any earlier
+    /// request of this invocation (see [handle validity](Self#handle-validity)). Closure arguments
+    /// exclude the hidden environment.
     /// Arguments move into the invocation. Their immediate byte/string lengths are charged as
     /// host ingress; result materialization uses the ordinary payload-work budget. Each callback
     /// consumes one hard-fuel unit and shares call-depth, host-call and contract limits with its
@@ -79,7 +80,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Borrows the latest successful callback results without consuming them.
     ///
     /// An empty successful callback yields `Some(&[])`; `None` means no results are available.
-    /// Handles use this request's original heap/code. Inspection spends no guest work.
+    /// Handles use this request's original heap/code and stay valid until the invocation commits
+    /// its root or rolls back. Inspection spends no guest work.
     #[must_use]
     pub fn callback_results(&self) -> Option<&[Value]> {
         self.running
@@ -94,8 +96,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Takes the latest successful callback results belonging to this pending host operation.
     ///
     /// `None` means no callback has returned or the slots were already taken. The host operation
-    /// is still pending; result handles retain this invocation's original heap/code domains.
-    /// Taking values does not retain them independently. Completing the host operation discards
+    /// is still pending; result handles retain this invocation's original heap/code domains and
+    /// may be passed to later `call_guest`/`complete` calls of this invocation, as described
+    /// under [handle validity](Self#handle-validity). Taking values does not retain them
+    /// independently of the invocation. Completing the host operation discards
     /// untaken slots. Use the request context's `retain` for an independent aggregate snapshot.
     pub fn take_callback_results(&mut self) -> Option<Vec<Value>> {
         self.running
