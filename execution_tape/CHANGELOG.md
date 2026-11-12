@@ -16,6 +16,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- List every entered guest activation with `Recording::activations` and `Recording::activation`,
+  without instruction history. Each `Activation` has its entry ordinal (the live
+  `ActivationId::ordinal`), function and unit, caller, parent, depth and entry sequence, and an
+  `ActivationExit` with its location, `ActivationOutcome` (returned, caught, trapped or
+  cancelled) and exit sequence. Sequences place activations among host calls, control commands
+  and callback returns without renumbering them. Migration: no caller changes are required.
+
 - Reach the host from a waiting request with `PendingHostCall::host` and `host_mut`. A driver
   can consult or update its runtime and then complete, dispatch or call back on the same view,
   instead of copying the request out, dropping it, using `Invocation::host_mut` and querying the

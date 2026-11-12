@@ -64,6 +64,8 @@
 //! arena shares ancestry across observations without copying a stack per call. It retains every
 //! entered activation, including ones with no host calls, up to `RecordLimits::call_frames`.
 //! `RecordStats::call_frames` counts this storage. Trap ancestry is pinned before VM unwinding.
+//! [`Recording::activations`] lists those activations in entry order with their exits: where and
+//! how each ended, and where its entry and exit fall in the observation sequence.
 //! Missing call callbacks, rejected entry and failed capture leave stack data explicitly unavailable.
 //! Replay checks captured activation order, caller locations and boundary ancestry as well as values.
 //!
@@ -141,7 +143,7 @@ use core::ops::Range;
 
 pub use capture::Recorder;
 pub use control::{ControlAction, ControlCommand, GuestReturn};
-pub use frames::CallStack;
+pub use frames::{Activation, ActivationExit, ActivationOutcome, CallStack};
 pub use instructions::{
     InstructionCapture, InstructionOutcome, InstructionStatus, InstructionStep,
     RegisterObservations, RegisterWatch,
@@ -577,6 +579,24 @@ impl Recording {
             self.outcome_frame?,
             self.outcome_location()?,
         ))
+    }
+
+    /// Iterates every entered guest activation in entry order, with its exit when observed.
+    ///
+    /// Needs only call-frame observations, not instruction history. Empty when call-frame
+    /// callbacks were not captured or entry was rejected; retention stops at
+    /// [`RecordLimits::call_frames`], which makes the capture incomplete.
+    pub fn activations(&self) -> impl ExactSizeIterator<Item = Activation> + '_ {
+        self.frames
+            .iter()
+            .enumerate()
+            .map(|(ordinal, frame)| frame.view(ordinal))
+    }
+
+    /// Looks up one activation by its entry ordinal.
+    #[must_use]
+    pub fn activation(&self, ordinal: usize) -> Option<Activation> {
+        self.frames.get(ordinal).map(|frame| frame.view(ordinal))
     }
 
     /// Returns used storage counts, not allocator traffic, capacity or RSS.

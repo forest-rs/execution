@@ -1,8 +1,8 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::trace::TraceLocation;
-use crate::value::FuncId;
+use crate::trace::{TraceLocation, TraceOutcome};
+use crate::value::{FuncId, FuncRef};
 use core::num::NonZeroU32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +27,90 @@ pub(crate) struct Frame {
     pub(crate) caller: Option<TraceLocation>,
     pub(crate) parent: Option<FrameId>,
     pub(crate) depth: u32,
+    pub(crate) entered: usize,
+    pub(crate) exit: Option<ActivationExit>,
+}
+
+impl Frame {
+    pub(crate) fn view(&self, ordinal: usize) -> Activation {
+        Activation {
+            ordinal,
+            // A recording describes one unit; its frames all run the recorded unit.
+            func: FuncRef::new(super::RECORDED_UNIT, self.func),
+            caller: self.caller,
+            parent: self.parent.map(FrameId::index),
+            depth: self.depth as usize,
+            entered: self.entered,
+            exit: self.exit,
+        }
+    }
+}
+
+/// One entered guest activation, in entry order.
+///
+/// Recordings retain every activation the invocation entered, including ones that made no host
+/// call, without instruction history. Sequences use the observation order shared by
+/// [`HostCall::sequence`](super::HostCall::sequence), control commands and callback returns:
+/// an activation consumes no sequence number, and observations numbered below its `entered`
+/// happened before it was entered, while the rest happened after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Activation {
+    /// Entry order, counting the root as zero. This is the live invocation's
+    /// [`ActivationId::ordinal`](crate::vm::ActivationId::ordinal) for the same activation.
+    pub ordinal: usize,
+    /// Entered function and the unit that ran it.
+    pub func: FuncRef,
+    /// The instruction that entered this activation: a call, or the host request that called
+    /// back into the guest. `None` for the root.
+    pub caller: Option<TraceLocation>,
+    /// Ordinal of the activation running [`Self::caller`]. `None` for the root.
+    pub parent: Option<usize>,
+    /// Stack depth while it ran; the root activation has depth one.
+    pub depth: usize,
+    /// Observation sequence when it was entered.
+    pub entered: usize,
+    /// How it ended, or `None` when no exit was observed because capture stopped first.
+    pub exit: Option<ActivationExit>,
+}
+
+/// How and where a recorded activation ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActivationExit {
+    /// The instruction that ended it: its own return, or, when a trap, exception or
+    /// cancellation unwound it, the trapping, raising or interrupted instruction. Every
+    /// activation one unwinding passes through reports that same location.
+    pub location: TraceLocation,
+    /// Why it ended.
+    pub outcome: ActivationOutcome,
+    /// Observation sequence when it exited. Observations numbered below it happened before.
+    pub sequence: usize,
+}
+
+/// Why a recorded activation ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationOutcome {
+    /// It returned to its caller, or a callback returned to its host request.
+    Returned,
+    /// An exception passed through it and was caught by an activation at `depth`.
+    Caught {
+        /// Stack depth of the catching activation; the root activation has depth one.
+        depth: usize,
+    },
+    /// It was unwound by a trap. The trap itself is the recording's outcome.
+    Trapped,
+    /// The invocation was cancelled while it was active.
+    Cancelled,
+}
+
+impl ActivationOutcome {
+    pub(crate) fn of(outcome: TraceOutcome<'_>) -> Self {
+        match outcome {
+            TraceOutcome::Ok => Self::Returned,
+            TraceOutcome::Caught { depth } => Self::Caught { depth },
+            TraceOutcome::Trap(_) => Self::Trapped,
+            TraceOutcome::Cancelled => Self::Cancelled,
+        }
+    }
 }
 
 /// Borrowed guest instruction locations from the innermost activation to the root.
