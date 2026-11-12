@@ -4,6 +4,7 @@
 //! Reconstruct control decisions; recompute guest callback results and preserve nested evidence.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -75,6 +76,7 @@ fn fixture() -> Fixture {
     let result = a.alloc_register(ValueType::Agg);
     a.const_i64(number, 11).tuple_new(unused, &[number]);
     let root_host = TraceLocation {
+        unit: UnitId(0),
         func: root,
         pc: a.pc(),
     };
@@ -133,7 +135,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         recorder = recorder.with_instructions(InstructionCapture {
             max_steps,
             watches: vec![RegisterWatch {
-                location: f.root_host,
+                location: f.root_host.into(),
                 registers: vec![1, f.host_result],
             }],
         });
@@ -166,7 +168,10 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         ])
         .unwrap();
     outer
-        .call_guest(Value::Func(f.nested), vec![Value::Agg(staged)])
+        .call_guest(
+            Value::Func(FuncRef::new(UnitId(0), f.nested)),
+            vec![Value::Agg(staged)],
+        )
         .unwrap();
     assert_eq!(
         run.resume(u64::MAX).unwrap(),
@@ -179,7 +184,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
     inner
         .call_guest(
             Value::Closure(Closure {
-                func: f.closure,
+                func: FuncRef::new(UnitId(0), f.closure),
                 env: staged,
             }),
             vec![value],
@@ -402,22 +407,34 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
         let error = if mode == 0 {
             run.pending_host_call()
                 .unwrap()
-                .call_guest(Value::Func(FuncId(u32::MAX)), vec![])
+                .call_guest(
+                    Value::Func(FuncRef::new(UnitId(0), FuncId(u32::MAX))),
+                    vec![],
+                )
                 .unwrap_err()
         } else if mode == 1 {
             run.pending_host_call()
                 .unwrap()
-                .call_guest(Value::Func(f.nested), vec![Value::Bool(false)])
+                .call_guest(
+                    Value::Func(FuncRef::new(UnitId(0), f.nested)),
+                    vec![Value::Bool(false)],
+                )
                 .unwrap_err()
         } else if mode >= 3 {
             run.pending_host_call()
                 .unwrap()
-                .call_guest(Value::Func(f.nested), vec![Value::Agg(input)])
+                .call_guest(
+                    Value::Func(FuncRef::new(UnitId(0), f.nested)),
+                    vec![Value::Agg(input)],
+                )
                 .unwrap_err()
         } else {
             run.pending_host_call()
                 .unwrap()
-                .call_guest(Value::Func(f.nested), vec![Value::Agg(input)])
+                .call_guest(
+                    Value::Func(FuncRef::new(UnitId(0), f.nested)),
+                    vec![Value::Agg(input)],
+                )
                 .unwrap();
             run.resume(u64::MAX).unwrap();
             run.pending_host_call()
@@ -476,7 +493,10 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
         run.resume(u64::MAX).unwrap();
         run.pending_host_call()
             .unwrap()
-            .call_guest(Value::Func(f.nested), vec![Value::Agg(input)])
+            .call_guest(
+                Value::Func(FuncRef::new(UnitId(0), f.nested)),
+                vec![Value::Agg(input)],
+            )
             .unwrap();
         run.resume(u64::MAX).unwrap();
         if return_first {

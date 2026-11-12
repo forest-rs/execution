@@ -157,7 +157,7 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
             source
                 .instrs()
                 .map(|i| RegisterWatch {
-                    location: execution_tape::trace::TraceLocation { func, pc: i.pc() },
+                    location: execution_tape::trace::CodeLocation { func, pc: i.pc() },
                     registers: i
                         .reads()
                         .chain(i.writes())

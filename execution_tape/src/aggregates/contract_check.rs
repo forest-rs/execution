@@ -6,8 +6,8 @@
 use super::*;
 use crate::contract::{Contract, ContractId, ContractMismatch, ContractPath, ContractViolation};
 use crate::program::ValueType;
-use crate::value::FuncId;
-use crate::vm::Unit;
+use crate::value::FuncRef;
+use crate::vm::UnitTable;
 use alloc::collections::BTreeSet;
 
 #[derive(Debug)]
@@ -19,8 +19,8 @@ pub(crate) enum CheckError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Input {
     Aggregate(AggHandle),
-    Function(FuncId),
-    Closure(FuncId, AggHandle),
+    Function(FuncRef),
+    Closure(FuncRef, AggHandle),
 }
 impl Input {
     fn new(value: &Value) -> Option<Self> {
@@ -31,11 +31,12 @@ impl Input {
             _ => None,
         }
     }
-    fn key(self, contract: ContractId) -> (u8, u32, u32, ContractId) {
+    /// A proof key. `contract` is store-canonical, so proofs hold across units.
+    fn key(self, contract: ContractId) -> ProofKey {
         match self {
-            Self::Aggregate(handle) => (0, handle.0, 0, contract),
-            Self::Function(func) => (1, func.0, 0, contract),
-            Self::Closure(func, env) => (2, func.0, env.0, contract),
+            Self::Aggregate(handle) => (0, handle.0, 0, 0, contract),
+            Self::Function(func) => (1, func.unit.0, func.func.0, 0, contract),
+            Self::Closure(func, env) => (2, func.unit.0, func.func.0, env.0, contract),
         }
     }
     fn kind(self) -> ValueType {
@@ -46,9 +47,13 @@ impl Input {
         }
     }
 }
+type ProofKey = (u8, u32, u32, u32, ContractId);
+
 #[derive(Clone, Debug)]
 struct Frame {
     value: Input,
+    /// The unit whose program defines `contract`.
+    unit: crate::value::UnitId,
     contract: ContractId,
     next: usize,
     entered: bool,
@@ -57,7 +62,7 @@ struct Frame {
 #[derive(Debug, Default)]
 pub(crate) struct ContractScratch {
     frames: Vec<Frame>,
-    proven: BTreeSet<(u8, u32, u32, ContractId)>,
+    proven: BTreeSet<ProofKey>,
     work: u64,
 }
 impl ContractScratch {
@@ -97,25 +102,30 @@ impl ContractScratch {
     #[cfg(test)]
     pub(crate) fn check(
         &mut self,
-        unit: &Unit,
+        units: &UnitTable,
+        unit: crate::value::UnitId,
         heap: &AggHeap,
         handle: AggHandle,
         contract: ContractId,
         limit: u64,
     ) -> Result<(), CheckError> {
-        self.check_value(unit, heap, &Value::Agg(handle), contract, limit)
+        self.check_value(units, unit, heap, &Value::Agg(handle), contract, limit)
     }
-    /// Checks `value` against `contract` of `unit`'s program, resolving nominal types through
-    /// the unit's interned shapes in `heap`.
+    /// Checks `value` against `contract` of `unit`'s program.
+    ///
+    /// Nominal types resolve through the unit's interned shapes in `heap`. A callable value may
+    /// belong to another unit: its signature is compared through store-canonical contracts.
     pub(crate) fn check_value(
         &mut self,
-        unit: &Unit,
+        units: &UnitTable,
+        unit: crate::value::UnitId,
         heap: &AggHeap,
         value: &Value,
         contract: ContractId,
         limit: u64,
     ) -> Result<(), CheckError> {
-        let program = unit.program.program();
+        let root = unit;
+        let program = units.unit(root).program.program();
         self.frames.clear();
         // A kind obligation needs no graph traversal or successful-proof entry. In particular,
         // opaque closure environments must resolve, but do not need a traversal frame to do so.
@@ -155,19 +165,25 @@ impl ContractScratch {
         };
         self.frames.push(Frame {
             value: input,
+            unit: root,
             contract,
             next: 0,
             entered: false,
             path: None,
         });
         while let Some(frame) = self.frames.last().cloned() {
+            let unit = units.unit(frame.unit);
+            let program = unit.program.program();
             let contract = program
                 .contracts
                 .get(frame.contract)
                 .expect("verified contract");
             if !frame.entered {
                 self.charge(limit)?;
-                if self.proven.contains(&frame.value.key(frame.contract)) {
+                if self
+                    .proven
+                    .contains(&frame.value.key(unit.canonical(frame.contract)))
+                {
                     self.frames.pop();
                     continue;
                 }
@@ -200,35 +216,30 @@ impl ContractScratch {
                         Input::Closure(function, env) => (function, Some(env)),
                         _ => unreachable!("checked kind"),
                     };
-                    let actual = program.functions.get(function.0 as usize).ok_or_else(|| {
-                        self.failure(
+                    let mismatch = |this: &Self| {
+                        this.failure(
                             frame.contract,
                             None,
                             ContractMismatch::Callable {
                                 function: Some(function),
                             },
                         )
-                    })?;
-                    let actual_args = program.verified_contracts(actual.arg_types);
-                    let actual_rets = program.verified_contracts(actual.ret_types);
+                    };
+                    // The callable may belong to another unit; compare canonical contracts.
+                    let target = units.get(function.unit).ok_or_else(|| mismatch(self))?;
+                    let target_program = target.program.program();
+                    let actual = target_program
+                        .functions
+                        .get(function.func.0 as usize)
+                        .ok_or_else(|| mismatch(self))?;
+                    let actual_args = target_program.verified_contracts(actual.arg_types);
+                    let actual_rets = target_program.verified_contracts(actual.ret_types);
                     let (env_contract, actual_args) = if environment.is_some() {
                         let Some((&env, rest)) = actual_args.split_first() else {
-                            return Err(self.failure(
-                                frame.contract,
-                                None,
-                                ContractMismatch::Callable {
-                                    function: Some(function),
-                                },
-                            ));
+                            return Err(mismatch(self));
                         };
-                        if program.contracts.kind(env) != Some(ValueType::Agg) {
-                            return Err(self.failure(
-                                frame.contract,
-                                None,
-                                ContractMismatch::Callable {
-                                    function: Some(function),
-                                },
-                            ));
+                        if target_program.contracts.kind(env) != Some(ValueType::Agg) {
+                            return Err(mismatch(self));
                         }
                         (Some(env), rest)
                     } else {
@@ -243,28 +254,24 @@ impl ContractScratch {
                             .zip(args.iter().chain(rets))
                         {
                             self.charge(limit)?;
-                            if actual != expected {
+                            if target.canonical(actual) != unit.canonical(expected) {
                                 matches = false;
                                 break;
                             }
                         }
                     }
                     if !matches {
-                        return Err(self.failure(
-                            frame.contract,
-                            None,
-                            ContractMismatch::Callable {
-                                function: Some(function),
-                            },
-                        ));
+                        return Err(mismatch(self));
                     }
                     if frame.next == 0
                         && let Some(env) = environment
                     {
                         self.frames.last_mut().unwrap().next = 1;
                         self.charge(limit)?;
+                        // The body's own contract checks its environment, in its own unit.
                         child = Some((
                             Input::Aggregate(env),
+                            function.unit,
                             env_contract.unwrap(),
                             ContractPath::Environment,
                         ));
@@ -334,7 +341,12 @@ impl ContractScratch {
                         };
                         if let Some(expected) = expected {
                             if let Some(input) = Input::new(&values[index]) {
-                                child = Some((input, expected, ContractPath::Member(index)));
+                                child = Some((
+                                    input,
+                                    frame.unit,
+                                    expected,
+                                    ContractPath::Member(index),
+                                ));
                             } else {
                                 self.charge(limit)?;
                                 let kind =
@@ -357,16 +369,18 @@ impl ContractScratch {
                     }
                 }
             }
-            if let Some((value, contract, path)) = child {
+            if let Some((value, unit, contract, path)) = child {
                 self.frames.push(Frame {
                     value,
+                    unit,
                     contract,
                     next: 0,
                     entered: false,
                     path: Some(path),
                 });
             } else {
-                self.proven.insert(frame.value.key(frame.contract));
+                self.proven
+                    .insert(frame.value.key(unit.canonical(frame.contract)));
                 self.frames.pop();
             }
         }
@@ -379,6 +393,7 @@ mod tests {
     use super::*;
     use crate::asm::ProgramBuilder;
     use crate::value::Closure;
+    use crate::value::{FuncId, UnitId};
     use alloc::vec;
 
     #[test]
@@ -391,34 +406,40 @@ mod tests {
             .contract(Contract::Kind(ValueType::Closure))
             .unwrap();
         let mut heap = AggHeap::new();
-        let program = Unit::new(Arc::new(builder.build_verified().unwrap()), &mut heap).unwrap();
+        let mut units = UnitTable::default();
+        let unit = units
+            .install(Arc::new(builder.build_verified().unwrap()), &mut heap)
+            .unwrap();
         let handle = heap.tuple_new(vec![]).unwrap();
         let mut scratch = ContractScratch::default();
         // Opaque callable kinds do not promise target identity or a valid captured environment.
         for (contract, value) in [
             (integer, Value::I64(42)),
             (aggregate, Value::Agg(handle)),
-            (function, Value::Func(FuncId(u32::MAX))),
+            (
+                function,
+                Value::Func(FuncRef::new(UnitId(0), FuncId(u32::MAX))),
+            ),
             (
                 closure,
                 Value::Closure(Closure {
-                    func: FuncId(u32::MAX),
+                    func: FuncRef::new(UnitId(0), FuncId(u32::MAX)),
                     env: AggHandle(u32::MAX),
                 }),
             ),
         ] {
             scratch.reset();
             assert!(matches!(
-                scratch.check_value(&program, &heap, &value, contract, 0),
+                scratch.check_value(&units, unit, &heap, &value, contract, 0),
                 Err(CheckError::Limit)
             ));
             assert_eq!(scratch.work, 0);
             scratch
-                .check_value(&program, &heap, &value, contract, 1)
+                .check_value(&units, unit, &heap, &value, contract, 1)
                 .unwrap();
             assert_eq!(scratch.work, 1);
             assert!(matches!(
-                scratch.check_value(&program, &heap, &value, contract, 1),
+                scratch.check_value(&units, unit, &heap, &value, contract, 1),
                 Err(CheckError::Limit)
             ));
             assert_eq!(
@@ -434,17 +455,17 @@ mod tests {
         scratch.reset();
         let invalid = Value::Agg(AggHandle(u32::MAX));
         assert!(matches!(
-            scratch.check_value(&program, &heap, &invalid, aggregate, 0),
+            scratch.check_value(&units, unit, &heap, &invalid, aggregate, 0),
             Err(CheckError::Limit)
         ));
         assert!(
-            matches!(scratch.check_value(&program,&heap,&invalid,aggregate,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Heap(AggError::BadHandle),path,..})) if path.is_empty())
+            matches!(scratch.check_value(&units, unit,&heap,&invalid,aggregate,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Heap(AggError::BadHandle),path,..})) if path.is_empty())
         );
         assert_eq!(scratch.work, 1);
         // Type disagreement precedes handle resolution, after exactly one charged visit.
         scratch.reset();
         assert!(
-            matches!(scratch.check_value(&program,&heap,&invalid,integer,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Kind{expected:ValueType::I64,actual:ValueType::Agg},path,..})) if path.is_empty())
+            matches!(scratch.check_value(&units, unit,&heap,&invalid,integer,1),Err(CheckError::Mismatch(ContractViolation{mismatch:ContractMismatch::Kind{expected:ValueType::I64,actual:ValueType::Agg},path,..})) if path.is_empty())
         );
         assert_eq!(scratch.work, 1);
         assert_eq!(scratch.frames.capacity(), 0);
@@ -452,11 +473,11 @@ mod tests {
         scratch.reset();
         for _ in 0..2 {
             scratch
-                .check_value(&program, &heap, &Value::Agg(handle), aggregate, 2)
+                .check_value(&units, unit, &heap, &Value::Agg(handle), aggregate, 2)
                 .unwrap();
         }
         assert!(matches!(
-            scratch.check_value(&program, &heap, &Value::Agg(handle), aggregate, 2),
+            scratch.check_value(&units, unit, &heap, &Value::Agg(handle), aggregate, 2),
             Err(CheckError::Limit)
         ));
         assert_eq!(scratch.work, 2);

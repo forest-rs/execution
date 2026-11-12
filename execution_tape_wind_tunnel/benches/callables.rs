@@ -10,6 +10,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{Closure, Value};
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
 use std::{hint::black_box, time::Duration};
@@ -139,6 +140,8 @@ fn callables(c: &mut Criterion) {
                 } else {
                     Value::I64(42)
                 };
+                // The VM installs this program as its first unit.
+                let target = FuncRef::new(UnitId(0), target);
                 let callee = if closure {
                     let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
                     Value::Closure(Closure { func: target, env })
@@ -217,7 +220,10 @@ fn retained_callables(c: &mut Criterion) {
         let env = heap
             .tuple_new(vec![Value::Str("sixteen bytes!!!".into()); fields])
             .unwrap();
-        let value = Closure { func: body, env };
+        let value = Closure {
+            func: FuncRef::new(UnitId(0), body),
+            env,
+        };
         group.bench_function(BenchmarkId::new("retain_capture", fields), |b| {
             b.iter(|| {
                 black_box(

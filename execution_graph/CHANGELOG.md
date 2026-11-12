@@ -33,6 +33,12 @@ This release has an [MSRV][] of 1.88.
   failure reports the new `TapeError::Install`. Migration: handle `TapeError::Install` in
   exhaustive matches.
 
+- Tape values holding functions or closures name the executor's unit for their node program when
+  imported, so a value published by one executor keeps working in another.
+
+- `TapeError::Trap` boxes its `TrapInfo`, which grew with unit-qualified locations, so graph
+  errors stay small. Migration: dereference the box, or construct it with `Box::new`.
+
 - `Executor::execute` now returns `NodeOutcome<Self::Value, Self::Error>` so deferred tasks carry
   their exact edge-value and error types. Migration: update explicit return annotations in
   custom executors and helpers; inferred `Complete`/`Pending` expressions usually need no

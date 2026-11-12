@@ -13,6 +13,7 @@ use execution_tape::recording::{
 };
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{AggHandle, AggType, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Trap, Vm};
@@ -144,6 +145,7 @@ fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
     assert_eq!(
         record.outcome_location(),
         Some(execution_tape::trace::TraceLocation {
+            unit: UnitId(0),
             func: FuncId(0),
             pc: expected
         })
@@ -167,6 +169,7 @@ fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
     assert_eq!(
         record.outcome_location(),
         Some(execution_tape::trace::TraceLocation {
+            unit: UnitId(0),
             func: trap.func,
             pc: trap.pc
         })
@@ -501,7 +504,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
         )
         .unwrap();
     let inner = Closure {
-        func: FuncId(0),
+        func: FuncRef::new(UnitId(0), FuncId(0)),
         env: array,
     };
     let env = vm
@@ -514,7 +517,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
                     host_type: HostTypeId(123),
                     handle: ObjHandle(987),
                 }),
-                Value::Func(FuncId(0)),
+                Value::Func(FuncRef::new(UnitId(0), FuncId(0))),
             ],
         )
         .unwrap();
@@ -522,7 +525,7 @@ fn float_bits_decimal_scale_objects_and_nested_closure_environments_survive_repl
         &mut vm,
         &p,
         &[Value::Closure(Closure {
-            func: FuncId(0),
+            func: FuncRef::new(UnitId(0), FuncId(0)),
             env,
         })],
     );

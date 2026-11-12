@@ -6,7 +6,7 @@ use crate::resolver::{
 };
 use execution_tape::program::Program;
 use execution_tape::source::{BoundSources, SourceError, SourceMap, SourceRange};
-use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceSink};
+use execution_tape::trace::{CodeLocation, ScopeKind, TraceMask, TraceSink};
 use std::string::String;
 use std::vec::Vec;
 
@@ -77,8 +77,9 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
     pub fn source_location(
         &self,
         program: &Program,
-        location: TraceLocation,
+        location: impl Into<CodeLocation>,
     ) -> Option<SourceRange<'a>> {
+        let location = location.into();
         self.sources
             .as_ref()
             .filter(|sources| core::ptr::eq(sources.program, program))?
@@ -91,7 +92,7 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        location: TraceLocation,
+        location: CodeLocation,
     ) {
         let label = self.resolve_label(program, kind);
         let guard = self.start_scope(program, kind, &label, location);
@@ -140,7 +141,7 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
         program: &Program,
         kind: ScopeKind,
         label: &str,
-        location: TraceLocation,
+        location: CodeLocation,
     ) -> Option<BackendGuard> {
         let function_name = match kind {
             ScopeKind::CallFrame { .. } => "execution_tape.call_frame",
@@ -184,7 +185,7 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         pc: u32,
         _span_id: Option<u64>,
     ) {
-        self.on_scope_enter(program, kind, depth, TraceLocation { func, pc });
+        self.on_scope_enter(program, kind, depth, CodeLocation { func, pc });
     }
 
     fn scope_exit(
@@ -245,7 +246,7 @@ mod tests {
                 caller: None,
             },
             "test",
-            execution_tape::trace::TraceLocation {
+            execution_tape::trace::CodeLocation {
                 func: FuncId(0),
                 pc: 0,
             },

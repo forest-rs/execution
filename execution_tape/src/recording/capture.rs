@@ -3,6 +3,7 @@
 
 use crate::host::ValueRef;
 use crate::program::Program;
+use crate::recording::RECORDED_UNIT;
 use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry, InstructionCapture,
     InstructionOutcome, InstructionStatus, Propagation, RecordLimits, Recording, Thrown,
@@ -15,7 +16,7 @@ use crate::trace::{
     HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask,
     TraceOutcome, TraceSink, ValueEvent,
 };
-use crate::value::FuncId;
+use crate::value::{FuncId, UnitId};
 use crate::verifier::VerifiedProgram;
 use crate::vm::Trap;
 use alloc::sync::Arc;
@@ -47,6 +48,8 @@ pub struct Recorder {
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
     started: bool,
+    /// The VM unit the recorded invocation entered; locations record it as [`RECORDED_UNIT`].
+    unit: Option<UnitId>,
 }
 
 impl Recorder {
@@ -69,6 +72,7 @@ impl Recorder {
             propagations: Vec::new(),
             end: None,
             fault: None,
+            unit: None,
             fault_location: None,
             started: false,
         }
@@ -157,6 +161,22 @@ impl Recorder {
             self.fail(CaptureFault::ProgramMismatch);
         }
         self.fault.is_none()
+    }
+
+    /// Records a VM location as a location of the recorded unit.
+    ///
+    /// A recording describes one unit; replay installs it as [`RECORDED_UNIT`]. Execution in any
+    /// other unit cannot be recorded yet.
+    fn local(&mut self, location: TraceLocation) -> TraceLocation {
+        match self.unit {
+            Some(unit) if unit != location.unit => self.fail(CaptureFault::ForeignUnit),
+            Some(_) => {}
+            None => self.unit = Some(location.unit),
+        }
+        TraceLocation {
+            unit: RECORDED_UNIT,
+            ..location
+        }
     }
 
     fn check_location(&self, location: TraceLocation) -> Result<(), CaptureFault> {
@@ -284,7 +304,7 @@ impl Recorder {
                     .builder
                     .roots(args.iter().map(ValueRef::from_value), aggregates)?;
                 self.entry = Some(Entry {
-                    func: entry,
+                    func: entry.func,
                     args,
                     limits: limits.clone(),
                     work,
@@ -461,6 +481,13 @@ impl TraceSink for Recorder {
         }
     }
     fn wants_registers(&self, location: TraceLocation, _: RegisterPhase) -> bool {
+        if self.unit.is_some_and(|unit| unit != location.unit) {
+            return false;
+        }
+        let location = TraceLocation {
+            unit: RECORDED_UNIT,
+            ..location
+        };
         self.fault.is_none()
             && self.history.as_ref().is_some_and(|h| {
                 h.status != InstructionStatus::Incomplete
@@ -474,6 +501,7 @@ impl TraceSink for Recorder {
         if !self.check(program) || !self.wants_registers(event.location, event.phase) {
             return;
         }
+        let location = self.local(event.location);
         let history = self.history.as_mut().expect("enabled history");
         let index = history.current().expect("pending attempt");
         let watch = history
@@ -491,7 +519,7 @@ impl TraceSink for Recorder {
             .filter(|(reg, _)| wanted.binary_search(reg).is_ok())
         {
             let Some(value) = value else {
-                self.fail_at(CaptureFault::InvalidSequence, Some(event.location));
+                self.fail_at(CaptureFault::InvalidSequence, Some(location));
                 return;
             };
             match self
@@ -500,7 +528,7 @@ impl TraceSink for Recorder {
             {
                 Ok(range) => history.registers.push((reg, range.start)),
                 Err(error) => {
-                    self.fail_at(error, Some(event.location));
+                    self.fail_at(error, Some(location));
                     return;
                 }
             }
@@ -564,7 +592,15 @@ impl TraceSink for Recorder {
         let Some(history) = &mut self.history else {
             return;
         };
-        history.record_instruction(TraceLocation { func, pc }, opcode, self.top);
+        history.record_instruction(
+            TraceLocation {
+                unit: RECORDED_UNIT,
+                func,
+                pc,
+            },
+            opcode,
+            self.top,
+        );
     }
 
     fn instr_end(
@@ -577,6 +613,8 @@ impl TraceSink for Recorder {
         if !self.check(program) {
             return;
         }
+        let location = self.local(location);
+        let next = next.map(|next| self.local(next));
         let Some(history) = &mut self.history else {
             return;
         };
@@ -584,6 +622,11 @@ impl TraceSink for Recorder {
     }
 
     fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
+        if let ValueEvent::Entry { entry, .. } = event {
+            self.unit = Some(entry.unit);
+            self.builder.unit = Some(entry.unit);
+        }
+        let event = event.map_locations(|location| self.local(location));
         let location = match event {
             ValueEvent::Entry { .. } => None,
             ValueEvent::HostCall { location, .. }
@@ -620,7 +663,12 @@ impl TraceSink for Recorder {
         if !self.check(program) {
             return;
         }
-        let location = Some(TraceLocation { func, pc });
+        let caller = caller.map(|caller| self.local(caller));
+        let location = Some(TraceLocation {
+            unit: RECORDED_UNIT,
+            func,
+            pc,
+        });
         let expected_depth = self
             .top
             .map_or(1, |top| self.frames[top.index()].depth.saturating_add(1));
@@ -682,19 +730,19 @@ impl TraceSink for Recorder {
         if !self.check(program) {
             return;
         }
+        let caller = caller.map(|caller| self.local(caller));
+        let location = TraceLocation {
+            unit: RECORDED_UNIT,
+            func,
+            pc,
+        };
         let Some(top) = self.top else {
-            self.fail_at(
-                CaptureFault::InvalidSequence,
-                Some(TraceLocation { func, pc }),
-            );
+            self.fail_at(CaptureFault::InvalidSequence, Some(location));
             return;
         };
         let frame = self.frames[top.index()];
         if (frame.func, frame.caller, frame.depth as usize) != (callee, caller, depth) {
-            self.fail_at(
-                CaptureFault::InvalidSequence,
-                Some(TraceLocation { func, pc }),
-            );
+            self.fail_at(CaptureFault::InvalidSequence, Some(location));
             return;
         }
         if matches!(outcome, TraceOutcome::Trap(_)) && self.outcome_frame.is_none() {
@@ -749,7 +797,11 @@ impl TraceSink for Recorder {
                     && !self.propagations.last().is_some_and(|last| {
                         last.caught.is_none()
                             && self.thrown[last.exception].tag == exception.local_tag()
-                            && self.thrown[last.exception].location == exception.origin()
+                            && self.thrown[last.exception].location
+                                == TraceLocation {
+                                    unit: RECORDED_UNIT,
+                                    ..exception.origin()
+                                }
                             && last.location.func == error.func
                             && last.location.pc == error.pc
                     })
@@ -760,12 +812,16 @@ impl TraceSink for Recorder {
                     self.fail_at(
                         fault,
                         Some(TraceLocation {
+                            unit: RECORDED_UNIT,
                             func: error.func,
                             pc: error.pc,
                         }),
                     );
                 } else {
-                    self.end = Some(End::Trapped(error.clone()));
+                    // Traps in another unit already faulted through its events.
+                    let mut error = error.clone();
+                    error.unit = RECORDED_UNIT;
+                    self.end = Some(End::Trapped(error));
                 }
             }
         }

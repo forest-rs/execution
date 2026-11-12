@@ -16,6 +16,7 @@ use execution_tape::value::AggType;
 use execution_tape::value::Decimal;
 use execution_tape::value::FuncId;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program, verify_program_owned};
 use execution_tape::vm::{Limits, Trap, Vm};
@@ -121,7 +122,6 @@ fn entry_arity_errors_allow_context_reuse() {
     )
     .unwrap();
     assert_eq!(outputs, vec![Value::I64(42)]);
-    let unit = vm.install(program.clone()).unwrap();
     assert!(matches!(
         vm.run(
             FuncRef::new(unit, FuncId(u32::MAX)),
@@ -1941,7 +1941,7 @@ fn vm_traps_call_indirect_on_signature_mismatch() {
     let err = vm
         .run(
             FuncRef::new(unit, caller),
-            &[Value::Func(callee)],
+            &[Value::Func(FuncRef::new(UnitId(0), callee))],
             TraceMask::NONE,
             None,
         )

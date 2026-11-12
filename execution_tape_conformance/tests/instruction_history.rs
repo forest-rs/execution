@@ -13,6 +13,7 @@ use execution_tape::recording::{
 };
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
@@ -207,7 +208,7 @@ fn watches(program: &VerifiedProgram) -> Vec<execution_tape::recording::Register
             source
                 .instrs()
                 .map(|i| execution_tape::recording::RegisterWatch {
-                    location: execution_tape::trace::TraceLocation { func, pc: i.pc() },
+                    location: execution_tape::trace::CodeLocation { func, pc: i.pc() },
                     registers: i.reads().chain(i.writes()).filter(|&r| r != 0).collect(),
                 })
                 .collect::<Vec<_>>()
@@ -437,6 +438,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
     let heap = AggHeap::new();
     let limits = Limits::default();
     let location = TraceLocation {
+        unit: UnitId(0),
         func: FuncId(0),
         pc: 0,
     };
@@ -444,7 +446,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
     recorder.values(
         p.program(),
         ValueEvent::Entry {
-            entry: FuncId(0),
+            entry: FuncRef::new(UnitId(0), FuncId(0)),
             args: &[],
             aggregates: &heap,
             limits: &limits,
@@ -464,6 +466,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
         p.program(),
         ValueEvent::ReturnCandidate {
             location: TraceLocation {
+                unit: UnitId(0),
                 func: FuncId(0),
                 pc: ret,
             },

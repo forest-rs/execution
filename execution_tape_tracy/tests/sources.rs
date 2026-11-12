@@ -10,7 +10,7 @@ use execution_tape::{
         SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping,
         SourcePosition,
     },
-    trace::TraceLocation,
+    trace::CodeLocation,
 };
 use execution_tape_tracy::ProfilingTraceSink;
 
@@ -25,12 +25,12 @@ fn source_binding_is_exact_and_queryable_without_a_tracy_client() {
         .unwrap();
     let mut body = builder.function_asm(function).unwrap();
     let value = body.alloc_register(ValueType::I64);
-    let location = TraceLocation {
+    let location = CodeLocation {
         func: function,
         pc: body.pc(),
     };
     body.const_i64(value, 42);
-    let unmapped = TraceLocation {
+    let unmapped = CodeLocation {
         func: function,
         pc: body.pc(),
     };

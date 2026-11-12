@@ -9,10 +9,11 @@ use super::{
     program::{Compiled, POINTS_TYPE},
 };
 use execution_graph::{NodeAccess, NodeAttempt, NodeTask, TapeValue};
+use execution_tape::trace::CodeLocation;
 use execution_tape::{
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     recording::{InstructionCapture, RecordLimits, Recorder, RegisterWatch},
-    trace::{TraceLocation, TraceSink},
+    trace::TraceSink,
     value::{Obj, ObjHandle, Value},
     vm::{Invocation, InvocationOptions, Limits, RunStatus, Vm},
 };
@@ -74,7 +75,7 @@ impl Guest {
         let watches = body
             .instrs()
             .map(|instruction| RegisterWatch {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: compiled.target.function_id(),
                     pc: instruction.pc(),
                 },
@@ -103,7 +104,7 @@ impl Guest {
                     .yield_host_calls()
                     .trace_owned(mask, capture.clone()),
             )
-            .map_err(SceneError::Vm)?;
+            .map_err(|error| SceneError::Vm(Box::new(error)))?;
         let index = evidence.borrow_mut().start(
             NodeAttempt {
                 node: access.node(),
@@ -130,7 +131,10 @@ impl Guest {
         access: &mut NodeAccess<'_, SceneValue>,
     ) -> Result<Poll<()>, SceneError> {
         let invocation = self.invocation.as_mut().expect("active task");
-        match invocation.resume(u64::MAX).map_err(SceneError::Vm)? {
+        match invocation
+            .resume(u64::MAX)
+            .map_err(|error| SceneError::Vm(Box::new(error)))?
+        {
             RunStatus::AwaitingHost => {}
             RunStatus::Suspended => unreachable!("unbounded quantum"),
             RunStatus::Complete => return Err(SceneError::Expected("asset request before result")),
@@ -175,7 +179,7 @@ impl Guest {
             Err(error) => {
                 request
                     .complete(&mut [], Err(HostError::custom(error)))
-                    .map_err(SceneError::Vm)?;
+                    .map_err(|error| SceneError::Vm(Box::new(error)))?;
                 return Err(SceneError::Expected("failed host completion must trap"));
             }
             Ok(reply) => reply,
@@ -208,8 +212,12 @@ impl Guest {
             Ok(root) => request.complete(&mut [root], Ok(0)),
             Err(error) => request.complete(&mut [], Err(error)),
         }
-        .map_err(SceneError::Vm)?;
-        if invocation.resume(u64::MAX).map_err(SceneError::Vm)? != RunStatus::Complete {
+        .map_err(|error| SceneError::Vm(Box::new(error)))?;
+        if invocation
+            .resume(u64::MAX)
+            .map_err(|error| SceneError::Vm(Box::new(error)))?
+            != RunStatus::Complete
+        {
             return Err(SceneError::Expected("completed asset guest"));
         }
         let work = invocation.data_work();

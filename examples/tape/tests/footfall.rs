@@ -126,7 +126,6 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let taken = branch_target.expect("branch reports its actual target");
 
     let start = runtime.snapshot().next_cursor();
-    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
         vm.run(
             FuncRef::new(unit, ENTRY),
@@ -156,7 +155,6 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     for behavior in [Behavior::Failure, Behavior::InvalidReturn] {
         vm.host_mut().behavior = behavior;
         let start = runtime.snapshot().next_cursor();
-        let unit = vm.install(program.clone()).unwrap();
         vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
             .unwrap_err();
         let trapped = runtime.snapshot_since(start);
@@ -169,7 +167,6 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     }
 
     let start = runtime.snapshot().next_cursor();
-    let unit = vm.install(program.clone()).unwrap();
     vm.run(FuncRef::new(unit, GUEST_TRAP), &[], all, Some(&mut sink))
         .unwrap_err();
     let trapped = runtime.snapshot_since(start);
@@ -280,7 +277,6 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
         vm.host_mut().behavior = Behavior::Failure;
         let start = runtime.snapshot().next_cursor();
-        let unit = vm.install(program.clone()).unwrap();
         vm.run(FuncRef::new(unit, ENTRY), &arguments, mask, Some(&mut sink))
             .unwrap_err();
         let trapped = runtime.snapshot_since(start);
@@ -356,7 +352,6 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     );
     runtime.set_level(InstrumentationLevel::Off);
     let start = runtime.snapshot().next_cursor();
-    let unit = vm.install(program.clone()).unwrap();
     vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
         .unwrap();
     assert!(runtime.snapshot_since(start).events().is_empty());
@@ -456,7 +451,6 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
     let start = runtime.snapshot().next_cursor();
     for _ in 0..100 {
-        let unit = vm.install(program.clone()).unwrap();
         vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
             .unwrap();
     }

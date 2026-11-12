@@ -79,8 +79,8 @@ pub enum TapeError {
     },
     /// The executor's VM could not install a node's program.
     Install(InstallError),
-    /// VM execution trapped.
-    Trap(TrapInfo),
+    /// VM execution trapped. Boxed so graph errors stay small.
+    Trap(Box<TrapInfo>),
 }
 
 impl fmt::Display for TapeError {
@@ -129,7 +129,7 @@ impl fmt::Display for TapeError {
 impl core::error::Error for TapeError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Trap(trap) => Some(trap),
+            Self::Trap(trap) => Some(&**trap),
             Self::Aggregate(error) => Some(error),
             _ => None,
         }
@@ -333,15 +333,12 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
     }
 
     /// The unit running `program`, installing it on first use.
-    fn unit(&mut self, program: &Arc<VerifiedProgram>) -> Result<UnitId, TapeError> {
+    fn unit(&mut self, program: &Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
         let key = Arc::as_ptr(program) as usize;
         if let Some((_, unit)) = self.units.get(&key) {
             return Ok(*unit);
         }
-        let unit = self
-            .vm
-            .install(Arc::clone(program))
-            .map_err(TapeError::Install)?;
+        let unit = self.vm.install(Arc::clone(program))?;
         self.units.insert(key, (Arc::clone(program), unit));
         Ok(unit)
     }
@@ -413,8 +410,10 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
         for (index, input) in inputs.iter().enumerate() {
             input.validate_input(index, &node.program)?;
         }
+        // Inputs scoped to this program name its unit in this executor's VM.
+        let unit = self.unit(&node.program).map_err(TapeError::Install)?;
         for input in inputs {
-            match self.importer.import(input, self.vm.aggregates_mut()) {
+            match self.importer.import(input, unit, self.vm.aggregates_mut()) {
                 Ok(value) => self.args.push(value),
                 Err(error) => {
                     self.clear_workspace();
@@ -429,7 +428,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             entry: node.entry,
         };
         let mut capture = self.observer.begin(invocation);
-        let result = self.execute_owned(node, outputs, access, capture.as_mut());
+        let result = self.execute_owned(node, unit, outputs, access, capture.as_mut());
         if let Some(capture) = capture {
             self.observer
                 .finish(invocation, capture, result.as_ref().copied());
@@ -441,11 +440,11 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
     fn execute_owned<V>(
         &mut self,
         node: &TapeNode,
+        unit: UnitId,
         outputs: &mut Vec<TapeValue>,
         access: &mut NodeAccess<'_, V>,
         capture: Option<&mut O::Sink>,
     ) -> Result<(), TapeError> {
-        let unit = self.unit(&node.program)?;
         let access_count: Cell<usize> = Cell::new(0);
         let mut strict = StrictDepsTrace::new(&access_count);
         let mut sink = TapeAccessSink {
@@ -470,7 +469,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
                 Some(&mut sink),
             )
         };
-        result.map_err(TapeError::Trap)?;
+        result.map_err(|trap| TapeError::Trap(Box::new(trap)))?;
 
         if self.strict_deps
             && let Some(v) = strict.violation()

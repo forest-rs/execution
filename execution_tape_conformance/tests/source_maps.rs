@@ -3,6 +3,7 @@
 
 //! A frontend and headless consumer use source connections through the core API alone.
 
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     program::{ConstEntry, Program, ValueType},
@@ -25,11 +26,13 @@ fn headless_source_lookup_borrows_exact_text_and_byte_coordinates() {
     let mut body = builder.function_asm(function).unwrap();
     let result = body.alloc_register(ValueType::I64);
     let mapped = TraceLocation {
+        unit: UnitId(0),
         func: function,
         pc: body.pc(),
     };
     body.const_i64(result, 42);
     let unmapped = TraceLocation {
+        unit: UnitId(0),
         func: function,
         pc: body.pc(),
     };
@@ -45,7 +48,7 @@ fn headless_source_lookup_borrows_exact_text_and_byte_coordinates() {
             text: snapshot.into(),
         }],
         vec![SourceMapping {
-            location: mapped,
+            location: mapped.into(),
             document: SourceId(0),
             range: start..start + "界".len(),
         }],

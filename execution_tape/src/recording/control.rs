@@ -27,7 +27,7 @@ pub struct ControlCommand<'a> {
 /// An embedding control operation, with values owned by its recording.
 #[derive(Debug)]
 pub enum ControlAction<'a> {
-    /// Run a same-program guest function or closure without completing the pending host call.
+    /// Run a guest function or closure without completing the pending host call.
     CallGuest {
         /// Requested target, observed before admission/contract validation.
         callee: &'a RecordedValue,

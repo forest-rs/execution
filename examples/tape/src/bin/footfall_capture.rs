@@ -7,6 +7,7 @@
 mod demo;
 
 use demo::{Behavior, DemoHost, ENTRY, GUEST_TRAP};
+use execution_tape::trace::CodeLocation;
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncId;
 use execution_tape::value::FuncRef;
@@ -101,7 +102,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
     use execution_tape::source::{
         SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
-    use execution_tape::trace::TraceLocation;
+
     let text = include_str!("../support/footfall_demo.rs");
     let statements: &[(FuncId, &[&str])] = &[
         (
@@ -145,7 +146,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
         for (instruction, statement) in source.instrs().zip(statements) {
             let start = text.find(statement).expect("fixture statement exists");
             mappings.push(SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func,
                     pc: instruction.pc(),
                 },

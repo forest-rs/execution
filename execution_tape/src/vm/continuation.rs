@@ -60,7 +60,7 @@ impl<'a> Continuation<'a> {
             .run_start(self.program.program(), self.entry, self.args.len());
         self.trace
             .values(self.program.program(), || ValueEvent::Entry {
-                entry: self.entry,
+                entry: FuncRef::new(self.unit, self.entry),
                 args: &self.args,
                 aggregates: vm.memory.aggs(),
                 limits: &vm.limits,
@@ -113,7 +113,6 @@ impl Continuation<'_> {
             vm.execute_loop::<WithTracePolicy, true>(
                 &mut self.ctx,
                 budget,
-                &self.program,
                 self.entry,
                 &self.args,
                 &mut self.outputs,
@@ -126,7 +125,6 @@ impl Continuation<'_> {
             vm.execute_loop::<NoTracePolicy, true>(
                 &mut self.ctx,
                 budget,
-                &self.program,
                 self.entry,
                 &self.args,
                 &mut self.outputs,

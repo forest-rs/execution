@@ -56,7 +56,7 @@ enum SceneValue {
 #[derive(Debug)]
 enum SceneError {
     Expected(&'static str),
-    Vm(TrapInfo),
+    Vm(Box<TrapInfo>),
     Aggregate(AggError),
     Tape(TapeError),
     Io(asset_io::LoadError),
@@ -79,7 +79,7 @@ impl fmt::Display for SceneError {
 impl Error for SceneError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Vm(e) => Some(e),
+            Self::Vm(e) => Some(&**e),
             Self::Aggregate(e) => Some(e),
             Self::Tape(e) => Some(e),
             Self::Io(e) => Some(e),

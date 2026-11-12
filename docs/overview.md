@@ -208,16 +208,17 @@ and variance/subtyping are separate capabilities.
   metadata and constants, not a live VM heap.
 
 ### Functions and closures
-- `Func`: a first-class reference to a program function.
+- `Func`: a first-class reference to a function of an installed unit (`FuncRef { unit, func }`).
+  Calling it runs that unit's program, so independently compiled units call each other directly.
 - `Closure { func_id, env }`: a `Func` paired with a captured environment aggregate. When called via
   `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
   only the caller-visible arguments (see the [specification](v1_spec.md)).
 
-Function references belong to their program, and struct/array type IDs are resolved to shapes
+Function references name their installed unit, and struct/array type IDs are resolved to shapes
 interned in the VM heap when a program is installed, so equal layouts are the same runtime type
-across programs. Aggregate handles belong to one heap. Raw `Value`s do not encode those ownership domains. The graph's `TapeValue` adapter owns
-snapshots and rejects program-local values transferred to a different program. It does not provide
-cross-program guest calls.
+across programs. Unit IDs and aggregate handles belong to one VM. The graph's `TapeValue` adapter
+owns snapshots, rejects values scoped to a different program, and names the executor's unit for
+its node program on import.
 
 ## Effects
 Calls use a single reserved Unit register, r0. The verifier requires call/host-call `eff_in`
@@ -285,10 +286,10 @@ producer or unwinding during delivery prevents retry: subsequent resumption repo
 `HostCallAbandoned`, and recording is cancelled/incomplete. Unpolled futures and unused request
 views leave the call pending. Completed callbacks remain ordinary recorded host outcomes, so
 checked replay reproduces rejected arities, kinds and budgets without calling a live host.
-This boundary does not create cross-program guest frames, a language method dictionary or
-recoverable guest exceptions.
+This boundary does not provide a language method dictionary. A host can answer with a function
+value of any installed unit, including one installed while the request waits.
 
-An admitted host request can explicitly reenter a same-program guest function or closure with
+An admitted host request can explicitly reenter a guest function or closure of any unit with
 `call_guest`. It retains the host instruction, original frames, heap, activation identities and
 all hard budgets. The same invocation driver handles nested host waits and further callbacks.
 When a callback returns, `AwaitingHost` identifies the original request again; its callback
@@ -433,7 +434,7 @@ external effects are replayed.
 
 ### Recorded embedding control
 
-A yielded host request can enter a same-program guest function or closure while its original
+A yielded host request can enter a guest function or closure while its original
 host instruction remains pending. The boundary recorder retains that embedding command,
 all promoted staging, and the actual callback return separately from the eventual host outcome.
 Their sequence numbers describe observation order; a callback return does not publish the root

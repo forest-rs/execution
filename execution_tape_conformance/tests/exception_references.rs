@@ -4,6 +4,7 @@
 //! Exception references: `catch_ref`, `catch_all_ref` and `throw_ref`.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{Asm, Catch, FunctionSig, ProgramBuilder},
     disasm::disassemble,
@@ -177,6 +178,7 @@ fn a_rethrow_keeps_the_original_tag_payload_and_throw_site() {
     assert_eq!(
         exception.origin(),
         TraceLocation {
+            unit: UnitId(0),
             func: f.body,
             pc: f.throw_pc
         }
@@ -199,6 +201,7 @@ fn an_exception_raised_during_cleanup_replaces_the_original() {
     assert_eq!(exception.local_tag(), f.other);
     assert_eq!(exception.payload().values(), &[Value::I64(9)]);
     let cleanup = TraceLocation {
+        unit: UnitId(0),
         func: f.cleanup,
         pc: f.cleanup_pc,
     };
@@ -251,7 +254,6 @@ fn catch_ref_binds_the_payload_and_the_reference() {
         .unwrap(),
         [Value::I64(-3)]
     );
-    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
             FuncRef::new(unit, function),

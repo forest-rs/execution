@@ -9,6 +9,7 @@ use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, Value
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program_owned};
 use execution_tape::vm::{ExecutionContext, Limits, Trap, Vm};
@@ -255,7 +256,6 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
         .tuple_new(vec![Value::Agg(good_inner)])
         .unwrap();
     vm.host_mut().0 = Value::Agg(good_outer);
-    let unit = vm.install(prepared.clone()).unwrap();
     assert!(
         vm.run_with_ctx(
             &mut ctx,
@@ -503,7 +503,6 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
         .tuple_new(vec![Value::Bool(false)])
         .unwrap();
     assert_eq!(good, bad);
-    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run_with_ctx(
             &mut ctx,
@@ -750,10 +749,12 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             record.outcome_stack().unwrap().collect::<Vec<_>>(),
             vec![
                 TraceLocation {
+                    unit: UnitId(0),
                     func: target,
                     pc: return_pc
                 },
                 TraceLocation {
+                    unit: UnitId(0),
                     func: entry,
                     pc: call_pc
                 }
@@ -764,13 +765,13 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
         );
         let mut observer = Completions {
             call: TraceLocation {
+                unit: UnitId(0),
                 func: entry,
                 pc: call_pc,
             },
             success: false,
             frames: vec![],
         };
-        let unit = vm.install(program.clone()).unwrap();
         vm.run(
             FuncRef::new(unit, entry),
             &[],
@@ -823,7 +824,7 @@ fn contract_work_limit_has_exact_accounting_and_boundary_context() {
             result.unwrap();
         } else {
             assert!(
-                matches!(result.unwrap_err().trap,Trap::ContractWorkExceeded{function,position:ContractPosition::Argument{index,..},limit:reported} if function==entry && reported==limit && index==u32::from(limit==3))
+                matches!(result.unwrap_err().trap,Trap::ContractWorkExceeded{function,position:ContractPosition::Argument{index,..},limit:reported} if function==FuncRef::new(UnitId(0), entry) && reported==limit && index==u32::from(limit==3))
             );
         }
     }

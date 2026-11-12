@@ -18,6 +18,12 @@ This release has an [MSRV][] of 1.88.
 - Close profiling scopes when a resumable invocation is cancelled. Logical scopes span scheduling
   quanta, so elapsed time includes suspension. ([#205][] by [@waywardmonkeys][])
 
+### Changed
+
+- `ProfilingTraceSink::source_location` accepts any location convertible to the program-local
+  `CodeLocation`, including a `TraceLocation`. Migration: pass a `CodeLocation { func, pc }`
+  where you built a `TraceLocation` without a unit.
+
 ## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.

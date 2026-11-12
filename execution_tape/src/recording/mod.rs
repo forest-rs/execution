@@ -228,7 +228,15 @@ pub enum CaptureFault {
     },
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
+    /// Execution or a function value left the recorded unit. A recording describes one unit.
+    ForeignUnit,
 }
+
+/// The unit every location and function value in a recording names.
+///
+/// A recording describes one installed unit, whatever its ID in the recorded VM. Replay installs
+/// the recorded program as the first unit of a fresh VM, which is this ID.
+pub const RECORDED_UNIT: crate::value::UnitId = crate::value::UnitId(0);
 
 impl core::fmt::Display for CaptureFault {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -547,6 +555,7 @@ impl Recording {
         match self.end.as_ref()? {
             End::Returned => self.candidate.as_ref().map(|(location, _)| *location),
             End::Trapped(trap) => Some(TraceLocation {
+                unit: trap.unit,
                 func: trap.func,
                 pc: trap.pc,
             }),

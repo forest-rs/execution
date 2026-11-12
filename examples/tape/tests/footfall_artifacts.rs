@@ -7,6 +7,7 @@ use execution_tape::program::Program;
 use execution_tape::source::{SourceLimits, SourceMap};
 use execution_tape::trace::TraceLocation;
 use execution_tape::value::FuncId;
+use execution_tape::value::UnitId;
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use footfall::session::capture::CaptureReader;
 use footfall::session::{OwnedLabelValue, OwnedObservation};
@@ -73,6 +74,7 @@ fn saved_capture_resolves_instruction_locations_against_saved_program() {
                 assert_eq!(u32::from(instruction.opcode as u8), number("opcode"));
                 let source = bound
                     .lookup(TraceLocation {
+                        unit: UnitId(0),
                         func: function.id(),
                         pc: instruction.pc,
                     })

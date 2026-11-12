@@ -152,7 +152,6 @@ mod tests {
         assert_eq!(invocation.resume(10).unwrap(), RunStatus::Complete);
         assert_eq!(invocation.work(), work);
         drop(invocation);
-        let unit = vm.install(program.clone()).unwrap();
         // The ordinary unobserved path remains usable without a work observer.
         vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap();

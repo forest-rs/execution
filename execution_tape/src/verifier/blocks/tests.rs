@@ -5,8 +5,7 @@ use super::*;
 use crate::asm::{Asm, FunctionSig, ProgramBuilder};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::trace::{TraceLocation, TraceMask, TraceOutcome, TraceSink};
-use crate::value::FuncRef;
-use crate::value::{Decimal, Value};
+use crate::value::{Decimal, FuncRef, UnitId, Value};
 use crate::vm::{ExecutionContext, Limits, Trap, Vm};
 
 struct NoHost;
@@ -269,7 +268,10 @@ fn all_scalar_and_borrowed_payload_classes_transfer_without_changing_bits() {
                 host_type: HostTypeId(42),
             }),
         ],
-        [Value::Func(FuncId(0)), Value::Func(FuncId(0))],
+        [
+            Value::Func(FuncRef::new(UnitId(0), FuncId(0))),
+            Value::Func(FuncRef::new(UnitId(0), FuncId(0))),
+        ],
     ];
     let values: Vec<_> = pairs.into_iter().flatten().collect();
     let out = run(&p, &values);

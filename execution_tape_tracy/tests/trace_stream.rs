@@ -160,7 +160,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
     use execution_tape::{
         program::Program,
         source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
-        trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome},
+        trace::{CodeLocation, ScopeKind, TraceMask, TraceOutcome},
     };
     struct Observe<'a> {
         sink: ProfilingTraceSink<'a>,
@@ -181,7 +181,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
         ) {
             let source = self
                 .sink
-                .source_location(program, TraceLocation { func, pc })
+                .source_location(program, CodeLocation { func, pc })
                 .expect("scope maps to its own function/PC");
             self.locations
                 .push((func, source.document().name.clone(), source.start().line));
@@ -211,7 +211,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
                 .unwrap()
                 .instructions()
                 .map(|instruction| SourceMapping {
-                    location: TraceLocation {
+                    location: CodeLocation {
                         func: function,
                         pc: instruction.pc,
                     },

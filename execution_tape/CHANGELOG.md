@@ -196,6 +196,19 @@ This release has an [MSRV][] of 1.88.
   reports per-unit metadata. Static verification diagnostics use the new program-local
   `AggDescriptor` through `ContractMismatch::Schema`.
 
+- Call across installed units. Function values and closures hold a `FuncRef`, so independently
+  compiled units call each other with `call.indirect`, and a pending host request can answer with
+  or call back into any unit. Each activation keeps the unit it entered, so installing
+  replacement code leaves suspended frames running their code; `Invocation::install` and
+  `PendingHostCall::install` install while an invocation is suspended, and
+  `PendingHostCall::unit` and `Invocation::units` report units. Indirect calls compare exact
+  contract signatures interned per VM, and callable contracts compare canonical contracts across
+  units. Tags remain local to their unit: `UncaughtException::unit` names it, a `catch tag` clause
+  catches only its own unit's tags, and `catch_all` catches exceptions from any unit. Source maps
+  and recording watches use the new program-local `CodeLocation`. A recording describes one unit,
+  names it `RECORDED_UNIT`, and reports `CaptureFault::ForeignUnit` when execution leaves it.
+  `CallableError::MixedUnits` rejects a closure capturing another unit's functions.
+
 ### Removed
 
 - `Invocation::program_owner`. Every invocation now retains its entry unit's program; use
@@ -221,6 +234,17 @@ This release has an [MSRV][] of 1.88.
   `let unit = vm.install(program)?; vm.run(FuncRef::new(unit, entry), args, mask, trace)`. For a
   callable, install `Arc::clone(callable.program())` and pass that unit. Install outside hot
   loops: installing is not a cache, and each call adds a unit the VM keeps.
+
+- Function values are unit-qualified. `Value::Func`, `ValueRef::Func` and `Closure::func` hold a
+  `FuncRef` instead of a `FuncId`; `TraceLocation` and `TrapInfo` gain a `unit`; and
+  `Trap::CallableSignatureMismatch`, `Trap::ContractMismatch`, `Trap::ContractWorkExceeded` and
+  `ContractMismatch::Callable` name a `FuncRef`. `ValueEvent::Entry::entry` is a `FuncRef`. Trap
+  display includes the unit (`trap at u0:f1 pc=4`). `SourceMapping::location`,
+  `SourceError` locations and `RegisterWatch::location` are `CodeLocation`s, and
+  `BoundSources::lookup`/`context` accept anything convertible to one, including a
+  `TraceLocation`. Migration: build function values with `FuncRef::new(unit, func)` and read
+  `function.func` where a program-local ID is needed; add `unit` to `TraceLocation` literals;
+  use `CodeLocation { func, pc }` for source mappings and watches.
 
 - `AggType::Struct` and `AggType::Array` carry a heap `ShapeId` instead of a program `TypeId` or
   `ElemTypeId`, and `AggHeap::struct_new`, `AggHeap::array_new` and their `AggOverlay` forms take a

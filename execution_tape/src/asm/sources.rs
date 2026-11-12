@@ -72,7 +72,7 @@ impl Asm {
             .instructions
             .iter()
             .map(move |(pc, document, range)| SourceMapping {
-                location: crate::trace::TraceLocation {
+                location: crate::trace::CodeLocation {
                     func: function,
                     pc: *pc,
                 },
@@ -135,7 +135,7 @@ mod tests {
         let bound = sources.bind(program.program()).unwrap();
         let code = disassemble_function(program.program(), entry).unwrap();
         for instruction in code.instrs() {
-            let location = crate::trace::TraceLocation {
+            let location = crate::trace::CodeLocation {
                 func: entry,
                 pc: instruction.pc(),
             };

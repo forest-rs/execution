@@ -4,6 +4,7 @@
 //! Exceptions raised by hosts at their `host_call`.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{Catch, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -152,6 +153,7 @@ fn an_uncaught_host_throw_reports_the_host_call() {
     assert_eq!(
         exception.origin(),
         TraceLocation {
+            unit: UnitId(0),
             func: f.bare,
             pc: f.call_pc
         }

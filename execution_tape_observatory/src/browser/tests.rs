@@ -5,6 +5,8 @@ use super::*;
 use crate::{render_program, render_screen};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::program::{SpanId, ValueType};
+use execution_tape::trace::CodeLocation;
+use execution_tape::value::FuncId;
 
 fn fixture() -> Program {
     let mut builder = ProgramBuilder::new();
@@ -812,7 +814,7 @@ fn frontend_snapshot_is_visible_on_compact_screens_and_follows_diagnostics() {
     use execution_tape::source::{
         SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
-    use execution_tape::trace::TraceLocation;
+
     let (mut program, make, wrong) = nested_fixture(false);
     let offset = program.functions[make.0 as usize].ret_types.offset as usize;
     program.contract_ids[offset] = wrong;
@@ -821,7 +823,7 @@ fn frontend_snapshot_is_visible_on_compact_screens_and_follows_diagnostics() {
         let func = FuncId(u32::try_from(index).unwrap());
         let code = disassemble_function(&program, func).unwrap();
         mappings.extend(code.instrs().map(|instruction| SourceMapping {
-            location: TraceLocation {
+            location: CodeLocation {
                 func,
                 pc: instruction.pc(),
             },

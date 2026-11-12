@@ -3,7 +3,7 @@
 
 //! Terminal-cell layout for the core's structured source context.
 
-use execution_tape::{source::BoundSources, trace::TraceLocation};
+use execution_tape::{source::BoundSources, trace::CodeLocation};
 
 fn escaped(ch: char) -> String {
     if ch.is_control()
@@ -33,10 +33,11 @@ fn safe_label(label: &str) -> String {
 /// Original names/text are escaped so this helper cannot emit terminal control sequences.
 pub(super) fn context_lines(
     sources: BoundSources<'_>,
-    location: TraceLocation,
+    location: impl Into<CodeLocation>,
     max_lines: usize,
     max_columns: usize,
 ) -> Vec<String> {
+    let location = location.into();
     let Some(context) = sources.context(location, max_lines, max_columns) else {
         return vec![format!(
             "Source: no frontend mapping for f{}:{}",
@@ -99,7 +100,7 @@ mod tests {
         body.const_i64(value, 42).ret(0, &[value]);
         builder.define_function(function, body).unwrap();
         let program = builder.build_verified().unwrap();
-        let location = TraceLocation {
+        let location = CodeLocation {
             func: function,
             pc: 0,
         };
@@ -128,7 +129,7 @@ mod tests {
                 "source display must escape controls"
             );
         }
-        let missing = TraceLocation {
+        let missing = CodeLocation {
             pc: u32::MAX,
             ..location
         };

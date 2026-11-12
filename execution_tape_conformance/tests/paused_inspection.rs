@@ -3,7 +3,9 @@
 
 //! Paused source boundaries and object roots remain valid through calls and bank reuse.
 
+use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -93,6 +95,7 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
         assert_eq!(
             frames[1].location,
             TraceLocation {
+                unit: UnitId(0),
                 func: entry,
                 pc: first
             }
@@ -222,7 +225,7 @@ fn paused_call_sites_resolve_to_exact_authored_source() {
             text: text.into(),
         }],
         vec![SourceMapping {
-            location: TraceLocation {
+            location: CodeLocation {
                 func: entry,
                 pc: first,
             },
@@ -450,6 +453,7 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
             assert_eq!(
                 frames[0].caller,
                 Some(TraceLocation {
+                    unit: UnitId(0),
                     func: entry,
                     pc: call_pc
                 })

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
@@ -82,7 +83,7 @@ fn program(parent: bool) -> (VerifiedProgram, FuncId, SourceMap) {
         }],
         [before, after]
             .map(|pc| SourceMapping {
-                location: TraceLocation { func: entry, pc },
+                location: CodeLocation { func: entry, pc },
                 document: SourceId(0),
                 range: 0..text.len(),
             })

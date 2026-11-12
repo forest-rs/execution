@@ -554,7 +554,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut Browser<'_>) {
             )
             .and_then(|(func, instruction)| {
                 view.source_map?
-                    .lookup(execution_tape::trace::TraceLocation {
+                    .lookup(execution_tape::trace::CodeLocation {
                         func,
                         pc: instruction.pc(),
                     })

@@ -226,6 +226,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
                         .result()
                         .and_then(Result::err)
                         .map(|t| TraceLocation {
+                            unit: t.unit,
                             func: t.func,
                             pc: t.pc,
                         })

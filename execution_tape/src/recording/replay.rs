@@ -5,9 +5,11 @@ use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, Program};
 use crate::recording::control::Action;
-use crate::recording::{AggregateId, CallOutcome, CaptureFault, End, RecordedValue, Recording};
+use crate::recording::{
+    AggregateId, CallOutcome, CaptureFault, End, RECORDED_UNIT, RecordedValue, Recording,
+};
 use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent};
-use crate::value::{AggHandle, AggType, Closure, FuncId, Value};
+use crate::value::{AggHandle, AggType, Closure, FuncId, FuncRef, Value};
 use crate::vm::{Trap, TrapInfo, Vm};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
@@ -241,10 +243,14 @@ impl State {
             (RecordedValue::Bytes(a), ValueRef::Bytes(b)) if a.as_ref() == b => None,
             (RecordedValue::Str(a), ValueRef::Str(b)) if a.as_ref() == b => None,
             (RecordedValue::Obj(a), ValueRef::Obj(b)) if *a == b => None,
-            (RecordedValue::Func(a), ValueRef::Func(b)) if *a == b => None,
+            (RecordedValue::Func(a), ValueRef::Func(b))
+                if *a == b.func && b.unit == RECORDED_UNIT =>
+            {
+                None
+            }
             (RecordedValue::Agg(id), ValueRef::Agg(handle)) => Some((*id, handle)),
             (RecordedValue::Closure { func, env }, ValueRef::Closure(value))
-                if *func == value.func =>
+                if *func == value.func.func && value.func.unit == RECORDED_UNIT =>
             {
                 Some((*env, value.env))
             }
@@ -366,7 +372,7 @@ impl State {
                 [match value {
                     RecordedValue::Agg(_) => ValueRef::Agg(handle),
                     RecordedValue::Closure { func, .. } => ValueRef::Closure(Closure {
-                        func: *func,
+                        func: FuncRef::new(RECORDED_UNIT, *func),
                         env: handle,
                     }),
                     _ => unreachable!(),
@@ -384,10 +390,10 @@ impl State {
             RecordedValue::Bytes(value) => Value::Bytes(value.to_vec()),
             RecordedValue::Str(value) => Value::Str(value.as_ref().into()),
             RecordedValue::Obj(value) => Value::Obj(*value),
-            RecordedValue::Func(value) => Value::Func(*value),
+            RecordedValue::Func(value) => Value::Func(FuncRef::new(RECORDED_UNIT, *value)),
             RecordedValue::Agg(id) => Value::Agg(self.bindings[id]),
             RecordedValue::Closure { func, env } => Value::Closure(Closure {
-                func: *func,
+                func: FuncRef::new(RECORDED_UNIT, *func),
                 env: self.bindings[env],
             }),
         })
@@ -723,7 +729,11 @@ impl TraceSink for Check<'_> {
                 == (callee, caller, state.top, depth)
         }) {
             state.boundary = ReplayBoundary::Completion;
-            state.location = caller.or(Some(TraceLocation { func, pc }));
+            state.location = caller.or(Some(TraceLocation {
+                unit: RECORDED_UNIT,
+                func,
+                pc,
+            }));
             state.error = Some(state.mismatch(Divergence::CallStack));
             return;
         }
@@ -758,7 +768,11 @@ impl TraceSink for Check<'_> {
 
     fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
         let mut state = self.state.borrow_mut();
-        state.location = Some(TraceLocation { func, pc });
+        state.location = Some(TraceLocation {
+            unit: RECORDED_UNIT,
+            func,
+            pc,
+        });
         let index = state.instructions;
         state.instructions = state.instructions.saturating_add(1);
         if state.error.is_some() {
@@ -767,7 +781,12 @@ impl TraceSink for Check<'_> {
         if let Some(history) = &self.record.history {
             state.boundary = ReplayBoundary::Instruction { index };
             if let Some(step) = history.steps.get(index) {
-                if step.location != (TraceLocation { func, pc })
+                if step.location
+                    != (TraceLocation {
+                        unit: RECORDED_UNIT,
+                        func,
+                        pc,
+                    })
                     || step.opcode != opcode
                     || step.frame.is_some_and(|frame| Some(frame) != state.top)
                     || step.parent
@@ -1107,6 +1126,7 @@ impl Recording {
         let unit = vm
             .install(Arc::clone(&self.program))
             .expect("a fresh VM can install its first unit");
+        debug_assert_eq!(unit, RECORDED_UNIT, "replay runs the recorded unit");
         for &id in &self.initial {
             let node = self.aggregate(id).expect("complete initial node");
             let values = state
@@ -1159,45 +1179,41 @@ impl Recording {
                     },
                 &mut check,
             );
-        let result = match vm.start_prepaid(
-            crate::value::FuncRef::new(unit, entry.func),
-            &args,
-            options,
-            entry.work,
-        ) {
-            Err(error) => Err(error),
-            Ok(mut invocation) => loop {
-                match invocation.resume(u64::MAX) {
-                    Err(error) => break Err(error),
-                    Ok(crate::vm::RunStatus::Suspended) => {}
-                    Ok(crate::vm::RunStatus::Complete) => {
-                        break Ok(invocation.take_outputs().expect("completed replay outputs"));
-                    }
-                    Ok(crate::vm::RunStatus::AwaitingHost) => {
-                        let mut request = invocation
-                            .pending_host_call()
-                            .expect("yielded replay request");
-                        let outcome = recorded_host.invoke(&mut request)?;
-                        let outcome = match outcome {
-                            Delivery::CallGuest { callee, args } => {
-                                if let Err(error) = request.call_guest(callee, args) {
-                                    break Err(error);
+        let result =
+            match vm.start_prepaid(FuncRef::new(unit, entry.func), &args, options, entry.work) {
+                Err(error) => Err(error),
+                Ok(mut invocation) => loop {
+                    match invocation.resume(u64::MAX) {
+                        Err(error) => break Err(error),
+                        Ok(crate::vm::RunStatus::Suspended) => {}
+                        Ok(crate::vm::RunStatus::Complete) => {
+                            break Ok(invocation.take_outputs().expect("completed replay outputs"));
+                        }
+                        Ok(crate::vm::RunStatus::AwaitingHost) => {
+                            let mut request = invocation
+                                .pending_host_call()
+                                .expect("yielded replay request");
+                            let outcome = recorded_host.invoke(&mut request)?;
+                            let outcome = match outcome {
+                                Delivery::CallGuest { callee, args } => {
+                                    if let Err(error) = request.call_guest(callee, args) {
+                                        break Err(error);
+                                    }
+                                    continue;
                                 }
-                                continue;
+                                Delivery::Host(outcome) => outcome,
+                            };
+                            let (mut values, outcome) = match outcome {
+                                Ok((values, fuel)) => (values, Ok(fuel)),
+                                Err(error) => (Vec::new(), Err(error)),
+                            };
+                            if let Err(error) = request.complete(&mut values, outcome) {
+                                break Err(error);
                             }
-                            Delivery::Host(outcome) => outcome,
-                        };
-                        let (mut values, outcome) = match outcome {
-                            Ok((values, fuel)) => (values, Ok(fuel)),
-                            Err(error) => (Vec::new(), Err(error)),
-                        };
-                        if let Err(error) = request.complete(&mut values, outcome) {
-                            break Err(error);
                         }
                     }
-                }
-            },
-        };
+                },
+            };
         let mut state = state.borrow_mut();
         if let Some(error) = &state.error {
             return Err(error.clone());
@@ -1346,7 +1362,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 signature: b,
                 function: bf,
             },
-        ) => a == b && af == bf,
+        ) => a == b && af.func == bf.func,
         (
             Trap::ContractWorkExceeded {
                 function: af,
@@ -1358,7 +1374,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 position: bp,
                 limit: bl,
             },
-        ) => af == bf && ap == bp && al == bl,
+        ) => af.func == bf.func && ap == bp && al == bl,
 
         (
             Trap::ContractMismatch {
@@ -1371,7 +1387,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
                 position: right_arg,
                 error: be,
             },
-        ) => ac == bc && aa == right_arg && ae == be,
+        ) => ac.func == bc.func && aa == right_arg && ae == be,
         (
             Trap::HostCallFailed {
                 symbol: as_,
@@ -1412,7 +1428,7 @@ mod tests {
     use crate::host::HostSig;
     use crate::program::ValueType;
     use crate::recording::{Call, RecordLimits, Recorder};
-    use crate::value::FuncRef;
+
     use crate::vm::Limits;
     use alloc::vec;
 
@@ -1537,7 +1553,7 @@ mod tests {
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
         run.pending_host_call()
             .unwrap()
-            .call_guest(Value::Func(handler), args.to_vec())
+            .call_guest(Value::Func(FuncRef::new(unit, handler)), args.to_vec())
             .unwrap();
         assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
         let mut request = run.pending_host_call().unwrap();

@@ -36,7 +36,9 @@ pub struct FuncId(pub u32);
 /// [`crate::vm::Vm::install`] assigns these in installation order. An ID belongs to the VM that
 /// issued it: it does not retain that VM, and another VM may assign the same number to unrelated
 /// code. Units are never removed, so an ID keeps its meaning for the lifetime of its VM.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// The default is the first unit a VM installs.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub u32);
 
 /// A function in one installed unit: the store-qualified identity of executable code.
@@ -72,8 +74,8 @@ pub struct AggHandle(pub u32);
 /// A closure value (function + captured environment).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Closure {
-    /// Function identifier for the closure body.
-    pub func: FuncId,
+    /// The closure body, qualified with the unit that defines it.
+    pub func: FuncRef,
     /// Captured immutable environment.
     pub env: AggHandle,
 }
@@ -228,8 +230,8 @@ pub enum Value {
     Obj(Obj),
     /// Aggregate handle (tuple/struct/array).
     Agg(AggHandle),
-    /// Function reference.
-    Func(FuncId),
+    /// Function reference, qualified with the unit that defines it.
+    Func(FuncRef),
     /// Closure reference (function + captured environment).
     Closure(Closure),
 }

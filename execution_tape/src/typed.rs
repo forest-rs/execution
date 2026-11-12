@@ -978,7 +978,9 @@ pub(crate) struct ExecCatch {
 
 impl ExecProtection {
     /// Selects the first clause catching `tag` for an exception raised by instruction `ix`.
-    pub(crate) fn catch(&self, ix: usize, tag: TagId) -> Option<ExecCatch> {
+    /// `tag` is `None` for an exception whose tag this program cannot name; only catch-all
+    /// clauses catch it.
+    pub(crate) fn catch(&self, ix: usize, tag: Option<TagId>) -> Option<ExecCatch> {
         let ix = u32::try_from(ix).ok()?;
         let run = self
             .runs
@@ -994,7 +996,7 @@ impl ExecProtection {
                 .iter()
                 .enumerate()
             {
-                if clause.tag.is_none_or(|caught| caught == tag) {
+                if clause.tag.is_none_or(|caught| Some(caught) == tag) {
                     return Some(ExecCatch {
                         region,
                         clause: u32::try_from(offset).expect("verified clause count"),

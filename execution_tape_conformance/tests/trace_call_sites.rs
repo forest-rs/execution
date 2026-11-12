@@ -8,6 +8,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 
@@ -55,7 +56,11 @@ impl TraceSink for Calls {
         self.exited.push((
             kind,
             depth,
-            TraceLocation { func, pc },
+            TraceLocation {
+                unit: UnitId(0),
+                func,
+                pc,
+            },
             matches!(outcome, TraceOutcome::Trap(_)),
         ));
     }
@@ -165,6 +170,7 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                         ScopeKind::CallFrame {
                             func: leaf,
                             caller: Some(TraceLocation {
+                                unit: UnitId(0),
                                 func: caller,
                                 pc: call_pc
                             })

@@ -3,7 +3,9 @@
 
 //! Admitted host instructions can wait without replaying effects or weakening validation.
 
+use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
@@ -90,7 +92,7 @@ fn fixture(calls: usize, nested: bool) -> Fixture {
             text: "echo(message)".into(),
         }],
         vec![SourceMapping {
-            location: TraceLocation { func: child, pc },
+            location: CodeLocation { func: child, pc },
             document: SourceId(0),
             range: 0..13,
         }],
@@ -151,6 +153,7 @@ fn pending_request_borrows_inputs_keeps_source_and_hides_unreturned_destinations
         assert_eq!(
             request.location(),
             TraceLocation {
+                unit: UnitId(0),
                 func: f.child,
                 pc: f.pc
             }

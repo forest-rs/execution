@@ -12,12 +12,12 @@ use execution_graph::{
 use execution_tape::recording::{
     InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch, ReplayOutcome,
 };
+use execution_tape::trace::CodeLocation;
 use execution_tape::{
     asm::{Asm, FunctionAbi, ProgramBuilder},
     contract::Contract,
     host::{Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
     program::ValueType,
-    trace::TraceLocation,
     value::{FuncId, Value},
     verifier::VerifiedProgram,
     vm::Limits,
@@ -163,7 +163,7 @@ impl TapeObserver for Observe {
         let watches = source
             .instrs()
             .map(|instruction| RegisterWatch {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: invocation.entry,
                     pc: instruction.pc(),
                 },
@@ -781,7 +781,7 @@ fn explore(compiled: &Compiled, capture: &Captured, snapshot: bool) -> Result<()
         .ranges
         .iter()
         .map(|(pc, range)| SourceMapping {
-            location: TraceLocation {
+            location: CodeLocation {
                 func: compiled.entry,
                 pc: *pc,
             },

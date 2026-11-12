@@ -20,7 +20,6 @@ use crate::value::AggHandle;
 use crate::value::AggType;
 use crate::value::Closure;
 use crate::value::Decimal;
-use crate::value::FuncId;
 use crate::value::Obj;
 use crate::value::Value;
 
@@ -624,8 +623,8 @@ pub enum ValueRef<'a> {
     Obj(Obj),
     /// Aggregate handle (tuple/struct/array).
     Agg(AggHandle),
-    /// Function reference.
-    Func(FuncId),
+    /// Function reference, qualified with its unit.
+    Func(crate::value::FuncRef),
     /// Closure reference (function + captured environment).
     Closure(Closure),
 }
@@ -788,11 +787,14 @@ mod tests {
     #[test]
     fn retained_arguments_are_independent_of_the_source_heap() {
         let mut heap = AggHeap::new();
-        let unit = crate::vm::Unit::new(
-            Arc::new(crate::asm::ProgramBuilder::new().build_verified().unwrap()),
-            &mut heap,
-        )
-        .unwrap();
+        let mut units = crate::vm::UnitTable::default();
+        let unit = units
+            .install(
+                Arc::new(crate::asm::ProgramBuilder::new().build_verified().unwrap()),
+                &mut heap,
+            )
+            .unwrap();
+        let unit = units.unit(unit);
         let root = heap
             .tuple_new(alloc::vec![Value::Str("retained".into())])
             .unwrap();
@@ -800,7 +802,7 @@ mod tests {
             crate::vm::DataWork::default(),
             crate::vm::DataWork::default(),
         );
-        let snapshot = HostContext::new(&unit, HostSigId(0), &heap, &mut results, None)
+        let snapshot = HostContext::new(unit, HostSigId(0), &heap, &mut results, None)
             .retain(&[ValueRef::Agg(root)])
             .unwrap();
         heap.clear();

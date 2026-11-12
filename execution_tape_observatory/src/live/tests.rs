@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{HostContext, HostError, HostSig, SigHash},
@@ -83,7 +85,7 @@ fn program(trap: bool) -> (VerifiedProgram, FuncId, u32, SourceMap) {
         }],
         vec![
             SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: entry,
                     pc: call,
                 },
@@ -91,7 +93,7 @@ fn program(trap: bool) -> (VerifiedProgram, FuncId, u32, SourceMap) {
                 range: 0..10,
             },
             SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: entry,
                     pc: publish,
                 },
@@ -186,11 +188,14 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
                     ("value".into(), Value::I64(value)),
                     ("peer".into(), Value::Obj(object(43))),
                     ("local aggregate".into(), Value::Agg(AggHandle(0))),
-                    ("local function".into(), Value::Func(FuncId(0))),
+                    (
+                        "local function".into(),
+                        Value::Func(FuncRef::new(UnitId(0), FuncId(0))),
+                    ),
                     (
                         "local closure".into(),
                         Value::Closure(execution_tape::value::Closure {
-                            func: FuncId(0),
+                            func: FuncRef::new(UnitId(0), FuncId(0)),
                             env: AggHandle(0),
                         }),
                     ),
@@ -380,7 +385,6 @@ fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
     assert_eq!(view.frames[0].location.pc, publish);
     // Move back to entry in a fresh run; set a future instruction breakpoint through UI keys.
     drop(view);
-    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
         .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
@@ -412,6 +416,7 @@ fn terminal_trap_has_no_fabricated_live_values_and_keeps_source_location() {
     assert_eq!(
         view.location(),
         Some(TraceLocation {
+            unit: UnitId(0),
             func: error.func,
             pc: error.pc
         })

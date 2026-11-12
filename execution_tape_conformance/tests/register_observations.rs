@@ -104,7 +104,6 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     );
     sink.events.clear();
     sink.selected = Some(sink_selected_pc(&p));
-    let unit = vm.install(p.clone()).unwrap();
     vm.run(
         FuncRef::new(unit, FuncId(0)),
         &[Value::Str("x".into())],
@@ -114,7 +113,6 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     .unwrap();
     assert!(sink.events.is_empty());
     assert_eq!(sink.masks.len(), 1);
-    let unit = vm.install(p.clone()).unwrap();
     vm.run(
         FuncRef::new(unit, FuncId(0)),
         &[Value::Str("x".into())],
