@@ -131,6 +131,20 @@ fn arguments<'a>(
 ///
 /// If delivery or an observer panics, the invocation cannot retry that operation. Drop it, or
 /// observe [`Trap::HostCallAbandoned`] on resumption; cancelled trace evidence is incomplete.
+///
+/// # Handle validity
+///
+/// Aggregate, closure and function handles read from any request of an invocation (its
+/// [`arguments`](Self::arguments), [`callback_results`](Self::callback_results) and the values
+/// they reach) stay valid until that invocation commits its root or rolls back. The embedding may
+/// keep them as plain [`Value`]s and pass them to a later [`call_guest`](Self::call_guest) or
+/// [`complete`](Self::complete) of the same invocation, including from a nested or later request.
+/// Guest execution, callbacks, completions and caught exceptions only append to the heap; the
+/// heap is compacted only when the root returns, and a trap or cancellation truncates it to the
+/// invocation's start. Handles from [`context`](Self::context) are staged: `call_guest` promotes
+/// them unchanged, while `complete` adopts only those reachable from its outcome, under new
+/// handles. Retain values that must outlive the invocation through its outputs, a snapshot or
+/// [`HostContext::retain`].
 pub struct PendingHostCall<'request, 'vm, H: Host> {
     pub(super) running: Running<'request, 'vm, H>,
     pub(super) delivering: bool,
@@ -224,6 +238,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         self.site().ret_types
     }
     /// Borrows actual arguments without copying byte/string payloads.
+    ///
+    /// Aggregate, closure and function handles among them stay valid for the rest of this
+    /// invocation, as described under [handle validity](Self#handle-validity).
     pub fn arguments(&self) -> impl ExactSizeIterator<Item = ValueRef<'_>> {
         let inv = &self.running;
         let site = self.site();
@@ -303,6 +320,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// function, closure and nominal type IDs must belong to this request's original heap/code;
     /// this method does not import foreign VM handles. Validation failure terminates the run,
     /// rolls back new guest aggregates, and preserves already performed external effects.
+    /// Values may be handles read from any earlier request of this invocation; see
+    /// [handle validity](Self#handle-validity).
     pub fn complete(
         mut self,
         values: &mut [Value],

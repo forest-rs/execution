@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Document the lifetime of handles read from yielded requests. Aggregate, closure and function
+  handles read from any request of an invocation (arguments, callback results and what they
+  reach) stay valid until the invocation commits its root or rolls back, and may be passed to
+  later `PendingHostCall::call_guest` and `complete` calls. A conformance test pins this.
+  Migration: no caller changes are required.
+
 - Complete WebAssembly scalar `f64` parity with `f64.floor` (`0x94`), `f64.ceil` (`0x95`),
   `f64.trunc` (`0x96`), `f64.nearest` (`0x97`, ties to even), `f64.sqrt` (`0x98`, correctly
   rounded), `f64.copysign` (`0x99`), the saturating conversions `f64.to_i64_sat` (`0x9A`) and
