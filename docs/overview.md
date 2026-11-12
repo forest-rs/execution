@@ -241,9 +241,10 @@ table. Each instance owns independent state, available through `vm.host().state(
 `vm.host_mut().state_mut()` between runs. The definition registry can be dropped after binding;
 changing registrations does not alter existing bindings.
 
-Bindings belong to the original verified program allocation. Calls from another program,
-including an equal clone, fail before a callback runs. This adapter suits repeated execution of
-one program; custom `Host` implementations can also serve multiple programs. Callbacks still use
+Bindings belong to the original verified program allocations. `HostBindings::bind` adds another
+program's table, so one host instance serves every unit installed from a bound program, as calls
+across units require. Calls from a program that was never bound, including an equal clone, fail
+with `HostError::ProgramMismatch` before a callback runs. Callbacks still use
 the ordinary borrowed argument ABI, access recording, runtime return checks, and fuel charging.
 
 Host callbacks can return `HostError::custom(error)` for detailed operation failures. The payload

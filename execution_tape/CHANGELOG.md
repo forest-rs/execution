@@ -292,6 +292,11 @@ This release has an [MSRV][] of 1.88.
   `function.func` where a program-local ID is needed; add `unit` to `TraceLocation` literals;
   use `CodeLocation { func, pc }` for source mappings and watches.
 
+- Serve several programs from one bound host. `HostBindings::bind` validates and adds another
+  program's imports, so units installed from any bound program call the same `BoundHost`, and
+  `HostBindings::program_count` reports them. `HostBindings::import_count` now counts the slots
+  of every bound program.
+
 - Trace hooks name the unit they observe. `TraceSink::instr`, `scope_enter` and `scope_exit`
   take a `TraceLocation` in place of the `func` and `pc` pair, `TraceSink::run_start` takes the
   entry `FuncRef`, and `ScopeKind::CallFrame::func` is a `FuncRef`; each hook's `program` is the

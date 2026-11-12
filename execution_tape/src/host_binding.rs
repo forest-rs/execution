@@ -4,8 +4,9 @@
 //! Validate host imports once, then dispatch through a program-local callback table.
 //!
 //! [`HostFunctions`] owns operation definitions. Binding checks every declared import against
-//! full argument/return types and produces immutable [`HostBindings`]. Each [`BoundHost`] supplies
-//! independent mutable state while borrowing that table. The ordinary [`Host`] ABI, VM return
+//! full argument/return types and produces immutable [`HostBindings`], with one callback table
+//! per bound program, so units installed from any bound program can call the same host. Each
+//! [`BoundHost`] supplies independent mutable state while borrowing those tables. The ordinary [`Host`] ABI, VM return
 //! validation, fuel charging, tracing, and access recording continue to apply.
 
 use alloc::boxed::Box;
@@ -115,6 +116,15 @@ impl<S> HostFunctions<S> {
         &self,
         program: &'program VerifiedProgram,
     ) -> Result<HostBindings<'program, S>, BindingError> {
+        let mut bindings = HostBindings { tables: Vec::new() };
+        bindings.tables.push(self.table(program)?);
+        Ok(bindings)
+    }
+
+    fn table<'program>(
+        &self,
+        program: &'program VerifiedProgram,
+    ) -> Result<Table<'program, S>, BindingError> {
         let source = program.program();
         let mut callbacks = Vec::with_capacity(source.host_sigs.len());
         let mut errors = Vec::new();
@@ -154,63 +164,97 @@ impl<S> HostFunctions<S> {
         if !errors.is_empty() {
             return Err(BindingError { imports: errors });
         }
-        Ok(HostBindings {
+        Ok(Table {
             program: source,
             callbacks: callbacks.into_boxed_slice(),
         })
     }
 }
 
-/// Immutable callback choices validated for one verified program.
-///
-/// Each instance borrows the same table without copying callbacks or signatures. Bindings refer
-/// to the original program allocation: an equal cloned program is a different binding domain.
-pub struct HostBindings<'program, S> {
+/// The validated callbacks of one program, indexed by its import IDs.
+struct Table<'program, S> {
     program: &'program Program,
     callbacks: Box<[HostCallback<S>]>,
+}
+
+/// Immutable callback choices validated for one or more verified programs.
+///
+/// Each instance borrows the same tables without copying callbacks or signatures. Bindings refer
+/// to the original program allocations: an equal cloned program is a different binding domain.
+/// Every unit installed from a bound program dispatches through that program's table.
+pub struct HostBindings<'program, S> {
+    tables: Vec<Table<'program, S>>,
 }
 
 impl<S> fmt::Debug for HostBindings<'_, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostBindings")
-            .field("import_count", &self.callbacks.len())
+            .field("program_count", &self.tables.len())
+            .field("import_count", &self.import_count())
             .finish_non_exhaustive()
     }
 }
 
-impl<S> HostBindings<'_, S> {
-    /// Creates a host instance with independent mutable state, borrowing this binding table.
+impl<'program, S> HostBindings<'program, S> {
+    /// Validates `program`'s imports against `functions` and adds them to these bindings.
+    ///
+    /// Units of every bound program can then share one [`BoundHost`], as calls across installed
+    /// units require. Binding a program again replaces its table. On failure the bindings are
+    /// unchanged; the error lists `program`'s rejected imports as [`HostFunctions::bind`] does.
+    pub fn bind(
+        &mut self,
+        functions: &HostFunctions<S>,
+        program: &'program VerifiedProgram,
+    ) -> Result<(), BindingError> {
+        let table = functions.table(program)?;
+        match self
+            .tables
+            .iter_mut()
+            .find(|bound| core::ptr::eq(bound.program, table.program))
+        {
+            Some(bound) => *bound = table,
+            None => self.tables.push(table),
+        }
+        Ok(())
+    }
+
+    /// Creates a host instance with independent mutable state, borrowing these binding tables.
     #[must_use]
     pub fn with_state(&self, state: S) -> BoundHost<'_, S> {
         BoundHost {
-            program: self.program,
-            callbacks: &self.callbacks,
+            tables: &self.tables,
             state,
         }
     }
 
-    /// Returns the number of validated import slots.
+    /// Returns the number of bound programs.
+    #[must_use]
+    pub fn program_count(&self) -> usize {
+        self.tables.len()
+    }
+
+    /// Returns the number of validated import slots across all bound programs.
     #[must_use]
     pub fn import_count(&self) -> usize {
-        self.callbacks.len()
+        self.tables.iter().map(|table| table.callbacks.len()).sum()
     }
 }
 
-/// Per-VM host state using a validated callback table.
+/// Per-VM host state using validated callback tables.
 ///
-/// Dispatch checks program identity before indexing the active import. Using this host with a
-/// different program traps with [`HostError::ProgramMismatch`] before invoking a callback.
-/// Argument/return buffers still follow [`Host::call`], including borrowed aggregate arguments.
+/// Dispatch finds the calling program's table by identity before indexing the active import.
+/// A call from a program that was never bound traps with [`HostError::ProgramMismatch`] before
+/// invoking a callback. Argument/return buffers still follow [`Host::call`], including borrowed
+/// aggregate arguments.
 pub struct BoundHost<'bindings, S> {
-    program: &'bindings Program,
-    callbacks: &'bindings [HostCallback<S>],
+    tables: &'bindings [Table<'bindings, S>],
     state: S,
 }
 
 impl<S> fmt::Debug for BoundHost<'_, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoundHost")
-            .field("import_count", &self.callbacks.len())
+            .field("program_count", &self.tables.len())
             .finish_non_exhaustive()
     }
 }
@@ -237,10 +281,13 @@ impl<S> Host for BoundHost<'_, S> {
         rets: &mut [Value],
         ctx: HostContext<'_, '_>,
     ) -> Result<u64, HostError> {
-        if !core::ptr::eq(self.program, ctx.program()) {
-            return Err(HostError::ProgramMismatch);
-        }
-        let callback = self
+        let program = ctx.program();
+        let table = self
+            .tables
+            .iter()
+            .find(|table| core::ptr::eq(table.program, program))
+            .ok_or(HostError::ProgramMismatch)?;
+        let callback = table
             .callbacks
             .get(ctx.host_sig_id().0 as usize)
             .ok_or(HostError::UnknownSymbol)?;
