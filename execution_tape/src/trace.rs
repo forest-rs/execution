@@ -18,7 +18,7 @@ use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, RegionId, SymbolId, TagId};
-use crate::value::{FuncId, Value};
+use crate::value::{FuncId, UnitId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo};
 
 /// A set of trace events requested by a [`TraceSink`].
@@ -182,13 +182,44 @@ pub enum TraceOutcome<'a> {
     Trap(&'a TrapInfo),
 }
 
-/// An instruction boundary in a program.
+/// An instruction boundary in an installed unit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TraceLocation {
+    /// Installed unit whose program contains [`Self::func`].
+    pub unit: UnitId,
     /// Function containing the instruction.
     pub func: FuncId,
     /// Byte offset within the function.
     pub pc: u32,
+}
+
+impl TraceLocation {
+    /// The same boundary within its program, without the unit that runs it.
+    #[must_use]
+    pub const fn code(self) -> CodeLocation {
+        CodeLocation {
+            func: self.func,
+            pc: self.pc,
+        }
+    }
+}
+
+/// An instruction boundary within one program, independent of any installed unit.
+///
+/// Program artifacts such as source maps describe code this way; every unit installed from that
+/// program shares them.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CodeLocation {
+    /// Function containing the instruction.
+    pub func: FuncId,
+    /// Byte offset within the function.
+    pub pc: u32,
+}
+
+impl From<TraceLocation> for CodeLocation {
+    fn from(location: TraceLocation) -> Self {
+        location.code()
+    }
 }
 
 /// Raw outcome returned by the host, before the VM validates it.
@@ -232,7 +263,7 @@ pub enum ValueEvent<'a> {
     CallbackEnter {
         /// Host instruction whose embedding requested the callback.
         location: TraceLocation,
-        /// Requested same-program function or closure.
+        /// Requested function or closure, of any installed unit.
         callee: &'a Value,
         /// Supplied user arguments, excluding a closure's hidden environment.
         args: &'a [Value],
@@ -256,8 +287,8 @@ pub enum ValueEvent<'a> {
     },
     /// Invocation inputs, before entry, argument, shape or execution-limit validation.
     Entry {
-        /// Requested entry function, which may be absent.
-        entry: FuncId,
+        /// Requested entry function, which may be absent from its unit.
+        entry: crate::value::FuncRef,
         /// Supplied value arguments, excluding the effect token.
         args: &'a [Value],
         /// Aggregate storage at entry. Its length distinguishes initial from run-created nodes.
@@ -350,6 +381,106 @@ pub enum ValueEvent<'a> {
         /// Guest callbacks abandoned with their pending host requests.
         unwound_callbacks: usize,
     },
+}
+
+impl ValueEvent<'_> {
+    /// Applies `map` to every location this event carries.
+    pub(crate) fn map_locations(self, mut map: impl FnMut(TraceLocation) -> TraceLocation) -> Self {
+        match self {
+            Self::CallbackEnter {
+                location,
+                callee,
+                args,
+                work,
+                created,
+                aggregates,
+            } => Self::CallbackEnter {
+                location: map(location),
+                callee,
+                args,
+                work,
+                created,
+                aggregates,
+            },
+            Self::CallbackReturn {
+                location,
+                caller,
+                values,
+                aggregates,
+            } => Self::CallbackReturn {
+                location: map(location),
+                caller: map(caller),
+                values,
+                aggregates,
+            },
+            event @ Self::Entry { .. } => event,
+            Self::HostCall {
+                location,
+                host_sig,
+                args,
+                outcome,
+                work,
+                created,
+                aggregates,
+            } => Self::HostCall {
+                location: map(location),
+                host_sig,
+                args,
+                outcome,
+                work,
+                created,
+                aggregates,
+            },
+            Self::ReturnCandidate {
+                location,
+                values,
+                aggregates,
+            } => Self::ReturnCandidate {
+                location: map(location),
+                values,
+                aggregates,
+            },
+            Self::Thrown {
+                location,
+                tag,
+                values,
+                aggregates,
+            } => Self::Thrown {
+                location: map(location),
+                tag,
+                values,
+                aggregates,
+            },
+            Self::Rethrown {
+                location,
+                tag,
+                exception,
+                origin,
+            } => Self::Rethrown {
+                location: map(location),
+                tag,
+                exception,
+                origin: map(origin),
+            },
+            Self::Caught {
+                location,
+                tag,
+                handler,
+                depth,
+                region,
+                clause,
+                unwound_callbacks,
+            } => Self::Caught {
+                location: map(location),
+                tag,
+                handler: map(handler),
+                depth,
+                region,
+                clause,
+                unwound_callbacks,
+            },
+        }
+    }
 }
 
 impl core::fmt::Debug for ValueEvent<'_> {

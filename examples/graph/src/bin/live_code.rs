@@ -4,6 +4,7 @@
 //! Shared mutable captures and live lookup updates, without patching active code.
 
 use execution_graph::{ExecutionGraph, TapeExecutor};
+use execution_tape::trace::CodeLocation;
 use execution_tape::{
     asm::{FunctionAbi, ProgramBuilder},
     callable::{Callable, CodeSlot, CodeUpdate, CodeVersion},
@@ -12,7 +13,7 @@ use execution_tape::{
     program::{HostTypeId, ValueType},
     recording::{RecordLimits, Recorder, Recording, ReplayOutcome},
     source::{SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping},
-    trace::{TraceLocation, TraceSink},
+    trace::TraceSink,
     value::{FuncId, Obj, ObjHandle, Value},
     vm::{Invocation, InvocationOptions, Limits, RunStatus, Vm},
 };
@@ -86,7 +87,7 @@ struct Revision {
 fn mapping(source: &str, function: FuncId, pc: u32, fragment: &str) -> SourceMapping {
     let start = source.find(fragment).expect("authored demo fragment");
     SourceMapping {
-        location: TraceLocation { func: function, pc },
+        location: CodeLocation { func: function, pc },
         document: SourceId(0),
         range: start..start + fragment.len(),
     }

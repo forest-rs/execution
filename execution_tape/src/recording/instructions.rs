@@ -27,8 +27,8 @@ impl Default for InstructionCapture {
 /// Opt-in observation of source registers at one instruction, including repeated visits.
 #[derive(Clone, Debug)]
 pub struct RegisterWatch {
-    /// Exact source instruction location.
-    pub location: TraceLocation,
+    /// Exact source instruction location in the recorded program.
+    pub location: crate::trace::CodeLocation,
     /// Virtual register IDs. r0, non-operands and unavailable registers produce no observation.
     pub registers: Vec<u32>,
 }

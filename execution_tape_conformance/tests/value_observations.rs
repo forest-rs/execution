@@ -11,6 +11,7 @@ use execution_tape::trace::{
     HostCallOutcome, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{AggHandle, FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{ExecutionContext, Limits, Trap, TrapInfo, Vm};
@@ -58,7 +59,12 @@ impl TraceSink for Observe {
                     "borrowed entry arguments have no preparation debit"
                 );
                 self.order.push("entry");
-                self.entry = Some((entry, args.to_vec(), aggregates.len_u32(), limits.clone()));
+                self.entry = Some((
+                    entry.func,
+                    args.to_vec(),
+                    aggregates.len_u32(),
+                    limits.clone(),
+                ));
             }
             ValueEvent::HostCall {
                 location,
@@ -324,6 +330,7 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
         assert_eq!(
             *location,
             TraceLocation {
+                unit: UnitId(0),
                 func: FuncId(0),
                 pc: 0
             }

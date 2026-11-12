@@ -208,17 +208,17 @@ pub enum Trap {
     },
     /// An indirect target has the right storage kinds but different compositional contracts.
     CallableSignatureMismatch {
-        /// Expected program-local indirect signature.
+        /// Expected indirect signature, local to the calling unit's program.
         signature: crate::program::CallSigId,
-        /// Selected guest function.
-        function: FuncId,
+        /// Selected guest function, which may belong to another unit.
+        function: FuncRef,
     },
     /// Aggregate heap error.
     AggError(AggError),
     /// A concrete argument or result violates a compositional guest contract.
     ContractMismatch {
-        /// Function whose signature is being checked.
-        function: FuncId,
+        /// Function whose signature is being checked, which may belong to another unit.
+        function: FuncRef,
         /// Argument or result position.
         position: ContractPosition,
         /// Nested expected/observed disagreement.
@@ -226,8 +226,8 @@ pub enum Trap {
     },
     /// The run exhausted its aggregate contract validation work budget.
     ContractWorkExceeded {
-        /// Function whose boundary was being validated.
-        function: FuncId,
+        /// Function whose boundary was being validated, which may belong to another unit.
+        function: FuncRef,
         /// Argument or result whose validation exhausted the budget.
         position: ContractPosition,
         /// Configured work limit for this run.
@@ -338,8 +338,8 @@ impl fmt::Display for Trap {
                 function,
             } => write!(
                 f,
-                "function #{} does not match indirect signature #{}",
-                function.0, signature.0
+                "function #{} of unit #{} does not match indirect signature #{}",
+                function.func.0, function.unit.0, signature.0
             ),
             Self::AggError(e) => write!(f, "aggregate error: {e}"),
             Self::ContractMismatch {
@@ -347,7 +347,7 @@ impl fmt::Display for Trap {
                 position,
                 error,
             } => {
-                write!(f, "function #{}: ", function.0)?;
+                write!(f, "function #{} of unit #{}: ", function.func.0, function.unit.0)?;
                 error.fmt_at(f, *position)
             }
             Self::ContractWorkExceeded {
@@ -356,8 +356,9 @@ impl fmt::Display for Trap {
                 limit,
             } => write!(
                 f,
-                "aggregate contract work limit {limit} exceeded in function #{} at {position}",
-                function.0
+                "aggregate contract work limit {limit} exceeded in function #{} of unit #{} at {position}",
+                function.func.0,
+                function.unit.0
             ),
             Self::TypeIdOutOfBounds => write!(f, "type id out of bounds"),
             Self::ElemTypeIdOutOfBounds => write!(f, "elem type id out of bounds"),
@@ -413,6 +414,8 @@ impl core::error::Error for Trap {
 /// A trap annotated with location information.
 #[derive(Clone, Debug)]
 pub struct TrapInfo {
+    /// Installed unit whose program contains [`Self::func`].
+    pub unit: UnitId,
     /// Function id.
     pub func: FuncId,
     /// Byte offset pc.
@@ -428,10 +431,14 @@ impl fmt::Display for TrapInfo {
         match self.span_id {
             Some(span) => write!(
                 f,
-                "trap at f{} pc={} span={span}: {}",
-                self.func.0, self.pc, self.trap
+                "trap at u{}:f{} pc={} span={span}: {}",
+                self.unit.0, self.func.0, self.pc, self.trap
             ),
-            None => write!(f, "trap at f{} pc={}: {}", self.func.0, self.pc, self.trap),
+            None => write!(
+                f,
+                "trap at u{}:f{} pc={}: {}",
+                self.unit.0, self.func.0, self.pc, self.trap
+            ),
         }
     }
 }
@@ -536,9 +543,11 @@ struct Registers {
     /// Aggregate registers (handles into the aggregate heap).
     aggs: Vec<AggHandle>,
     /// Function registers.
-    funcs: Vec<FuncId>,
+    funcs: Vec<FuncRef>,
     /// Closure registers.
     closures: Vec<Closure>,
+    /// The entry unit, which locates traps before the root frame exists.
+    unit: UnitId,
     /// Exception reference registers; `None` only before initialization.
     exns: Vec<Option<Arc<Exception>>>,
     /// Exceptions raised so far in this invocation; also the next raise's ordinal.
@@ -702,6 +711,7 @@ impl<'a> TraceCtx<'a> {
     fn instr_if_enabled(
         &mut self,
         program: &Program,
+        unit: UnitId,
         func: FuncId,
         pc: u32,
         next_pc: u32,
@@ -712,7 +722,7 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
-            self.pending = Some(TraceLocation { func, pc });
+            self.pending = Some(TraceLocation { unit, func, pc });
             t.instr(program, func, pc, next_pc, span_id, opcode);
         }
     }
@@ -893,6 +903,7 @@ impl<'a> TraceCtx<'a> {
             self.unwind(
                 program,
                 TraceLocation {
+                    unit: error.unit,
                     func: error.func,
                     pc: error.pc,
                 },
@@ -922,8 +933,7 @@ trait TracePolicy {
         _trace: &mut TraceCtx<'_>,
         _program: &Program,
         _ctx: &Registers,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _base: RegBase,
         _sources: ValueSources<'_>,
         _phase: crate::trace::RegisterPhase,
@@ -943,6 +953,7 @@ trait TracePolicy {
     fn instr(
         trace: &mut TraceCtx<'_>,
         program: &Program,
+        unit: UnitId,
         func: FuncId,
         pc: u32,
         next_pc: u32,
@@ -1004,6 +1015,7 @@ impl TracePolicy for NoTracePolicy {
     fn instr(
         _trace: &mut TraceCtx<'_>,
         _program: &Program,
+        _unit: UnitId,
         _func: FuncId,
         _pc: u32,
         _next_pc: u32,
@@ -1078,8 +1090,7 @@ impl TracePolicy for WithTracePolicy {
         trace: &mut TraceCtx<'_>,
         program: &Program,
         ctx: &Registers,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         base: RegBase,
         sources: ValueSources<'_>,
         phase: crate::trace::RegisterPhase,
@@ -1089,8 +1100,7 @@ impl TracePolicy for WithTracePolicy {
             trace,
             program,
             ctx,
-            func,
-            pc,
+            location,
             base,
             sources,
             phase,
@@ -1114,13 +1124,14 @@ impl TracePolicy for WithTracePolicy {
     fn instr(
         trace: &mut TraceCtx<'_>,
         program: &Program,
+        unit: UnitId,
         func: FuncId,
         pc: u32,
         next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
     ) {
-        trace.instr_if_enabled(program, func, pc, next_pc, span_id, opcode);
+        trace.instr_if_enabled(program, unit, func, pc, next_pc, span_id, opcode);
     }
 
     #[inline(always)]
@@ -1266,7 +1277,7 @@ impl<H: Host> Vm<H> {
 
         let result = if trace_active {
             trace.values(program_ref, || ValueEvent::Entry {
-                entry,
+                entry: FuncRef::new(unit, entry),
                 args,
                 aggregates: self.memory.aggs(),
                 limits: &self.limits,
@@ -1303,6 +1314,7 @@ impl<H: Host> Vm<H> {
             .get(unit)
             .map(|unit| &unit.program)
             .ok_or(TrapInfo {
+                unit,
                 func: FuncId(0),
                 pc: 0,
                 span_id: None,
@@ -1330,7 +1342,6 @@ impl<H: Host> Vm<H> {
         let progress = self.execute_loop::<P, false>(
             ctx,
             budget,
-            program,
             entry,
             args,
             outputs,
@@ -1367,6 +1378,7 @@ impl<H: Host> Vm<H> {
         let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         ctx.clear();
+        ctx.unit = unit;
 
         let entry_fn = program_ref
             .functions
@@ -1419,7 +1431,6 @@ impl<H: Host> Vm<H> {
         &mut self,
         ctx: &mut Registers,
         budget: &mut Budget,
-        program: &VerifiedProgram,
         entry: FuncId,
         args: &[Value],
         outputs: &mut Vec<Value>,
@@ -1430,9 +1441,16 @@ impl<H: Host> Vm<H> {
     ) -> Result<Progress, TrapInfo> {
         let root_args = args;
         let output_start = outputs.len();
-        let program_ref = program.program();
         let max_call_depth = self.limits.max_call_depth;
         let max_host_calls = self.limits.max_host_calls;
+        // The program of the unit the top frame runs. Frames of different units interleave on
+        // one stack; the program is reloaded only when control crosses into another unit.
+        let Some(top) = ctx.frames.last() else {
+            return Err(ctx.trap(entry, 0, None, Trap::InvalidPc));
+        };
+        let mut loaded_unit = top.unit;
+        let mut current: &Unit = self.units.unit(loaded_unit);
+        let mut program: &VerifiedProgram = &current.program;
 
         loop {
             if YIELD {
@@ -1441,6 +1459,15 @@ impl<H: Host> Vm<H> {
                 }
                 control.remaining -= 1;
             }
+            let Some(top) = ctx.frames.last() else {
+                return Err(ctx.trap(entry, 0, None, Trap::InvalidPc));
+            };
+            if top.unit != loaded_unit {
+                loaded_unit = top.unit;
+                current = self.units.unit(loaded_unit);
+                program = &current.program;
+            }
+            let program_ref = program.program();
             if budget.fuel == 0 {
                 return Err(ctx.trap(
                     ctx.cur_func(),
@@ -1451,11 +1478,7 @@ impl<H: Host> Vm<H> {
             }
             budget.fuel -= 1;
 
-            let frame_index = ctx
-                .frames
-                .len()
-                .checked_sub(1)
-                .ok_or_else(|| ctx.trap(entry, 0, None, Trap::InvalidPc))?;
+            let frame_index = ctx.frames.len() - 1;
 
             let (unit_id, func_id, pc, instr_ix, base, _byte_len) = {
                 let f = &ctx.frames[frame_index];
@@ -1493,20 +1516,33 @@ impl<H: Host> Vm<H> {
                 })
                 .copied()
                 .unwrap_or_default();
-            P::instr(trace, program_ref, func_id, pc, next_pc, span_id, opcode);
+            P::instr(
+                trace,
+                program_ref,
+                unit_id,
+                func_id,
+                pc,
+                next_pc,
+                span_id,
+                opcode,
+            );
 
             // Default fallthrough: advance to the next decoded instruction.
             ctx.frames[frame_index].pc = next_pc;
             ctx.frames[frame_index].instr_ix = next_instr_ix;
 
-            let sources = ValueSources::new(program_ref, args, self.memory.aggs());
+            let sources = ValueSources::new(&self.units, args, self.memory.aggs())
+                .with_current(unit_id, program_ref);
             P::registers(
                 register_state,
                 trace,
                 program_ref,
                 ctx,
-                func_id,
-                pc,
+                TraceLocation {
+                    unit: unit_id,
+                    func: func_id,
+                    pc,
+                },
                 base,
                 sources,
                 crate::trace::RegisterPhase::Inputs,
@@ -1527,7 +1563,11 @@ impl<H: Host> Vm<H> {
                         sources,
                         trace,
                         control,
-                        TraceLocation { func: func_id, pc },
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        },
                         span_id,
                     )?;
                     // The handler's instruction attempt starts on the next iteration.
@@ -1544,7 +1584,11 @@ impl<H: Host> Vm<H> {
                         exception,
                         trace,
                         control,
-                        TraceLocation { func: func_id, pc },
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        },
                         span_id,
                     )?;
                     continue;
@@ -1649,7 +1693,7 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
                 ExecInstr::ConstFunc { dst, func_id } => {
-                    ctx.write_func(base, *dst, *func_id);
+                    ctx.write_func(base, *dst, FuncRef::new(unit_id, *func_id));
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
@@ -1699,12 +1743,14 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolBytes { dst, idx } => {
-                    let h = ctx.arena.borrow_bytes(PayloadSource::Constant(*idx));
+                    let h = ctx
+                        .arena
+                        .borrow_bytes(PayloadSource::Constant(unit_id, *idx));
                     ctx.write_bytes_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::ConstPoolStr { dst, idx } => {
-                    let h = ctx.arena.borrow_str(PayloadSource::Constant(*idx));
+                    let h = ctx.arena.borrow_str(PayloadSource::Constant(unit_id, *idx));
                     ctx.write_str_handle(base, *dst, h);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2331,7 +2377,11 @@ impl<H: Host> Vm<H> {
                     });
 
                     if YIELD {
-                        control.enter(TraceLocation { func: func_id, pc });
+                        control.enter(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        });
                     }
                     P::call_scope_enter(
                         trace,
@@ -2340,7 +2390,11 @@ impl<H: Host> Vm<H> {
                         *callee,
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
-                        Some(TraceLocation { func: func_id, pc }),
+                        Some(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        }),
                     );
 
                     debug_assert_eq!(
@@ -2361,7 +2415,11 @@ impl<H: Host> Vm<H> {
                             trace,
                             vf,
                             vf.vregs(*rets),
-                            TraceLocation { func: func_id, pc },
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             span_id,
                             base,
                         )?;
@@ -2377,14 +2435,22 @@ impl<H: Host> Vm<H> {
                             );
                         }
                         P::values(trace, program_ref, || ValueEvent::ReturnCandidate {
-                            location: TraceLocation { func: func_id, pc },
+                            location: TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             values: &outputs[output_start..],
                             aggregates: self.memory.aggs(),
                         });
                         self.check_result_contracts(ctx, budget, unit_id, func_id, vf, base, rets)
                             .map_err(|error| ctx.trap(func_id, pc, span_id, error))?;
                         return Ok(Progress::Returned(ReturnSite {
-                            location: TraceLocation { func: func_id, pc },
+                            location: TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             span: span_id,
                         }));
                     }
@@ -2415,11 +2481,17 @@ impl<H: Host> Vm<H> {
                     let rets = vf.vregs(*rets);
 
                     let caller_index = ctx.frames.len() - 1;
-                    let (caller_func, caller_base) = {
+                    let (caller_unit, caller_func, caller_base) = {
                         let f = &ctx.frames[caller_index];
-                        (f.func, f.base)
+                        (f.unit, f.func, f.base)
                     };
-                    let caller_vf = program
+                    // The caller may run another unit; its own program names its registers.
+                    let caller_program = if caller_unit == unit_id {
+                        program
+                    } else {
+                        &self.units.unit(caller_unit).program
+                    };
+                    let caller_vf = caller_program
                         .verified(caller_func)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
                     let dst_rets = caller_vf.vregs(ret.dst_rets);
@@ -2516,7 +2588,11 @@ impl<H: Host> Vm<H> {
 
                     if YIELD && control.yield_host_calls {
                         control.pending_host = Some(host_call::PendingHost {
-                            location: TraceLocation { func: func_id, pc },
+                            location: TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             instruction: instr_ix,
                             depth: frame_index + 1,
                             abandoned: false,
@@ -2536,7 +2612,7 @@ impl<H: Host> Vm<H> {
                         .as_mut()
                         .map(|access| &mut **access as &mut dyn AccessSink);
                     let host_ctx = HostContext::new(
-                        self.units.unit(unit_id),
+                        current,
                         *host_sig,
                         self.memory.aggs(),
                         &mut host_results,
@@ -2553,7 +2629,7 @@ impl<H: Host> Vm<H> {
                     budget.aggregate_work += work.aggregate;
                     budget.payload_work += work.payload;
                     if P::values_enabled(trace) {
-                        let sources = ValueSources::new(program_ref, root_args, self.memory.aggs());
+                        let sources = ValueSources::new(&self.units, root_args, self.memory.aggs());
                         let observed_args: Vec<_> = args
                             .iter()
                             .map(|&a| {
@@ -2578,7 +2654,11 @@ impl<H: Host> Vm<H> {
                             })
                             .collect();
                         P::values(trace, program_ref, || ValueEvent::HostCall {
-                            location: TraceLocation { func: func_id, pc },
+                            location: TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             host_sig: *host_sig,
                             args: &observed_args,
                             outcome: host_call::observed(ret_slots, &host_result),
@@ -2597,7 +2677,11 @@ impl<H: Host> Vm<H> {
                             *thrown,
                             trace,
                             control,
-                            TraceLocation { func: func_id, pc },
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             span_id,
                         )?;
                         continue;
@@ -2606,7 +2690,11 @@ impl<H: Host> Vm<H> {
                         ctx,
                         budget,
                         host_call::HostReturnSite {
-                            location: TraceLocation { func: func_id, pc },
+                            location: TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
                             span: span_id,
                             base,
                             symbol: sym,
@@ -2640,23 +2728,12 @@ impl<H: Host> Vm<H> {
                         return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
                     }
 
-                    let callee_func = ctx.read_func(base, *callee);
-                    let callee_fn = program_ref
-                        .functions
-                        .get(callee_func.0 as usize)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let callee_vf = program
-                        .verified(callee_func)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-
-                    validate_indirect_call_signature(
-                        program,
-                        *call_sig,
-                        callee_func,
-                        callee_fn,
-                        IndirectCalleeKind::Func,
-                    )
-                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    // The target may belong to any installed unit; it runs that unit's code.
+                    let target = ctx.read_func(base, *callee);
+                    let (callee_unit, callee_fn, callee_vf) =
+                        indirect_target(&self.units, unit_id, *call_sig, target, false)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let callee_program = callee_unit.program.program();
 
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
@@ -2675,8 +2752,8 @@ impl<H: Host> Vm<H> {
                     self.check_arg_contracts(
                         ctx,
                         budget,
-                        unit_id,
-                        callee_func,
+                        target.unit,
+                        target.func,
                         callee_vf,
                         callee_base,
                     )
@@ -2684,8 +2761,8 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
-                        unit: unit_id,
-                        func: callee_func,
+                        unit: target.unit,
+                        func: target.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
@@ -2696,16 +2773,24 @@ impl<H: Host> Vm<H> {
                     });
 
                     if YIELD {
-                        control.enter(TraceLocation { func: func_id, pc });
+                        control.enter(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        });
                     }
                     P::call_scope_enter(
                         trace,
-                        program_ref,
+                        callee_program,
                         ctx.frames.len(),
-                        callee_func,
+                        target.func,
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
-                        Some(TraceLocation { func: func_id, pc }),
+                        Some(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        }),
                     );
 
                     debug_assert_eq!(
@@ -2724,22 +2809,11 @@ impl<H: Host> Vm<H> {
                     }
 
                     let callee = ctx.read_closure(base, *callee);
-                    let callee_fn = program_ref
-                        .functions
-                        .get(callee.func.0 as usize)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let callee_vf = program
-                        .verified(callee.func)
-                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-
-                    validate_indirect_call_signature(
-                        program,
-                        *call_sig,
-                        callee.func,
-                        callee_fn,
-                        IndirectCalleeKind::Closure,
-                    )
-                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let target = callee.func;
+                    let (callee_unit, callee_fn, callee_vf) =
+                        indirect_target(&self.units, unit_id, *call_sig, target, true)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    let callee_program = callee_unit.program.program();
 
                     let callee_base = ctx.alloc_frame(callee_vf);
                     let args = vf.vregs(*args);
@@ -2764,8 +2838,8 @@ impl<H: Host> Vm<H> {
                     self.check_arg_contracts(
                         ctx,
                         budget,
-                        unit_id,
-                        callee.func,
+                        target.unit,
+                        target.func,
                         callee_vf,
                         callee_base,
                     )
@@ -2773,15 +2847,16 @@ impl<H: Host> Vm<H> {
 
                     // Even an unrefined environment must resolve before entering a closure body.
                     let environment_contract =
-                        program_ref.verified_contracts(callee_fn.arg_types)[0];
+                        callee_program.verified_contracts(callee_fn.arg_types)[0];
                     if matches!(
-                        program_ref.contracts.get(environment_contract),
+                        callee_program.contracts.get(environment_contract),
                         Some(Contract::Kind(_))
                     ) {
                         budget
                             .contract_scratch
                             .check_value(
-                                self.units.unit(unit_id),
+                                &self.units,
+                                target.unit,
                                 self.memory.aggs(),
                                 &Value::Agg(callee.env),
                                 environment_contract,
@@ -2793,9 +2868,9 @@ impl<H: Host> Vm<H> {
                                     pc,
                                     span_id,
                                     self.contract_trap(
-                                        callee.func,
+                                        target,
                                         ContractPosition::Argument {
-                                            callee: callee.func,
+                                            callee: target.func,
                                             index: 0,
                                         },
                                         error,
@@ -2806,8 +2881,8 @@ impl<H: Host> Vm<H> {
 
                     budget.frames += 1;
                     ctx.frames.push(Frame {
-                        unit: unit_id,
-                        func: callee.func,
+                        unit: target.unit,
+                        func: target.func,
                         pc: callee_vf.pc_at_ix(0).unwrap_or(0),
                         instr_ix: 0,
                         byte_len: callee_vf.byte_len,
@@ -2818,16 +2893,24 @@ impl<H: Host> Vm<H> {
                     });
 
                     if YIELD {
-                        control.enter(TraceLocation { func: func_id, pc });
+                        control.enter(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        });
                     }
                     P::call_scope_enter(
                         trace,
-                        program_ref,
+                        callee_program,
                         ctx.frames.len(),
-                        callee.func,
+                        target.func,
                         callee_vf.pc_at_ix(0).unwrap_or(0),
                         callee_vf.span_at_ix(0).map(|id| id.get()),
-                        Some(TraceLocation { func: func_id, pc }),
+                        Some(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        }),
                     );
 
                     debug_assert_eq!(
@@ -2840,29 +2923,46 @@ impl<H: Host> Vm<H> {
                         func: ctx.read_func(base, *func),
                         env: ctx.read_agg_handle(base, *env),
                     };
-                    let body = program_ref
+                    // The body may belong to another unit; its own program checks the capture.
+                    let body_program = self
+                        .units
+                        .get(closure.func.unit)
+                        .ok_or_else(|| {
+                            ctx.trap(
+                                func_id,
+                                pc,
+                                span_id,
+                                Trap::UnknownUnit {
+                                    unit: closure.func.unit,
+                                },
+                            )
+                        })?
+                        .program
+                        .program();
+                    let body = body_program
                         .functions
-                        .get(closure.func.0 as usize)
+                        .get(closure.func.func.0 as usize)
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
-                    let env_contract = *program_ref
+                    let env_contract = *body_program
                         .verified_contracts(body.arg_types)
                         .first()
                         .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ArityMismatch))?;
-                    if program_ref.contracts.kind(env_contract) != Some(ValueType::Agg) {
+                    if body_program.contracts.kind(env_contract) != Some(ValueType::Agg) {
                         return Err(ctx.trap(
                             func_id,
                             pc,
                             span_id,
                             Trap::TypeMismatch {
                                 expected: ValueType::Agg,
-                                actual: program_ref.contracts.kind(env_contract).unwrap(),
+                                actual: body_program.contracts.kind(env_contract).unwrap(),
                             },
                         ));
                     }
                     budget
                         .contract_scratch
                         .check_value(
-                            self.units.unit(unit_id),
+                            &self.units,
+                            closure.func.unit,
                             self.memory.aggs(),
                             &Value::Agg(closure.env),
                             env_contract,
@@ -2876,7 +2976,7 @@ impl<H: Host> Vm<H> {
                                 self.contract_trap(
                                     closure.func,
                                     ContractPosition::Argument {
-                                        callee: closure.func,
+                                        callee: closure.func.func,
                                         index: 0,
                                     },
                                     error,
@@ -3490,16 +3590,21 @@ impl<H: Host> Vm<H> {
                 trace,
                 program_ref,
                 ctx,
-                func_id,
-                pc,
+                TraceLocation {
+                    unit: unit_id,
+                    func: func_id,
+                    pc,
+                },
                 base,
-                ValueSources::new(program_ref, args, self.memory.aggs()),
+                ValueSources::new(&self.units, args, self.memory.aggs())
+                    .with_current(unit_id, program_ref),
                 crate::trace::RegisterPhase::Outputs,
             );
             P::instr_end(
                 trace,
                 program_ref,
                 ctx.frames.last().map(|frame| TraceLocation {
+                    unit: frame.unit,
                     func: frame.func,
                     pc: frame.pc,
                 }),
@@ -3558,13 +3663,13 @@ impl<H: Host> Vm<H> {
         vf: &ExecFunc,
         base: RegBase,
     ) -> Result<(), Trap> {
-        let unit = self.units.unit(unit);
         for check in &vf.contract_checks[..vf.arg_check_count as usize] {
             let value =
                 Self::contract_value(ctx, base, vf.reg_layout.arg_regs[check.index as usize]);
             budget
                 .contract_scratch
                 .check_value(
+                    &self.units,
                     unit,
                     self.memory.aggs(),
                     &value,
@@ -3573,7 +3678,7 @@ impl<H: Host> Vm<H> {
                 )
                 .map_err(|error| {
                     self.contract_trap(
-                        callee,
+                        FuncRef::new(unit, callee),
                         ContractPosition::Argument {
                             callee,
                             index: check.index,
@@ -3595,12 +3700,12 @@ impl<H: Host> Vm<H> {
         base: RegBase,
         rets: &[VReg],
     ) -> Result<(), Trap> {
-        let unit = self.units.unit(unit);
         for check in &vf.contract_checks[vf.arg_check_count as usize..] {
             let value = Self::contract_value(ctx, base, rets[check.index as usize]);
             budget
                 .contract_scratch
                 .check_value(
+                    &self.units,
                     unit,
                     self.memory.aggs(),
                     &value,
@@ -3609,7 +3714,7 @@ impl<H: Host> Vm<H> {
                 )
                 .map_err(|error| {
                     self.contract_trap(
-                        function,
+                        FuncRef::new(unit, function),
                         ContractPosition::Result { index: check.index },
                         error,
                     )
@@ -3620,7 +3725,7 @@ impl<H: Host> Vm<H> {
 
     fn contract_trap(
         &self,
-        function: FuncId,
+        function: FuncRef,
         position: ContractPosition,
         error: CheckError,
     ) -> Trap {
@@ -3698,11 +3803,12 @@ impl Registers {
             },
         );
         self.aggs.resize(base.aggs + counts.aggs, AggHandle(0));
-        self.funcs.resize(base.funcs + counts.funcs, FuncId(0));
+        let placeholder = FuncRef::new(UnitId(0), FuncId(0));
+        self.funcs.resize(base.funcs + counts.funcs, placeholder);
         self.closures.resize(
             base.closures + counts.closures,
             Closure {
-                func: FuncId(0),
+                func: placeholder,
                 env: AggHandle(0),
             },
         );
@@ -3824,6 +3930,7 @@ impl Registers {
         }
     }
 
+    #[inline(always)]
     fn materialize_vreg(
         &mut self,
         budget: &mut Budget,
@@ -4049,11 +4156,11 @@ impl Registers {
 
     #[inline(always)]
     #[must_use]
-    fn read_func(&self, base: RegBase, r: FuncReg) -> FuncId {
+    fn read_func(&self, base: RegBase, r: FuncReg) -> FuncRef {
         self.funcs[base.funcs + r.0 as usize]
     }
     #[inline(always)]
-    fn write_func(&mut self, base: RegBase, r: FuncReg, v: FuncId) {
+    fn write_func(&mut self, base: RegBase, r: FuncReg, v: FuncRef) {
         self.funcs[base.funcs + r.0 as usize] = v;
     }
 
@@ -4126,8 +4233,10 @@ impl Registers {
         out
     }
 
+    /// A trap at `func`/`pc` of the top frame's unit, or of the entry unit before any frame.
     fn trap(&self, func: FuncId, pc: u32, span_id: Option<u64>, trap: Trap) -> TrapInfo {
         TrapInfo {
+            unit: self.frames.last().map_or(self.unit, |frame| frame.unit),
             func,
             pc,
             span_id,
@@ -4187,65 +4296,63 @@ fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -
     Ok(())
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum IndirectCalleeKind {
-    Func,
-    Closure,
-}
-
+/// Resolves an indirect call target in its own unit and checks it against `call_sig`.
+///
+/// Signatures are interned per VM, so a target in any unit matches by one comparison. On a
+/// mismatch, the full kind vectors produce the precise trap.
 #[inline]
-fn validate_indirect_call_signature(
-    verified: &VerifiedProgram,
+fn indirect_target(
+    units: &UnitTable,
+    caller: UnitId,
     call_sig: crate::program::CallSigId,
-    callee_func: FuncId,
-    callee_fn: &Function,
-    callee_kind: IndirectCalleeKind,
-) -> Result<(), Trap> {
-    let expected = verified
-        .call_sig_fingerprint(call_sig)
+    target: FuncRef,
+    closure: bool,
+) -> Result<(&Unit, &Function, &ExecFunc), Trap> {
+    let callee = units
+        .get(target.unit)
+        .ok_or(Trap::UnknownUnit { unit: target.unit })?;
+    let program = &callee.program;
+    let function = program
+        .program()
+        .functions
+        .get(target.func.0 as usize)
         .ok_or(Trap::InvalidPc)?;
-    let actual = match callee_kind {
-        IndirectCalleeKind::Func => verified.function_direct_sig_fingerprint(callee_func),
-        IndirectCalleeKind::Closure => verified.function_closure_sig_fingerprint(callee_func),
-    };
-
-    if let Some(actual) = actual {
-        // Fast path: both hash and canonical signature key match.
-        if expected.hash == actual.hash && expected.key == actual.key {
-            return Ok(());
-        }
+    let body = program.verified(target.func).ok_or(Trap::InvalidPc)?;
+    let caller = units.unit(caller);
+    if !callee.accepts_call(target.func, closure, caller, call_sig) {
+        indirect_signature_types(
+            caller.program.program(),
+            call_sig,
+            program.program(),
+            function,
+            closure,
+        )?;
+        return Err(Trap::CallableSignatureMismatch {
+            signature: call_sig,
+            function: target,
+        });
     }
-
-    // Preserve exact trap behavior and remain collision-safe by validating the full type vectors
-    // whenever fingerprints do not prove equivalence.
-    validate_indirect_call_signature_types(
-        verified.program(),
-        call_sig,
-        callee_fn,
-        matches!(callee_kind, IndirectCalleeKind::Closure),
-    )?;
-    Err(Trap::CallableSignatureMismatch {
-        signature: call_sig,
-        function: callee_func,
-    })
+    Ok((callee, function, body))
 }
 
+/// Reports the first kind disagreement between a call signature and a target in any program.
 #[inline]
-fn validate_indirect_call_signature_types(
-    program: &Program,
+fn indirect_signature_types(
+    caller: &Program,
     call_sig: crate::program::CallSigId,
+    callee: &Program,
     callee_fn: &Function,
     is_closure: bool,
 ) -> Result<(), Trap> {
-    let call_sig_entry = program.call_sig(call_sig).ok_or(Trap::InvalidPc)?;
-    let expected_args = program
+    let call_sig_entry = caller.call_sig(call_sig).ok_or(Trap::InvalidPc)?;
+    let expected_args = caller
         .call_sig_args(call_sig_entry)
         .map_err(|_| Trap::InvalidPc)?;
-    let expected_rets = program
+    let expected_rets = caller
         .call_sig_rets(call_sig_entry)
         .map_err(|_| Trap::InvalidPc)?;
-    let actual_args = callee_fn.arg_types(program).map_err(|_| Trap::InvalidPc)?;
-    let actual_rets = callee_fn.ret_types(program).map_err(|_| Trap::InvalidPc)?;
+    let actual_args = callee_fn.arg_types(callee).map_err(|_| Trap::InvalidPc)?;
+    let actual_rets = callee_fn.ret_types(callee).map_err(|_| Trap::InvalidPc)?;
 
     if is_closure {
         let Some((first, rest)) = actual_args.split_first() else {
@@ -4295,7 +4402,7 @@ fn read_value_ref_at<'a>(
     strs: &'a [StrHandle],
     objs: &'a [Obj],
     aggs: &'a [AggHandle],
-    funcs: &'a [FuncId],
+    funcs: &'a [FuncRef],
     closures: &'a [Closure],
     base: RegBase,
     v: VReg,
@@ -4407,9 +4514,9 @@ mod tests {
         let text = ctx.registers.arena.alloc_str(String::from("computed"));
         ctx.registers.i64s.extend([1, 2, 3]);
         let capacity = ctx.registers.i64s.capacity();
-        let program = ProgramBuilder::new().build();
         let heap = AggHeap::new();
-        let sources = ValueSources::new(&program, &[], &heap);
+        let units = UnitTable::default();
+        let sources = ValueSources::new(&units, &[], &heap);
         assert_eq!(
             ctx.registers.arena.bytes(bytes, sources).unwrap().len(),
             8192
@@ -4553,7 +4660,15 @@ mod tests {
         }
         impl TraceSink for Sink {
             fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, _: u8) {
-                assert!(self.pending.replace(TraceLocation { func, pc }).is_none());
+                assert!(
+                    self.pending
+                        .replace(TraceLocation {
+                            unit: UnitId(0),
+                            func,
+                            pc
+                        })
+                        .is_none()
+                );
             }
             fn instr_end(
                 &mut self,
@@ -4687,6 +4802,7 @@ mod tests {
                         assert_eq!(
                             sink.ends[0].1,
                             Some(TraceLocation {
+                                unit: UnitId(0),
                                 func: target,
                                 pc: 0
                             })
@@ -4883,7 +4999,6 @@ mod tests {
         );
         assert_eq!(vm.host().calls, [first, second]);
         vm.host_mut().offset = 10;
-        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
             vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
                 .unwrap(),
@@ -5044,14 +5159,13 @@ mod tests {
                 vm.aggregates().tuple_get(root, 2),
                 Ok(Value::Agg(closure.env))
             );
-            assert_eq!(closure.func, target);
+            assert_eq!(closure.func.func, target);
             assert_eq!(
                 vm.aggregates().tuple_get(closure.env, 0),
                 Ok(Value::Str("retained text".into()))
             );
             prior.push(root);
             for &old_root in &prior {
-                let unit = vm.install(program.clone()).unwrap();
                 assert_eq!(
                     vm.run(
                         FuncRef::new(unit, read),
@@ -5118,7 +5232,7 @@ mod tests {
                 Value::Agg(invalid)
             } else {
                 Value::Closure(Closure {
-                    func: entry,
+                    func: FuncRef::new(UnitId(0), entry),
                     env: invalid,
                 })
             };
@@ -5150,9 +5264,11 @@ mod tests {
             let valid = if ty == ValueType::Agg {
                 Value::Agg(env)
             } else {
-                Value::Closure(Closure { func: entry, env })
+                Value::Closure(Closure {
+                    func: FuncRef::new(UnitId(0), entry),
+                    env,
+                })
             };
-            let unit = vm.install(program.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
                 FuncRef::new(unit, entry),
@@ -5307,7 +5423,6 @@ mod tests {
         )
         .unwrap();
         let first = outputs.clone();
-        let unit = vm.install(p.clone()).unwrap();
         let error = vm
             .run_with_ctx(
                 &mut ctx,
@@ -5321,7 +5436,6 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error.trap, Trap::TrapCode(123)));
         assert_eq!(outputs, first);
-        let unit = vm.install(p.clone()).unwrap();
         vm.run_with_ctx(
             &mut ctx,
             FuncRef::new(unit, entry),
@@ -6114,7 +6228,7 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let closure = Closure {
-            func: FuncId(123),
+            func: FuncRef::new(UnitId(0), FuncId(123)),
             env: AggHandle(0),
         };
 
@@ -6157,7 +6271,7 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let closure = Closure {
-            func: FuncId(42),
+            func: FuncRef::new(UnitId(0), FuncId(42)),
             env: AggHandle(0),
         };
 
@@ -6234,7 +6348,7 @@ mod tests {
             other => panic!("expected single closure return, got {other:?}"),
         };
 
-        assert_eq!(closure.func, FuncId(0));
+        assert_eq!(closure.func, FuncRef::new(UnitId(0), FuncId(0)));
         assert_eq!(closure.env, env);
         assert_eq!(vm.aggregates().tuple_len(closure.env), Ok(2));
         assert_eq!(
@@ -6529,7 +6643,7 @@ mod tests {
         let err = vm
             .run(
                 FuncRef::new(unit, FuncId(0)),
-                &[Value::Func(FuncId(1))],
+                &[Value::Func(FuncRef::new(UnitId(0), FuncId(1)))],
                 TraceMask::NONE,
                 None,
             )
@@ -6602,7 +6716,7 @@ mod tests {
         let err = vm
             .run(
                 FuncRef::new(unit, FuncId(0)),
-                &[Value::Func(FuncId(1))],
+                &[Value::Func(FuncRef::new(UnitId(0), FuncId(1)))],
                 TraceMask::NONE,
                 None,
             )
@@ -6656,7 +6770,7 @@ mod tests {
             .run(
                 FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(Closure {
-                    func: FuncId(99),
+                    func: FuncRef::new(UnitId(0), FuncId(99)),
                     env: AggHandle(0),
                 })],
                 TraceMask::NONE,
@@ -6756,7 +6870,7 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let closure = Closure {
-            func: FuncId(42),
+            func: FuncRef::new(UnitId(0), FuncId(42)),
             env: AggHandle(0),
         };
 
@@ -6801,11 +6915,11 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let closure_a = Closure {
-            func: FuncId(10),
+            func: FuncRef::new(UnitId(0), FuncId(10)),
             env: AggHandle(0),
         };
         let closure_b = Closure {
-            func: FuncId(20),
+            func: FuncRef::new(UnitId(0), FuncId(20)),
             env: AggHandle(1),
         };
 
@@ -7101,7 +7215,7 @@ mod tests {
             .run(
                 FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(Closure {
-                    func: FuncId(1),
+                    func: FuncRef::new(UnitId(0), FuncId(1)),
                     env,
                 })],
                 TraceMask::NONE,

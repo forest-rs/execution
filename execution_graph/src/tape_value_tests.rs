@@ -8,6 +8,8 @@ use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder};
 use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{StructTypeDef, ValueType};
+use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{Closure, FuncId};
 use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
 
@@ -123,9 +125,9 @@ fn exported_function_uses_original_program_and_raw_values_explain_missing_owners
         }
     );
     for value in [
-        Value::Func(entries.value),
+        Value::Func(FuncRef::new(UnitId(0), entries.value)),
         Value::Closure(Closure {
-            func: entries.value,
+            func: FuncRef::new(UnitId(0), entries.value),
             env: AggHandle(0),
         }),
     ] {
@@ -347,7 +349,11 @@ fn callable_program_domain_is_enforced_before_execution() {
         })
     ));
     graph
-        .set_input_value(same, "f", Value::Func(entries.value).into())
+        .set_input_value(
+            same,
+            "f",
+            Value::Func(FuncRef::new(UnitId(0), entries.value)).into(),
+        )
         .unwrap();
     graph.invalidate_input("f");
     assert!(matches!(
@@ -367,11 +373,11 @@ fn nested_scoped_ids_require_program_and_reject_foreign_owners() {
     for kind in 0..4 {
         let mut heap = AggHeap::new();
         let leaf = match kind {
-            0 => Value::Func(FuncId(0)),
+            0 => Value::Func(FuncRef::new(UnitId(0), FuncId(0))),
             1 => {
                 let env = heap.tuple_new(vec![]).unwrap();
                 Value::Closure(Closure {
-                    func: FuncId(0),
+                    func: FuncRef::new(UnitId(0), FuncId(0)),
                     env,
                 })
             }
@@ -572,8 +578,8 @@ fn deep_shared_input_import_and_release_are_iterative() {
     let values = TapeValue::from_snapshot(snapshot, None).unwrap();
     let mut importer = Importer::default();
     let mut target = AggHeap::new();
-    let a = importer.import(&values[0], &mut target).unwrap();
-    let b = importer.import(&values[0], &mut target).unwrap();
+    let a = importer.import(&values[0], UnitId(0), &mut target).unwrap();
+    let b = importer.import(&values[0], UnitId(0), &mut target).unwrap();
     assert_eq!(a, b);
     assert_eq!(target.len_u32(), 10_001);
     assert_eq!(importer.origins.domains.len(), 1);

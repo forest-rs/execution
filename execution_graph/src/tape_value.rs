@@ -11,7 +11,7 @@ use core::fmt;
 
 use execution_tape::aggregates::{AggError, AggHeap, AggRemap, ValueSnapshot};
 use execution_tape::callable::{Callable, CallableError};
-use execution_tape::value::{AggHandle, AggType, ShapeId, Value};
+use execution_tape::value::{AggHandle, AggType, FuncRef, ShapeId, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
 
 use crate::TapeError;
@@ -257,7 +257,7 @@ impl TapeValue {
         match self.value() {
             Value::Func(function) => Callable::function(
                 Arc::clone(self.program().ok_or(CallableError::MissingCodeOwner)?),
-                *function,
+                function.func,
             ),
             Value::Closure(closure) => Callable::retain(
                 Arc::clone(self.program().ok_or(CallableError::MissingCodeOwner)?),
@@ -518,20 +518,24 @@ impl Importer {
         self.handles.clear();
     }
 
+    /// Imports `value` into `target`, naming `unit` in every function or closure it holds.
+    ///
+    /// Admission already checked that program-scoped values belong to the program `unit` runs.
     pub(crate) fn import(
         &mut self,
         value: &TapeValue,
+        unit: UnitId,
         target: &mut AggHeap,
     ) -> Result<Value, AggError> {
         let Some(root) = aggregate(value.value()) else {
-            return Ok(value.value().clone());
+            return Ok(retarget(value.value().clone(), unit));
         };
         let Repr::Shared { bundle, .. } = &value.repr else {
             return Err(AggError::BadHandle);
         };
         let source = bundle.snapshot.aggregates();
         if self.handles.contains_key(&bundle.origins.key(root)) {
-            return Ok(self.remap(value.value(), &bundle.origins));
+            return Ok(self.remap(value.value(), &bundle.origins, unit));
         }
         let mut pending = vec![(root, false)];
         while let Some((handle, visited)) = pending.pop() {
@@ -551,7 +555,11 @@ impl Importer {
             }
             let mut values = Vec::with_capacity(shape.len());
             for index in 0..shape.len() {
-                values.push(self.remap(shape.element(source, handle, index)?, &bundle.origins));
+                values.push(self.remap(
+                    shape.element(source, handle, index)?,
+                    &bundle.origins,
+                    unit,
+                ));
             }
             let imported = match shape {
                 Shape::Tuple(_) => target.tuple_new(values)?,
@@ -584,18 +592,31 @@ impl Importer {
             });
             self.handles.insert(key, imported);
         }
-        Ok(self.remap(value.value(), &bundle.origins))
+        Ok(self.remap(value.value(), &bundle.origins, unit))
     }
 
-    fn remap(&self, value: &Value, origins: &Origins) -> Value {
+    fn remap(&self, value: &Value, origins: &Origins, unit: UnitId) -> Value {
         match value {
             Value::Agg(handle) => Value::Agg(self.handles[&origins.key(*handle)]),
             Value::Closure(closure) => {
                 let mut closure = *closure;
                 closure.env = self.handles[&origins.key(closure.env)];
+                closure.func.unit = unit;
                 Value::Closure(closure)
             }
-            value => value.clone(),
+            value => retarget(value.clone(), unit),
         }
+    }
+}
+
+/// Names `unit` in a function value; other values are unchanged.
+fn retarget(value: Value, unit: UnitId) -> Value {
+    match value {
+        Value::Func(function) => Value::Func(FuncRef::new(unit, function.func)),
+        Value::Closure(mut closure) => {
+            closure.func.unit = unit;
+            Value::Closure(closure)
+        }
+        value => value,
     }
 }

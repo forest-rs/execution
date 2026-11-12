@@ -66,6 +66,10 @@ pub enum CallableError {
     Aggregate(AggError),
     /// Logical capture-copy work cannot be represented by the VM's counters.
     CaptureSizeOverflow,
+    /// A captured function or closure belongs to a different unit than the retained callable.
+    ///
+    /// A callable retains one program; it cannot carry code of other units.
+    MixedUnits,
 }
 impl fmt::Display for CallableError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -92,6 +96,9 @@ impl fmt::Display for CallableError {
             Self::Aggregate(error) => write!(f, "cannot retain closure environment: {error}"),
             Self::CaptureSizeOverflow => {
                 f.write_str("closure capture exceeds logical work-counter capacity")
+            }
+            Self::MixedUnits => {
+                f.write_str("a captured function belongs to a different unit than the callable")
             }
         }
     }
@@ -129,8 +136,9 @@ pub(crate) struct Capture {
 /// [`Self::start`] creates the ordinary resumable invocation with this target. A closure's hidden
 /// environment is imported into that invocation's heap transaction. Existing invocations and
 /// retained callables keep their original code even if an embedding replaces its lookup entry.
-/// This does not implement cross-program guest calls or transfer program-local IDs between code
-/// revisions. Host objects, mutable cells and their collection remain embedding responsibilities.
+/// A callable retains one program, so it captures function values of one unit only; starting it
+/// names the unit that runs its program. Host objects, mutable cells and their collection remain
+/// embedding responsibilities.
 ///
 /// Equality compares code-owner/target identity for functions and shared retained-capture identity
 /// for closures. Clones compare equal; independently retained closure snapshots remain distinct.
@@ -240,7 +248,7 @@ impl Callable {
         value: ValueRef<'_>,
     ) -> Result<Self, CallableError> {
         match value {
-            ValueRef::Func(function) => Self::function(program, function),
+            ValueRef::Func(function) => Self::function(program, function.func),
             ValueRef::Closure(closure) => Self::from_snapshot(
                 program,
                 heap.snapshot(&[Value::Closure(closure)])
@@ -268,7 +276,7 @@ impl Callable {
             });
         };
         let closure = match value {
-            Value::Func(function) => return Self::function(program, *function),
+            Value::Func(function) => return Self::function(program, function.func),
             Value::Closure(closure) => *closure,
             other => {
                 return Err(CallableError::NotCallable {
@@ -276,17 +284,27 @@ impl Callable {
                 });
             }
         };
+        let function = closure.func.func;
         let body = program
-            .function(closure.func)
-            .ok_or(CallableError::MissingFunction {
-                function: closure.func,
-            })?;
+            .function(function)
+            .ok_or(CallableError::MissingFunction { function })?;
         let actual = body.arg_types().get(0).copied();
         if actual != Some(ValueType::Agg) {
-            return Err(CallableError::EnvironmentArgument {
-                function: closure.func,
-                actual,
+            return Err(CallableError::EnvironmentArgument { function, actual });
+        }
+        // Captured callables keep their source unit IDs; starting the callable retargets them
+        // to the unit that runs this program, so all of them must share the root's unit.
+        let foreign = snapshot
+            .aggregates()
+            .node_values()
+            .flatten()
+            .any(|value| match value {
+                Value::Func(captured) => captured.unit != closure.func.unit,
+                Value::Closure(captured) => captured.func.unit != closure.func.unit,
+                _ => false,
             });
+        if foreign {
+            return Err(CallableError::MixedUnits);
         }
         let mut aggregate_work = 0_u64;
         let mut payload_work = 0_u64;
@@ -312,7 +330,7 @@ impl Callable {
             program,
             target: Target::Closure(Arc::new(Capture {
                 snapshot,
-                function: closure.func,
+                function,
                 environment: closure.env,
                 aggregate_work,
                 payload_work,

@@ -6,7 +6,10 @@
 //! `throw` materializes its payload, checks the tag's payload contracts and then unwinds to the
 //! innermost catching clause of a protected region. A `*_ref` clause also binds a shared
 //! reference to the exception, which `throw_ref` propagates again with its original tag, payload
-//! and throw site. An exception no clause catches leaves the invocation as [`Trap::Uncaught`];
+//! and throw site. Tags are local to the program that declares them: until units share tag
+//! identities, a tagged clause catches only exceptions raised by its own unit, and an exception
+//! from another unit is reachable only through `catch_all`/`catch_all_ref`. An exception no clause
+//! catches leaves the invocation as [`Trap::Uncaught`];
 //! its payload is detached into an owned [`ValueSnapshot`] before the failed invocation rolls
 //! back its aggregates, so the embedding can inspect it.
 
@@ -20,8 +23,7 @@ use crate::typed::ExecCatch;
 ///
 /// The payload is an independent snapshot: aggregate handles refer to
 /// [`ValueSnapshot::aggregates`], not to the VM heap, which discards the failed invocation's
-/// allocations. Host objects remain host-owned handles; function IDs still refer to the
-/// throwing program.
+/// allocations. Host objects remain host-owned handles; function references keep their units.
 #[derive(Clone, Debug)]
 pub struct UncaughtException {
     tag: TagId,
@@ -31,10 +33,16 @@ pub struct UncaughtException {
 }
 
 impl UncaughtException {
-    /// Program-local identity of the thrown tag.
+    /// Identity of the thrown tag, local to the program of [`Self::unit`].
     #[must_use]
     pub fn local_tag(&self) -> TagId {
         self.tag
+    }
+
+    /// The unit whose program declares the thrown tag: the unit of [`Self::origin`].
+    #[must_use]
+    pub fn unit(&self) -> UnitId {
+        self.origin.unit
     }
 
     /// The thrown tag's declared name.
@@ -70,7 +78,8 @@ impl fmt::Display for UncaughtException {
 
 /// A raised exception: its tag, checked payload and original throw site.
 ///
-/// Exception reference registers share one record; rethrowing never copies or rechecks it.
+/// The tag is local to the program of `origin.unit`. Exception reference registers share one
+/// record; rethrowing never copies or rechecks it.
 #[derive(Debug)]
 pub(crate) struct Exception {
     tag: TagId,
@@ -204,8 +213,8 @@ impl<H: Host> Vm<H> {
                 continue;
             }
             if let Err(error) = budget.contract_scratch.check_value(
-                self.units
-                    .unit(ctx.frames.last().expect("raising activation").unit),
+                &self.units,
+                location.unit,
                 self.memory.aggs(),
                 value,
                 contract,
@@ -217,7 +226,7 @@ impl<H: Host> Vm<H> {
                 };
                 return Err(fail(
                     ctx,
-                    self.contract_trap(location.func, position, error),
+                    self.contract_trap(FuncRef::new(location.unit, location.func), position, error),
                 ));
             }
         }
@@ -281,13 +290,13 @@ impl<H: Host> Vm<H> {
         location: TraceLocation,
         span_id: Option<u64>,
     ) -> Result<(), TrapInfo> {
-        let program = prepared.program();
         let tag = exception.tag;
-        if let Some((frame, catch)) = find_catch(ctx, prepared, tag) {
+        if let Some((frame, catch)) = find_catch(ctx, &self.units, exception.origin.unit, tag) {
             return self.catch::<P>(
                 ctx, budget, prepared, exception, trace, control, location, span_id, frame, catch,
             );
         }
+        let program = self.units.unit(exception.origin.unit).program.program();
         let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, span_id, trap);
         let payload = match self.memory.aggs().snapshot(&exception.payload) {
             Ok(payload) => payload,
@@ -326,11 +335,13 @@ impl<H: Host> Vm<H> {
         let program = prepared.program();
         let tag = exception.tag;
         let catcher = &ctx.frames[frame];
-        let body = prepared
+        let catcher_program = &self.units.unit(catcher.unit).program;
+        let body = catcher_program
             .verified(catcher.func)
             .expect("active verified function");
         let target_ix = catch.handler.target_ix as usize;
         let handler = TraceLocation {
+            unit: catcher.unit,
             func: catcher.func,
             pc: body.pc_at_ix(target_ix).expect("verified handler entry"),
         };
@@ -355,16 +366,23 @@ impl<H: Host> Vm<H> {
         trace.exit_host(program, location, span_id, outcome);
         trace.instr_end(program, Some(handler), outcome);
         for exited in (depth + 1..=ctx.frames.len()).rev() {
-            trace.exit_frame(program, exited, location, span_id, outcome);
+            // Each scope closes with the program of the activation that entered it.
+            let frame_program = self
+                .units
+                .unit(ctx.frames[exited - 1].unit)
+                .program
+                .program();
+            trace.exit_frame(frame_program, exited, location, span_id, outcome);
             let waiting = control
                 .callbacks
                 .as_ref()
                 .and_then(|callbacks| callbacks.waiting_at(exited - 1));
             if let Some((host, instruction)) = waiting {
+                let host_program = self.units.unit(host.location.unit).program.program();
                 trace.pending = instruction.then_some(host.location);
-                let span = ctx.span_at(program, host.location.func, host.location.pc);
-                trace.exit_host(program, host.location, span, outcome);
-                trace.instr_end(program, None, outcome);
+                let span = ctx.span_at(host_program, host.location.func, host.location.pc);
+                trace.exit_host(host_program, host.location, span, outcome);
+                trace.instr_end(host_program, None, outcome);
             }
         }
         if let Some(first) = ctx.frames.get(depth) {
@@ -456,9 +474,13 @@ impl TraceCtx<'_> {
 ///
 /// The leaf raised with `throw`; every other activation is suspended at the call or host call
 /// that entered the activation above it. Each frame has already advanced past that instruction.
+///
+/// Each frame consults its own unit's regions. `tag` is local to `unit`: a frame of another unit
+/// cannot name it, so only that frame's catch-all clauses apply.
 fn find_catch(
     ctx: &Registers,
-    prepared: &VerifiedProgram,
+    units: &UnitTable,
+    unit: UnitId,
     tag: TagId,
 ) -> Option<(usize, ExecCatch)> {
     ctx.frames
@@ -466,8 +488,10 @@ fn find_catch(
         .enumerate()
         .rev()
         .find_map(|(index, frame)| {
-            let protection = prepared.verified(frame.func)?.protection.as_deref()?;
+            let program = &units.unit(frame.unit).program;
+            let protection = program.verified(frame.func)?.protection.as_deref()?;
             let raising = frame.instr_ix.checked_sub(1)?;
+            let tag = (frame.unit == unit).then_some(tag);
             Some((index, protection.catch(raising, tag)?))
         })
 }

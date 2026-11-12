@@ -3,6 +3,8 @@
 
 //! Existing activations and escaped callables keep their meaning across lookup replacement.
 
+use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
     callable::{
@@ -310,7 +312,7 @@ fn exposed_signature_compatibility_hides_each_closures_concrete_environment_layo
         Arc::clone(&program),
         &heap,
         ValueRef::Closure(Closure {
-            func: functions[0],
+            func: FuncRef::new(UnitId(0), functions[0]),
             env: first,
         }),
     )
@@ -319,7 +321,7 @@ fn exposed_signature_compatibility_hides_each_closures_concrete_environment_layo
         program,
         &heap,
         ValueRef::Closure(Closure {
-            func: functions[1],
+            func: FuncRef::new(UnitId(0), functions[1]),
             env: second,
         }),
     )

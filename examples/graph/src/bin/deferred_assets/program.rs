@@ -3,6 +3,7 @@
 
 //! The example's tiny frontend translates these two authored operations directly to tape.
 
+use execution_tape::trace::CodeLocation;
 use execution_tape::{
     asm::{Asm, FunctionAbi, ProgramBuilder},
     callable::Callable,
@@ -10,7 +11,6 @@ use execution_tape::{
     host::HostSig,
     program::{ElemTypeId, HostTypeId, StructTypeDef, TypeId, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
-    trace::TraceLocation,
 };
 use std::{error::Error, sync::Arc};
 
@@ -85,7 +85,7 @@ pub(super) fn compile() -> Result<Compiled, Box<dyn Error>> {
         }],
         vec![
             SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: entry,
                     pc: host_pc,
                 },
@@ -93,7 +93,7 @@ pub(super) fn compile() -> Result<Compiled, Box<dyn Error>> {
                 range: 0..split,
             },
             SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: entry,
                     pc: return_pc,
                 },

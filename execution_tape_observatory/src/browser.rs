@@ -301,7 +301,7 @@ impl<'a> Browser<'a> {
         self.source_lines = self.source_map.map_or_else(Vec::new, |sources| {
             super::source_context::context_lines(
                 sources,
-                execution_tape::trace::TraceLocation {
+                execution_tape::trace::CodeLocation {
                     func: self.function.expect("selected function"),
                     pc,
                 },

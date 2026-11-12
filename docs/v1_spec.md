@@ -35,6 +35,15 @@ It does **not** own:
 Function values and closures are supported. A closure pairs a function reference with a captured
 aggregate environment; `call_indirect` injects that environment as the body's first argument.
 
+### Installed units
+A VM executes programs it has installed. Installing a verified program creates a *unit*: the
+program plus VM-local metadata (its struct/array shapes, canonical contracts and signatures). Units
+are never removed, and every install of a program is a distinct unit. A function value is a
+`FuncRef { unit, func }`: `func` is local to the unit's program, and the unit's program runs it,
+whichever unit called it. Each activation runs the unit it entered; installing new code changes no
+running or suspended activation. Independently compiled units call each other through function
+values, which a host may supply (for example from a language-owned method table).
+
 ## Terminology
 - **Value**: runtime datum computed by the VM. Some values (notably `Bytes`/`Str`) may be stored indirectly by
   handle into a per-run arena while preserving the same observable semantics.
@@ -166,11 +175,10 @@ Preparation translates virtual register IDs into class-local operands. Runtime a
 the corresponding bank base and class-local index, not `base + virtual_register_id`. Unit needs
 no payload address. Arguments and results are explicit register lists in bytecode.
 
-Recursion is allowed, subject to `Limits::max_call_depth`. Function references are program-local
-and nominal type IDs are resolved through the installed unit; aggregate handles are heap-local. Raw
-`Value`s carry no ownership domain.
-The graph adapter's owned `TapeValue` snapshots preserve that domain and reject incompatible
-program-local transfers; they do not enable cross-program guest invocation.
+Recursion is allowed, subject to `Limits::max_call_depth`. Function references name their unit and
+nominal type IDs are resolved through the installed unit; unit IDs and aggregate handles are local
+to one VM. The graph adapter's owned `TapeValue` snapshots retain their program and name its unit
+in whichever executor imports them.
 
 ### Control flow invariants
 - All jump targets must point to instruction boundaries.
@@ -712,6 +720,10 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     argument (which must be `Agg`), so the callee's declared signature is `[Agg, <call_sig args>...]`; for
     a `Func` callee nothing is injected and `call_sig` matches the callee 1:1. Return types match 1:1.
   - Threads `eff` like `call`; traps if the callee's signature does not match.
+  - The callee may belong to any installed unit and runs that unit's program. Signatures match
+    when their canonical contracts are identical: contracts are interned per VM at install, with
+    struct/array types replaced by their heap shapes, so the check is one comparison. A unit the
+    VM did not install traps with `UnknownUnit`.
 - `closure_new r_dst, r_func, r_env`
   - Builds a `Closure` pairing the `Func` in `r_func` with a captured environment aggregate in `r_env`.
     The target must accept an aggregate environment first; construction checks that concrete
@@ -729,6 +741,9 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     `host_call` that entered the activation above it. Within an activation, the clauses of the
     instruction's innermost region are tried in order, then its parent's, and so on. A
     `catch tag` clause catches only that tag; `catch_all` catches every exception.
+  - Tags are local to the unit whose program declares them. An activation of another unit
+    cannot name the tag, so only its `catch_all`/`catch_all_ref` clauses catch that exception;
+    a `catch tag` clause never matches another unit's tag, even one with the same name.
   - A catch abandons every activation above the catching one, including guest callbacks entered
     from a pending host request and that request itself, releasing their frames. The payload is
     written to the handler block's parameters and execution continues at the handler.
@@ -738,7 +753,7 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   - An exception that no clause catches leaves the invocation as `Trap::Uncaught`, located at
     the `throw`, and call scopes close with that trap outcome. Its payload is detached into a
     `ValueSnapshot` before rollback discards the invocation's aggregates. Host objects stay
-    host-owned handles; function IDs still name the throwing program.
+    host-owned handles; function references keep their units.
   - Traps (fuel, limits, arithmetic, contract failures) are not exceptions and cannot be caught.
 - `throw_ref r_eff_in, r_exn`
   - Terminator. Raises the exception referenced by the `Exn` register again, with its original

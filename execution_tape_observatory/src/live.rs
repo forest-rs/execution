@@ -245,7 +245,11 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.code_func.and_then(|func| {
             self.code
                 .get(self.code_selected)
-                .map(|&(pc, _)| TraceLocation { func, pc })
+                .map(|&(pc, _)| TraceLocation {
+                    unit: self.invocation.unit(),
+                    func,
+                    pc,
+                })
         })
     }
 
@@ -350,6 +354,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                 Err(trap) => {
                     self.status = format!("TRAPPED · {}", render::trap_text(&trap.trap));
                     let location = TraceLocation {
+                        unit: trap.unit,
                         func: trap.func,
                         pc: trap.pc,
                     };
@@ -661,10 +666,10 @@ fn value_text(value: ValueRef<'_>) -> String {
             object.handle.0, object.host_type.0
         ),
         ValueRef::Agg(handle) => format!("aggregate @{} · Enter to inspect", handle.0),
-        ValueRef::Func(func) => format!("function f{}", func.0),
+        ValueRef::Func(func) => format!("function f{}", func.func.0),
         ValueRef::Closure(closure) => format!(
             "closure f{} · environment @{}",
-            closure.func.0, closure.env.0
+            closure.func.func.0, closure.env.0
         ),
     }
 }
@@ -763,6 +768,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                     self.show_location(frame.location);
                 } else if let Some(Err(trap)) = self.invocation.result() {
                     self.show_location(TraceLocation {
+                        unit: trap.unit,
                         func: trap.func,
                         pc: trap.pc,
                     });

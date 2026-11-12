@@ -97,7 +97,6 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
             vm.limits.max_aggregate_work = 2 * cost;
             for _ in 0..2 {
                 outputs.clear();
-                let unit = vm.install(program.clone()).unwrap();
                 vm.run_with_ctx(
                     &mut ctx,
                     FuncRef::new(unit, FuncId(0)),

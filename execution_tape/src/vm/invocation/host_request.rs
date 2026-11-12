@@ -21,7 +21,37 @@ struct Site<'a> {
     destinations: &'a [VReg],
     ret_types: &'a [ValueType],
 }
-fn site<'a>(program: &'a VerifiedProgram, ctx: &Registers, pending: PendingHost) -> Site<'a> {
+/// Installed code with the invocation's entry unit at hand, the usual requester.
+#[derive(Clone, Copy)]
+struct Code<'a> {
+    units: &'a UnitTable,
+    entry: UnitId,
+    program: &'a VerifiedProgram,
+}
+
+impl<'a> Code<'a> {
+    fn new(units: &'a UnitTable, entry: UnitId, program: &'a VerifiedProgram) -> Self {
+        Self {
+            units,
+            entry,
+            program,
+        }
+    }
+    fn of(self, unit: UnitId) -> &'a VerifiedProgram {
+        if unit == self.entry {
+            self.program
+        } else {
+            &self.units.unit(unit).program
+        }
+    }
+    fn sources(self, args: &'a [Value], heap: &'a AggHeap) -> ValueSources<'a> {
+        ValueSources::new(self.units, args, heap).with_current(self.entry, self.program.program())
+    }
+}
+
+/// The admitted host instruction, read from the program of the unit that admitted it.
+fn site<'a>(code: Code<'a>, ctx: &Registers, pending: PendingHost) -> Site<'a> {
+    let program = code.of(pending.location.unit);
     let body = program
         .verified(pending.location.func)
         .expect("admitted function");
@@ -116,7 +146,11 @@ impl<H: Host> fmt::Debug for PendingHostCall<'_, '_, H> {
 impl<H: Host> PendingHostCall<'_, '_, H> {
     fn site(&self) -> Site<'_> {
         site(
-            &self.running.continuation.program,
+            Code::new(
+                &self.running.vm.units,
+                self.running.continuation.unit,
+                &self.running.continuation.program,
+            ),
             &self.running.continuation.ctx,
             self.running
                 .continuation
@@ -130,6 +164,21 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn location(&self) -> TraceLocation {
         self.site().pending.location
     }
+    /// Installed unit whose program admitted this request.
+    #[must_use]
+    pub fn unit(&self) -> UnitId {
+        self.location().unit
+    }
+    /// Installs `program` in this request's VM while the request waits.
+    ///
+    /// The waiting frames keep their units. Complete the request with, or call back into, a
+    /// [`FuncRef`] of the new unit to run its code in this invocation.
+    pub fn install(
+        &mut self,
+        program: impl Into<Arc<VerifiedProgram>>,
+    ) -> Result<UnitId, InstallError> {
+        self.running.vm.install(program)
+    }
     /// Program-local declared import. Its identity belongs to [`Self::program`].
     #[must_use]
     pub fn import(&self) -> HostSigId {
@@ -138,7 +187,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Exact code whose import and nominal value identities this request uses.
     #[must_use]
     pub fn program(&self) -> &VerifiedProgram {
-        &self.running.continuation.program
+        &self.running.vm.units.unit(self.unit()).program
     }
     /// Borrows the heap that gives this request's aggregate argument handles their meaning.
     #[must_use]
@@ -179,11 +228,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         let site = self.site();
         arguments(
             &inv.continuation.ctx,
-            ValueSources::new(
-                inv.continuation.program.program(),
-                &inv.continuation.args,
-                inv.vm.memory.aggs(),
-            ),
+            Code::new(
+                &inv.vm.units,
+                inv.continuation.unit,
+                &inv.continuation.program,
+            )
+            .sources(&inv.continuation.args, inv.vm.memory.aggs()),
             site.base,
             site.args,
         )
@@ -223,8 +273,16 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn context(&mut self) -> HostContext<'_, '_> {
         let import = self.import();
         let inv = &mut self.running;
+        let unit = inv.vm.units.unit(
+            inv.continuation
+                .control
+                .pending_host
+                .expect("pending guard")
+                .location
+                .unit,
+        );
         HostContext::new(
-            inv.vm.units.unit(inv.continuation.unit),
+            unit,
             import,
             inv.vm.memory.aggs(),
             inv.continuation
@@ -344,8 +402,13 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             .control
             .pending_host
             .expect("pending guard");
-        let site = site(&self.continuation.program, &self.continuation.ctx, pending);
         let vm = &mut *self.vm;
+        let code = Code::new(
+            &vm.units,
+            self.continuation.unit,
+            &self.continuation.program,
+        );
+        let site = site(code, &self.continuation.ctx, pending);
         let mut inline_args = [ValueRef::Unit; 8];
         let mut arg_vec;
         let args = if site.args.len() <= inline_args.len() {
@@ -356,11 +419,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         };
         for (slot, value) in args.iter_mut().zip(arguments(
             &self.continuation.ctx,
-            ValueSources::new(
-                self.continuation.program.program(),
-                &self.continuation.args,
-                vm.memory.aggs(),
-            ),
+            code.sources(&self.continuation.args, vm.memory.aggs()),
             site.base,
             site.args,
         )) {
@@ -375,7 +434,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             &mut ret_vec
         };
         let context = HostContext::new(
-            vm.units.unit(self.continuation.unit),
+            vm.units.unit(site.pending.location.unit),
             site.import,
             vm.memory.aggs(),
             self.continuation
@@ -416,7 +475,11 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             finish_pending::<WithTracePolicy>(
                 &mut self.continuation.ctx,
                 self.budget,
-                &self.continuation.program,
+                Code::new(
+                    &self.vm.units,
+                    self.continuation.unit,
+                    &self.continuation.program,
+                ),
                 &self.continuation.args,
                 self.vm.memory.aggs(),
                 self.continuation
@@ -434,7 +497,11 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             finish_pending::<NoTracePolicy>(
                 &mut self.continuation.ctx,
                 self.budget,
-                &self.continuation.program,
+                Code::new(
+                    &self.vm.units,
+                    self.continuation.unit,
+                    &self.continuation.program,
+                ),
                 &self.continuation.args,
                 self.vm.memory.aggs(),
                 self.continuation
@@ -467,7 +534,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
     }
     /// Raises a delivered [`HostThrow`] at its pending `host_call`.
     fn raise_pending(&mut self, pending: PendingHost, thrown: HostThrow) -> Result<(), TrapInfo> {
-        let program = self.continuation.program.program();
+        let prepared = &self.vm.units.unit(pending.location.unit).program;
+        let program = prepared.program();
         let span =
             self.continuation
                 .ctx
@@ -477,7 +545,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             self.vm.raise_host::<WithTracePolicy>(
                 &mut continuation.ctx,
                 self.budget,
-                &continuation.program,
+                prepared,
                 thrown,
                 &mut continuation.trace,
                 &mut continuation.control,
@@ -488,7 +556,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             self.vm.raise_host::<NoTracePolicy>(
                 &mut continuation.ctx,
                 self.budget,
-                &continuation.program,
+                prepared,
                 thrown,
                 &mut continuation.trace,
                 &mut continuation.control,
@@ -504,7 +572,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             self.budget.payload_work += results.work.payload;
         }
         let span = self.continuation.ctx.span_at(
-            self.continuation.program.program(),
+            self.vm.units.unit(pending.location.unit).program.program(),
             pending.location.func,
             pending.location.pc,
         );
@@ -541,7 +609,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
 fn finish_pending<P: TracePolicy>(
     ctx: &mut Registers,
     budget: &mut Budget,
-    prepared: &VerifiedProgram,
+    code: Code<'_>,
     root_args: &[Value],
     heap: &AggHeap,
     pending: PendingHost,
@@ -552,16 +620,11 @@ fn finish_pending<P: TracePolicy>(
     trace: &mut TraceCtx<'_>,
     register_state: &mut P::RegisterState,
 ) -> Result<Option<HostThrow>, TrapInfo> {
-    let site = site(prepared, ctx, pending);
-    let program = prepared.program();
+    let site = site(code, ctx, pending);
+    let program = code.of(pending.location.unit).program();
     if P::values_enabled(trace) {
-        let args: Vec<_> = arguments(
-            ctx,
-            ValueSources::new(program, root_args, heap),
-            site.base,
-            site.args,
-        )
-        .collect();
+        let args: Vec<_> =
+            arguments(ctx, code.sources(root_args, heap), site.base, site.args).collect();
         P::values(trace, program, || ValueEvent::HostCall {
             location: site.pending.location,
             host_sig: site.import,
@@ -615,16 +678,16 @@ fn finish_pending<P: TracePolicy>(
         trace,
         program,
         ctx,
-        site.pending.location.func,
-        site.pending.location.pc,
+        site.pending.location,
         site.base,
-        ValueSources::new(program, root_args, heap),
+        code.sources(root_args, heap),
         crate::trace::RegisterPhase::Outputs,
     );
     P::instr_end(
         trace,
         program,
         ctx.frames.last().map(|frame| TraceLocation {
+            unit: frame.unit,
             func: frame.func,
             pc: frame.pc,
         }),

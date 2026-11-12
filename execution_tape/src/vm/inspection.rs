@@ -96,6 +96,7 @@ impl ExecutionControl {
         } else {
             let frame = &ctx.frames[index];
             TraceLocation {
+                unit: frame.unit,
                 func: frame.func,
                 pc: frame.pc,
             }
@@ -201,14 +202,15 @@ struct FunctionInspection<'a> {
 /// resuming. Terminal invocations expose no live frames, but retained heaps and outputs can
 /// still contribute object roots. Source connections use each frame's exact `location`.
 pub struct InvocationInspection<'a> {
-    program: &'a VerifiedProgram,
+    units: &'a UnitTable,
     ctx: &'a Registers,
     args: &'a [Value],
     outputs: &'a [Value],
     aggregates: &'a AggHeap,
     control: &'a ExecutionControl,
     active: bool,
-    functions: BTreeMap<u32, FunctionInspection<'a>>,
+    /// Keyed by unit and function: each frame is analyzed in its own unit's program.
+    functions: BTreeMap<(u32, u32), FunctionInspection<'a>>,
 }
 impl fmt::Debug for InvocationInspection<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -223,7 +225,7 @@ impl<H: Host> Invocation<'_, H> {
     /// Borrows paused state. Expensive register facts are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(&self.continuation, self.vm.memory.aggs())
+        inspection(&self.continuation, &self.vm.units, self.vm.memory.aggs())
     }
 
     /// Mutates host state between quanta. Preserve the validity of referenced object handles.
@@ -236,16 +238,17 @@ impl<H: Host> Invocation<'_, H> {
 
 impl<H: Host> invocation::Running<'_, '_, H> {
     pub(super) fn inspect(&self) -> InvocationInspection<'_> {
-        inspection(self.continuation, self.vm.memory.aggs())
+        inspection(self.continuation, &self.vm.units, self.vm.memory.aggs())
     }
 }
 
 fn inspection<'a>(
     continuation: &'a continuation::Continuation<'_>,
+    units: &'a UnitTable,
     aggregates: &'a AggHeap,
 ) -> InvocationInspection<'a> {
     InvocationInspection {
-        program: &continuation.program,
+        units,
         ctx: &continuation.ctx,
         args: &continuation.args,
         outputs: continuation
@@ -279,7 +282,9 @@ impl<'a> InvocationInspection<'a> {
             location,
             caller: activation.caller,
             waiting_for_return: waiting,
-            register_count: self.program.program().functions[frame.func.0 as usize].reg_count,
+            register_count: self.units.unit(frame.unit).program.program().functions
+                [frame.func.0 as usize]
+                .reg_count,
         }
     }
     fn index(&self, id: &ActivationId) -> Option<usize> {
@@ -314,14 +319,15 @@ impl<'a> InvocationInspection<'a> {
     pub fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
         let index = self.index(id)?;
         let frame = self.frame_at(index);
+        let program: &'a VerifiedProgram = &self.units.unit(frame.location.unit).program;
         let function = self
             .functions
-            .entry(frame.location.func.0)
+            .entry((frame.location.unit.0, frame.location.func.0))
             .or_insert_with(|| FunctionInspection {
-                facts: ProgramAnalysis::from(self.program)
+                facts: ProgramAnalysis::from(program)
                     .function(frame.location.func)
                     .expect("verified function"),
-                registers: observations::register_map(self.program.program(), frame.location.func)
+                registers: observations::register_map(program.program(), frame.location.func)
                     .expect("verified ledger"),
             });
         let fact = function
@@ -332,7 +338,7 @@ impl<'a> InvocationInspection<'a> {
             let ctx = self.ctx;
             read_value_ref_at(
                 &ctx.arena,
-                ValueSources::new(self.program.program(), self.args, self.aggregates),
+                ValueSources::new(self.units, self.args, self.aggregates),
                 &ctx.bools,
                 &ctx.i64s,
                 &ctx.u64s,

@@ -9,6 +9,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{Closure, FuncId, Value};
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig, VerifyError};
 use execution_tape::vm::{Limits, Trap, Vm};
@@ -124,7 +125,7 @@ fn rich_indirect_results_roundtrip_and_feed_projection_and_inspection() {
             let unit = vm.install(verified.clone()).unwrap();
             vm.run(
                 FuncRef::new(unit, entry),
-                &[Value::Func(target)],
+                &[Value::Func(FuncRef::new(UnitId(0), target))],
                 TraceMask::NONE,
                 None,
             )
@@ -222,9 +223,8 @@ fn closure_construction_preserves_exposed_signature_and_checks_concrete_environm
         .aggregates_mut()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
-    let unit = vm.install(p.clone()).unwrap();
     assert!(
-        matches!(vm.run(FuncRef::new(unit, entry),&[Value::Agg(bad)],TraceMask::NONE,None).unwrap_err().trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==target)
+        matches!(vm.run(FuncRef::new(unit, entry),&[Value::Agg(bad)],TraceMask::NONE,None).unwrap_err().trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==FuncRef::new(UnitId(0), target))
     );
 }
 #[test]
@@ -275,8 +275,14 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
         .run(
             FuncRef::new(unit, entry),
             &[
-                Value::Closure(Closure { func: first, env }),
-                Value::Closure(Closure { func: second, env }),
+                Value::Closure(Closure {
+                    func: FuncRef::new(UnitId(0), first),
+                    env,
+                }),
+                Value::Closure(Closure {
+                    func: FuncRef::new(UnitId(0), second),
+                    env,
+                }),
             ],
             TraceMask::NONE,
             None,
@@ -318,8 +324,8 @@ fn exact_rich_identity_rejects_equal_kind_hashes_before_dispatch() {
     assert!(matches!({
  let mut vm = Vm::new(NoHost,Limits::default());
  let unit = vm.install(p.clone()).unwrap();
- vm.run(FuncRef::new(unit, entry), &[Value::Func(target)], TraceMask::NONE, None)
- }.unwrap_err().trap,Trap::CallableSignatureMismatch{signature,function} if signature==call && function==target));
+ vm.run(FuncRef::new(unit, entry), &[Value::Func(FuncRef::new(UnitId(0), target))], TraceMask::NONE, None)
+ }.unwrap_err().trap,Trap::CallableSignatureMismatch{signature,function} if signature==call && function==FuncRef::new(UnitId(0), target)));
 }
 #[test]
 fn statically_known_incompatible_indirect_targets_are_rejected() {
@@ -396,9 +402,8 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
     );
     let invalid = vm
         .aggregates_mut()
-        .tuple_new(vec![Value::Func(FuncId(u32::MAX))])
+        .tuple_new(vec![Value::Func(FuncRef::new(UnitId(0), FuncId(u32::MAX)))])
         .unwrap();
-    let unit = vm.install(p.clone()).unwrap();
     let error = vm
         .run(
             FuncRef::new(unit, take),
@@ -453,7 +458,10 @@ fn callable_signature_positions_and_cached_visits_are_budgeted() {
             let unit = vm.install(p.clone()).unwrap();
             vm.run(
                 FuncRef::new(unit, entry),
-                &[Value::Func(target), Value::Func(target)],
+                &[
+                    Value::Func(FuncRef::new(UnitId(0), target)),
+                    Value::Func(FuncRef::new(UnitId(0), target)),
+                ],
                 TraceMask::NONE,
                 None,
             )
@@ -489,7 +497,7 @@ fn opaque_closures_validate_even_an_unused_unrefined_environment_before_entry() 
         vm.run(
             FuncRef::new(unit, entry),
             &[Value::Closure(Closure {
-                func: target,
+                func: FuncRef::new(UnitId(0), target),
                 env: execution_tape::value::AggHandle(0),
             })],
             TraceMask::NONE,
@@ -498,7 +506,7 @@ fn opaque_closures_validate_even_an_unused_unrefined_environment_before_entry() 
     }
     .unwrap_err();
     assert!(
-        matches!(error.trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==target)
+        matches!(error.trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==FuncRef::new(UnitId(0), target))
     );
 }
 
@@ -565,7 +573,7 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
             rets: &mut [Value],
             _: HostContext<'_, '_>,
         ) -> Result<u64, HostError> {
-            rets[0] = Value::Func(self.0);
+            rets[0] = Value::Func(FuncRef::new(UnitId(0), self.0));
             Ok(0)
         }
     }

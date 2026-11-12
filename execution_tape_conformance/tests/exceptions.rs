@@ -7,6 +7,7 @@
 //! `Trap::Uncaught` with a payload snapshot that survives rollback.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{BuildError, FunctionSig, ProgramBuilder, TagBuildError},
     contract::{Contract, ContractId, ContractPosition},
@@ -127,7 +128,7 @@ fn assert_uncaught(fixture: &Fixture, error: &TrapInfo, code: i64) {
     assert_eq!(
         error.to_string(),
         format!(
-            "trap at f{} pc={}: uncaught exception tag#0 (\"failed\") with 3 payload values",
+            "trap at u0:f{} pc={}: uncaught exception tag#0 (\"failed\") with 3 payload values",
             fixture.raise.0, fixture.throw_pc
         ),
         "trap display names the tag"
@@ -154,7 +155,6 @@ fn uncaught_exception_detaches_its_payload_before_rollback() {
         before,
         "the failed invocation's aggregates are rolled back; the payload survives in the trap"
     );
-    let unit = vm.install(f.program.clone()).unwrap();
     // The VM remains usable after an uncaught exception.
     let again = vm
         .run(
@@ -229,7 +229,10 @@ fn an_exception_escaping_a_guest_callback_ends_the_whole_invocation() {
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
-        .call_guest(Value::Func(raise), vec![Value::I64(5)])
+        .call_guest(
+            Value::Func(FuncRef::new(UnitId(0), raise)),
+            vec![Value::I64(5)],
+        )
         .unwrap();
     let error = run.resume(u64::MAX).unwrap_err();
     assert_eq!((error.func, error.pc), (raise, throw_pc));
@@ -363,6 +366,7 @@ fn recorded_uncaught_exceptions_replay_with_their_payload() {
     assert_eq!(
         recording.outcome_location(),
         Some(TraceLocation {
+            unit: UnitId(0),
             func: f.raise,
             pc: f.throw_pc
         })
@@ -426,7 +430,6 @@ fn payload_contracts_are_checked_statically_and_where_the_exception_is_raised() 
     assert!(error.to_string().contains("throw tag#0: payload[0]"));
 
     let right = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
-    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
             FuncRef::new(unit, FuncId(0)),

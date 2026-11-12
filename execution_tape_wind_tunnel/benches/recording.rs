@@ -23,7 +23,6 @@ fn recording(c: &mut Criterion) {
             .run(FuncRef::new(unit, FuncId(0)), &args, TraceMask::NONE, None)
             .unwrap();
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-        let unit = vm.install(program.clone()).unwrap();
         let actual = vm
             .run(
                 FuncRef::new(unit, FuncId(0)),

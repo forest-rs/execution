@@ -534,7 +534,7 @@ pub enum ContractMismatch {
     /// A callable does not match its exact exposed signature.
     Callable {
         /// Concrete target when runtime checking identified one.
-        function: Option<crate::value::FuncId>,
+        function: Option<crate::value::FuncRef>,
     },
     /// An aggregate handle does not resolve.
     Heap(crate::aggregates::AggError),
@@ -544,7 +544,11 @@ impl fmt::Display for ContractMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Callable { function } => match function {
-                Some(id) => write!(f, "function #{} has incompatible callable contracts", id.0),
+                Some(id) => write!(
+                    f,
+                    "function #{} of unit #{} has incompatible callable contracts",
+                    id.func.0, id.unit.0
+                ),
                 None => f.write_str("incompatible callable contracts"),
             },
             Self::Kind { expected, actual } => {
@@ -815,7 +819,7 @@ mod tests {
             "function #2 at byte 15: result[0][0][0]: expected bool, found i64"
         );
         let trapped = crate::vm::Trap::ContractMismatch {
-            function: FuncId(2),
+            function: crate::value::FuncRef::new(crate::value::UnitId(0), FuncId(2)),
             position: ContractPosition::Argument {
                 callee: FuncId(3),
                 index: 1,
@@ -824,7 +828,7 @@ mod tests {
         };
         assert_eq!(
             format!("{trapped}"),
-            "function #2: call to function #3: argument[1][0][0]: expected bool, found i64"
+            "function #2 of unit #0: call to function #3: argument[1][0][0]: expected bool, found i64"
         );
         assert_eq!(
             format!(

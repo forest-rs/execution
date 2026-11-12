@@ -6,6 +6,7 @@
 //! and protected cleanup is ordinary guest code. Exiting to a restart is a guest exception that
 //! this runtime raises at the pending request; the VM unwinds it.
 
+use execution_tape::value::UnitId;
 use execution_tape::{
     callable::Callable,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -426,7 +427,7 @@ impl Runtime {
         let function = self
             .run
             .program()
-            .function(closure.func)
+            .function(closure.func.func)
             .ok_or(Error::Abi("unknown closure body"))?;
         let expected = std::iter::once(ValueType::Agg).chain(args.iter().copied());
         if !function.arg_types().iter().copied().eq(expected)
@@ -504,6 +505,7 @@ impl Runtime {
         let key = self.key().ok();
         let location = key.as_ref().map(|key| key.location).or(match &error {
             Error::Vm(trap) => Some(TraceLocation {
+                unit: UnitId(0),
                 func: trap.func,
                 pc: trap.pc,
             }),

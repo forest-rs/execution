@@ -4,6 +4,7 @@
 //! Protected regions and catch clauses.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{Asm, Catch, FunctionSig, ProgramBuilder},
     contract::{Contract, ContractPosition},
@@ -342,7 +343,10 @@ fn drive_callback(
     invocation
         .pending_host_call()
         .unwrap()
-        .call_guest(Value::Func(raise), vec![Value::I64(41)])
+        .call_guest(
+            Value::Func(FuncRef::new(UnitId(0), raise)),
+            vec![Value::I64(41)],
+        )
         .unwrap();
     assert_eq!(
         invocation.resume(u64::MAX).unwrap(),
@@ -467,7 +471,6 @@ fn traps_and_payload_contract_failures_are_never_caught() {
         }
     ));
     let right = vm.aggregates_mut().tuple_new(vec![Value::I64(3)]).unwrap();
-    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
         vm.run(
             FuncRef::new(unit, FuncId(1)),

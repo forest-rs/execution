@@ -4,6 +4,7 @@
 //! Consumer-style ownership, admission and replay of escaped executable closures.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     aggregates::AggHeap,
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
@@ -231,7 +232,10 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
     let callable = Callable::retain(
         Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(Closure {
+            func: FuncRef::new(UnitId(0), body),
+            env,
+        }),
     )
     .unwrap();
     for limit in [3, 4] {
@@ -300,7 +304,7 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
         p,
         &heap,
         ValueRef::Closure(Closure {
-            func: FuncId(0),
+            func: FuncRef::new(UnitId(0), FuncId(0)),
             env,
         }),
     )
@@ -333,7 +337,10 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
     let callable = Callable::retain(
         Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(Closure {
+            func: FuncRef::new(UnitId(0), body),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -434,7 +441,10 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     let callable = Callable::retain(
         program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(Closure {
+            func: FuncRef::new(UnitId(0), body),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -493,7 +503,10 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     let outer = Callable::retain(
         Arc::clone(&program),
         &heap,
-        ValueRef::Closure(Closure { func: outer, env }),
+        ValueRef::Closure(Closure {
+            func: FuncRef::new(UnitId(0), outer),
+            env,
+        }),
     )
     .unwrap();
     drop(heap);
@@ -565,7 +578,10 @@ fn snapshot_adoption_rejects_ambiguous_roots_and_non_environment_bodies() {
     let (program, factory) = maker();
     let heap = AggHeap::new();
     let snapshot = heap
-        .snapshot(&[Value::Func(factory), Value::Func(factory)])
+        .snapshot(&[
+            Value::Func(FuncRef::new(UnitId(0), factory)),
+            Value::Func(FuncRef::new(UnitId(0), factory)),
+        ])
         .unwrap();
     assert!(matches!(
         Callable::from_snapshot(Arc::clone(&program), snapshot),
@@ -577,7 +593,10 @@ fn snapshot_adoption_rejects_ambiguous_roots_and_non_environment_bodies() {
         Callable::retain(
             program,
             &heap,
-            ValueRef::Closure(Closure { func: factory, env })
+            ValueRef::Closure(Closure {
+                func: FuncRef::new(UnitId(0), factory),
+                env
+            })
         ),
         Err(CallableError::EnvironmentArgument {
             actual: Some(ValueType::I64),
@@ -664,7 +683,10 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
     let callable = Callable::retain(
         program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(Closure {
+            func: FuncRef::new(UnitId(0), body),
+            env,
+        }),
     )
     .unwrap();
     let payload = String::from("abcde");

@@ -16,7 +16,10 @@ use execution_tape::recording::{
     InstructionCapture, InstructionStatus, RecordLimits, Recorder, Recording, RegisterWatch,
     ReplayOutcome,
 };
-use execution_tape::trace::{TraceLocation, TraceMask, TraceSink};
+use execution_tape::trace::CodeLocation;
+use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::Limits;
@@ -75,7 +78,7 @@ impl TapeObserver for Observe {
                 .with_instructions(InstructionCapture {
                     max_steps: 64,
                     watches: vec![RegisterWatch {
-                        location: TraceLocation {
+                        location: CodeLocation {
                             func: invocation.entry,
                             pc: 0,
                         },
@@ -398,7 +401,11 @@ fn ownership_rejection_precedes_observer_admission() {
         .add_tape_node(program, entry, vec!["input".into()])
         .unwrap();
     graph
-        .set_input_value(node, "input", Value::Func(entry).into())
+        .set_input_value(
+            node,
+            "input",
+            Value::Func(FuncRef::new(UnitId(0), entry)).into(),
+        )
         .unwrap();
     assert!(matches!(
         graph.run_all(),

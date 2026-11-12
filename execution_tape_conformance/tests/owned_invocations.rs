@@ -4,6 +4,7 @@
 //! Independently stored invocations use the same budgets, evidence and cancellation boundary.
 
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::{
     aggregates::AggHeap,
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
@@ -114,7 +115,10 @@ fn retained_closure() -> Callable {
     Callable::retain(
         program,
         &heap,
-        ValueRef::Closure(Closure { func: body, env }),
+        ValueRef::Closure(Closure {
+            func: FuncRef::new(UnitId(0), body),
+            env,
+        }),
     )
     .unwrap()
 }

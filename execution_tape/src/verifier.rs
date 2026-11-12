@@ -37,7 +37,7 @@ use crate::analysis::protection::Protection;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::contract::{Contract, ContractKinds, ContractPosition, ContractViolation};
 use crate::format::DecodeError;
-use crate::host::{SigHash, sig_hash_slices};
+use crate::host::sig_hash_slices;
 use crate::instr_operands;
 use crate::opcode::Opcode;
 use crate::program::{
@@ -68,31 +68,6 @@ use crate::vm::Vm;
 pub struct VerifiedProgram {
     program: Program,
     verified_functions: Vec<ExecFunc>,
-    signature_cache: SignatureCache,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SigFingerprint {
-    pub(crate) hash: SigHash,
-    pub(crate) key: u32,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-struct FunctionSigFingerprints {
-    direct: SigFingerprint,
-    closure: Option<SigFingerprint>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SignatureCache {
-    call_sigs: Vec<SigFingerprint>,
-    functions: Vec<FunctionSigFingerprints>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CanonicalSignature {
-    args: Vec<crate::contract::ContractId>,
-    rets: Vec<crate::contract::ContractId>,
 }
 
 /// A non-fatal verifier lint warning.
@@ -174,30 +149,6 @@ impl VerifiedProgram {
     #[must_use]
     pub(crate) fn verified(&self, func: FuncId) -> Option<&ExecFunc> {
         self.verified_functions.get(func.0 as usize)
-    }
-
-    #[must_use]
-    pub(crate) fn call_sig_fingerprint(&self, call_sig: CallSigId) -> Option<SigFingerprint> {
-        self.signature_cache
-            .call_sigs
-            .get(call_sig.0 as usize)
-            .copied()
-    }
-
-    #[must_use]
-    pub(crate) fn function_direct_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
-        self.signature_cache
-            .functions
-            .get(func.0 as usize)
-            .map(|s| s.direct)
-    }
-
-    #[must_use]
-    pub(crate) fn function_closure_sig_fingerprint(&self, func: FuncId) -> Option<SigFingerprint> {
-        self.signature_cache
-            .functions
-            .get(func.0 as usize)
-            .and_then(|s| s.closure)
     }
 
     /// Consumes `self` and returns the underlying program.
@@ -1299,7 +1250,7 @@ pub fn verify_program_owned(
     tags::verify(&program)?;
     verify_exception_places(&program)?;
     verify_function_value_names(&program)?;
-    let signature_cache = build_signature_cache(&program)?;
+    verify_signature_ranges(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
@@ -1311,7 +1262,6 @@ pub fn verify_program_owned(
     Ok(VerifiedProgram {
         program,
         verified_functions,
-        signature_cache,
     })
 }
 
@@ -1326,7 +1276,7 @@ pub fn verify_program_owned_with_lints(
     tags::verify(&program)?;
     verify_exception_places(&program)?;
     verify_function_value_names(&program)?;
-    let signature_cache = build_signature_cache(&program)?;
+    verify_signature_ranges(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     let mut lints: Vec<VerifyLint> = Vec::new();
@@ -1341,79 +1291,33 @@ pub fn verify_program_owned_with_lints(
         VerifiedProgram {
             program,
             verified_functions,
-            signature_cache,
         },
         lints,
     ))
 }
 
-fn build_signature_cache(program: &Program) -> Result<SignatureCache, VerifyError> {
-    let mut canonical = Vec::new();
-    let mut call_sigs = Vec::with_capacity(program.call_sigs.len());
+/// Checks that every call signature and function signature resolves.
+///
+/// Installation interns these signatures per VM; see [`crate::vm::Vm::install`].
+fn verify_signature_ranges(program: &Program) -> Result<(), VerifyError> {
     for (i, entry) in program.call_sigs.iter().enumerate() {
         let error = |_| VerifyError::CallSigMalformed {
             call_sig: u32::try_from(i).expect("verified function/signature count"),
         };
-        let args = program.call_sig_arg_contracts(entry).map_err(error)?;
-        let rets = program.call_sig_ret_contracts(entry).map_err(error)?;
-        call_sigs.push(SigFingerprint {
-            key: intern_signature(&mut canonical, args, rets),
-            hash: program.call_sig_hash(entry).map_err(error)?,
-        });
+        program.call_sig_arg_contracts(entry).map_err(error)?;
+        program.call_sig_ret_contracts(entry).map_err(error)?;
+        program.call_sig_hash(entry).map_err(error)?;
     }
-    let mut functions = Vec::with_capacity(program.functions.len());
-    for (i, func) in program.functions.iter().enumerate() {
-        let args =
-            func.arg_contracts(program)
-                .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds {
-                    func: u32::try_from(i).expect("verified function/signature count"),
-                })?;
-        let rets =
-            func.ret_contracts(program)
-                .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds {
-                    func: u32::try_from(i).expect("verified function/signature count"),
-                })?;
-        let hash = |args: &[crate::contract::ContractId]| {
-            crate::host::sig_hash_iter(
-                program.contracts.kinds(args).iter(),
-                program.contracts.kinds(rets).iter(),
-            )
-        };
-        let direct = SigFingerprint {
-            key: intern_signature(&mut canonical, args, rets),
-            hash: hash(args),
-        };
-        let closure = args
-            .split_first()
-            .filter(|(first, _)| program.contracts.kind(**first) == Some(ValueType::Agg))
-            .map(|(_, rest)| SigFingerprint {
-                key: intern_signature(&mut canonical, rest, rets),
-                hash: hash(rest),
-            });
-        functions.push(FunctionSigFingerprints { direct, closure });
+    for (i, function) in program.functions.iter().enumerate() {
+        let func = u32::try_from(i).expect("verified function/signature count");
+        function
+            .arg_contracts(program)
+            .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func })?;
+        function
+            .ret_contracts(program)
+            .map_err(|_| VerifyError::FunctionRetTypesOutOfBounds { func })?;
     }
-    Ok(SignatureCache {
-        call_sigs,
-        functions,
-    })
-}
-fn intern_signature(
-    canonical: &mut Vec<CanonicalSignature>,
-    args: &[crate::contract::ContractId],
-    rets: &[crate::contract::ContractId],
-) -> u32 {
-    if let Some(index) = canonical
-        .iter()
-        .position(|sig| sig.args == args && sig.rets == rets)
-    {
-        return u32::try_from(index).expect("signature capacity");
-    }
-    let key = u32::try_from(canonical.len()).expect("signature capacity");
-    canonical.push(CanonicalSignature {
-        args: args.to_vec(),
-        rets: rets.to_vec(),
-    });
-    key
+    Ok(())
 }
 
 struct ExecFuncContainer {

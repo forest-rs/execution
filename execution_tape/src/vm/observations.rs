@@ -10,7 +10,8 @@ use crate::trace::{RegisterEvent, RegisterPhase, RegisterValues};
 use alloc::collections::btree_map::Entry;
 
 /// Per-run indexes owned only by the trace-capable interpreter policy.
-pub(super) type RegisterState = alloc::collections::BTreeMap<u32, FunctionRegisters>;
+/// Keyed by unit and function: units can run different programs.
+pub(super) type RegisterState = alloc::collections::BTreeMap<(u32, u32), FunctionRegisters>;
 
 pub(super) struct FunctionRegisters {
     instructions: Vec<DecodedInstr>,
@@ -33,8 +34,7 @@ pub(super) fn emit(
     trace: &mut TraceCtx<'_>,
     program: &Program,
     ctx: &Registers,
-    func: FuncId,
-    pc: u32,
+    location: TraceLocation,
     base: RegBase,
     sources: ValueSources<'_>,
     phase: RegisterPhase,
@@ -42,14 +42,14 @@ pub(super) fn emit(
     if !trace.enabled(TraceMask::REGISTERS) {
         return;
     }
-    let location = TraceLocation { func, pc };
+    let TraceLocation { unit, func, pc } = location;
     let Some(sink) = &mut trace.sink else {
         return;
     };
     if !sink.wants_registers(location, phase) {
         return;
     }
-    let map = match register_state.entry(func.0) {
+    let map = match register_state.entry((unit.0, func.0)) {
         Entry::Vacant(entry) => {
             let Some(map) = FunctionRegisters::new(program, func) else {
                 return;

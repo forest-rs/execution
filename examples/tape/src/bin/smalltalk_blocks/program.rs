@@ -490,7 +490,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
 mod tests {
     use super::*;
     use crate::runtime::{Runtime, Status, decode_outputs};
-    use execution_tape::{recording::ReplayOutcome, trace::TraceLocation};
+    use execution_tape::recording::ReplayOutcome;
 
     #[test]
     fn source_snapshots_preserve_lf_and_crlf_while_both_return_modes_execute_and_replay() {
@@ -500,7 +500,7 @@ mod tests {
                 let fixture = compile_story(&story, non_local).unwrap();
                 let sources = fixture.sources.bind(fixture.program.program()).unwrap();
                 let first = sources
-                    .lookup(TraceLocation {
+                    .lookup(execution_tape::trace::CodeLocation {
                         func: fixture.entry,
                         pc: 0,
                     })

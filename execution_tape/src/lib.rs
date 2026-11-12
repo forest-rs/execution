@@ -409,6 +409,34 @@
 //! Signature comparison is iterative/memoized and preserves program-local nominal identities.
 //! The embedding owns class/selector lookup, synchronization, cache invalidation and host objects.
 //!
+//! ## Units and live replacement
+//!
+//! Independently compiled programs call each other in one invocation through function values.
+//! A [`FuncRef`](value::FuncRef) names a unit and a function of its program; `call.indirect` runs
+//! the target's own unit, checking its exact contract signature, which every unit of a VM interns
+//! the same way. Struct and array types are interned as heap shapes, so values keep their meaning
+//! in every unit. Each activation keeps the unit it entered: installing replacement code changes
+//! no running or suspended frame, and new calls reach new code only through the function values a
+//! language hands out, for example from a host-owned method table:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use execution_tape::{host::Host, value::{FuncId, FuncRef, Value}, verifier::VerifiedProgram,
+//!     vm::Invocation};
+//! fn answer_with_edit<H: Host>(run: &mut Invocation<'_, H>, edited: Arc<VerifiedProgram>,
+//!     method: FuncId) -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut request = run.pending_host_call().expect("a yielded method lookup");
+//!     // Frames already running the old method keep it; this lookup answers with the new one.
+//!     let unit = request.install(edited)?;
+//!     request.complete(&mut [Value::Func(FuncRef::new(unit, method))], Ok(0))?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! Exception tags are still local to their unit: a `catch tag` clause catches only its own
+//! unit's tags, and exceptions from other units are reachable through `catch_all`. A recording
+//! describes one unit and reports `CaptureFault::ForeignUnit` when execution leaves it.
+//!
 //! ## Paused frames and host-object roots
 //!
 //! `Invocation::inspect` borrows live state at a safe instruction boundary. Frames have

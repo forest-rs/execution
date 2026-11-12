@@ -6,8 +6,10 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::recording::{RecordLimits, RecordedValue, Recorder};
+use execution_tape::trace::CodeLocation;
 use execution_tape::trace::TraceSink;
 use execution_tape::value::FuncRef;
+use execution_tape::value::UnitId;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -112,7 +114,7 @@ fn recording_with_options(
         let watches = source
             .instrs()
             .map(|i| execution_tape::recording::RegisterWatch {
-                location: execution_tape::trace::TraceLocation {
+                location: CodeLocation {
                     func: FuncId(0),
                     pc: i.pc(),
                 },
@@ -380,6 +382,7 @@ fn compact_failures_keep_boundary_location_and_reason_visible() {
     view.replay = render::replay_error(&ReplayError::Diverged {
         boundary: ReplayBoundary::HostCall { index: 123 },
         location: Some(TraceLocation {
+            unit: UnitId(0),
             func: FuncId(7),
             pc: 42,
         }),
@@ -727,7 +730,7 @@ fn recorded_instructions_follow_exact_source_snapshots_and_reject_stale_bundles(
     use execution_tape::source::{
         SourceDocument, SourceError, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
-    use execution_tape::trace::TraceLocation;
+
     let (record, _) = recording_with_options(RecordLimits::default(), None, true, true);
     let source =
         execution_tape::disasm::disassemble_function(record.program().program(), FuncId(0))
@@ -742,7 +745,7 @@ fn recorded_instructions_follow_exact_source_snapshots_and_reject_stale_bundles(
         }],
         vec![
             SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: FuncId(0),
                     pc: first,
                 },
@@ -750,7 +753,7 @@ fn recorded_instructions_follow_exact_source_snapshots_and_reject_stale_bundles(
                 range: 0..5,
             },
             SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: FuncId(0),
                     pc: last,
                 },
@@ -833,7 +836,7 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
         .with_instructions(execution_tape::recording::InstructionCapture {
             max_steps: 100,
             watches: vec![execution_tape::recording::RegisterWatch {
-                location: execution_tape::trace::TraceLocation {
+                location: CodeLocation {
                     func: callee,
                     pc: 0,
                 },
@@ -924,7 +927,7 @@ fn callback_recording() -> Recording {
     assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
     run.pending_host_call()
         .unwrap()
-        .call_guest(Value::Func(handler), args.to_vec())
+        .call_guest(Value::Func(FuncRef::new(unit, handler)), args.to_vec())
         .unwrap();
     assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
     let mut request = run.pending_host_call().unwrap();

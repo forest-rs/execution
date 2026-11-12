@@ -28,7 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let expected = vm.run(FuncRef::new(unit, FuncId(0)), &args, TraceMask::NONE, None)?;
     let before = vm.host().calls;
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-    let unit = vm.install(program.clone()).unwrap();
     let actual = vm.run(
         FuncRef::new(unit, FuncId(0)),
         &args,

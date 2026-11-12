@@ -5,27 +5,34 @@
 //!
 //! Register handles refer to owned computed payloads or immutable sources in the active run.
 //! Source indices carry no borrowed pointers and are resolved only against that run's inputs,
-//! program, and VM heap. Reset discards all indices before another run can use the context.
+//! the VM's installed units, and its heap. Reset discards all indices before another run can use the context.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::aggregates::AggHeap;
-use crate::program::{ConstId, Program};
-use crate::value::{AggHandle, Value};
+use crate::program::ConstId;
+use crate::value::{AggHandle, UnitId, Value};
+use crate::vm::UnitTable;
 
 /// Immutable payload source within one active run.
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum PayloadSource {
-    Constant(ConstId),
+    /// A constant of the program of this unit.
+    Constant(UnitId, ConstId),
     Argument(usize),
-    Aggregate { handle: AggHandle, index: usize },
+    Aggregate {
+        handle: AggHandle,
+        index: usize,
+    },
 }
 
 /// The owners against which per-run source indices are resolved.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ValueSources<'a> {
-    program: &'a Program,
+    units: &'a UnitTable,
+    /// The executing unit's program, which resolves its constants without a table lookup.
+    current: Option<(UnitId, &'a crate::program::Program)>,
     args: &'a [Value],
     aggregates: &'a AggHeap,
 }
@@ -34,11 +41,29 @@ impl<'a> ValueSources<'a> {
     pub(crate) fn aggregates(self) -> &'a AggHeap {
         self.aggregates
     }
-    pub(crate) fn new(program: &'a Program, args: &'a [Value], aggregates: &'a AggHeap) -> Self {
+    pub(crate) fn new(units: &'a UnitTable, args: &'a [Value], aggregates: &'a AggHeap) -> Self {
         Self {
-            program,
+            units,
+            current: None,
             args,
             aggregates,
+        }
+    }
+
+    /// Resolves constants of `unit` through `program` directly.
+    pub(crate) fn with_current(
+        mut self,
+        unit: UnitId,
+        program: &'a crate::program::Program,
+    ) -> Self {
+        self.current = Some((unit, program));
+        self
+    }
+
+    fn program(self, unit: UnitId) -> Option<&'a crate::program::Program> {
+        match self.current {
+            Some((current, program)) if current == unit => Some(program),
+            _ => Some(self.units.get(unit)?.program.program()),
         }
     }
 
@@ -48,13 +73,13 @@ impl<'a> ValueSources<'a> {
             PayloadSource::Aggregate { handle, index } => {
                 self.aggregates.value_ref(handle, index).ok()
             }
-            PayloadSource::Constant(_) => None,
+            PayloadSource::Constant(..) => None,
         }
     }
 
     fn bytes(self, source: PayloadSource) -> Option<&'a [u8]> {
-        if let PayloadSource::Constant(id) = source {
-            return self.program.const_bytes(id).ok();
+        if let PayloadSource::Constant(unit, id) = source {
+            return self.program(unit)?.const_bytes(id).ok();
         }
         match self.value(source)? {
             Value::Bytes(bytes) => Some(bytes),
@@ -63,8 +88,8 @@ impl<'a> ValueSources<'a> {
     }
 
     fn str(self, source: PayloadSource) -> Option<&'a str> {
-        if let PayloadSource::Constant(id) = source {
-            return self.program.const_str(id).ok();
+        if let PayloadSource::Constant(unit, id) = source {
+            return self.program(unit)?.const_str(id).ok();
         }
         match self.value(source)? {
             Value::Str(s) => Some(s),
@@ -154,23 +179,27 @@ mod tests {
         let mut pb = ProgramBuilder::new();
         let bytes = pb.const_bytes(b"constant");
         let text = pb.const_str("constant");
-        let p = pb.build();
+        let p = alloc::sync::Arc::new(pb.build_verified().unwrap());
         let args = [Value::Bytes(vec![1, 2]), Value::Str("input".into())];
         let mut heap = AggHeap::new();
+        let mut units = UnitTable::default();
+        let unit = units
+            .install(alloc::sync::Arc::clone(&p), &mut heap)
+            .unwrap();
         let tuple = heap
             .tuple_new(vec![Value::Bytes(vec![3, 4]), Value::Str("field".into())])
             .unwrap();
-        let sources = ValueSources::new(&p, &args, &heap);
+        let sources = ValueSources::new(&units, &args, &heap);
         let mut arena = ValueArena::default();
-        let cb = arena.borrow_bytes(PayloadSource::Constant(bytes));
-        let cs = arena.borrow_str(PayloadSource::Constant(text));
+        let cb = arena.borrow_bytes(PayloadSource::Constant(unit, bytes));
+        let cs = arena.borrow_str(PayloadSource::Constant(unit, text));
         assert_eq!(
             arena.bytes(cb, sources).unwrap().as_ptr(),
-            p.const_bytes(bytes).unwrap().as_ptr()
+            p.program().const_bytes(bytes).unwrap().as_ptr()
         );
         assert_eq!(
             arena.str(cs, sources).unwrap().as_ptr(),
-            p.const_str(text).unwrap().as_ptr()
+            p.program().const_str(text).unwrap().as_ptr()
         );
         for (source, value) in [
             (PayloadSource::Argument(0), &args[0]),
@@ -218,9 +247,9 @@ mod tests {
 
     #[test]
     fn computed_payloads_move_into_the_arena_and_reset_releases_sources() {
-        let p = ProgramBuilder::new().build();
         let heap = AggHeap::new();
-        let sources = ValueSources::new(&p, &[], &heap);
+        let units = UnitTable::default();
+        let sources = ValueSources::new(&units, &[], &heap);
         let mut arena = ValueArena::default();
         let bytes = vec![1, 2, 3];
         let bytes_ptr = bytes.as_ptr();

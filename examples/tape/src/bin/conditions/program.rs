@@ -839,9 +839,7 @@ pub(super) fn scenario(name: &str) -> Result<Fixture> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape::{
-        disasm::disassemble_function, program::Program, source::SourceError, trace::TraceLocation,
-    };
+    use execution_tape::{disasm::disassemble_function, program::Program, source::SourceError};
 
     #[test]
     fn every_scenario_has_exact_source_for_each_verified_instruction() {
@@ -851,7 +849,7 @@ mod tests {
             for function in fixture.program.functions() {
                 let code = disassemble_function(fixture.program.program(), function.id()).unwrap();
                 for instruction in code.instrs() {
-                    let location = TraceLocation {
+                    let location = execution_tape::trace::CodeLocation {
                         func: function.id(),
                         pc: instruction.pc(),
                     };

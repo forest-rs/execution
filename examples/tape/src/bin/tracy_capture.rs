@@ -9,6 +9,7 @@
 use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use execution_tape::program::ValueType;
+use execution_tape::trace::CodeLocation;
 use execution_tape::trace::TraceSink;
 use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
@@ -170,7 +171,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
     use execution_tape::source::{
         SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping,
     };
-    use execution_tape::trace::TraceLocation;
+
     let text = include_str!("tracy_capture.rs");
     let statements: &[&[&str]] = &[
         &["a_leaf.ret(0, &[1]);"],
@@ -205,7 +206,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
         for (instruction, statement) in instructions.zip(*statements) {
             let start = text.find(statement).expect("demo statement exists");
             mappings.push(SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func,
                     pc: instruction.pc,
                 },
@@ -229,7 +230,7 @@ fn source_map(program: &VerifiedProgram) -> execution_tape::source::SourceMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use execution_tape::trace::{TraceLocation, TraceMask};
+    use execution_tape::trace::TraceMask;
 
     #[test]
     fn demo_executes_and_maps_every_instruction_without_a_tracy_client() {
@@ -241,7 +242,7 @@ mod tests {
             for instruction in program.function(func).unwrap().instructions() {
                 assert!(
                     !bound
-                        .lookup(TraceLocation {
+                        .lookup(execution_tape::trace::CodeLocation {
                             func,
                             pc: instruction.pc
                         })

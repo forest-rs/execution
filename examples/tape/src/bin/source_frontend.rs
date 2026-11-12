@@ -5,12 +5,13 @@
 //! Grammar: signed integer literals, parentheses, +, -, *. All arithmetic wraps like the VM.
 
 use execution_tape::source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping};
+use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     program::{Program, ValueType},
-    trace::{TraceLocation, TraceMask, TraceSink},
+    trace::{TraceMask, TraceSink},
     value::Value,
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
@@ -191,7 +192,7 @@ fn compile(name: String, source: String) -> Result<(Program, SourceMap), Box<dyn
     let mappings = ranges
         .into_iter()
         .map(|(pc, range)| SourceMapping {
-            location: TraceLocation { func: entry, pc },
+            location: CodeLocation { func: entry, pc },
             document: SourceId(0),
             range,
         })
@@ -290,7 +291,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let watches = source
             .instrs()
             .map(|i| execution_tape::recording::RegisterWatch {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: source.func(),
                     pc: i.pc(),
                 },
@@ -409,7 +410,7 @@ mod tests {
         .unwrap();
         for instruction in code.instrs() {
             let range = bound
-                .lookup(TraceLocation {
+                .lookup(execution_tape::trace::CodeLocation {
                     func: code.func(),
                     pc: instruction.pc(),
                 })

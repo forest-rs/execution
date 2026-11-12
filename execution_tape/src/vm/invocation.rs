@@ -356,13 +356,23 @@ impl<H: Host> Invocation<'_, H> {
             index,
             count: outputs.len(),
         })?;
-        if !matches!(value, Value::Func(_) | Value::Closure(_)) {
-            return Err(CallableError::NotCallable {
-                actual: value.value_type(),
-            });
-        }
+        let unit = match value {
+            Value::Func(function) => function.unit,
+            Value::Closure(closure) => closure.func.unit,
+            _ => {
+                return Err(CallableError::NotCallable {
+                    actual: value.value_type(),
+                });
+            }
+        };
+        // The result may be code of any unit, not only the entry unit.
+        let program = self
+            .vm
+            .units
+            .get(unit)
+            .ok_or(CallableError::MissingCodeOwner)?;
         Callable::retain(
-            Arc::clone(&self.continuation.program),
+            Arc::clone(&program.program),
             self.aggregates(),
             ValueRef::from_value(value),
         )
@@ -430,6 +440,24 @@ impl<H: Host> Invocation<'_, H> {
         self.continuation.unit
     }
 
+    /// Installs `program` in this invocation's VM between scheduling quanta.
+    ///
+    /// This is [`Vm::install`] for a VM the invocation borrows or owns. Suspended frames keep
+    /// the units they run; guest code reaches the new unit only through a [`FuncRef`] it is
+    /// given, for example by a host call or as a callback.
+    pub fn install(
+        &mut self,
+        program: impl Into<Arc<VerifiedProgram>>,
+    ) -> Result<UnitId, InstallError> {
+        self.vm.install(program)
+    }
+
+    /// Inspects the units installed in this invocation's VM.
+    #[must_use]
+    pub fn units(&self) -> Units<'_> {
+        self.vm.units()
+    }
+
     /// Borrows aggregate storage. Values observed while suspended belong to this heap.
     #[must_use]
     pub fn aggregates(&self) -> &AggHeap {
@@ -494,7 +522,9 @@ impl<H: Host> Running<'_, '_, H> {
                         self.continuation.trace.scopes.last(),
                         Some((ScopeKind::HostCall { .. }, _))
                     ) {
-                        self.continuation
+                        self.vm
+                            .units
+                            .unit(frame.unit)
                             .program
                             .verified(frame.func)
                             .and_then(|body| body.pc_at_ix(frame.instr_ix.saturating_sub(1)))
@@ -503,17 +533,19 @@ impl<H: Host> Running<'_, '_, H> {
                         frame.pc
                     };
                     TraceLocation {
+                        unit: frame.unit,
                         func: frame.func,
                         pc,
                     }
                 })
             })
             .unwrap_or(TraceLocation {
+                unit: self.continuation.unit,
                 func: self.continuation.entry,
                 pc: 0,
             });
         let span = self.continuation.ctx.span_at(
-            self.continuation.program.program(),
+            self.vm.units.unit(location.unit).program.program(),
             location.func,
             location.pc,
         );
@@ -614,6 +646,7 @@ impl Callable {
         let entry = self.function_id();
         if !Arc::ptr_eq(vm.entry_program(unit)?, self.program()) {
             return Err(TrapInfo {
+                unit,
                 func: entry,
                 pc: 0,
                 span_id: None,
@@ -625,6 +658,7 @@ impl Callable {
             return Ok((checkpoint, args, DataWork::default()));
         };
         let trap = |trap| TrapInfo {
+            unit,
             func: entry,
             pc: 0,
             span_id: None,
@@ -643,11 +677,14 @@ impl Callable {
         };
         work.check(&vm.limits).map_err(trap)?;
         let checkpoint = vm.memory.checkpoint();
+        let first = vm.memory.aggs().len_u32();
         let imported = vm
             .memory
             .aggs_mut()
             .import(&capture.snapshot)
             .map_err(|error| trap(Trap::AggError(error)))?;
+        // Captured callables name this program's unit in the destination VM.
+        vm.memory.aggs_mut().retarget_units_since(first, unit);
         let [Value::Closure(closure)] = imported.as_slice() else {
             unreachable!("retained closure root");
         };

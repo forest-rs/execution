@@ -15,8 +15,45 @@
 
 use super::*;
 use crate::aggregates::AggShape;
-use crate::program::{ElemTypeId, StructTypeDef, TypeId};
+use crate::contract::{ContractId, ContractTableBuilder};
+use crate::program::{CallSigId, ElemTypeId, StructTypeDef, TypeId};
 use crate::value::ShapeId;
+use alloc::collections::BTreeMap;
+
+/// A signature of canonical contracts interned once per VM, so indirect calls compare one integer.
+///
+/// Indirect calls require the target's exact contract signature, as within one program.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SigId(u32);
+
+/// Canonical argument and result contracts of one signature.
+type SignatureKey = (Box<[ContractId]>, Box<[ContractId]>);
+
+/// Store-wide canonical forms shared by every unit of one VM.
+#[derive(Default)]
+pub(crate) struct Canon {
+    signatures: BTreeMap<SignatureKey, SigId>,
+    /// Contracts with every nominal type replaced by its heap shape and children canonicalized.
+    contracts: ContractTableBuilder,
+}
+
+impl Canon {
+    fn signature(
+        &mut self,
+        args: &[ContractId],
+        rets: &[ContractId],
+    ) -> Result<SigId, InstallError> {
+        let key: SignatureKey = (args.into(), rets.into());
+        if let Some(&id) = self.signatures.get(&key) {
+            return Ok(id);
+        }
+        let id = u32::try_from(self.signatures.len())
+            .map(SigId)
+            .map_err(|_| InstallError::CapacityExceeded)?;
+        self.signatures.insert(key, id);
+        Ok(id)
+    }
+}
 
 /// Code and store-local metadata for one installed program.
 pub(crate) struct Unit {
@@ -25,6 +62,14 @@ pub(crate) struct Unit {
     structs: Box<[ShapeId]>,
     /// Heap shape of each program [`ElemTypeId`].
     arrays: Box<[ShapeId]>,
+    /// Store-canonical identity of each program contract.
+    contracts: Box<[ContractId]>,
+    /// Kind signature of each function called directly.
+    direct: Box<[SigId]>,
+    /// Kind signature of each function called as a closure body, without its environment.
+    closure: Box<[Option<SigId>]>,
+    /// Kind signature of each indirect call site signature.
+    call_sigs: Box<[SigId]>,
 }
 
 impl Unit {
@@ -40,56 +85,53 @@ impl Unit {
         self.arrays.get(ty.0 as usize).copied()
     }
 
+    /// The store-canonical identity of a verified contract of this unit's program.
+    #[inline]
+    pub(crate) fn canonical(&self, contract: ContractId) -> ContractId {
+        self.contracts[contract.0 as usize]
+    }
+
+    /// Whether `callee` of this unit can be the target of `call_sig` in `caller`.
+    #[inline]
+    pub(crate) fn accepts_call(
+        &self,
+        callee: FuncId,
+        closure: bool,
+        caller: &Self,
+        call_sig: CallSigId,
+    ) -> bool {
+        let actual = if closure {
+            self.closure.get(callee.0 as usize).copied().flatten()
+        } else {
+            self.direct.get(callee.0 as usize).copied()
+        };
+        actual.is_some() && actual == caller.call_sigs.get(call_sig.0 as usize).copied()
+    }
+
     fn metadata_bytes(&self) -> usize {
-        size_of::<Self>() + size_of_val(&*self.structs) + size_of_val(&*self.arrays)
-    }
-}
-
-/// The VM's append-only table of installed units.
-#[derive(Default)]
-pub(crate) struct UnitTable {
-    units: Vec<Unit>,
-}
-
-impl UnitTable {
-    #[inline]
-    pub(crate) fn get(&self, unit: UnitId) -> Option<&Unit> {
-        self.units.get(unit.0 as usize)
+        size_of::<Self>()
+            + size_of_val(&*self.structs)
+            + size_of_val(&*self.arrays)
+            + size_of_val(&*self.contracts)
+            + size_of_val(&*self.direct)
+            + size_of_val(&*self.closure)
+            + size_of_val(&*self.call_sigs)
     }
 
-    /// A unit this VM issued. Units are never removed, so frames and admitted values always
-    /// name an existing unit.
-    #[inline]
-    pub(crate) fn unit(&self, unit: UnitId) -> &Unit {
-        &self.units[unit.0 as usize]
-    }
-
-    fn install(
-        &mut self,
+    /// Interns `program`'s struct and array types in `heap`, and its contracts and signatures
+    /// in `canon`.
+    fn new(
         program: Arc<VerifiedProgram>,
         heap: &mut AggHeap,
-    ) -> Result<UnitId, InstallError> {
-        let id = u32::try_from(self.units.len())
-            .ok()
-            .filter(|&id| id < u32::MAX)
-            .ok_or(InstallError::CapacityExceeded)?;
-        self.units.push(Unit::new(program, heap)?);
-        Ok(UnitId(id))
-    }
-}
-
-impl Unit {
-    /// Interns `program`'s struct and array types in `heap`.
-    pub(crate) fn new(
-        program: Arc<VerifiedProgram>,
-        heap: &mut AggHeap,
+        canon: &mut Canon,
     ) -> Result<Self, InstallError> {
-        let types = &program.program().types;
+        let source = program.program();
+        let types = &source.types;
         let mut intern = |shape| {
             heap.intern_shape(shape)
                 .map_err(|_| InstallError::CapacityExceeded)
         };
-        let structs = types
+        let structs: Box<[ShapeId]> = types
             .structs
             .iter()
             .map(|st| {
@@ -112,16 +154,150 @@ impl Unit {
                 }))
             })
             .collect::<Result<_, _>>()?;
-        let arrays = types
+        let arrays: Box<[ShapeId]> = types
             .array_elems
             .iter()
             .map(|&element| intern(AggShape::Array(element)))
+            .collect::<Result<_, _>>()?;
+        let contracts = canonical_contracts(source, &structs, &arrays, &mut canon.contracts)?;
+        let canonical = |ids: &[ContractId]| -> Vec<ContractId> {
+            ids.iter().map(|id| contracts[id.0 as usize]).collect()
+        };
+        let mut direct = Vec::with_capacity(source.functions.len());
+        let mut closure = Vec::with_capacity(source.functions.len());
+        for function in &source.functions {
+            let local = source.verified_contracts(function.arg_types);
+            let args = canonical(local);
+            let rets = canonical(source.verified_contracts(function.ret_types));
+            direct.push(canon.signature(&args, &rets)?);
+            let environment = local
+                .first()
+                .is_some_and(|&first| source.contracts.kind(first) == Some(ValueType::Agg));
+            closure.push(if environment {
+                Some(canon.signature(&args[1..], &rets)?)
+            } else {
+                None
+            });
+        }
+        let call_sigs = source
+            .call_sigs
+            .iter()
+            .map(|entry| {
+                let args = source
+                    .call_sig_arg_contracts(entry)
+                    .expect("verified call signature");
+                let rets = source
+                    .call_sig_ret_contracts(entry)
+                    .expect("verified call signature");
+                canon.signature(&canonical(args), &canonical(rets))
+            })
             .collect::<Result<_, _>>()?;
         Ok(Self {
             program,
             structs,
             arrays,
+            contracts,
+            direct: direct.into(),
+            closure: closure.into(),
+            call_sigs,
         })
+    }
+}
+
+/// Maps each program contract to its canonical form, child before parent.
+fn canonical_contracts(
+    program: &Program,
+    structs: &[ShapeId],
+    arrays: &[ShapeId],
+    canon: &mut ContractTableBuilder,
+) -> Result<Box<[ContractId]>, InstallError> {
+    let mut ids: Vec<ContractId> = Vec::with_capacity(program.contracts.len());
+    let mut members = Vec::new();
+    let mut fields = Vec::new();
+    for (_, contract) in program.contracts.iter() {
+        let map = |id: ContractId| ids[id.0 as usize];
+        let canonical = match contract {
+            Contract::Kind(kind) => Contract::Kind(kind),
+            Contract::Tuple(slots) => {
+                members.clear();
+                members.extend(slots.iter().map(|slot| slot.map(map)));
+                Contract::Tuple(&members)
+            }
+            Contract::Struct { type_id, fields: f } => {
+                fields.clear();
+                fields.extend(f.iter().copied().map(map));
+                Contract::Struct {
+                    type_id: TypeId(structs[type_id.0 as usize].0),
+                    fields: &fields,
+                }
+            }
+            Contract::Array {
+                elem_type_id,
+                element,
+            } => Contract::Array {
+                elem_type_id: ElemTypeId(arrays[elem_type_id.0 as usize].0),
+                element: map(element),
+            },
+            Contract::Function { args, rets } | Contract::Closure { args, rets } => {
+                fields.clear();
+                fields.extend(args.iter().chain(rets).copied().map(map));
+                let (args, rets) = fields.split_at(args.len());
+                if matches!(contract, Contract::Function { .. }) {
+                    Contract::Function { args, rets }
+                } else {
+                    Contract::Closure { args, rets }
+                }
+            }
+        };
+        ids.push(
+            canon
+                .intern(canonical)
+                .map_err(|_| InstallError::CapacityExceeded)?,
+        );
+    }
+    Ok(ids.into())
+}
+
+/// The VM's append-only table of installed units.
+#[derive(Default)]
+pub(crate) struct UnitTable {
+    units: Vec<Unit>,
+    canon: Canon,
+}
+
+impl fmt::Debug for UnitTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnitTable")
+            .field("units", &self.units.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl UnitTable {
+    #[inline]
+    pub(crate) fn get(&self, unit: UnitId) -> Option<&Unit> {
+        self.units.get(unit.0 as usize)
+    }
+
+    /// A unit this VM issued. Units are never removed, so a frame always names an existing
+    /// unit. Values come from outside the VM too: resolve their units with [`Self::get`].
+    #[inline]
+    pub(crate) fn unit(&self, unit: UnitId) -> &Unit {
+        &self.units[unit.0 as usize]
+    }
+
+    pub(crate) fn install(
+        &mut self,
+        program: Arc<VerifiedProgram>,
+        heap: &mut AggHeap,
+    ) -> Result<UnitId, InstallError> {
+        let id = u32::try_from(self.units.len())
+            .ok()
+            .filter(|&id| id < u32::MAX)
+            .ok_or(InstallError::CapacityExceeded)?;
+        let unit = Unit::new(program, heap, &mut self.canon)?;
+        self.units.push(unit);
+        Ok(UnitId(id))
     }
 }
 

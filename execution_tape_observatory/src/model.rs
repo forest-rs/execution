@@ -152,6 +152,7 @@ impl<'a> View<'a> {
         }
         if self.selected == 0 {
             return self.record.invocation().map(|entry| TraceLocation {
+                unit: execution_tape::recording::RECORDED_UNIT,
                 func: entry.entry,
                 pc: 0,
             });
@@ -229,6 +230,7 @@ impl<'a> View<'a> {
                         cond,
                         [source.executable_pc(yes), source.executable_pc(no)].map(|pc| {
                             pc.map(|pc| TraceLocation {
+                                unit: location.unit,
                                 func: location.func,
                                 pc,
                             })

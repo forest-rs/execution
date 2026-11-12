@@ -159,7 +159,6 @@ fn doubling_traps_before_next_copy_and_context_resets() {
         vm.limits.max_payload_work = 254;
         for _ in 0..2 {
             outputs.clear();
-            let unit = vm.install(p.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
                 FuncRef::new(unit, FuncId(0)),

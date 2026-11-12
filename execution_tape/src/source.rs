@@ -17,7 +17,7 @@
 //! use execution_tape::{
 //!     asm::{FunctionSig, ProgramBuilder}, program::ValueType,
 //!     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping, SourcePosition},
-//!     trace::TraceLocation,
+//!     trace::CodeLocation,
 //! };
 //! let mut builder = ProgramBuilder::new();
 //! let function = builder.declare_function(FunctionSig {
@@ -25,7 +25,7 @@
 //! })?;
 //! let mut body = builder.function_asm(function)?;
 //! let result = body.alloc_register(ValueType::I64);
-//! let location = TraceLocation { func: function, pc: body.pc() };
+//! let location = CodeLocation { func: function, pc: body.pc() };
 //! body.const_i64(result, 42).ret(0, &[result]);
 //! builder.define_function(function, body)?;
 //! let program = builder.build_verified()?;
@@ -46,7 +46,7 @@
 //! The standalone sidecar codec preserves supplied source contents and is separate from tape
 //! encoding. Source maps are never attached to [`Program`] or retained by verification/VM runs.
 
-use crate::{disasm::disassemble_function, program::Program, trace::TraceLocation, value::FuncId};
+use crate::{disasm::disassemble_function, program::Program, trace::CodeLocation, value::FuncId};
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
@@ -71,7 +71,7 @@ pub struct SourceDocument {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceMapping {
     /// Program-local function and exact source bytecode PC.
-    pub location: TraceLocation,
+    pub location: CodeLocation,
     /// Document snapshot in this map.
     pub document: SourceId,
     /// Half-open UTF-8 byte range; empty ranges represent a source point.
@@ -116,15 +116,15 @@ pub enum SourceError {
     /// A map belongs to a different canonical encoded program.
     ProgramMismatch,
     /// No instruction/declaration exists at this function/PC.
-    InvalidLocation(TraceLocation),
+    InvalidLocation(CodeLocation),
     /// Two mappings were supplied for the same instruction.
-    DuplicateLocation(TraceLocation),
+    DuplicateLocation(CodeLocation),
     /// A mapping references an absent document.
     InvalidDocument(SourceId),
     /// Range is reversed, outside the snapshot, or splits a UTF-8 code point.
     InvalidRange {
         /// Mapping's instruction.
-        location: TraceLocation,
+        location: CodeLocation,
         /// Referenced snapshot.
         document: SourceId,
         /// Supplied half-open byte range.
@@ -375,7 +375,7 @@ impl SourceMap {
         let mut mappings = Vec::with_capacity(count);
         for _ in 0..count {
             mappings.push(SourceMapping {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: FuncId(r.small()?),
                     pc: r.small()?,
                 },
@@ -542,7 +542,8 @@ impl fmt::Debug for SourceContext<'_> {
 }
 impl<'a> BoundSources<'a> {
     /// Resolves only an explicitly supplied exact location. Missing mappings never inherit spans.
-    pub fn lookup(self, location: TraceLocation) -> Option<SourceRange<'a>> {
+    pub fn lookup(self, location: impl Into<CodeLocation>) -> Option<SourceRange<'a>> {
+        let location = location.into();
         let index = self
             .map
             .mappings
@@ -562,7 +563,7 @@ impl<'a> BoundSources<'a> {
     /// 16..=240 sanitized Unicode scalars per line; neither is a terminal-cell measurement.
     pub fn context(
         self,
-        location: TraceLocation,
+        location: impl Into<CodeLocation>,
         max_lines: usize,
         max_columns: usize,
     ) -> Option<SourceContext<'a>> {
@@ -657,7 +658,7 @@ mod tests {
         program::ValueType,
     };
     use alloc::{format, vec};
-    fn fixture(value: i64) -> (Program, TraceLocation) {
+    fn fixture(value: i64) -> (Program, CodeLocation) {
         let mut a = Asm::new();
         a.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         a.const_i64(1, value).ret(0, &[1]);
@@ -671,11 +672,11 @@ mod tests {
                 },
             )
             .unwrap();
-        (b.build_checked().unwrap(), TraceLocation { func, pc: 0 })
+        (b.build_checked().unwrap(), CodeLocation { func, pc: 0 })
     }
     fn source(
         program: &Program,
-        location: TraceLocation,
+        location: CodeLocation,
         text: &str,
         range: Range<usize>,
     ) -> Result<SourceMap, SourceError> {
@@ -738,7 +739,7 @@ mod tests {
         let bound = map.bind(&p).unwrap();
         assert_eq!(bound.context(loc, 1, 20).unwrap().lines[0].selected, "é");
         assert!(matches!(
-            source(&p, TraceLocation { pc: 1, ..loc }, "x", 0..1),
+            source(&p, CodeLocation { pc: 1, ..loc }, "x", 0..1),
             Err(SourceError::InvalidLocation(_))
         ));
         let duplicate = SourceMapping {
@@ -777,7 +778,7 @@ mod tests {
         let (p, loc) = fixture(42);
         let map = source(&p, loc, "42", 0..2).unwrap();
         let bound = map.bind(&p).unwrap();
-        let other = TraceLocation {
+        let other = CodeLocation {
             pc: u32::MAX,
             ..loc
         };

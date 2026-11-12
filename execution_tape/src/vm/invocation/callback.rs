@@ -44,7 +44,7 @@ impl Callbacks {
 }
 
 impl<H: Host> PendingHostCall<'_, '_, H> {
-    /// Starts a same-program guest function or closure while retaining this host request.
+    /// Starts a guest function or closure of any installed unit while retaining this request.
     ///
     /// Consumes the view, not the host operation. Drive the same invocation with `resume`:
     /// the callback may yield further host requests, whose guards support the same operation.
@@ -52,8 +52,10 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Take its callback results, then complete the host operation explicitly. Repeated calls
     /// discard any untaken previous callback results.
     ///
-    /// The target and all raw argument handles belong to this invocation's code/heap domain;
-    /// this does not import a foreign callable. Closure arguments exclude the hidden environment.
+    /// The target may belong to any unit of this VM, including one installed while this request
+    /// waits; it runs that unit's code, and an unknown unit traps with [`Trap::UnknownUnit`].
+    /// Raw argument handles belong to this VM's heap. Closure arguments exclude the hidden
+    /// environment.
     /// Arguments move into the invocation. Their immediate byte/string lengths are charged as
     /// host ingress; result materialization uses the ordinary payload-work budget. Each callback
     /// consumes one hard-fuel unit and shares call-depth, host-call and contract limits with its
@@ -114,7 +116,7 @@ impl<H: Host> Running<'_, '_, H> {
             .pending_host
             .expect("pending host guard");
         let span = self.continuation.ctx.span_at(
-            self.continuation.program.program(),
+            self.vm.units.unit(pending.location.unit).program.program(),
             pending.location.func,
             pending.location.pc,
         );
@@ -157,17 +159,16 @@ impl<H: Host> Running<'_, '_, H> {
         let created = staging
             .promote(self.vm.memory.aggs_mut())
             .map_err(Trap::AggError)?;
+        let requester = self.vm.units.unit(pending.location.unit).program.program();
         self.continuation
             .trace
-            .values(self.continuation.program.program(), || {
-                ValueEvent::CallbackEnter {
-                    location: pending.location,
-                    callee,
-                    args: &args,
-                    work,
-                    created: &created,
-                    aggregates: self.vm.memory.aggs(),
-                }
+            .values(requester, || ValueEvent::CallbackEnter {
+                location: pending.location,
+                callee,
+                args: &args,
+                work,
+                created: &created,
+                aggregates: self.vm.memory.aggs(),
             });
         if self.budget.fuel == 0 {
             return Err(Trap::FuelExceeded);
@@ -186,7 +187,18 @@ impl<H: Host> Running<'_, '_, H> {
                 });
             }
         };
-        let program = self.continuation.program.program();
+        // The callback may run any unit of this VM, not only the requesting one.
+        let unit = function.unit;
+        let code = Arc::clone(
+            &self
+                .vm
+                .units
+                .get(unit)
+                .ok_or(Trap::UnknownUnit { unit })?
+                .program,
+        );
+        let program = code.program();
+        let function = function.func;
         let body = program
             .functions
             .get(function.0 as usize)
@@ -208,18 +220,13 @@ impl<H: Host> Running<'_, '_, H> {
             sum.checked_add(bytes).ok_or(Trap::PayloadSizeOverflow)
         })?;
         self.budget.charge_payload_bytes(payload, 1)?;
-        let prepared = self
-            .continuation
-            .program
-            .verified(function)
-            .ok_or(Trap::InvalidPc)?;
+        let prepared = code.verified(function).ok_or(Trap::InvalidPc)?;
         let base = self.continuation.ctx.alloc_frame(prepared);
         for (register, value) in prepared.reg_layout.arg_regs.iter().copied().zip(args) {
             self.continuation
                 .ctx
                 .write_owned_value(base, register, value)?;
         }
-        let unit = self.continuation.unit;
         self.vm.check_arg_contracts(
             &mut self.continuation.ctx,
             self.budget,
@@ -235,7 +242,8 @@ impl<H: Host> Running<'_, '_, H> {
                 self.budget
                     .contract_scratch
                     .check_value(
-                        self.vm.units.unit(unit),
+                        &self.vm.units,
+                        unit,
                         self.vm.memory.aggs(),
                         &Value::Agg(environment),
                         contract,
@@ -243,7 +251,7 @@ impl<H: Host> Running<'_, '_, H> {
                     )
                     .map_err(|error| {
                         self.vm.contract_trap(
-                            function,
+                            FuncRef::new(unit, function),
                             ContractPosition::Argument {
                                 callee: function,
                                 index: 0,
@@ -302,7 +310,7 @@ pub(in crate::vm) fn returns_to_host(control: &ExecutionControl, depth: usize) -
 }
 
 pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
-    vm: &mut Vm<H>,
+    vm: &Vm<H>,
     ctx: &mut Registers,
     budget: &mut Budget,
     prepared: &VerifiedProgram,
@@ -326,7 +334,7 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
                 budget,
                 base,
                 reg,
-                ValueSources::new(program, root_args, vm.memory.aggs()),
+                ValueSources::new(&vm.units, root_args, vm.memory.aggs()),
             )
             .map_err(|trap| ctx.trap(location.func, location.pc, span, trap))?,
         );

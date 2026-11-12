@@ -156,8 +156,8 @@ pub struct AggHeap {
 ///
 /// Snapshots retain exact byte/string contents and sharing between aggregate references, and
 /// carry the shapes their struct/array nodes use, so importing translates shapes into the
-/// destination heap. Host objects remain host-owned handles; function IDs still refer to their
-/// original program.
+/// destination heap. Host objects remain host-owned handles; function references keep the units of
+/// the VM they came from.
 /// Import into a destination heap before passing snapshot aggregate handles to that VM.
 #[derive(Clone, Debug)]
 pub struct ValueSnapshot {
@@ -598,6 +598,21 @@ impl<'a> AggOverlay<'a> {
 impl AggHeap {
     pub(crate) fn node_values(&self) -> impl Iterator<Item = &[Value]> {
         self.nodes.iter().map(AggNode::values)
+    }
+
+    /// Moves every function and closure in nodes from `start` onward to `unit`.
+    ///
+    /// Imported single-program captures use this to name the unit that runs their program.
+    pub(crate) fn retarget_units_since(&mut self, start: u32, unit: crate::value::UnitId) {
+        for node in &mut self.nodes[start as usize..] {
+            for value in node.values_mut() {
+                match value {
+                    Value::Func(function) => function.unit = unit,
+                    Value::Closure(closure) => closure.func.unit = unit,
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Enumerates immediate opaque object references in all allocated aggregate nodes.
@@ -1064,6 +1079,7 @@ fn copy_roots_into<'a>(
 mod tests {
     use super::*;
     use crate::value::{Closure, FuncId};
+    use crate::value::{FuncRef, UnitId};
 
     fn struct_shape(heap: &mut AggHeap, fields: usize) -> ShapeId {
         heap.intern_shape(AggShape::Struct(StructTypeDef {
@@ -1099,7 +1115,7 @@ mod tests {
             .tuple_new(vec![
                 Value::Agg(child),
                 Value::Closure(Closure {
-                    func: FuncId(8),
+                    func: FuncRef::new(UnitId(0), FuncId(8)),
                     env: child,
                 }),
             ])
@@ -1110,7 +1126,7 @@ mod tests {
         assert_eq!(
             base.tuple_get(root, 1),
             Ok(Value::Closure(Closure {
-                func: FuncId(8),
+                func: FuncRef::new(UnitId(0), FuncId(8)),
                 env: child
             }))
         );
@@ -1158,7 +1174,7 @@ mod tests {
             .into_snapshot(vec![
                 Value::Agg(root),
                 Value::Closure(Closure {
-                    func: FuncId(7),
+                    func: FuncRef::new(UnitId(0), FuncId(7)),
                     env: child,
                 }),
             ])
@@ -1183,7 +1199,7 @@ mod tests {
         assert_eq!(
             snapshot.values()[1],
             Value::Closure(Closure {
-                func: FuncId(7),
+                func: FuncRef::new(UnitId(0), FuncId(7)),
                 env: first
             })
         );
@@ -1243,7 +1259,7 @@ mod tests {
                 Value::Agg(child),
                 Value::Agg(equal_distinct),
                 Value::Closure(Closure {
-                    func: FuncId(42),
+                    func: FuncRef::new(UnitId(0), FuncId(42)),
                     env: child,
                 }),
             ])
@@ -1270,7 +1286,7 @@ mod tests {
         assert_eq!(
             snapshot.aggregates().tuple_get(root, 3),
             Ok(Value::Closure(Closure {
-                func: FuncId(42),
+                func: FuncRef::new(UnitId(0), FuncId(42)),
                 env: first
             }))
         );
@@ -1319,7 +1335,7 @@ mod tests {
         for value in [
             Value::Agg(AggHandle(0)),
             Value::Closure(Closure {
-                func: FuncId(0),
+                func: FuncRef::new(UnitId(0), FuncId(0)),
                 env: AggHandle(0),
             }),
         ] {
@@ -1378,13 +1394,14 @@ mod tests {
         let empty_tuple = b.contract(Contract::Tuple(&[])).unwrap();
         let p = b.build_verified().unwrap();
         let mut heap = AggHeap::new();
-        let p = crate::vm::Unit::new(Arc::new(p), &mut heap).unwrap();
-        let st_shape = p.struct_shape(st_type).unwrap();
-        let elem_shape = p.array_shape(elem_type).unwrap();
+        let mut units = crate::vm::UnitTable::default();
+        let unit = units.install(Arc::new(p), &mut heap).unwrap();
+        let st_shape = units.unit(unit).struct_shape(st_type).unwrap();
+        let elem_shape = units.unit(unit).array_shape(elem_type).unwrap();
         let mut scratch = ContractScratch::default();
         let st = heap.struct_new(st_shape, vec![Value::Bool(true)]).unwrap();
         assert!(matches!(
-            scratch.check(&p, &heap, st, st_contract, 100),
+            scratch.check(&units, unit, &heap, st, st_contract, 100),
             Err(CheckError::Mismatch(crate::contract::ContractViolation {
                 mismatch: ContractMismatch::Kind { .. },
                 ..
@@ -1395,13 +1412,14 @@ mod tests {
         let array = heap
             .array_new(elem_shape, vec![Value::I64(1), Value::Bool(false)])
             .unwrap();
-        let Err(CheckError::Mismatch(failure)) = scratch.check(&p, &heap, array, arr_contract, 100)
+        let Err(CheckError::Mismatch(failure)) =
+            scratch.check(&units, unit, &heap, array, arr_contract, 100)
         else {
             panic!("expected wrong array element");
         };
         assert_eq!(failure.path, vec![crate::contract::ContractPath::Member(1)]);
         assert!(matches!(
-            scratch.check(&p, &heap, array, st_contract, 100),
+            scratch.check(&units, unit, &heap, array, st_contract, 100),
             Err(CheckError::Mismatch(crate::contract::ContractViolation {
                 mismatch: ContractMismatch::Aggregate { .. },
                 ..
@@ -1409,10 +1427,22 @@ mod tests {
         ));
         let other = array_shape(&mut heap, ValueType::Bool);
         let wrong = heap.array_new(other, vec![]).unwrap();
-        assert!(scratch.check(&p, &heap, wrong, arr_contract, 100).is_err());
+        assert!(
+            scratch
+                .check(&units, unit, &heap, wrong, arr_contract, 100)
+                .is_err()
+        );
         let tuple = heap.tuple_new(vec![Value::Bool(false)]).unwrap();
-        assert!(scratch.check(&p, &heap, tuple, any_tuple, 100).is_ok());
-        assert!(scratch.check(&p, &heap, tuple, empty_tuple, 100).is_err());
+        assert!(
+            scratch
+                .check(&units, unit, &heap, tuple, any_tuple, 100)
+                .is_ok()
+        );
+        assert!(
+            scratch
+                .check(&units, unit, &heap, tuple, empty_tuple, 100)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1829,7 +1859,7 @@ mod tests {
             o.tuple_new(vec![Value::I64(42)]).expect("alloc")
         });
         let mut roots = vec![Value::Closure(Closure {
-            func: FuncId(5),
+            func: FuncRef::new(UnitId(0), FuncId(5)),
             env,
         })];
 
@@ -1843,7 +1873,7 @@ mod tests {
         let Value::Closure(merged) = &roots[0] else {
             panic!("expected closure root");
         };
-        assert_eq!(merged.func, FuncId(5)); // function id preserved
+        assert_eq!(merged.func.func, FuncId(5)); // function id preserved
         assert_eq!(merged.env, AggHandle(1)); // staged env remapped into base domain
         assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(42)));
     }
@@ -1858,7 +1888,7 @@ mod tests {
             let _unreachable = o.tuple_new(vec![Value::I64(7)]).expect("alloc");
             let env = o.tuple_new(vec![Value::I64(3)]).expect("alloc");
             let closure = Value::Closure(Closure {
-                func: FuncId(8),
+                func: FuncRef::new(UnitId(0), FuncId(8)),
                 env,
             });
             o.tuple_new(vec![closure]).expect("alloc")
@@ -1874,7 +1904,7 @@ mod tests {
         let Value::Closure(merged) = field else {
             panic!("expected closure field");
         };
-        assert_eq!(merged.func, FuncId(8));
+        assert_eq!(merged.func.func, FuncId(8));
         assert!(merged.env.0 < base.len_u32()); // env rewritten into base domain
         assert_eq!(base.tuple_get(merged.env, 0), Ok(Value::I64(3)));
     }

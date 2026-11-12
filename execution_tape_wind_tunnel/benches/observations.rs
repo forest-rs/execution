@@ -9,11 +9,12 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::recording::{
     InstructionCapture, InstructionStatus, RecordLimits, Recorder, RegisterWatch,
 };
+use execution_tape::trace::CodeLocation;
 use execution_tape::value::FuncRef;
 use execution_tape::{
     disasm::disassemble_function,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
-    trace::{TraceLocation, TraceMask, TraceSink},
+    trace::{TraceMask, TraceSink},
     value::{FuncId, Value},
     verifier::{VerifyConfig, verify_program_owned},
     vm::{Limits, Vm},
@@ -50,7 +51,7 @@ fn observations(c: &mut Criterion) {
         let watches = source
             .instrs()
             .map(|i| RegisterWatch {
-                location: TraceLocation {
+                location: CodeLocation {
                     func: source.func(),
                     pc: i.pc(),
                 },
