@@ -30,7 +30,7 @@
 //!     host::Host,
 //!     recording::{RecordLimits, Recorder, Recording},
 //!     trace::TraceSink,
-//!     value::{FuncId, Value},
+//!     value::{FuncId, FuncRef, Value},
 //!     verifier::VerifiedProgram,
 //!     vm::{Limits, Vm},
 //! };
@@ -39,9 +39,12 @@
 //!     program: Arc<VerifiedProgram>, entry: FuncId, host: H, args: &[Value],
 //! ) -> Result<Recording, Box<dyn std::error::Error>> {
 //!     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+//!     let mut vm = Vm::new(host, Limits::default());
+//!     let unit = vm.install(program)?;
 //!     // Capture successful returns and guest traps alike.
-//!     let _live_result = Vm::new(host, Limits::default())
-//!         .run(&program, entry, args, recorder.mask(), Some(&mut recorder));
+//!     let _live_result = vm.run(
+//!         FuncRef::new(unit, entry), args, recorder.mask(), Some(&mut recorder),
+//!     );
 //!     let recording = recorder.finish();
 //!     recording.status().map_err(Clone::clone)?;
 //!     let _checked_outcome = recording.replay()?;

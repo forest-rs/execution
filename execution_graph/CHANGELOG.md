@@ -28,6 +28,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `TapeExecutor` installs each distinct node program in its VM on first execution and keeps that
+  unit for the executor's lifetime, following `execution_tape`'s installed-unit entry. Installation
+  failure reports the new `TapeError::Install`. Migration: handle `TapeError::Install` in
+  exhaustive matches.
+
 - `Executor::execute` now returns `NodeOutcome<Self::Value, Self::Error>` so deferred tasks carry
   their exact edge-value and error types. Migration: update explicit return annotations in
   custom executors and helpers; inferred `Complete`/`Pending` expressions usually need no

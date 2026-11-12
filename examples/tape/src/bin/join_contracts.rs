@@ -7,6 +7,7 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use execution_tape::vm::{Limits, Vm};
@@ -72,9 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let prepared = verify_program_owned(Program::decode(&bytes)?, &VerifyConfig::default())?;
     let mut vm = Vm::new(NoHost, Limits::default());
     for condition in [true, false] {
+        let unit = vm.install(prepared.clone()).unwrap();
         let values = vm.run(
-            &prepared,
-            entry,
+            FuncRef::new(unit, entry),
             &[Value::Bool(condition)],
             TraceMask::NONE,
             None,

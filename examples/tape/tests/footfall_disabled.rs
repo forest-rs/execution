@@ -7,6 +7,7 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 use execution_tape_footfall::FootfallSink;
@@ -48,8 +49,9 @@ fn runs_and_reuses_sink_without_backend() {
     let mask = TraceMask::RUN | TraceMask::CALL | TraceMask::HOST | TraceMask::INSTR;
     let mut vm = Vm::new(NoHost, Limits::default());
     for _ in 0..2 {
+        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
-            vm.run(&program, FuncId(0), &[], mask, Some(&mut sink))
+            vm.run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
                 .unwrap(),
             [Value::I64(42)]
         );

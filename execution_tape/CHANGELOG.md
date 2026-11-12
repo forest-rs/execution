@@ -180,7 +180,18 @@ This release has an [MSRV][] of 1.88.
   budgets and ordinary host/value/recording semantics. Dropping an unfinished
   invocation rolls back new aggregates while preserving already performed host effects. ([#205][] by [@waywardmonkeys][])
 
+- Install verified programs in a VM with `Vm::install`, which returns the new unit's `UnitId`.
+  A `FuncRef { unit, func }` names one function of one installed unit, and `Vm::units` reports
+  the installed units. Every install creates a distinct unit; the VM keeps each one until it is
+  dropped, and running or suspended frames keep the unit they entered. A `FuncRef` naming a unit
+  the VM did not install traps with `Trap::UnknownUnit`, and starting a `Callable` in a unit
+  installed from a different program traps with `Trap::UnitProgramMismatch`. `Invocation::unit`
+  reports the entry unit.
+
 ### Removed
+
+- `Invocation::program_owner`. Every invocation now retains its entry unit's program; use
+  `Invocation::program`, which returns that `Arc<VerifiedProgram>`.
 
 - `PendingHostCall::return_from` and `ControlError`, along with their evidence:
   `ValueEvent::ReturnFrom`, `ControlAction::ReturnFrom`, `Divergence::ControlTarget`,
@@ -192,6 +203,16 @@ This release has an [MSRV][] of 1.88.
   Abandoned work now closes with `TraceOutcome::Caught`.
 
 ### Changed
+
+- Execution enters an installed unit instead of a borrowed program. `Vm::run`, `Vm::run_with_ctx`
+  and `Vm::start` take an entry `FuncRef` in place of the `&VerifiedProgram` and `FuncId` pair,
+  and `Callable::start`/`start_owned` take the `UnitId` that runs the callable's program.
+  `Invocation::program` returns `&Arc<VerifiedProgram>`, and `Invocation::retain_callable` no
+  longer fails with `CallableError::MissingCodeOwner` for raw entries. Migration: install each
+  program once, then run its functions by reference, for example
+  `let unit = vm.install(program)?; vm.run(FuncRef::new(unit, entry), args, mask, trace)`. For a
+  callable, install `Arc::clone(callable.program())` and pass that unit. Install outside hot
+  loops: installing is not a cache, and each call adds a unit the VM keeps.
 
 - The tape wire version is now 0.6. Published 0.1.0 reads exactly 0.5, and new opcodes and
   program sections are about to land, so the version is advanced ahead of them. The wire version

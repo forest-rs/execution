@@ -13,13 +13,12 @@
 //!
 //! ## Example
 //! ```no_run
-//! use execution_tape::{host::Host, trace::TraceSink, value::FuncId,
-//!     verifier::VerifiedProgram, vm::{TrapInfo, Vm}};
+//! use execution_tape::{host::Host, trace::TraceSink, value::FuncRef, vm::{TrapInfo, Vm}};
 //! use execution_tape_tracy::ProfilingTraceSink;
-//! # fn profile<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId) -> Result<(), TrapInfo> {
+//! # fn profile<H: Host>(vm: &mut Vm<H>, entry: FuncRef) -> Result<(), TrapInfo> {
 //! let mut sink = ProfilingTraceSink::new();
 //! let mask = sink.mask();
-//! vm.run(program, entry, &[], mask, Some(&mut sink))?;
+//! vm.run(entry, &[], mask, Some(&mut sink))?;
 //! # Ok(()) }
 //! ```
 //!

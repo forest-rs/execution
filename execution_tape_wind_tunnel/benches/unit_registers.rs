@@ -3,6 +3,7 @@
 
 //! Unit register width, guest/host transfers and simultaneous joins.
 
+use execution_tape::value::FuncRef;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -80,14 +81,15 @@ fn units(c: &mut Criterion) {
     let mut group = c.benchmark_group("unit_registers");
     for width in [8, 65535] {
         let (program, entry) = program(width);
+        let program = std::sync::Arc::new(program);
         let mut vm = Vm::new(UnitHost, Limits::default());
         let args = [Value::Unit, Value::Unit, Value::Bool(true)];
         let mut context = ExecutionContext::new();
         let mut output = Vec::new();
+        let unit = vm.install(std::sync::Arc::clone(&program)).unwrap();
         vm.run_with_ctx(
             &mut context,
-            &program,
-            entry,
+            FuncRef::new(unit, entry),
             &args,
             &mut output,
             TraceMask::NONE,
@@ -104,10 +106,13 @@ fn units(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("fresh_vm", width), |b| {
             b.iter(|| {
                 let mut vm = Vm::new(UnitHost, Limits::default());
+                // A fresh VM includes installing its code.
+                let unit = vm
+                    .install(std::sync::Arc::clone(black_box(&program)))
+                    .unwrap();
                 black_box(
                     vm.run(
-                        black_box(&program),
-                        entry,
+                        FuncRef::new(unit, entry),
                         black_box(&args),
                         TraceMask::NONE,
                         None,
@@ -121,8 +126,7 @@ fn units(c: &mut Criterion) {
                 output.clear();
                 vm.run_with_ctx(
                     &mut context,
-                    black_box(&program),
-                    entry,
+                    FuncRef::new(unit, entry),
                     black_box(&args),
                     &mut output,
                     TraceMask::NONE,

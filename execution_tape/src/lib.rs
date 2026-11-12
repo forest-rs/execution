@@ -27,7 +27,7 @@
 //! use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 //! use execution_tape::program::ValueType;
 //! use execution_tape::trace::TraceMask;
-//! use execution_tape::value::Value;
+//! use execution_tape::value::{FuncRef, Value};
 //! use execution_tape::vm::{Limits, Vm};
 //!
 //! struct NoHost;
@@ -62,11 +62,19 @@
 //!
 //!     let program = builder.build_verified()?;
 //!     let mut vm = Vm::new(NoHost, Limits::default());
-//!     let out = vm.run(&program, entry, &[Value::I64(41)], TraceMask::NONE, None)?;
+//!     let unit = vm.install(program)?;
+//!     let entry = FuncRef::new(unit, entry);
+//!     let out = vm.run(entry, &[Value::I64(41)], TraceMask::NONE, None)?;
 //!     assert_eq!(out, vec![Value::I64(42)]);
 //!     Ok(())
 //! }
 //! ```
+//!
+//! Execution always enters code installed in the VM. [`Vm::install`](vm::Vm::install) gives a
+//! verified program a [`UnitId`](value::UnitId) in that VM, and a [`FuncRef`](value::FuncRef)
+//! names one function of one unit. Install a program once and run it as often as needed: every
+//! install creates a new unit, and the VM retains every installed unit until it is dropped.
+//! [`Vm::units`](vm::Vm::units) reports what is installed.
 //!
 //! For repeated execution, keep an [`ExecutionContext`](vm::ExecutionContext) and a result `Vec`.
 //! Clear the result buffer between runs and call [`Vm::run_with_ctx`](vm::Vm::run_with_ctx)
@@ -190,17 +198,17 @@
 //!
 //! ## Resumable execution
 //!
-//! `Vm::start` validates an invocation and returns a handle that borrows its VM, program, inputs,
-//! and optional observers. `Invocation::resume` executes a scheduling quantum at complete
+//! `Vm::start` validates an invocation and returns a handle that borrows its VM, inputs and
+//! optional observers, and retains its entry unit's program. `Invocation::resume` executes a scheduling quantum at complete
 //! instruction boundaries. Hard fuel and data-work budgets accumulate across resumes; a quantum
 //! is separate from these limits. Host calls run synchronously by default.
 //!
 //! ```
-//! use execution_tape::{host::Host, verifier::VerifiedProgram, value::{FuncId, Value},
+//! use execution_tape::{host::Host, value::{FuncRef, Value},
 //!     vm::{InvocationOptions, RunStatus, TrapInfo, Vm}};
-//! fn scheduled<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
-//!     args: &[Value]) -> Result<Vec<Value>, TrapInfo> {
-//!     let mut invocation = vm.start(program, entry, args, InvocationOptions::default())?;
+//! fn scheduled<H: Host>(vm: &mut Vm<H>, entry: FuncRef, args: &[Value])
+//!     -> Result<Vec<Value>, TrapInfo> {
+//!     let mut invocation = vm.start(entry, args, InvocationOptions::default())?;
 //!     while invocation.resume(1024)? == RunStatus::Suspended {
 //!         // Return control to the application's scheduler between quanta.
 //!     }
@@ -224,13 +232,14 @@
 //! use execution_tape::{callable::Callable, host::Host,
 //!     recording::{Recorder, RecordLimits}, trace::TraceSink, value::Value,
 //!     vm::{Invocation, InvocationOptions, TrapInfo, Vm}};
-//! fn stored<H: Host + 'static>(target: &Callable, vm: Vm<H>, args: Vec<Value>)
-//!     -> Result<(Invocation<'static, H>, Rc<RefCell<Recorder>>), TrapInfo>
+//! fn stored<H: Host + 'static>(target: &Callable, mut vm: Vm<H>, args: Vec<Value>)
+//!     -> Result<(Invocation<'static, H>, Rc<RefCell<Recorder>>), Box<dyn std::error::Error>>
 //! {
+//!     let unit = vm.install(target.program().clone())?;
 //!     let capture = Rc::new(RefCell::new(Recorder::new(
 //!         target.program().clone(), RecordLimits::default())));
 //!     let mask = capture.mask();
-//!     let invocation = target.start_owned(vm, args, InvocationOptions::default()
+//!     let invocation = target.start_owned(vm, unit, args, InvocationOptions::default()
 //!         .yield_host_calls().trace_owned(mask, Rc::clone(&capture)))?;
 //!     Ok((invocation, capture))
 //! }
@@ -268,7 +277,7 @@
 //! make foreign handles portable. Use `retain` for results needed outside the host call.
 //! After successful execution, `Invocation::into_snapshot` consumes the invocation and moves
 //! an owned VM's reachable results out without copying payloads. A borrowed VM copies its
-//! reachable graph and keeps its existing raw handles valid. Clone `Invocation::program_owner`
+//! reachable graph and keeps its existing raw handles valid. Clone `Invocation::program`
 //! before consumption to retain the exact code domain for nominal/callable snapshot IDs, even
 //! after the original lookup handle has been dropped.
 //! Recordings preserve adopted node identities and all successful construction debits, so
@@ -377,8 +386,9 @@
 //!     verifier::VerifiedProgram, vm::{InvocationOptions, RunStatus, Vm}};
 //! fn make_callback<H: Host>(vm: &mut Vm<H>, program: Arc<VerifiedProgram>, factory: FuncId,
 //!     args: Vec<Value>) -> Result<Callable, Box<dyn std::error::Error>> {
+//!     let unit = vm.install(Arc::clone(&program))?;
 //!     let factory = Callable::function(program, factory)?;
-//!     let mut invocation = factory.start(vm, args, InvocationOptions::default())?;
+//!     let mut invocation = factory.start(vm, unit, args, InvocationOptions::default())?;
 //!     while invocation.resume(1024)? == RunStatus::Suspended {}
 //!     Ok(invocation.retain_callable(0)?)
 //! }

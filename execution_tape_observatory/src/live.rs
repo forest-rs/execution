@@ -71,12 +71,12 @@ enum ValueTarget {
 /// must match the complete program identity. This is live execution, not recording replay.
 ///
 /// ```no_run
-/// # use execution_tape::{host::Host, source::SourceMap, value::FuncId,
-/// #     verifier::VerifiedProgram, vm::{Vm, InvocationOptions}};
+/// # use execution_tape::{host::Host, source::SourceMap, value::FuncRef,
+/// #     vm::{Vm, InvocationOptions}};
 /// # use execution_tape_observatory::LiveExplorer;
-/// # fn debug<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId,
+/// # fn debug<H: Host>(vm: &mut Vm<H>, entry: FuncRef,
 /// #     sources: &SourceMap) -> Result<(), Box<dyn std::error::Error>> {
-/// let invocation = vm.start(program, entry, &[], InvocationOptions::default())?;
+/// let invocation = vm.start(entry, &[], InvocationOptions::default())?;
 /// let mut debugger = LiveExplorer::new(invocation).sources(sources)?;
 /// debugger.run()?;
 /// if let Some(result) = debugger.result() {

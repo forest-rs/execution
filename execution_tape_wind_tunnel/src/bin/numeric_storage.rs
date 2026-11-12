@@ -3,6 +3,7 @@
 
 //! Report prepared frames, constant arenas, and used recording value storage on this build.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -123,9 +124,17 @@ fn main() {
             .unwrap();
         let program = std::sync::Arc::new(builder.build_verified().unwrap());
         let mut recorder = Recorder::new(std::sync::Arc::clone(&program), RecordLimits::default());
-        Vm::new(NoHost, Limits::default())
-            .run(&program, id, &[], recorder.mask(), Some(&mut recorder))
-            .unwrap();
+        {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(program.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, id),
+                &[],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
+        }
+        .unwrap();
         let recording = recorder.finish();
         recording.status().unwrap();
         let stats = recording.stats();

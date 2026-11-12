@@ -297,8 +297,11 @@ impl Runtime {
         ));
         let callable =
             Callable::function(program, entry).map_err(|_| Error::Abi("missing entry"))?;
+        let mut owned_vm = Vm::new(NoHost, limits);
+        let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
         let run = callable.start_owned(
-            Vm::new(NoHost, limits),
+            owned_vm,
+            unit,
             vec![],
             InvocationOptions::default()
                 .yield_host_calls()

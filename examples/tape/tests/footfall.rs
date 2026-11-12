@@ -10,6 +10,7 @@ use demo::{Behavior, DemoHost, ENTRY, GUEST_TRAP};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
 use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Vm};
 use execution_tape_footfall::FootfallSink;
@@ -79,8 +80,9 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let all = sink.mask() | TraceMask::INSTR;
     let arguments = [Value::Bool(true), Value::I64(41)];
     let start = runtime.snapshot().next_cursor();
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
-        vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
             .unwrap(),
         [Value::I64(42)]
     );
@@ -124,13 +126,13 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let taken = branch_target.expect("branch reports its actual target");
 
     let start = runtime.snapshot().next_cursor();
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
         vm.run(
-            &program,
-            ENTRY,
+            FuncRef::new(unit, ENTRY),
             &[Value::Bool(false), Value::I64(41)],
             all,
-            Some(&mut sink),
+            Some(&mut sink)
         )
         .unwrap(),
         [Value::I64(0)]
@@ -154,7 +156,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     for behavior in [Behavior::Failure, Behavior::InvalidReturn] {
         vm.host_mut().behavior = behavior;
         let start = runtime.snapshot().next_cursor();
-        vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
             .unwrap_err();
         let trapped = runtime.snapshot_since(start);
         balanced(&trapped);
@@ -166,7 +169,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     }
 
     let start = runtime.snapshot().next_cursor();
-    vm.run(&program, GUEST_TRAP, &[], all, Some(&mut sink))
+    let unit = vm.install(program.clone()).unwrap();
+    vm.run(FuncRef::new(unit, GUEST_TRAP), &[], all, Some(&mut sink))
         .unwrap_err();
     let trapped = runtime.snapshot_since(start);
     balanced(&trapped);
@@ -196,8 +200,9 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
         }
     }
     let mut custom = Vm::new(CustomFailureHost, Limits::default());
+    let unit = custom.install(program.clone()).unwrap();
     let failure = custom
-        .run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        .run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
         .unwrap_err();
     assert!(matches!(
         failure.trap,
@@ -211,10 +216,10 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     // with a distinct outcome, and this same sink can immediately observe a subsequent run.
     for mask in [all, sink.mask(), TraceMask::RUN, TraceMask::INSTR] {
         let start = runtime.snapshot().next_cursor();
+        let unit = vm.install(program.clone()).unwrap();
         let mut invocation = vm
             .start(
-                &program,
-                ENTRY,
+                FuncRef::new(unit, ENTRY),
                 &arguments,
                 InvocationOptions::default().trace(mask, &mut sink),
             )
@@ -251,7 +256,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
         TraceMask::NONE,
     ] {
         let start = runtime.snapshot().next_cursor();
-        vm.run(&program, ENTRY, &arguments, mask, Some(&mut sink))
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, ENTRY), &arguments, mask, Some(&mut sink))
             .unwrap();
         let snapshot = runtime.snapshot_since(start);
         balanced(&snapshot);
@@ -274,7 +280,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
         vm.host_mut().behavior = Behavior::Failure;
         let start = runtime.snapshot().next_cursor();
-        vm.run(&program, ENTRY, &arguments, mask, Some(&mut sink))
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, ENTRY), &arguments, mask, Some(&mut sink))
             .unwrap_err();
         let trapped = runtime.snapshot_since(start);
         balanced(&trapped);
@@ -312,9 +319,9 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let mut interrupted_sink = FootfallSink::new(context.handle());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut vm = Vm::new(PanicHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         let _ = vm.run(
-            &program,
-            ENTRY,
+            FuncRef::new(unit, ENTRY),
             &arguments,
             all,
             Some(&mut interrupted_sink),
@@ -328,9 +335,9 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     assert_eq!(count(&interrupted, "execution_tape.run_trap"), 0);
     let start = runtime.snapshot().next_cursor();
     let mut replacement = FootfallSink::new(context.handle());
+    let unit = vm.install(program.clone()).unwrap();
     vm.run(
-        &program,
-        ENTRY,
+        FuncRef::new(unit, ENTRY),
         &arguments,
         TraceMask::CALL | TraceMask::HOST,
         Some(&mut replacement),
@@ -349,7 +356,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     );
     runtime.set_level(InstrumentationLevel::Off);
     let start = runtime.snapshot().next_cursor();
-    vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
+    let unit = vm.install(program.clone()).unwrap();
+    vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
         .unwrap();
     assert!(runtime.snapshot_since(start).events().is_empty());
     runtime.set_level(InstrumentationLevel::Scoped);
@@ -386,9 +394,15 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     );
     let start = runtime.snapshot().next_cursor();
     let mask_at_entry = sink.mask();
+    let unit = disabling_vm.install(program.clone()).unwrap();
     assert_eq!(
         disabling_vm
-            .run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
+            .run(
+                FuncRef::new(unit, ENTRY),
+                &arguments,
+                mask_at_entry,
+                Some(&mut sink)
+            )
             .unwrap(),
         [Value::I64(42)]
     );
@@ -400,8 +414,14 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     runtime.set_level(InstrumentationLevel::Scoped);
     let start = runtime.snapshot().next_cursor();
     let mask_at_entry = sink.mask();
-    vm.run(&program, ENTRY, &arguments, mask_at_entry, Some(&mut sink))
-        .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
+    vm.run(
+        FuncRef::new(unit, ENTRY),
+        &arguments,
+        mask_at_entry,
+        Some(&mut sink),
+    )
+    .unwrap();
     let resumed = runtime.snapshot_since(start);
     assert_eq!(count(&resumed, "execution_tape.run"), 1);
     balanced(&resumed);
@@ -412,8 +432,9 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let application_root = footfall::scope(&APPLICATION_ROOT, context.handle());
     runtime.set_level(InstrumentationLevel::Off);
     disabling_vm.host_mut().level = InstrumentationLevel::Scoped;
+    let unit = disabling_vm.install(program.clone()).unwrap();
     disabling_vm
-        .run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        .run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
         .unwrap();
     drop(application_root);
     let enabled_mid_run = runtime.snapshot_since(start);
@@ -435,7 +456,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
 
     let start = runtime.snapshot().next_cursor();
     for _ in 0..100 {
-        vm.run(&program, ENTRY, &arguments, all, Some(&mut sink))
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
             .unwrap();
     }
     let truncated = runtime.snapshot_since(start);

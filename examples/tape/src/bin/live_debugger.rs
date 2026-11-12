@@ -3,6 +3,7 @@
 
 //! Live execution with real host objects, nested calls and explicit authored-source connections.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -165,7 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Limits::default(),
     );
     let args = [Value::Obj(object())];
-    let invocation = vm.start(&p, entry, &args, InvocationOptions::default())?;
+    let unit = vm.install(p.clone()).unwrap();
+    let invocation = vm.start(
+        FuncRef::new(unit, entry),
+        &args,
+        InvocationOptions::default(),
+    )?;
     let mut view = LiveExplorer::new(invocation).sources(&sources)?;
     view.resume(if complete { u64::MAX } else { steps })?;
     if snapshot {
@@ -199,8 +205,13 @@ mod tests {
             Limits::default(),
         );
         let args = [Value::Obj(object())];
+        let unit = vm.install(p.clone()).unwrap();
         let invocation = vm
-            .start(&p, entry, &args, InvocationOptions::default())
+            .start(
+                FuncRef::new(unit, entry),
+                &args,
+                InvocationOptions::default(),
+            )
             .unwrap();
         let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
         view.step().unwrap();

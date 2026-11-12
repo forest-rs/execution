@@ -3,6 +3,7 @@
 
 //! Deterministic guest generation, an independent expression model, and failure shrinking.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -250,20 +251,27 @@ fn check(expr: &Expr, input: i64) -> Result<(), String> {
     for program in [program, decoded] {
         let verified = verify_program_owned(program, &VerifyConfig::default())
             .map_err(|e| format!("verify: {e:?}"))?;
-        let output = Vm::new(NoHost, Limits::default())
-            .run(
-                &verified,
-                FuncId(0),
+        let output = {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(verified.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::I64(input)],
                 TraceMask::NONE,
                 None,
             )
-            .map_err(|e| format!("run: {e:?}"))?;
+        }
+        .map_err(|e| format!("run: {e:?}"))?;
         for quantum in [1, 7, u64::MAX] {
             let mut vm = Vm::new(NoHost, Limits::default());
             let args = [Value::I64(input)];
+            let unit = vm.install(verified.clone()).unwrap();
             let mut invocation = vm
-                .start(&verified, FuncId(0), &args, InvocationOptions::default())
+                .start(
+                    FuncRef::new(unit, FuncId(0)),
+                    &args,
+                    InvocationOptions::default(),
+                )
                 .map_err(|e| format!("start: {e:?}"))?;
             while invocation
                 .resume(quantum)

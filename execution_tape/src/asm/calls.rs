@@ -301,6 +301,7 @@ impl ProgramBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::FuncRef;
     use crate::{
         host::{Host, HostContext, HostError, SigHash, ValueRef},
         trace::TraceMask,
@@ -381,9 +382,15 @@ mod tests {
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         let mut vm = Vm::new(Negate::default(), Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
-            vm.run(&program, entry, &[Value::I64(42)], TraceMask::NONE, None)
-                .unwrap(),
+            vm.run(
+                FuncRef::new(unit, entry),
+                &[Value::I64(42)],
+                TraceMask::NONE,
+                None
+            )
+            .unwrap(),
             [Value::I64(-42), Value::Bool(true)]
         );
         assert_eq!(vm.host().notifications, 1);

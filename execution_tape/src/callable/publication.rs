@@ -189,7 +189,9 @@ pub enum CodeUpdate {
 /// #     vm::{InvocationOptions, RunStatus, Vm}};
 /// # fn update<H: Host>(slot: &mut CodeSlot, replacement: Callable, vm: &mut Vm<H>)
 /// #     -> Result<(), Box<dyn std::error::Error>> {
-/// let mut old_call = slot.current().callable().start(vm, vec![], InvocationOptions::default())?;
+/// let current = slot.current();
+/// let unit = vm.install(current.callable().program().clone())?;
+/// let mut old_call = current.callable().start(vm, unit, vec![], InvocationOptions::default())?;
 /// old_call.resume(1)?;
 /// slot.replace(replacement)?;
 /// // Future lookups use the new publication; this active call owns its old code.

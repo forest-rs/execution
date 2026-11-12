@@ -8,6 +8,7 @@ use execution_tape::contract::{Contract, ContractId, ContractPath, ContractPosit
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{Closure, FuncId, Value};
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig, VerifyError};
 use execution_tape::vm::{Limits, Trap, Vm};
@@ -118,15 +119,17 @@ fn rich_indirect_results_roundtrip_and_feed_projection_and_inspection() {
     };
     assert!(matches!(at.contracts().get(id), Some(Contract::Tuple(_))));
     assert_eq!(
-        Vm::new(NoHost, Limits::default())
-            .run(
-                &verified,
-                entry,
+        {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(verified.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, entry),
                 &[Value::Func(target)],
                 TraceMask::NONE,
-                None
+                None,
             )
-            .unwrap(),
+        }
+        .unwrap(),
         vec![Value::I64(42)]
     );
 }
@@ -159,9 +162,12 @@ fn callable_values_survive_aggregate_projection_and_aliasing() {
         .unwrap();
     let p = b.build_verified().unwrap();
     assert_eq!(
-        Vm::new(NoHost, Limits::default())
-            .run(&p, entry, &[], TraceMask::NONE, None)
-            .unwrap(),
+        {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(p.clone()).unwrap();
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+        }
+        .unwrap(),
         vec![Value::I64(42)]
     );
 }
@@ -201,17 +207,24 @@ fn closure_construction_preserves_exposed_signature_and_checks_concrete_environm
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let unit = vm.install(p.clone()).unwrap();
     assert_eq!(
-        vm.run(&p, entry, &[Value::Agg(good)], TraceMask::NONE, None)
-            .unwrap(),
+        vm.run(
+            FuncRef::new(unit, entry),
+            &[Value::Agg(good)],
+            TraceMask::NONE,
+            None
+        )
+        .unwrap(),
         vec![Value::I64(42)]
     );
     let bad = vm
         .aggregates_mut()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
+    let unit = vm.install(p.clone()).unwrap();
     assert!(
-        matches!(vm.run(&p,entry,&[Value::Agg(bad)],TraceMask::NONE,None).unwrap_err().trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==target)
+        matches!(vm.run(FuncRef::new(unit, entry),&[Value::Agg(bad)],TraceMask::NONE,None).unwrap_err().trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==target)
     );
 }
 #[test]
@@ -257,10 +270,10 @@ fn rich_closure_boundaries_check_hidden_environments_and_do_not_reuse_another_ta
         execution_tape::verifier::verify_program_owned(decoded, &VerifyConfig::default()).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let env = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let unit = vm.install(p.clone()).unwrap();
     let error = vm
         .run(
-            &p,
-            entry,
+            FuncRef::new(unit, entry),
             &[
                 Value::Closure(Closure { func: first, env }),
                 Value::Closure(Closure { func: second, env }),
@@ -302,9 +315,11 @@ fn exact_rich_identity_rejects_equal_kind_hashes_before_dispatch() {
         .push_function_checked(a, sig(&[ValueType::Func], &[]))
         .unwrap();
     let p = b.build_verified().unwrap();
-    assert!(
-        matches!(Vm::new(NoHost,Limits::default()).run(&p,entry,&[Value::Func(target)],TraceMask::NONE,None).unwrap_err().trap,Trap::CallableSignatureMismatch{signature,function} if signature==call && function==target)
-    );
+    assert!(matches!({
+ let mut vm = Vm::new(NoHost,Limits::default());
+ let unit = vm.install(p.clone()).unwrap();
+ vm.run(FuncRef::new(unit, entry), &[Value::Func(target)], TraceMask::NONE, None)
+ }.unwrap_err().trap,Trap::CallableSignatureMismatch{signature,function} if signature==call && function==target));
 }
 #[test]
 fn statically_known_incompatible_indirect_targets_are_rejected() {
@@ -373,16 +388,24 @@ fn higher_order_returns_and_nested_callable_failures_keep_their_contracts() {
         .unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     assert_eq!(
-        vm.run(&p, entry, &[], TraceMask::NONE, None).unwrap(),
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+            .unwrap(),
         vec![Value::I64(42)]
     );
     let invalid = vm
         .aggregates_mut()
         .tuple_new(vec![Value::Func(FuncId(u32::MAX))])
         .unwrap();
+    let unit = vm.install(p.clone()).unwrap();
     let error = vm
-        .run(&p, take, &[Value::Agg(invalid)], TraceMask::NONE, None)
+        .run(
+            FuncRef::new(unit, take),
+            &[Value::Agg(invalid)],
+            TraceMask::NONE,
+            None,
+        )
         .unwrap_err();
     let Trap::ContractMismatch { error, .. } = error.trap else {
         panic!("missing nested failure")
@@ -419,20 +442,22 @@ fn callable_signature_positions_and_cached_visits_are_budgeted() {
     let p = b.build_verified().unwrap();
     // First callable: value visit + argument position + return position. Second: cached visit.
     for limit in [0, 2, 3, 4] {
-        let result = Vm::new(
-            NoHost,
-            Limits {
-                max_contract_work: limit,
-                ..Limits::default()
-            },
-        )
-        .run(
-            &p,
-            entry,
-            &[Value::Func(target), Value::Func(target)],
-            TraceMask::NONE,
-            None,
-        );
+        let result = {
+            let mut vm = Vm::new(
+                NoHost,
+                Limits {
+                    max_contract_work: limit,
+                    ..Limits::default()
+                },
+            );
+            let unit = vm.install(p.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, entry),
+                &[Value::Func(target), Value::Func(target)],
+                TraceMask::NONE,
+                None,
+            )
+        };
         if limit == 4 {
             result.unwrap();
         } else {
@@ -458,10 +483,11 @@ fn opaque_closures_validate_even_an_unused_unrefined_environment_before_entry() 
         .push_function_checked(entry, sig(&[ValueType::Closure], &[ValueType::I64]))
         .unwrap();
     let p = b.build_verified().unwrap();
-    let error = Vm::new(NoHost, Limits::default())
-        .run(
-            &p,
-            entry,
+    let error = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, entry),
             &[Value::Closure(Closure {
                 func: target,
                 env: execution_tape::value::AggHandle(0),
@@ -469,7 +495,8 @@ fn opaque_closures_validate_even_an_unused_unrefined_environment_before_entry() 
             TraceMask::NONE,
             None,
         )
-        .unwrap_err();
+    }
+    .unwrap_err();
     assert!(
         matches!(error.trap,Trap::ContractMismatch{function,position:ContractPosition::Argument{index:0,..},..} if function==target)
     );
@@ -511,9 +538,15 @@ fn selects_and_nominal_arrays_keep_signatures_without_merging_function_identity(
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     for (flag, number) in [(true, 42), (false, 7)] {
+        let unit = vm.install(p.clone()).unwrap();
         assert_eq!(
-            vm.run(&p, entry, &[Value::Bool(flag)], TraceMask::NONE, None)
-                .unwrap(),
+            vm.run(
+                FuncRef::new(unit, entry),
+                &[Value::Bool(flag)],
+                TraceMask::NONE,
+                None
+            )
+            .unwrap(),
             vec![Value::I64(number)]
         );
     }
@@ -566,10 +599,13 @@ fn an_opaque_host_write_erases_the_destinations_previous_callable_proof() {
         .unwrap();
     let p = b.build_verified().unwrap();
     assert!(matches!(
-        Vm::new(Choose(bad), Limits::default())
-            .run(&p, entry, &[], TraceMask::NONE, None)
-            .unwrap_err()
-            .trap,
+        {
+            let mut vm = Vm::new(Choose(bad), Limits::default());
+            let unit = vm.install(p.clone()).unwrap();
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+        }
+        .unwrap_err()
+        .trap,
         Trap::TypeMismatch {
             expected: ValueType::I64,
             actual: ValueType::Bool

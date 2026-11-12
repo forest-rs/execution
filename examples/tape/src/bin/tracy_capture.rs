@@ -10,6 +10,7 @@ use execution_tape::asm::{FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceSink;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
@@ -156,8 +157,9 @@ fn main() {
         .sources(program.program(), &sources)
         .expect("matching source map");
     let mask = sink.mask();
+    let unit = vm.install(program.clone()).unwrap();
     let out = vm
-        .run(&program, entry, &[], mask, Some(&mut sink))
+        .run(FuncRef::new(unit, entry), &[], mask, Some(&mut sink))
         .expect("vm run failed");
 
     println!("result: {:?}", out);
@@ -250,8 +252,10 @@ mod tests {
             }
         }
         let mut vm = Vm::new(EchoHost { expected_sig }, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
-            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+                .unwrap(),
             [Value::I64(42)]
         );
     }

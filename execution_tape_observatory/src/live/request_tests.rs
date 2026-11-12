@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{HostContext, HostError, HostSig, SigHash},
@@ -98,10 +99,10 @@ fn awaiting_host_is_explicit_stepping_waits_and_only_explicit_host_dispatch_has_
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let root = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
     let args = [Value::Agg(root)];
+    let unit = vm.install(p.clone()).unwrap();
     let call = vm
         .start(
-            &p,
-            entry,
+            FuncRef::new(unit, entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -147,10 +148,10 @@ fn leaving_presentation_preserves_a_pending_invocation_for_external_completion()
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let root = vm.aggregates_mut().tuple_new(vec![]).unwrap();
     let args = [Value::Agg(root)];
+    let unit = vm.install(p.clone()).unwrap();
     let call = vm
         .start(
-            &p,
-            entry,
+            FuncRef::new(unit, entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -178,10 +179,10 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
         .tuple_new(vec![Value::I64(7)])
         .unwrap();
     let args = [Value::Agg(arg)];
+    let unit = parent_vm.install(caller.clone()).unwrap();
     let mut parent = parent_vm
         .start(
-            &caller,
-            caller_entry,
+            FuncRef::new(unit, caller_entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -192,8 +193,13 @@ fn external_caller_uses_its_actual_code_and_source_even_when_local_function_ids_
     vm.aggregates_mut()
         .tuple_new(vec![Value::I64(999)])
         .unwrap();
+    let unit = vm.install(callee.clone()).unwrap();
     let call = vm
-        .start(&callee, callee_entry, &[], InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, callee_entry),
+            &[],
+            InvocationOptions::default(),
+        )
         .unwrap();
     let mut view = LiveExplorer::new(call)
         .sources(&callee_sources)
@@ -278,10 +284,10 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
     let mut parent_vm = Vm::new(Counter::default(), Limits::default());
     let root = parent_vm.aggregates_mut().tuple_new(vec![]).unwrap();
     let args = [Value::Agg(root)];
+    let unit = parent_vm.install(caller.clone()).unwrap();
     let mut parent = parent_vm
         .start(
-            &caller,
-            entry,
+            FuncRef::new(unit, entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -289,8 +295,13 @@ fn stale_parent_sources_are_rejected_independently_of_the_child_source_map() {
     parent.resume(1).unwrap();
     let request = parent.pending_host_call().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
+    let unit = vm.install(callee.clone()).unwrap();
     let call = vm
-        .start(&callee, target, &[], InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, target),
+            &[],
+            InvocationOptions::default(),
+        )
         .unwrap();
     assert!(matches!(
         LiveExplorer::new(call).requested_by(&request, Some(&wrong_sources)),
@@ -304,12 +315,10 @@ fn a_stored_owned_invocation_can_use_local_sources_and_return_to_its_scheduler()
     use std::sync::Arc;
     let (program, entry, sources) = program(false);
     let callable = Callable::function(Arc::new(program), entry).unwrap();
+    let mut owned_vm = Vm::new(Counter::default(), Limits::default());
+    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
     let call = callable
-        .start_owned(
-            Vm::new(Counter::default(), Limits::default()),
-            vec![],
-            InvocationOptions::default(),
-        )
+        .start_owned(owned_vm, unit, vec![], InvocationOptions::default())
         .unwrap();
     let mut stored: Option<Invocation<'static, Counter>> = Some(call);
     {

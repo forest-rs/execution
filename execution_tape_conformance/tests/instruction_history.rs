@@ -12,6 +12,7 @@ use execution_tape::recording::{
     ReplayOutcome,
 };
 use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
@@ -94,9 +95,9 @@ fn capture(
     } else {
         TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL
     };
+    let unit = vm.install(p.clone()).unwrap();
     let _ = vm.run(
-        &p,
-        FuncId(1),
+        FuncRef::new(unit, FuncId(1)),
         &[Value::Bool(condition)],
         mask,
         Some(&mut recorder),
@@ -234,9 +235,9 @@ fn watched_inputs_local_writes_and_call_dispatch_have_honest_boundaries() {
     let mut recorder =
         Recorder::new(Arc::clone(&p), RecordLimits::default()).with_instructions(config);
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     vm.run(
-        &p,
-        FuncId(1),
+        FuncRef::new(unit, FuncId(1)),
         &[Value::Bool(false)],
         recorder.mask(),
         Some(&mut recorder),
@@ -297,10 +298,10 @@ fn trapping_instruction_has_inputs_but_never_successful_writes() {
         },
     );
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     assert!(
         vm.run(
-            &p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::I64(42)],
             recorder.mask(),
             Some(&mut recorder)
@@ -353,9 +354,9 @@ fn aliased_aggregate_watches_preserve_before_after_graph_identity() {
         },
     );
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     vm.run(
-        &p,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::Str("retained text".into())],
         recorder.mask(),
         Some(&mut recorder),
@@ -394,9 +395,9 @@ fn omitted_watch_callbacks_do_not_claim_complete_value_history() {
         },
     );
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     vm.run(
-        &p,
-        FuncId(1),
+        FuncRef::new(unit, FuncId(1)),
         &[Value::Bool(true)],
         TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL | TraceMask::INSTR,
         Some(&mut recorder),
@@ -510,9 +511,15 @@ fn zero_budget_does_not_hide_disabled_instruction_callbacks_on_a_trap() {
         } else {
             TraceMask::RUN | TraceMask::VALUES | TraceMask::CALL
         };
+        let unit = vm.install(p.clone()).unwrap();
         assert!(
-            vm.run(&p, FuncId(0), &[], mask, Some(&mut recorder))
-                .is_err()
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
+                &[],
+                mask,
+                Some(&mut recorder)
+            )
+            .is_err()
         );
         let record = recorder.finish();
         assert_eq!(record.status(), Ok(()));
@@ -538,9 +545,15 @@ fn rejected_entry_is_complete_zero_attempt_history_when_subscriptions_are_enable
                 ..InstructionCapture::default()
             });
         let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         assert!(
-            vm.run(&p, FuncId(1), &[], recorder.mask(), Some(&mut recorder))
-                .is_err()
+            vm.run(
+                FuncRef::new(unit, FuncId(1)),
+                &[],
+                recorder.mask(),
+                Some(&mut recorder)
+            )
+            .is_err()
         );
         let record = recorder.finish();
         assert_eq!(record.status(), Ok(()));

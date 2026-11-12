@@ -11,6 +11,7 @@ use execution_tape::recording::{
     Recording, ReplayError, ReplayOutcome,
 };
 use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::{AggHandle, AggType, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Trap, Vm};
@@ -101,9 +102,9 @@ impl Host for TestHost {
 
 fn capture(vm: &mut Vm<TestHost>, program: &Arc<VerifiedProgram>, args: &[Value]) -> Recording {
     let mut recorder = Recorder::new(Arc::clone(program), RecordLimits::default());
+    let unit = vm.install(program.clone()).unwrap();
     let _ = vm.run(
-        program,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         args,
         recorder.mask(),
         Some(&mut recorder),
@@ -243,7 +244,13 @@ fn unwinding_host_leaves_an_explicitly_incomplete_recording() {
     let mut vm = Vm::new(Panics, Limits::default());
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        vm.run(&p, FuncId(0), &[], recorder.mask(), Some(&mut recorder))
+        let unit = vm.install(p.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &[],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
     }));
     assert!(result.is_err());
     let record = recorder.finish();
@@ -605,8 +612,14 @@ fn rejected_entries_and_execution_limits_remain_replayable() {
     ] {
         let mut vm = Vm::new(TestHost::returning(Value::Unit), limits);
         let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
-        vm.run(&p, entry, &args, recorder.mask(), Some(&mut recorder))
-            .unwrap_err();
+        let unit = vm.install(p.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, entry),
+            &args,
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+        .unwrap_err();
         let record = recorder.finish();
         record.status().unwrap();
         assert!(matches!(
@@ -638,9 +651,15 @@ fn every_budget_is_explicit_and_does_not_stop_live_execution() {
         let mut vm = Vm::new(TestHost::returning(Value::Unit), Limits::default());
         let mut recorder = Recorder::new(Arc::clone(&p), limits);
         let args = [Value::Str("abcd".into())];
+        let unit = vm.install(p.clone()).unwrap();
         assert_eq!(
-            vm.run(&p, FuncId(0), &args, recorder.mask(), Some(&mut recorder))
-                .unwrap(),
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
+                &args,
+                recorder.mask(),
+                Some(&mut recorder)
+            )
+            .unwrap(),
             args
         );
         let record = recorder.finish();
@@ -660,9 +679,9 @@ fn every_budget_is_explicit_and_does_not_stop_live_execution() {
             ..RecordLimits::default()
         },
     );
+    let unit = vm.install(p.clone()).unwrap();
     vm.run(
-        &p,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::Agg(root)],
         recorder.mask(),
         Some(&mut recorder),
@@ -687,9 +706,15 @@ fn every_budget_is_explicit_and_does_not_stop_live_execution() {
             ..RecordLimits::default()
         },
     );
+    let unit = vm.install(p.clone()).unwrap();
     assert_eq!(
-        vm.run(&p, FuncId(0), &[], recorder.mask(), Some(&mut recorder))
-            .unwrap(),
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &[],
+            recorder.mask(),
+            Some(&mut recorder)
+        )
+        .unwrap(),
         [Value::I64(42)]
     );
     let record = recorder.finish();
@@ -714,16 +739,22 @@ fn missing_masks_program_mismatch_reuse_and_invalid_graphs_never_claim_completen
         (TraceMask::NONE, CaptureFault::MissingEntry),
     ] {
         let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
-        vm.run(&p, FuncId(0), &[Value::I64(7)], mask, Some(&mut recorder))
-            .unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &[Value::I64(7)],
+            mask,
+            Some(&mut recorder),
+        )
+        .unwrap();
         let record = recorder.finish();
         assert_eq!(record.status(), Err(&expected));
     }
     let other = identity(ValueType::I64);
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
+    let unit = vm.install(other.clone()).unwrap();
     vm.run(
-        &other,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::I64(7)],
         recorder.mask(),
         Some(&mut recorder),
@@ -735,9 +766,9 @@ fn missing_masks_program_mismatch_reuse_and_invalid_graphs_never_claim_completen
     );
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
     for _ in 0..2 {
+        let unit = vm.install(p.clone()).unwrap();
         vm.run(
-            &p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::I64(7)],
             recorder.mask(),
             Some(&mut recorder),
@@ -751,8 +782,14 @@ fn missing_masks_program_mismatch_reuse_and_invalid_graphs_never_claim_completen
         Limits::default(),
     );
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
-    vm.run(&p, FuncId(0), &[], recorder.mask(), Some(&mut recorder))
-        .unwrap_err();
+    let unit = vm.install(p.clone()).unwrap();
+    vm.run(
+        FuncRef::new(unit, FuncId(0)),
+        &[],
+        recorder.mask(),
+        Some(&mut recorder),
+    )
+    .unwrap_err();
     let record = recorder.finish();
     assert_eq!(
         record.status(),

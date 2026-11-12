@@ -7,6 +7,7 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 
@@ -139,13 +140,16 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                 .unwrap()
                 .pc();
             let mut sink = Calls::default();
-            let result = Vm::new(NeverHost, Limits::default()).run(
-                &program,
-                caller,
-                &[],
-                TraceMask::CALL,
-                Some(&mut sink),
-            );
+            let result = {
+                let mut vm = Vm::new(NeverHost, Limits::default());
+                let unit = vm.install(program.clone()).unwrap();
+                vm.run(
+                    FuncRef::new(unit, caller),
+                    &[],
+                    TraceMask::CALL,
+                    Some(&mut sink),
+                )
+            };
             assert_eq!(result.is_err(), traps);
             assert_eq!(
                 sink.entered,

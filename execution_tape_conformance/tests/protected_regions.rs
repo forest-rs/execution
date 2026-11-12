@@ -3,6 +3,7 @@
 
 //! Protected regions and catch clauses.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, Catch, FunctionSig, ProgramBuilder},
     contract::{Contract, ContractPosition},
@@ -41,9 +42,12 @@ fn sig(args: &[ValueType], rets: &[ValueType]) -> FunctionSig {
 }
 
 fn run(program: &VerifiedProgram, entry: FuncId, args: &[Value]) -> Result<Vec<Value>, Trap> {
-    Vm::new(NoHost, Limits::default())
-        .run(program, entry, args, TraceMask::NONE, None)
-        .map_err(|error| error.trap)
+    {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, entry), args, TraceMask::NONE, None)
+    }
+    .map_err(|error| error.trap)
 }
 
 /// Emits `handler: (payload) -> payload + offset` out of line and returns its label.
@@ -230,9 +234,12 @@ fn caught_exceptions_release_every_abandoned_frame() {
         max_call_depth: 3,
         ..Limits::default()
     };
-    let result = Vm::new(NoHost, limits)
-        .run(&program, entry, &[], TraceMask::NONE, None)
-        .unwrap();
+    let result = {
+        let mut vm = Vm::new(NoHost, limits);
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+    }
+    .unwrap();
     assert_eq!(result, [Value::I64(50)]);
 }
 
@@ -315,17 +322,18 @@ fn callback_fixture() -> (VerifiedProgram, FuncId, FuncId) {
 }
 
 fn drive_callback(
-    program: &VerifiedProgram,
+    program: &Arc<VerifiedProgram>,
     outer: FuncId,
     raise: FuncId,
     recorder: Option<Rc<RefCell<Recorder>>>,
 ) {
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(program)).unwrap();
     let mut options = InvocationOptions::default().yield_host_calls();
     if let Some(recorder) = recorder {
         options = options.trace_owned(recorder.mask(), recorder);
     }
-    let mut vm = Vm::new(NoHost, Limits::default());
-    let mut invocation = vm.start(program, outer, &[], options).unwrap();
+    let mut invocation = vm.start(FuncRef::new(unit, outer), &[], options).unwrap();
     assert_eq!(
         invocation.resume(u64::MAX).unwrap(),
         RunStatus::AwaitingHost,
@@ -357,7 +365,7 @@ fn drive_callback(
 #[test]
 fn an_exception_from_a_guest_callback_abandons_its_host_request_and_is_caught() {
     let (program, outer, raise) = callback_fixture();
-    drive_callback(&program, outer, raise, None);
+    drive_callback(&Arc::new(program), outer, raise, None);
 }
 
 #[test]
@@ -425,10 +433,10 @@ fn traps_and_payload_contract_failures_are_never_caught() {
     let program = protected(true);
     let mut vm = Vm::new(NoHost, Limits::default());
     let tuple = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            FuncId(1),
+            FuncRef::new(unit, FuncId(1)),
             &[Value::Agg(tuple)],
             TraceMask::NONE,
             None,
@@ -442,10 +450,10 @@ fn traps_and_payload_contract_failures_are_never_caught() {
         .aggregates_mut()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            FuncId(1),
+            FuncRef::new(unit, FuncId(1)),
             &[Value::Agg(wrong)],
             TraceMask::NONE,
             None,
@@ -459,10 +467,10 @@ fn traps_and_payload_contract_failures_are_never_caught() {
         }
     ));
     let right = vm.aggregates_mut().tuple_new(vec![Value::I64(3)]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
         vm.run(
-            &program,
-            FuncId(1),
+            FuncRef::new(unit, FuncId(1)),
             &[Value::Agg(right)],
             TraceMask::NONE,
             None
@@ -479,10 +487,10 @@ fn traps_and_payload_contract_failures_are_never_caught() {
         },
     );
     let right = vm.aggregates_mut().tuple_new(vec![Value::I64(3)]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            FuncId(1),
+            FuncRef::new(unit, FuncId(1)),
             &[Value::Agg(right)],
             TraceMask::NONE,
             None,
@@ -622,15 +630,17 @@ fn trace_and_recording_explain_and_replay_a_caught_exception() {
     let (program, recurse) = recursion();
     let program = Arc::new(program);
     let mut sink = Observe::default();
-    Vm::new(NoHost, Limits::default())
-        .run(
-            &program,
-            recurse,
+    {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, recurse),
             &[Value::I64(2)],
             sink.mask(),
             Some(&mut sink),
         )
-        .unwrap();
+    }
+    .unwrap();
     // recurse(2) -> recurse(1) -> recurse(0) throws; recurse(1) at depth 2 catches.
     assert_eq!(sink.events.len(), 3, "{:#?}", sink.events);
     assert!(
@@ -655,15 +665,17 @@ fn trace_and_recording_explain_and_replay_a_caught_exception() {
             max_steps: 256,
             watches: vec![],
         });
-    let result = Vm::new(NoHost, Limits::default())
-        .run(
-            &program,
-            recurse,
+    let result = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, recurse),
             &[Value::I64(3)],
             recorder.mask(),
             Some(&mut recorder),
         )
-        .unwrap();
+    }
+    .unwrap();
     assert_eq!(result, [Value::I64(1)]);
     let recording = recorder.finish();
     recording.status().unwrap();

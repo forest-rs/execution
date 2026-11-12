@@ -11,6 +11,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::program::{ByteRange, Const, ConstEntry, ConstId, Program, ValueType};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{Decimal, DecimalRounding, FuncId, Value};
 use execution_tape::verifier::{
     MetadataTable, VerifiedProgram, VerifyConfig, VerifyError, verify_program, verify_program_owned,
@@ -55,7 +56,11 @@ fn function(
 }
 
 fn run(program: &VerifiedProgram, args: &[Value]) -> Result<Vec<Value>, TrapInfo> {
-    Vm::new(NoHost, Limits::default()).run(program, FuncId(0), args, TraceMask::NONE, None)
+    {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, FuncId(0)), args, TraceMask::NONE, None)
+    }
 }
 
 #[test]

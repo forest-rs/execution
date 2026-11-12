@@ -3,6 +3,7 @@
 
 //! Reentry keeps the signaling stack, value domain and hard budgets in one invocation.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
     contract::Contract,
@@ -163,7 +164,10 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     let f = fixture();
     let args = [Value::I64(40)];
     let mut vm = Vm::new(NoHost, Limits::default());
-    let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
     let before: Vec<_> = run.inspect().frames().collect();
     assert_eq!(
@@ -229,7 +233,10 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(0)];
-    let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
     run.resume(u64::MAX).unwrap();
     let mut host = run.pending_host_call().unwrap();
     let staged = host.context().tuple_new(vec![Value::I64(42)]).unwrap();
@@ -290,7 +297,10 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
     let f = fixture();
     let args = [Value::I64(0)];
     let mut vm = Vm::new(NoHost, Limits::default());
-    let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
     run.resume(u64::MAX).unwrap();
     let environment = run
         .pending_host_call()
@@ -332,7 +342,10 @@ fn moved_callback_text_is_distinct_from_root_argument_sources_and_charged() {
     let f = fixture();
     let args = [Value::I64(1)];
     let mut vm = Vm::new(NoHost, Limits::default());
-    let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
     run.resume(u64::MAX).unwrap();
     let value = String::from("callback-only text");
     let length = value.len() as u64;
@@ -387,7 +400,10 @@ fn callbacks_share_fuel_call_depth_host_call_and_payload_limits() {
         ),
     ] {
         let mut vm = Vm::new(NoHost, limits);
-        let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+        let unit = vm.install(f.program.clone()).unwrap();
+        let mut run = vm
+            .start(FuncRef::new(unit, f.entry), &args, options())
+            .unwrap();
         run.resume(u64::MAX).unwrap();
         let request = run.pending_host_call().unwrap();
         let result = if expected == "payload" {
@@ -428,7 +444,10 @@ fn callback_rejects_bad_targets_arguments_and_closure_contracts_before_guest_wor
             .aggregates_mut()
             .tuple_new(vec![Value::Bool(false)])
             .unwrap();
-        let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+        let unit = vm.install(f.program.clone()).unwrap();
+        let mut run = vm
+            .start(FuncRef::new(unit, f.entry), &args, options())
+            .unwrap();
         run.resume(u64::MAX).unwrap();
         let (target, args) = match mode {
             0 => (Value::Func(FuncId(u32::MAX)), vec![]),
@@ -536,10 +555,10 @@ fn cancellation_and_traps_close_nested_guest_host_and_instruction_scopes() {
         let capture = Rc::new(RefCell::new(Trace::default()));
         let mut vm = Vm::new(NoHost, Limits::default());
         let args = [Value::I64(1)];
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut run = vm
             .start(
-                &f.program,
-                f.entry,
+                FuncRef::new(unit, f.entry),
                 &args,
                 options().trace_owned(mask(), capture.clone()),
             )
@@ -582,10 +601,10 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
     ));
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(1)];
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             options().trace_owned(recorder.mask(), recorder.clone()),
         )
@@ -641,10 +660,10 @@ fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_va
         }));
         let mut vm = Vm::new(NoHost, Limits::default());
         let args = [Value::I64(1)];
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut run = vm
             .start(
-                &f.program,
-                f.entry,
+                FuncRef::new(unit, f.entry),
                 &args,
                 options().trace_owned(mask(), capture.clone()),
             )
@@ -682,10 +701,10 @@ fn callback_result_signature_is_independent_of_the_pending_host_signature() {
     let capture = Rc::new(RefCell::new(Trace::default()));
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(40)];
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             options().trace_owned(mask(), capture.clone()),
         )
@@ -741,7 +760,8 @@ fn callback_results_must_satisfy_their_own_rich_contract_before_returning_to_hos
     b.define_function(entry, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let mut run = vm.start(&program, entry, &[], options()).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
+    let mut run = vm.start(FuncRef::new(unit, entry), &[], options()).unwrap();
     run.resume(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
@@ -778,7 +798,10 @@ fn promoted_staging_and_callback_allocations_share_one_aggregate_budget() {
             ..Limits::default()
         },
     );
-    let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
     run.resume(u64::MAX).unwrap();
     let staged = run
         .pending_host_call()
@@ -817,7 +840,10 @@ fn pending_callback_object_results_remain_visible_to_the_embedding_collector() {
         host_type: HostTypeId(77),
         handle: ObjHandle(42),
     };
-    let mut run = vm.start(&f.program, f.entry, &args, options()).unwrap();
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
     run.resume(u64::MAX).unwrap();
     run.pending_host_call()
         .unwrap()
@@ -891,10 +917,10 @@ fn original_host_state_arguments_and_access_sink_are_shared_across_callback_disp
     let reads = Rc::new(RefCell::new(Reads::default()));
     let args = [Value::I64(40)];
     let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             options().access_owned(reads.clone()),
         )

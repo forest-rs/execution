@@ -7,6 +7,7 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::{RegisterEvent, RegisterPhase, TraceLocation, TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 
@@ -72,10 +73,10 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let mut sink = Observe::default();
+    let unit = vm.install(p.clone()).unwrap();
     let result = vm
         .run(
-            &p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::Str("hello".into())],
             TraceMask::REGISTERS,
             Some(&mut sink),
@@ -103,9 +104,9 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     );
     sink.events.clear();
     sink.selected = Some(sink_selected_pc(&p));
+    let unit = vm.install(p.clone()).unwrap();
     vm.run(
-        &p,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::Str("x".into())],
         TraceMask::NONE,
         Some(&mut sink),
@@ -113,9 +114,9 @@ fn aliases_borrow_old_inputs_and_new_outputs_with_exact_scalar_and_text_values()
     .unwrap();
     assert!(sink.events.is_empty());
     assert_eq!(sink.masks.len(), 1);
+    let unit = vm.install(p.clone()).unwrap();
     vm.run(
-        &p,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::Str("x".into())],
         TraceMask::REGISTERS,
         Some(&mut sink),

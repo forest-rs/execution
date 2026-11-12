@@ -62,10 +62,10 @@ fn exact_work(p: &VerifiedProgram, args: &[Value], required: u64) {
             .unwrap();
         let mut ctx = ExecutionContext::new();
         let mut outputs = vec![Value::I64(99)];
+        let unit = vm.install(p.clone()).unwrap();
         let result = vm.run_with_ctx(
             &mut ctx,
-            p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             args,
             &mut outputs,
             TraceMask::NONE,
@@ -134,11 +134,11 @@ fn doubling_traps_before_next_copy_and_context_resets() {
         let mut vm = vm(126);
         let mut ctx = ExecutionContext::new();
         let mut outputs = vec![Value::I64(99)];
+        let unit = vm.install(p.clone()).unwrap();
         let error = vm
             .run_with_ctx(
                 &mut ctx,
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &args,
                 &mut outputs,
                 TraceMask::NONE,
@@ -159,10 +159,10 @@ fn doubling_traps_before_next_copy_and_context_resets() {
         vm.limits.max_payload_work = 254;
         for _ in 0..2 {
             outputs.clear();
+            let unit = vm.install(p.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &args,
                 &mut outputs,
                 TraceMask::NONE,
@@ -303,13 +303,16 @@ fn slices_charge_output_bytes_after_index_and_character_validation() {
         };
         exact_work(&p, &[value.clone(), Value::U64(2), Value::U64(4)], 2);
         for (start, end) in [(4, 2), (0, 5), (1, 2)] {
-            let result = vm(0).run(
-                &p,
-                FuncId(0),
-                &[value.clone(), Value::U64(start), Value::U64(end)],
-                TraceMask::NONE,
-                None,
-            );
+            let result = {
+                let mut vm = vm(0);
+                let unit = vm.install(p.clone()).unwrap();
+                vm.run(
+                    FuncRef::new(unit, FuncId(0)),
+                    &[value.clone(), Value::U64(start), Value::U64(end)],
+                    TraceMask::NONE,
+                    None,
+                )
+            };
             let trap = result.unwrap_err().trap;
             if start == 1 && !text {
                 assert!(matches!(
@@ -363,17 +366,23 @@ fn conversions_charge_copy_and_utf8_work_before_it_occurs() {
         if to_text {
             let bad = [Value::Bytes(vec![255; 4])];
             assert!(matches!(
-                vm(7)
-                    .run(&p, FuncId(0), &bad, TraceMask::NONE, None)
-                    .unwrap_err()
-                    .trap,
+                {
+                    let mut vm = vm(7);
+                    let unit = vm.install(p.clone()).unwrap();
+                    vm.run(FuncRef::new(unit, FuncId(0)), &bad, TraceMask::NONE, None)
+                }
+                .unwrap_err()
+                .trap,
                 Trap::PayloadWorkExceeded { requested: 8, .. }
             ));
             assert!(matches!(
-                vm(8)
-                    .run(&p, FuncId(0), &bad, TraceMask::NONE, None)
-                    .unwrap_err()
-                    .trap,
+                {
+                    let mut vm = vm(8);
+                    let unit = vm.install(p.clone()).unwrap();
+                    vm.run(FuncRef::new(unit, FuncId(0)), &bad, TraceMask::NONE, None)
+                }
+                .unwrap_err()
+                .trap,
                 Trap::InvalidUtf8
             ));
         }
@@ -510,11 +519,11 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
             },
         );
         let mut ctx = ExecutionContext::new();
+        let unit = vm.install(p.clone()).unwrap();
         let error = vm
             .run_with_ctx(
                 &mut ctx,
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[],
                 &mut Vec::new(),
                 TraceMask::NONE,
@@ -547,8 +556,10 @@ fn direct_host_payloads_charge_only_after_all_return_kinds_are_checked() {
             ..Limits::default()
         },
     );
+    let unit = vm.install(p.clone()).unwrap();
     assert_eq!(
-        vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap(),
+        vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap(),
         [Value::U64(4)]
     );
 }
@@ -636,10 +647,10 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         .tuple_new(vec![Value::Bytes(vec![1; 4])])
         .unwrap();
     vm.host_mut().0 = root;
+    let unit = vm.install(projected(false).clone()).unwrap();
     assert_eq!(
         vm.run(
-            &projected(false),
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::Agg(root)],
             TraceMask::NONE,
             None
@@ -647,10 +658,10 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
         .unwrap(),
         [Value::U64(4)]
     );
+    let unit = vm.install(projected(true).clone()).unwrap();
     assert!(matches!(
         vm.run(
-            &projected(true),
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::Agg(root)],
             TraceMask::NONE,
             None
@@ -678,8 +689,9 @@ fn existing_aggregate_storage_is_not_charged_but_projected_root_copies_are() {
             a.host_call_sig_id(0, host, 0, &[], &[1]).ret(0, &[1]);
         },
     );
+    let unit = vm.install(returned.clone()).unwrap();
     assert_eq!(
-        vm.run(&returned, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap(),
         [Value::Agg(root)]
     );

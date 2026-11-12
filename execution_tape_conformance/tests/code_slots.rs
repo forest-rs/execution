@@ -45,8 +45,9 @@ fn constant(number: i64) -> Callable {
 }
 fn run(callable: &Callable) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut invocation = callable
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, unit, vec![], InvocationOptions::default())
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     invocation.take_outputs().unwrap()
@@ -58,10 +59,13 @@ fn lookup_update_does_not_patch_a_paused_frame_or_a_retained_old_target() {
     let old = slot.current();
     let mut vm = Vm::new(NoHost, Limits::default());
     // The lookup snapshot is temporary; the invocation itself retains the old code.
+    let unit = vm
+        .install(Arc::clone(slot.current().callable().program()))
+        .unwrap();
     let mut paused = slot
         .current()
         .callable()
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, unit, vec![], InvocationOptions::default())
         .unwrap();
     assert_eq!(paused.resume(1).unwrap(), RunStatus::Suspended);
     let update = slot.replace(constant(99)).unwrap();

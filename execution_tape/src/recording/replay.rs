@@ -1077,6 +1077,9 @@ impl Recording {
             state: Rc::clone(&state),
         };
         let mut vm = Vm::new(NoReplayEffects, entry.limits.clone());
+        let unit = vm
+            .install(Arc::clone(&self.program))
+            .expect("a fresh VM can install its first unit");
         for &id in &self.initial {
             let node = self.aggregate(id).expect("complete initial node");
             let values = state
@@ -1122,7 +1125,12 @@ impl Recording {
                     },
                 &mut check,
             );
-        let result = match vm.start_prepaid(&self.program, entry.func, &args, options, entry.work) {
+        let result = match vm.start_prepaid(
+            crate::value::FuncRef::new(unit, entry.func),
+            &args,
+            options,
+            entry.work,
+        ) {
             Err(error) => Err(error),
             Ok(mut invocation) => loop {
                 match invocation.resume(u64::MAX) {
@@ -1370,6 +1378,7 @@ mod tests {
     use crate::host::HostSig;
     use crate::program::ValueType;
     use crate::recording::{Call, RecordLimits, Recorder};
+    use crate::value::FuncRef;
     use crate::vm::Limits;
     use alloc::vec;
 
@@ -1434,9 +1443,9 @@ mod tests {
             Value::I64(7)
         };
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+        let unit = vm.install(program.clone()).unwrap();
         vm.run(
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[arg],
             recorder.mask(),
             Some(&mut recorder),
@@ -1481,10 +1490,10 @@ mod tests {
         ));
         let mut vm = Vm::new(Echo, Limits::default());
         let args = [Value::I64(41)];
+        let unit = vm.install(program.clone()).unwrap();
         let mut run = vm
             .start(
-                &program,
-                root,
+                FuncRef::new(unit, root),
                 &args,
                 InvocationOptions::default()
                     .yield_host_calls()
@@ -1598,20 +1607,22 @@ mod tests {
                 .unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-            Vm::new(
-                Echo,
-                Limits {
-                    max_payload_work: 3,
-                    ..Limits::default()
-                },
-            )
-            .run(
-                &program,
-                FuncId(0),
-                &[Value::Bytes(vec![1; 4])],
-                recorder.mask(),
-                Some(&mut recorder),
-            )
+            {
+                let mut vm = Vm::new(
+                    Echo,
+                    Limits {
+                        max_payload_work: 3,
+                        ..Limits::default()
+                    },
+                );
+                let unit = vm.install(program.clone()).unwrap();
+                vm.run(
+                    FuncRef::new(unit, FuncId(0)),
+                    &[Value::Bytes(vec![1; 4])],
+                    recorder.mask(),
+                    Some(&mut recorder),
+                )
+            }
             .unwrap_err();
             let mut record = recorder.finish();
             assert!(matches!(record.replay(), Ok(ReplayOutcome::Trapped(_))));
@@ -1764,15 +1775,17 @@ mod tests {
             .unwrap();
         let program = Arc::new(builder.build_verified().unwrap());
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-        Vm::new(Echo, Limits::default())
-            .run(
-                &program,
-                FuncId(0),
+        {
+            let mut vm = Vm::new(Echo, Limits::default());
+            let unit = vm.install(program.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
                 &[],
                 recorder.mask(),
                 Some(&mut recorder),
             )
-            .unwrap();
+        }
+        .unwrap();
         let mut record = recorder.finish();
         assert_eq!(record.calls.len(), 3);
         let location = record.calls[0].location;
@@ -1802,15 +1815,17 @@ mod tests {
         builder.define_function(function, body).unwrap();
         let program = Arc::new(builder.build_verified().unwrap());
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-        let error = Vm::new(Echo, Limits::default())
-            .run(
-                &program,
-                function,
+        let error = {
+            let mut vm = Vm::new(Echo, Limits::default());
+            let unit = vm.install(program.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, function),
                 &[Value::I64(3)],
                 recorder.mask(),
                 Some(&mut recorder),
             )
-            .unwrap_err();
+        }
+        .unwrap_err();
         assert!(matches!(error.trap, Trap::Uncaught(_)));
         recorder.finish()
     }
@@ -1839,15 +1854,17 @@ mod tests {
             builder.define_function(function, body).unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-            let result = Vm::new(Echo, Limits::default())
-                .run(
-                    &program,
-                    function,
+            let result = {
+                let mut vm = Vm::new(Echo, Limits::default());
+                let unit = vm.install(program.clone()).unwrap();
+                vm.run(
+                    FuncRef::new(unit, function),
                     &[Value::I64(3)],
                     recorder.mask(),
                     Some(&mut recorder),
                 )
-                .unwrap();
+            }
+            .unwrap();
             assert_eq!(result, [Value::I64(3)]);
             recorder.finish()
         };
@@ -1898,15 +1915,17 @@ mod tests {
             builder.define_function(function, body).unwrap();
             let program = Arc::new(builder.build_verified().unwrap());
             let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-            let error = Vm::new(Echo, Limits::default())
-                .run(
-                    &program,
-                    function,
+            let error = {
+                let mut vm = Vm::new(Echo, Limits::default());
+                let unit = vm.install(program.clone()).unwrap();
+                vm.run(
+                    FuncRef::new(unit, function),
                     &[Value::I64(3)],
                     recorder.mask(),
                     Some(&mut recorder),
                 )
-                .unwrap_err();
+            }
+            .unwrap_err();
             assert!(matches!(error.trap, Trap::Uncaught(_)));
             recorder.finish()
         };
@@ -2032,14 +2051,22 @@ mod tests {
             b.define_function(entry, a).unwrap();
             let program = Arc::new(b.build_verified().unwrap());
             let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
-            let error = Vm::new(
-                Produces,
-                Limits {
-                    max_aggregate_work: 2,
-                    ..Limits::default()
-                },
-            )
-            .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+            let error = {
+                let mut vm = Vm::new(
+                    Produces,
+                    Limits {
+                        max_aggregate_work: 2,
+                        ..Limits::default()
+                    },
+                );
+                let unit = vm.install(program.clone()).unwrap();
+                vm.run(
+                    FuncRef::new(unit, entry),
+                    &[],
+                    recorder.mask(),
+                    Some(&mut recorder),
+                )
+            }
             .unwrap_err();
             assert!(matches!(error.trap, Trap::AggregateWorkExceeded { .. }));
             let mut recording = recorder.finish();

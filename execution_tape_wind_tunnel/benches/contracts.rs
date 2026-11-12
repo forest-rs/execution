@@ -4,6 +4,7 @@
 //! The cost of enforcing a declared contract on shared immutable input data.
 //! Same guest body/data in both cases; unrefined kinds impose no structural obligation.
 
+use execution_tape::value::FuncRef;
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -70,10 +71,10 @@ fn bench_contracts(c: &mut Criterion) {
             let args = [value];
             let mut outputs = Vec::new();
             let mut context = ExecutionContext::new();
+            let unit = vm.install(program.clone()).unwrap();
             vm.run_with_ctx(
                 &mut context,
-                &program,
-                entry,
+                FuncRef::new(unit, entry),
                 &args,
                 &mut outputs,
                 TraceMask::NONE,
@@ -100,8 +101,7 @@ fn bench_contracts(c: &mut Criterion) {
                         outputs.clear();
                         vm.run_with_ctx(
                             &mut context,
-                            &program,
-                            entry,
+                            FuncRef::new(unit, entry),
                             black_box(&args),
                             &mut outputs,
                             TraceMask::NONE,

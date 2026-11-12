@@ -187,8 +187,12 @@ fn run_method(
         Arc::clone(publication.callable().program()),
         RecordLimits::default(),
     );
+    let unit = vm
+        .install(Arc::clone(publication.callable().program()))
+        .unwrap();
     let result = match publication.callable().start(
         &mut vm,
+        unit,
         vec![Value::Obj(receiver())],
         InvocationOptions::default()
             .trace(recorder.mask(), &mut recorder)
@@ -264,10 +268,12 @@ fn run(options: &Options) -> Result<Report> {
             ..Limits::default()
         },
     );
+    let unit = vm.install(Arc::clone(&caller.program))?;
     let mut call =
         execution_tape::callable::Callable::function(Arc::clone(&caller.program), caller.entry)?
             .start(
                 &mut vm,
+                unit,
                 vec![Value::Obj(receiver())],
                 InvocationOptions::default()
                     .yield_host_calls()

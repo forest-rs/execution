@@ -4,11 +4,13 @@
 //! [`Executor`] over verified `execution_tape` programs.
 //!
 //! A [`TapeNode`] is a `(VerifiedProgram, entry FuncId)` pair. The [`TapeExecutor`] owns one VM
-//! and one reusable execution context, runs each node's entry function with the bound argument
+//! and one reusable execution context. It installs each distinct program in its VM once, on first
+//! execution, and keeps that unit for its lifetime. It runs each node's entry function with the bound argument
 //! values, and translates the host's [`AccessSink`] events into graph dependency keys. Edges
 //! carry owned [`TapeValue`]s; the VM heap is invocation-local rather than a lifetime-long cache.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -19,9 +21,9 @@ use core::fmt;
 use execution_tape::aggregates::AggError;
 use execution_tape::host::{AccessSink, Host, ResourceKeyRef, SigHash};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceSink};
-use execution_tape::value::{FuncId, Value};
+use execution_tape::value::{FuncId, FuncRef, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
-use execution_tape::vm::{ExecutionContext, Limits, TrapInfo, Vm};
+use execution_tape::vm::{ExecutionContext, InstallError, Limits, TrapInfo, Vm};
 
 use crate::access::{HostOpId, NodeId, ResourceKey};
 use crate::executor::Executor;
@@ -75,6 +77,8 @@ pub enum TapeError {
         /// Signature hash carried in bytecode/program.
         sig_hash: SigHash,
     },
+    /// The executor's VM could not install a node's program.
+    Install(InstallError),
     /// VM execution trapped.
     Trap(TrapInfo),
 }
@@ -95,6 +99,7 @@ impl fmt::Display for TapeError {
                 "input {input} contains IDs belonging to a different prepared program; use its original program or explicitly translate the value"
             ),
             Self::Aggregate(error) => write!(f, "aggregate transfer failed: {error}"),
+            Self::Install(error) => write!(f, "installing the node program failed: {error}"),
             Self::BadEntryFunc { func } => {
                 write!(
                     f,
@@ -213,6 +218,8 @@ fn plain_values_equal(previous: &Value, next: &Value) -> bool {
 /// attempt. Cached and externally cloned results keep only their immutable publication storage.
 pub struct TapeExecutor<H: Host, O: TapeObserver = NoTapeObserver> {
     vm: Vm<H>,
+    /// Units installed for node programs, keyed by the retained program's address.
+    units: BTreeMap<usize, (Arc<VerifiedProgram>, UnitId)>,
     ctx: ExecutionContext,
     strict_deps: bool,
     early_cutoff: bool,
@@ -238,6 +245,7 @@ impl<H: Host> TapeExecutor<H> {
     pub fn new(host: H, limits: Limits) -> Self {
         Self {
             vm: Vm::new(host, limits),
+            units: BTreeMap::new(),
             ctx: ExecutionContext::new(),
             strict_deps: false,
             early_cutoff: false,
@@ -256,6 +264,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
     pub fn with_observer<N: TapeObserver>(self, observer: N) -> TapeExecutor<H, N> {
         TapeExecutor {
             vm: self.vm,
+            units: self.units,
             ctx: self.ctx,
             strict_deps: self.strict_deps,
             early_cutoff: self.early_cutoff,
@@ -321,6 +330,20 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
     /// `invalidate`/`invalidate_many` methods before querying dependent outputs.
     pub fn host_mut(&mut self) -> &mut H {
         self.vm.host_mut()
+    }
+
+    /// The unit running `program`, installing it on first use.
+    fn unit(&mut self, program: &Arc<VerifiedProgram>) -> Result<UnitId, TapeError> {
+        let key = Arc::as_ptr(program) as usize;
+        if let Some((_, unit)) = self.units.get(&key) {
+            return Ok(*unit);
+        }
+        let unit = self
+            .vm
+            .install(Arc::clone(program))
+            .map_err(TapeError::Install)?;
+        self.units.insert(key, (Arc::clone(program), unit));
+        Ok(unit)
     }
 
     fn clear_workspace(&mut self) {
@@ -422,6 +445,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
         access: &mut NodeAccess<'_, V>,
         capture: Option<&mut O::Sink>,
     ) -> Result<(), TapeError> {
+        let unit = self.unit(&node.program)?;
         let access_count: Cell<usize> = Cell::new(0);
         let mut strict = StrictDepsTrace::new(&access_count);
         let mut sink = TapeAccessSink {
@@ -438,8 +462,7 @@ impl<H: Host, O: TapeObserver> TapeExecutor<H, O> {
             };
             self.vm.run_with_ctx(
                 &mut self.ctx,
-                &node.program,
-                node.entry,
+                FuncRef::new(unit, node.entry),
                 &self.args,
                 &mut self.results,
                 trace_mask,

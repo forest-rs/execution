@@ -89,10 +89,15 @@ impl Guest {
                 }),
         ));
         let mask = capture.mask();
+        let mut owned_vm = Vm::new(NoHost, Limits::default());
+        let unit = owned_vm
+            .install(Arc::clone(compiled.target.program()))
+            .unwrap();
         let invocation = compiled
             .target
             .start_owned(
-                Vm::new(NoHost, Limits::default()),
+                owned_vm,
+                unit,
                 vec![Value::Str(path.clone())],
                 InvocationOptions::default()
                     .yield_host_calls()
@@ -209,7 +214,7 @@ impl Guest {
         }
         let work = invocation.data_work();
         let fuel = invocation.remaining_fuel();
-        let owner = invocation.program_owner().cloned();
+        let owner = Some(Arc::clone(invocation.program()));
         let snapshot = self
             .invocation
             .take()

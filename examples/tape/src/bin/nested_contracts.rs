@@ -3,6 +3,7 @@
 
 //! A nested guest result through the ordinary assembly, codec, verifier and interpreter path.
 
+use execution_tape::value::FuncRef;
 use std::error::Error;
 use std::io::Write;
 
@@ -86,8 +87,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source = builder.build_checked()?;
     let bytes = source.encode();
     let program = verify_program_owned(Program::decode(&bytes)?, &VerifyConfig::default())?;
-    let values =
-        Vm::new(NoHost, Limits::default()).run(&program, entry, &[], TraceMask::NONE, None)?;
+    let values = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+    }?;
     assert_eq!(values, vec![Value::I64(42)]);
     println!("make_nested() returns ((42), true); main projects the nested integer: {values:?}");
     println!(

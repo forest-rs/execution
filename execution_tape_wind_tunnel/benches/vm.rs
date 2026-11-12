@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
+use execution_tape::value::FuncRef;
+use std::{hint::black_box, sync::Arc};
 
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{
@@ -86,26 +87,26 @@ fn bench_run_memory(c: &mut Criterion) {
                     },
                 )
                 .unwrap();
-            let program = pb.build_verified().unwrap();
+            let program = Arc::new(pb.build_verified().unwrap());
             group.bench_function(mode, |b| {
                 b.iter_batched(
                     || {
                         let mut vm = Vm::new(NopHost, wide_open_limits());
+                        let unit = vm.install(Arc::clone(&program)).unwrap();
                         let root = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
                         (
-                            vm,
+                            (vm, unit),
                             ExecutionContext::new(),
                             vec![Value::Agg(root)],
                             Vec::with_capacity(1),
                         )
                     },
-                    |(mut vm, mut ctx, args, mut outputs)| {
+                    |((mut vm, unit), mut ctx, args, mut outputs)| {
                         for _ in 0..100 {
                             outputs.clear();
                             let result = vm.run_with_ctx(
                                 &mut ctx,
-                                &program,
-                                entry,
+                                FuncRef::new(unit, entry),
                                 &args,
                                 &mut outputs,
                                 TraceMask::NONE,
@@ -212,6 +213,7 @@ fn bench_payloads(c: &mut Criterion) {
                         .unwrap();
                     let p = pb.build_verified().unwrap();
                     let mut vm = Vm::new(PayloadHost { size, text }, wide_open_limits());
+                    let unit = vm.install(p.clone()).unwrap();
                     let mut ctx = ExecutionContext::new();
                     let mut outputs = Vec::with_capacity(1);
                     let operation = if length_only { "len" } else { "return" };
@@ -222,8 +224,7 @@ fn bench_payloads(c: &mut Criterion) {
                                 outputs.clear();
                                 vm.run_with_ctx(
                                     &mut ctx,
-                                    &p,
-                                    entry,
+                                    FuncRef::new(unit, entry),
                                     &inputs,
                                     &mut outputs,
                                     TraceMask::NONE,
@@ -289,9 +290,13 @@ fn bench_run_results(c: &mut Criterion) {
         .unwrap();
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(NopHost, wide_open_limits());
+        let unit = vm.install(p.clone()).unwrap();
         group.bench_function(BenchmarkId::new("fresh", count), |b| {
             b.iter(|| {
-                black_box(vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap());
+                black_box(
+                    vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                        .unwrap(),
+                );
             })
         });
         let mut ctx = ExecutionContext::new();
@@ -300,8 +305,7 @@ fn bench_run_results(c: &mut Criterion) {
                 let mut outputs = Vec::new();
                 vm.run_with_ctx(
                     &mut ctx,
-                    &p,
-                    FuncId(0),
+                    FuncRef::new(unit, FuncId(0)),
                     &[],
                     &mut outputs,
                     TraceMask::NONE,
@@ -318,8 +322,7 @@ fn bench_run_results(c: &mut Criterion) {
                 outputs.clear();
                 vm.run_with_ctx(
                     &mut ctx,
-                    &p,
-                    FuncId(0),
+                    FuncRef::new(unit, FuncId(0)),
                     &[],
                     &mut outputs,
                     TraceMask::NONE,
@@ -339,9 +342,12 @@ fn bench_i64_add_chain(c: &mut Criterion) {
     for &chain_len in &[10_u32, 50, 200, 1000] {
         let p = build_i64_add_chain(chain_len);
         let mut vm = Vm::new(NopHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -354,11 +360,14 @@ fn bench_i64_add_chain_traced_instr(c: &mut Criterion) {
     for &chain_len in &[10_u32, 50, 200] {
         let p = build_i64_add_chain(chain_len);
         let mut vm = Vm::new(NopHost, wide_open_limits());
+        let unit = vm.install(p.clone()).unwrap();
         let mut sink = CountingInstr::default();
         let mask = sink.mask();
-        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -371,11 +380,14 @@ fn bench_i64_add_chain_traced_instr_span_dense(c: &mut Criterion) {
     for &chain_len in &[10_u32, 50, 200] {
         let p = build_i64_add_chain_with_spans(chain_len, 1);
         let mut vm = Vm::new(NopHost, wide_open_limits());
+        let unit = vm.install(p.clone()).unwrap();
         let mut sink = CountingInstr::default();
         let mask = sink.mask();
-        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -388,11 +400,14 @@ fn bench_i64_add_chain_traced_instr_span_sparse(c: &mut Criterion) {
     for &chain_len in &[10_u32, 50, 200] {
         let p = build_i64_add_chain_with_spans(chain_len, 16);
         let mut vm = Vm::new(NopHost, wide_open_limits());
+        let unit = vm.install(p.clone()).unwrap();
         let mut sink = CountingInstr::default();
         let mask = sink.mask();
-        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -405,9 +420,12 @@ fn bench_i64_add_chain_no_trace_span_dense(c: &mut Criterion) {
     for &chain_len in &[10_u32, 50, 200, 1000] {
         let p = build_i64_add_chain_with_spans(chain_len, 1);
         let mut vm = Vm::new(NopHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(chain_len), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -420,9 +438,12 @@ fn bench_bytes_const_len(c: &mut Criterion) {
     for &n in &[0_usize, 32, 1024, 4096] {
         let p = build_bytes_const_len(n);
         let mut vm = Vm::new(NopHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -435,9 +456,12 @@ fn bench_str_const_len(c: &mut Criterion) {
     for &n in &[0_usize, 32, 1024, 4096] {
         let p = build_str_const_len(n);
         let mut vm = Vm::new(NopHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(n), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -448,10 +472,13 @@ fn bench_str_const_len(c: &mut Criterion) {
 fn bench_call_overhead(c: &mut Criterion) {
     let p = build_call_overhead();
     let mut vm = Vm::new(NopHost, wide_open_limits());
+    let unit = vm.install(p.clone()).unwrap();
 
     c.bench_function("call_overhead_one_call", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+            let out = vm
+                .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                .unwrap();
             black_box(out);
         });
     });
@@ -462,9 +489,12 @@ fn bench_call_loop(c: &mut Criterion) {
     for &iters in &[10_u64, 100, 1000] {
         let p = build_call_loop(iters);
         let mut vm = Vm::new(NopHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -478,12 +508,19 @@ fn bench_call_indirect_loop(c: &mut Criterion) {
         let func_program = build_call_indirect_loop(iters, false);
         let closure_program = build_call_indirect_loop(iters, true);
         let mut func_vm = Vm::new(NopHost, wide_open_limits());
+        let func_unit = func_vm.install(func_program.clone()).unwrap();
         let mut closure_vm = Vm::new(NopHost, wide_open_limits());
+        let closure_unit = closure_vm.install(closure_program.clone()).unwrap();
 
-        group.bench_with_input(BenchmarkId::new("func", iters), &func_program, |b, p| {
+        group.bench_with_input(BenchmarkId::new("func", iters), &func_program, |b, _| {
             b.iter(|| {
                 let out = func_vm
-                    .run(p, FuncId(0), &[], TraceMask::NONE, None)
+                    .run(
+                        FuncRef::new(func_unit, FuncId(0)),
+                        &[],
+                        TraceMask::NONE,
+                        None,
+                    )
                     .unwrap();
                 black_box(out);
             });
@@ -491,10 +528,15 @@ fn bench_call_indirect_loop(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("closure", iters),
             &closure_program,
-            |b, p| {
+            |b, _| {
                 b.iter(|| {
                     let out = closure_vm
-                        .run(p, FuncId(0), &[], TraceMask::NONE, None)
+                        .run(
+                            FuncRef::new(closure_unit, FuncId(0)),
+                            &[],
+                            TraceMask::NONE,
+                            None,
+                        )
                         .unwrap();
                     black_box(out);
                 });
@@ -509,9 +551,12 @@ fn bench_branch_hot_loop(c: &mut Criterion) {
     for &iters in &[100_u64, 1000, 10_000] {
         let p = build_branch_hot_loop(iters);
         let mut vm = Vm::new(NopHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -522,10 +567,13 @@ fn bench_branch_hot_loop(c: &mut Criterion) {
 fn bench_host_call(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
+    let unit = vm.install(p.clone()).unwrap();
 
     c.bench_function("host_call_overhead_one_call", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+            let out = vm
+                .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                .unwrap();
             black_box(out);
         });
     });
@@ -536,9 +584,12 @@ fn bench_host_call_loop(c: &mut Criterion) {
     for &iters in &[10_u64, 100, 1000] {
         let p = build_host_call_loop(iters);
         let mut vm = Vm::new(IdentityHost, wide_open_limits());
-        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, p| {
+        let unit = vm.install(p.clone()).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(iters), &p, |b, _| {
             b.iter(|| {
-                let out = vm.run(p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+                let out = vm
+                    .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                    .unwrap();
                 black_box(out);
             });
         });
@@ -549,12 +600,15 @@ fn bench_host_call_loop(c: &mut Criterion) {
 fn bench_host_call_traced_run(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
+    let unit = vm.install(p.clone()).unwrap();
     let mut sink = CountingTrace::default();
     let mask = sink.mask();
 
     c.bench_function("host_call_traced_run_mask_run", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+            let out = vm
+                .run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
+                .unwrap();
             black_box(out);
         });
     });
@@ -563,12 +617,15 @@ fn bench_host_call_traced_run(c: &mut Criterion) {
 fn bench_host_call_traced_instr(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
+    let unit = vm.install(p.clone()).unwrap();
     let mut sink = CountingInstr::default();
     let mask = sink.mask();
 
     c.bench_function("host_call_traced_instr_mask_instr", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+            let out = vm
+                .run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
+                .unwrap();
             black_box(out);
         });
     });
@@ -577,12 +634,15 @@ fn bench_host_call_traced_instr(c: &mut Criterion) {
 fn bench_host_call_traced_host(c: &mut Criterion) {
     let p = build_host_call_overhead();
     let mut vm = Vm::new(IdentityHost, wide_open_limits());
+    let unit = vm.install(p.clone()).unwrap();
     let mut sink = CountingHostScopes::default();
     let mask = sink.mask();
 
     c.bench_function("host_call_traced_host_mask_host", |b| {
         b.iter(|| {
-            let out = vm.run(&p, FuncId(0), &[], mask, Some(&mut sink)).unwrap();
+            let out = vm
+                .run(FuncRef::new(unit, FuncId(0)), &[], mask, Some(&mut sink))
+                .unwrap();
             black_box(out);
         });
     });

@@ -3,6 +3,7 @@
 
 //! Reconstruct control decisions; recompute guest callback results and preserve nested evidence.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -139,10 +140,10 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
     }
     let recorder = Rc::new(RefCell::new(recorder));
     let args = [Value::Agg(input)];
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
         .start(
-            &f.program,
-            f.root,
+            FuncRef::new(unit, f.root),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()
@@ -387,10 +388,10 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
         let mut vm = Vm::new(NoHost, limits);
         let input = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
         let args = [Value::Agg(input)];
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut run = vm
             .start(
-                &f.program,
-                f.root,
+                FuncRef::new(unit, f.root),
                 &args,
                 InvocationOptions::default()
                     .yield_host_calls()
@@ -462,10 +463,10 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
         let mut vm = Vm::new(NoHost, Limits::default());
         let input = vm.aggregates_mut().tuple_new(vec![]).unwrap();
         let args = [Value::Agg(input)];
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut run = vm
             .start(
-                &f.program,
-                f.root,
+                FuncRef::new(unit, f.root),
                 &args,
                 InvocationOptions::default()
                     .yield_host_calls()

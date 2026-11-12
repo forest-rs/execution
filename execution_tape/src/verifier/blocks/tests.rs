@@ -5,6 +5,7 @@ use super::*;
 use crate::asm::{Asm, FunctionSig, ProgramBuilder};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::trace::{TraceLocation, TraceMask, TraceOutcome, TraceSink};
+use crate::value::FuncRef;
 use crate::value::{Decimal, Value};
 use crate::vm::{ExecutionContext, Limits, Trap, Vm};
 
@@ -42,9 +43,12 @@ fn verify(asm: Asm, args: &[ValueType], returns: &[ValueType]) -> VerifiedProgra
 }
 
 fn run(p: &VerifiedProgram, args: &[Value]) -> Vec<Value> {
-    Vm::new(NoHost, Limits::default())
-        .run(p, FuncId(0), args, TraceMask::NONE, None)
-        .unwrap()
+    {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
+        vm.run(FuncRef::new(unit, FuncId(0)), args, TraceMask::NONE, None)
+    }
+    .unwrap()
 }
 
 #[test]
@@ -337,7 +341,10 @@ fn aggregate_and_closure_handles_survive_parallel_cycles_and_run_cleanup() {
         .unwrap();
     let p = builder.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
-    let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+    let unit = vm.install(p.clone()).unwrap();
+    let out = vm
+        .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+        .unwrap();
     let [
         Value::Agg(empty),
         Value::Agg(full),
@@ -637,10 +644,10 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
         let mut events = Events::default();
         let mut ctx = ExecutionContext::new();
         let mut outputs = vec![Value::I64(99)];
+        let unit = vm.install(p.clone()).unwrap();
         let result = vm.run_with_ctx(
             &mut ctx,
-            &p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::I64(7), Value::I64(9)],
             &mut outputs,
             TraceMask::INSTR,
@@ -842,15 +849,17 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
             .unwrap();
         let p = builder.build_verified().unwrap();
         let mut scopes = Scopes::default();
-        let out = Vm::new(NoHost, Limits::default())
-            .run(
-                &p,
-                entry,
+        let out = {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(p.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, entry),
                 &[Value::I64(7)],
                 TraceMask::CALL,
                 Some(&mut scopes),
             )
-            .unwrap();
+        }
+        .unwrap();
         assert_eq!(out, [Value::I64(7)]);
         assert_eq!(scopes.0, [(entry, 0, None), (callee, body_pc, Some(22))]);
     }

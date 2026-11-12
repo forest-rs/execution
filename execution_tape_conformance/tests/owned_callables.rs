@@ -3,6 +3,7 @@
 
 //! Consumer-style ownership, admission and replay of escaped executable closures.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     aggregates::AggHeap,
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
@@ -82,8 +83,9 @@ fn escaped() -> Callable {
     let factory = Callable::function(program, factory).unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(40)];
+    let unit = vm.install(Arc::clone(factory.program())).unwrap();
     let mut invocation = factory
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     invocation.retain_callable(0).unwrap()
@@ -91,8 +93,9 @@ fn escaped() -> Callable {
 
 fn finish(callable: &Callable, args: &[Value]) -> Vec<Value> {
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut invocation = callable
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap();
     while invocation.resume(1).unwrap() == RunStatus::Suspended {}
     invocation.take_outputs().unwrap()
@@ -139,8 +142,9 @@ fn invocation_imports_are_transactional_and_do_not_accumulate_in_a_long_lived_vm
     let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
     for cancel in [true, false, false, true] {
         let args = [Value::I64(2)];
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
         let mut invocation = callable
-            .start(&mut vm, args.to_vec(), InvocationOptions::default())
+            .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
             .unwrap();
         assert_eq!(invocation.aggregates().len_u32(), 2);
         if !cancel {
@@ -169,8 +173,10 @@ fn capture_import_work_is_admitted_before_allocation_and_preserved_in_replay() {
         );
         let mut recorder = Recorder::new(Arc::clone(callable.program()), RecordLimits::default());
         let args = [Value::I64(2)];
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
         let result = callable.start(
             &mut vm,
+            unit,
             args.to_vec(),
             InvocationOptions::default().trace(recorder.mask(), &mut recorder),
         );
@@ -237,9 +243,11 @@ fn imported_capture_work_cannot_be_replenished_by_resume_or_checked_replay() {
             },
         );
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
         let mut invocation = callable
             .start(
                 &mut vm,
+                unit,
                 vec![],
                 InvocationOptions::default().trace(recorder.mask(), &mut recorder),
             )
@@ -299,8 +307,9 @@ fn invalid_targets_and_environment_contracts_fail_without_retaining_vm_allocatio
     .unwrap();
     let args = [Value::I64(2)];
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(bad.program())).unwrap();
     let error = bad
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractMismatch { .. }));
     assert_eq!(vm.aggregates().len_u32(), 0);
@@ -338,8 +347,10 @@ fn capture_payloads_share_the_guest_budget_without_copying_owned_user_arguments(
             },
         );
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
         let started = callable.start(
             &mut vm,
+            unit,
             args.to_vec(),
             InvocationOptions::default().trace(recorder.mask(), &mut recorder),
         );
@@ -428,8 +439,9 @@ fn aliased_and_equal_but_distinct_captures_remain_distinct_after_import() {
     .unwrap();
     drop(heap);
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut run = callable
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, unit, vec![], InvocationOptions::default())
         .unwrap();
     let mut inspection = run.inspect();
     let root = inspection.frames().next().unwrap().activation;
@@ -486,8 +498,9 @@ fn a_returned_nested_closure_can_escape_another_vm_and_keep_its_original_code() 
     .unwrap();
     drop(heap);
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(outer.program())).unwrap();
     let mut run = outer
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, unit, vec![], InvocationOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     let inner = run.retain_callable(0).unwrap();
@@ -503,8 +516,9 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     let bound = Callable::function(Arc::clone(&program), factory).unwrap();
     let args = [Value::I64(40)];
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(Arc::clone(bound.program())).unwrap();
     let mut run = bound
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap();
     assert_eq!(
         run.retain_callable(0).unwrap_err(),
@@ -518,8 +532,9 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
     let closure = run.retain_callable(0).unwrap();
     drop(run);
     let args = [Value::I64(2)];
+    let unit = vm.install(Arc::clone(closure.program())).unwrap();
     let mut run = closure
-        .start(&mut vm, args.to_vec(), InvocationOptions::default())
+        .start(&mut vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap();
     run.resume(u64::MAX).unwrap();
     assert_eq!(
@@ -529,13 +544,19 @@ fn retaining_results_requires_a_successful_callable_and_an_exact_code_owner() {
         }
     );
     drop(run);
+    let unit = vm.install(program.clone()).unwrap();
     let mut run = vm
-        .start(&program, factory, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, factory),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     run.resume(u64::MAX).unwrap();
-    assert_eq!(
-        run.retain_callable(0).unwrap_err(),
-        CallableError::MissingCodeOwner
+    let retained = run.retain_callable(0).unwrap();
+    assert!(
+        Arc::ptr_eq(retained.program(), run.program()),
+        "every entry retains its installed code owner"
     );
 }
 
@@ -570,8 +591,14 @@ fn an_owned_invocation_outlives_a_discarded_or_temporary_lookup_handle() {
     let mut vm = Vm::new(NoHost, Limits::default());
     let lookup = escaped();
     let weak = Arc::downgrade(lookup.program());
+    let unit = vm.install(Arc::clone(lookup.program())).unwrap();
     let mut invocation = lookup
-        .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
+        .start(
+            &mut vm,
+            unit,
+            vec![Value::I64(2)],
+            InvocationOptions::default(),
+        )
         .unwrap();
     drop(lookup);
     assert!(
@@ -582,11 +609,18 @@ fn an_owned_invocation_outlives_a_discarded_or_temporary_lookup_handle() {
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(42)]);
     drop(invocation);
     assert!(
-        weak.upgrade().is_none(),
-        "completion alone does not leave a hidden code owner in the VM"
+        weak.upgrade().is_some(),
+        "the VM explicitly retains every installed unit"
     );
-    let mut invocation = escaped()
-        .start(&mut vm, vec![Value::I64(3)], InvocationOptions::default())
+    let temporary = escaped();
+    let unit = vm.install(Arc::clone(temporary.program())).unwrap();
+    let mut invocation = temporary
+        .start(
+            &mut vm,
+            unit,
+            vec![Value::I64(3)],
+            InvocationOptions::default(),
+        )
         .unwrap();
     invocation.resume(u64::MAX).unwrap();
     assert_eq!(invocation.result().unwrap().unwrap(), [Value::I64(43)]);
@@ -643,9 +677,11 @@ fn owned_input_payloads_move_without_cloning_and_usage_includes_capture_and_gues
             ..Limits::default()
         },
     );
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut invocation = callable
         .start(
             &mut vm,
+            unit,
             vec![Value::Str(payload)],
             InvocationOptions::default()
                 .trace(execution_tape::trace::TraceMask::VALUES, &mut probe),

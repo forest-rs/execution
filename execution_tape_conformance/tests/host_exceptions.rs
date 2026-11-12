@@ -3,6 +3,7 @@
 
 //! Exceptions raised by hosts at their `host_call`.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Catch, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -110,15 +111,17 @@ fn fixture() -> Fixture {
 }
 
 fn run(f: &Fixture, entry: FuncId, code: i64) -> Result<Vec<Value>, Trap> {
-    Vm::new(Raising { tag: f.failed }, Limits::default())
-        .run(
-            &f.program,
-            entry,
+    {
+        let mut vm = Vm::new(Raising { tag: f.failed }, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, entry),
             &[Value::I64(code)],
             TraceMask::NONE,
             None,
         )
-        .map_err(|error| error.trap)
+    }
+    .map_err(|error| error.trap)
 }
 
 #[test]
@@ -130,9 +133,17 @@ fn a_synchronous_host_throw_is_caught_like_a_guest_throw() {
 #[test]
 fn an_uncaught_host_throw_reports_the_host_call() {
     let f = fixture();
-    let error = Vm::new(Raising { tag: f.failed }, Limits::default())
-        .run(&f.program, f.bare, &[Value::I64(5)], TraceMask::NONE, None)
-        .unwrap_err();
+    let error = {
+        let mut vm = Vm::new(Raising { tag: f.failed }, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, f.bare),
+            &[Value::I64(5)],
+            TraceMask::NONE,
+            None,
+        )
+    }
+    .unwrap_err();
     assert_eq!((error.func, error.pc), (f.bare, f.call_pc));
     let Trap::Uncaught(exception) = &error.trap else {
         panic!("expected an uncaught exception, got {error}");
@@ -173,10 +184,10 @@ fn a_yielded_request_can_complete_by_throwing() {
     let f = fixture();
     let mut vm = Vm::new(Raising { tag: f.failed }, Limits::default());
     let args = [Value::I64(0)];
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
         .start(
-            &f.program,
-            f.protected,
+            FuncRef::new(unit, f.protected),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -194,13 +205,16 @@ fn recordings_capture_and_replay_host_throws() {
     let f = fixture();
     for (entry, caught) in [(f.protected, true), (f.bare, false)] {
         let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
-        let result = Vm::new(Raising { tag: f.failed }, Limits::default()).run(
-            &f.program,
-            entry,
-            &[Value::I64(3)],
-            recorder.mask(),
-            Some(&mut recorder),
-        );
+        let result = {
+            let mut vm = Vm::new(Raising { tag: f.failed }, Limits::default());
+            let unit = vm.install(f.program.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, entry),
+                &[Value::I64(3)],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
+        };
         assert_eq!(result.is_ok(), caught);
         let recording = recorder.finish();
         recording.status().unwrap();

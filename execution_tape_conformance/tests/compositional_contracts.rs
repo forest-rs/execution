@@ -8,6 +8,7 @@ use execution_tape::contract::{Contract, ContractId, ContractMismatch, ContractP
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
 use execution_tape::verifier::{VerifyConfig, VerifyError, verify_program_owned};
 use execution_tape::vm::{ExecutionContext, Limits, Trap, Vm};
@@ -88,8 +89,9 @@ fn nested_result_survives_codec_call_and_aliased_projections() {
         &[ValueType::Agg]
     );
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
+    let unit = vm.install(prepared.clone()).unwrap();
     assert_eq!(
-        vm.run(&prepared, entry, &[], TraceMask::NONE, None)
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(42)]
     );
@@ -122,8 +124,9 @@ fn local_nested_values_need_no_extra_annotations() {
         .unwrap();
     let prepared = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
+    let unit = vm.install(prepared.clone()).unwrap();
     assert_eq!(
-        vm.run(&prepared, entry, &[], TraceMask::NONE, None)
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
             .unwrap(),
         vec![Value::I64(42)]
     );
@@ -216,11 +219,11 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
     vm.host_mut().0 = Value::Agg(bad_outer);
     let mut ctx = ExecutionContext::new();
     let mut outputs = vec![Value::I64(99)];
+    let unit = vm.install(prepared.clone()).unwrap();
     let error = vm
         .run_with_ctx(
             &mut ctx,
-            &prepared,
-            entry,
+            FuncRef::new(unit, entry),
             &[],
             &mut outputs,
             TraceMask::NONE,
@@ -252,11 +255,11 @@ fn opaque_host_result_is_checked_before_return_and_rolls_back_outputs() {
         .tuple_new(vec![Value::Agg(good_inner)])
         .unwrap();
     vm.host_mut().0 = Value::Agg(good_outer);
+    let unit = vm.install(prepared.clone()).unwrap();
     assert!(
         vm.run_with_ctx(
             &mut ctx,
-            &prepared,
-            entry,
+            FuncRef::new(unit, entry),
             &[],
             &mut outputs,
             TraceMask::NONE,
@@ -295,9 +298,15 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
                 .unwrap(),
         );
     }
+    let unit = vm.install(prepared.clone()).unwrap();
     assert_eq!(
-        vm.run(&prepared, entry, &[value.clone()], TraceMask::NONE, None)
-            .unwrap(),
+        vm.run(
+            FuncRef::new(unit, entry),
+            &[value.clone()],
+            TraceMask::NONE,
+            None
+        )
+        .unwrap(),
         Vec::<Value>::new()
     );
     let heap = vm.aggregates().clone();
@@ -309,8 +318,9 @@ fn deep_shared_graph_check_is_bounded_and_nonrecursive() {
         },
     );
     *bounded.aggregates_mut() = heap;
+    let unit = bounded.install(prepared.clone()).unwrap();
     let error = bounded
-        .run(&prepared, entry, &[value], TraceMask::NONE, None)
+        .run(FuncRef::new(unit, entry), &[value], TraceMask::NONE, None)
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractWorkExceeded { .. }));
 }
@@ -401,10 +411,10 @@ fn branches_and_aliased_selects_keep_common_nested_structure() {
         let prepared = builder.build_verified().unwrap();
         let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
         for flag in [true, false] {
+            let unit = vm.install(prepared.clone()).unwrap();
             assert_eq!(
                 vm.run(
-                    &prepared,
-                    entry,
+                    FuncRef::new(unit, entry),
                     &[Value::Bool(flag)],
                     TraceMask::NONE,
                     None
@@ -437,10 +447,10 @@ fn one_handle_must_satisfy_each_distinct_contract() {
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let shared = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            entry,
+            FuncRef::new(unit, entry),
             &[Value::Agg(shared), Value::Agg(shared)],
             TraceMask::NONE,
             None,
@@ -476,10 +486,10 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
     let mut ctx = ExecutionContext::new();
     let mut outputs = vec![];
     let good = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     vm.run_with_ctx(
         &mut ctx,
-        &program,
-        entry,
+        FuncRef::new(unit, entry),
         &[Value::Agg(good)],
         &mut outputs,
         TraceMask::NONE,
@@ -493,11 +503,11 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
         .tuple_new(vec![Value::Bool(false)])
         .unwrap();
     assert_eq!(good, bad);
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run_with_ctx(
             &mut ctx,
-            &program,
-            entry,
+            FuncRef::new(unit, entry),
             &[Value::Agg(bad)],
             &mut outputs,
             TraceMask::NONE,
@@ -584,8 +594,14 @@ fn rejected_root_candidate_is_retained_and_checked_during_replay() {
         .unwrap();
     vm.host_mut().0 = Value::Agg(bad);
     let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
-        .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+        .run(
+            FuncRef::new(unit, entry),
+            &[],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
         .unwrap_err();
     assert!(matches!(error.trap, Trap::ContractMismatch { .. }));
     let record = recorder.finish();
@@ -718,8 +734,14 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             .unwrap();
         vm.host_mut().0 = Value::Agg(bad);
         let mut recorder = Recorder::new(program.clone(), RecordLimits::default());
+        let unit = vm.install(program.clone()).unwrap();
         let error = vm
-            .run(&program, entry, &[], recorder.mask(), Some(&mut recorder))
+            .run(
+                FuncRef::new(unit, entry),
+                &[],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
             .unwrap_err();
         assert_eq!((error.func, error.pc), (target, return_pc));
         let record = recorder.finish();
@@ -748,9 +770,9 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             success: false,
             frames: vec![],
         };
+        let unit = vm.install(program.clone()).unwrap();
         vm.run(
-            &program,
-            entry,
+            FuncRef::new(unit, entry),
             &[],
             TraceMask::INSTR | TraceMask::CALL,
             Some(&mut observer),
@@ -790,9 +812,9 @@ fn contract_work_limit_has_exact_accounting_and_boundary_context() {
             },
         );
         let value = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
+        let unit = vm.install(program.clone()).unwrap();
         let result = vm.run(
-            &program,
-            entry,
+            FuncRef::new(unit, entry),
             &[Value::Agg(value), Value::Agg(value)],
             TraceMask::NONE,
             None,
@@ -931,8 +953,10 @@ fn nested_struct_and_array_results_propagate_without_retaining_temporaries() {
     )
     .unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
-        vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+            .unwrap(),
         vec![Value::I64(42)]
     );
     assert_eq!(vm.aggregates().len_u32(), 0);
@@ -971,8 +995,14 @@ fn recursive_functions_use_declared_finite_result_contracts() {
     b.define_function(entry, asm).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
+    let unit = vm.install(program.clone()).unwrap();
     let out = vm
-        .run(&program, entry, &[Value::U64(4)], TraceMask::NONE, None)
+        .run(
+            FuncRef::new(unit, entry),
+            &[Value::U64(4)],
+            TraceMask::NONE,
+            None,
+        )
         .unwrap();
     let [Value::Agg(root)] = out[..] else {
         panic!("expected tuple");
@@ -1029,9 +1059,9 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
     let program = verify_program_owned(source, &VerifyConfig::default()).unwrap();
     let mut vm = Vm::new(TestHost(Value::Unit), Limits::default());
     let empty = vm.aggregates_mut().array_new(elem, vec![]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     vm.run(
-        &program,
-        check_array,
+        FuncRef::new(unit, check_array),
         &[Value::Agg(empty)],
         TraceMask::NONE,
         None,
@@ -1042,10 +1072,10 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
         .aggregates_mut()
         .struct_new(TypeId(1), vec![Value::Agg(child)])
         .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            check_struct,
+            FuncRef::new(unit, check_struct),
             &[Value::Agg(wrong)],
             TraceMask::NONE,
             None,
@@ -1065,10 +1095,10 @@ fn nominal_identity_is_not_layout_equality_and_empty_arrays_are_vacuous() {
         .aggregates_mut()
         .array_new(ElemTypeId(1), vec![])
         .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     assert!(matches!(
         vm.run(
-            &program,
-            check_array,
+            FuncRef::new(unit, check_array),
             &[Value::Agg(wrong)],
             TraceMask::NONE,
             None
