@@ -10,15 +10,10 @@ use crate::program::HostSigId;
 use crate::value::TagRef;
 use crate::vm::host_call::{HostReturnSite, PendingHost, admit_return, adopted_roots, observed};
 
+/// The code-owned slices of a [`PendingHost`] request.
 struct Site<'a> {
-    pending: PendingHost,
-    base: RegBase,
-    span: Option<u64>,
-    import: HostSigId,
     symbol: &'a str,
-    signature: SigHash,
     args: &'a [VReg],
-    arg_types: &'a [ValueType],
     destinations: &'a [VReg],
     ret_types: &'a [ValueType],
 }
@@ -50,47 +45,54 @@ impl<'a> Code<'a> {
     }
 }
 
-/// The admitted host instruction, read from the program of the unit that admitted it.
-fn site<'a>(code: Code<'a>, ctx: &Registers, pending: PendingHost) -> Site<'a> {
-    let program = code.of(pending.location.unit);
-    let body = program
-        .verified(pending.location.func)
-        .expect("admitted function");
-    let (
-        ExecInstr::HostCall {
-            host_sig,
-            args,
-            rets,
-        },
-        _,
-        _,
-    ) = body
-        .fetch_at_ix(pending.instruction)
-        .expect("admitted instruction")
-    else {
-        unreachable!("pending host instruction")
-    };
-    let p = program.program();
-    let signature = p.host_sig(*host_sig).expect("verified host signature");
-    Site {
-        pending,
-        base: ctx.frames[pending.depth - 1].base,
-        span: body.span_at_ix(pending.instruction).map(|span| span.get()),
-        import: *host_sig,
-        symbol: p
-            .symbol_str(signature.symbol)
-            .expect("verified host symbol"),
-        signature: signature.sig_hash,
-        args: body.vregs(*args),
-        arg_types: p.host_sig_args(signature).expect("verified argument types"),
-        destinations: body.vregs(*rets),
-        ret_types: p.host_sig_rets(signature).expect("verified return types"),
+/// Code-owned parts of the request, borrowed on demand.
+impl PendingHost {
+    fn program<'a>(&self, code: Code<'a>) -> &'a VerifiedProgram {
+        code.of(self.location.unit)
+    }
+    fn symbol<'a>(&self, code: Code<'a>) -> &'a str {
+        self.program(code)
+            .program()
+            .symbol_str(self.symbol)
+            .expect("verified host symbol")
+    }
+    fn args<'a>(&self, code: Code<'a>) -> &'a [VReg] {
+        self.program(code)
+            .verified(self.location.func)
+            .expect("admitted function")
+            .vregs(self.args)
+    }
+    fn types<'a>(&self, code: Code<'a>) -> (&'a [ValueType], &'a [ValueType]) {
+        let p = self.program(code).program();
+        let signature = p.host_sig(self.import).expect("verified host signature");
+        (
+            p.host_sig_args(signature).expect("verified argument types"),
+            p.host_sig_rets(signature).expect("verified return types"),
+        )
+    }
+    /// The waiting frame's register base. Frames do not move while their request waits.
+    fn base<'a>(&self, ctx: &'a Registers) -> &'a RegBase {
+        &ctx.frames[self.depth - 1].base
+    }
+    fn resolve<'a>(&self, code: Code<'a>) -> Site<'a> {
+        let program = self.program(code);
+        let body = program
+            .verified(self.location.func)
+            .expect("admitted function");
+        let p = program.program();
+        let signature = p.host_sig(self.import).expect("verified host signature");
+        Site {
+            symbol: p.symbol_str(self.symbol).expect("verified host symbol"),
+            args: body.vregs(self.args),
+            destinations: body.vregs(self.rets),
+            ret_types: p.host_sig_rets(signature).expect("verified return types"),
+        }
     }
 }
 fn arguments<'a>(
     ctx: &'a Registers,
     sources: ValueSources<'a>,
-    base: RegBase,
+    base: &'a RegBase,
     regs: &'a [VReg],
 ) -> impl ExactSizeIterator<Item = ValueRef<'a>> {
     regs.iter().map(move |&register| {
@@ -110,7 +112,7 @@ fn arguments<'a>(
             &ctx.aggs,
             &ctx.funcs,
             &ctx.closures,
-            base,
+            *base,
             register,
         )
         .expect("admitted host argument")
@@ -148,7 +150,7 @@ fn arguments<'a>(
 pub struct PendingHostCall<'request, 'vm, H: Host> {
     pub(super) running: Running<'request, 'vm, H>,
     pub(super) delivering: bool,
-    original: PendingHost,
+    pending: PendingHost,
 }
 impl<H: Host> fmt::Debug for PendingHostCall<'_, '_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -159,25 +161,13 @@ impl<H: Host> fmt::Debug for PendingHostCall<'_, '_, H> {
     }
 }
 impl<H: Host> PendingHostCall<'_, '_, H> {
-    fn site(&self) -> Site<'_> {
-        site(
-            Code::new(
-                &self.running.vm.units,
-                self.running.continuation.unit,
-                &self.running.continuation.program,
-            ),
-            &self.running.continuation.ctx,
-            self.running
-                .continuation
-                .control
-                .pending_host
-                .expect("pending guard"),
-        )
+    fn code(&self) -> Code<'_> {
+        self.running.code()
     }
     /// Exact source instruction that admitted this request.
     #[must_use]
     pub fn location(&self) -> TraceLocation {
-        self.site().pending.location
+        self.pending.location
     }
     /// Installed unit whose program admitted this request.
     #[must_use]
@@ -197,12 +187,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Program-local declared import. Its identity belongs to [`Self::program`].
     #[must_use]
     pub fn import(&self) -> HostSigId {
-        self.site().import
+        self.pending.import
     }
     /// Exact code whose import and nominal value identities this request uses.
     #[must_use]
     pub fn program(&self) -> &VerifiedProgram {
-        &self.running.vm.units.unit(self.unit()).program
+        self.pending.program(self.code())
     }
     /// Borrows the heap that gives this request's aggregate argument handles their meaning.
     #[must_use]
@@ -235,22 +225,22 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// Declared host symbol, without allocating a label.
     #[must_use]
     pub fn symbol(&self) -> &str {
-        self.site().symbol
+        self.pending.symbol(self.code())
     }
     /// Declared signature hash.
     #[must_use]
     pub fn signature_hash(&self) -> SigHash {
-        self.site().signature
+        self.pending.signature
     }
     /// Declared positional argument kinds.
     #[must_use]
     pub fn argument_types(&self) -> &[ValueType] {
-        self.site().arg_types
+        self.pending.types(self.code()).0
     }
     /// Declared positional result kinds.
     #[must_use]
     pub fn return_types(&self) -> &[ValueType] {
-        self.site().ret_types
+        self.pending.types(self.code()).1
     }
     /// Borrows actual arguments without copying byte/string payloads.
     ///
@@ -258,17 +248,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// invocation, as described under [handle validity](Self#handle-validity).
     pub fn arguments(&self) -> impl ExactSizeIterator<Item = ValueRef<'_>> {
         let inv = &self.running;
-        let site = self.site();
+        let code = self.code();
         arguments(
             &inv.continuation.ctx,
-            Code::new(
-                &inv.vm.units,
-                inv.continuation.unit,
-                &inv.continuation.program,
-            )
-            .sources(&inv.continuation.args, inv.vm.memory.aggs()),
-            site.base,
-            site.args,
+            code.sources(&inv.continuation.args, inv.vm.memory.aggs()),
+            self.pending.base(&inv.continuation.ctx),
+            self.pending.args(code),
         )
     }
     pub(crate) fn restore_host_work(&mut self, work: DataWork) -> Result<(), Trap> {
@@ -304,19 +289,11 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// this invocation's heap. Copy scalar/opaque arguments before borrowing
     /// this context mutably to record reads or writes, as in an ordinary host implementation.
     pub fn context(&mut self) -> HostContext<'_, '_> {
-        let import = self.import();
+        let pending = self.pending;
         let inv = &mut self.running;
-        let unit = inv.vm.units.unit(
-            inv.continuation
-                .control
-                .pending_host
-                .expect("pending guard")
-                .location
-                .unit,
-        );
         HostContext::new(
-            unit,
-            import,
+            inv.vm.units.unit(pending.location.unit),
+            pending.import,
             inv.vm.memory.aggs(),
             inv.continuation
                 .host_results
@@ -343,7 +320,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
         self.delivering = true;
-        let result = self.running.complete_pending(values, outcome);
+        let result = self
+            .running
+            .complete_pending(&self.pending, values, outcome);
         self.delivering = false;
         result
     }
@@ -372,7 +351,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
             Ok((values, fuel)) => (values, Ok(fuel)),
             Err(error) => (Vec::new(), Err(error)),
         };
-        let result = self.running.complete_pending(&mut values, outcome);
+        let result = self
+            .running
+            .complete_pending(&self.pending, &mut values, outcome);
         self.delivering = false;
         result
     }
@@ -382,7 +363,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// instruction was already admitted: dispatch spends no second instruction/host-call debit.
     pub fn dispatch(mut self) -> Result<(), TrapInfo> {
         self.delivering = true;
-        let result = self.running.dispatch_pending();
+        let result = self.running.dispatch_pending(&self.pending);
         self.delivering = false;
         result
     }
@@ -395,7 +376,7 @@ impl<H: Host> Drop for PendingHostCall<'_, '_, H> {
                 .continuation
                 .control
                 .pending_host
-                .get_or_insert(self.original);
+                .get_or_insert(self.pending);
             pending.abandoned = true;
         }
     }
@@ -416,34 +397,34 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         if self.continuation.outcome.is_some() {
             return None;
         }
-        self.continuation
-            .control
-            .pending_host
-            .filter(|pending| !pending.abandoned)?;
-        Some(PendingHostCall {
-            original: self
-                .continuation
-                .control
-                .pending_host
-                .expect("pending guard"),
-            running: self,
-            delivering: false,
-        })
-    }
-
-    fn dispatch_pending(&mut self) -> Result<(), TrapInfo> {
         let pending = self
             .continuation
             .control
             .pending_host
-            .expect("pending guard");
+            .filter(|pending| !pending.abandoned)?;
+        Some(PendingHostCall {
+            running: self,
+            delivering: false,
+            pending,
+        })
+    }
+
+    fn code(&self) -> Code<'_> {
+        Code::new(
+            &self.vm.units,
+            self.continuation.unit,
+            &self.continuation.program,
+        )
+    }
+
+    fn dispatch_pending(&mut self, request: &PendingHost) -> Result<(), TrapInfo> {
         let vm = &mut *self.vm;
         let code = Code::new(
             &vm.units,
             self.continuation.unit,
             &self.continuation.program,
         );
-        let site = site(code, &self.continuation.ctx, pending);
+        let site = request.resolve(code);
         let mut inline_args = [ValueRef::Unit; 8];
         let mut arg_vec;
         let args = if site.args.len() <= inline_args.len() {
@@ -455,7 +436,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         for (slot, value) in args.iter_mut().zip(arguments(
             &self.continuation.ctx,
             code.sources(&self.continuation.args, vm.memory.aggs()),
-            site.base,
+            request.base(&self.continuation.ctx),
             site.args,
         )) {
             *slot = value;
@@ -469,8 +450,8 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             &mut ret_vec
         };
         let context = HostContext::new(
-            vm.units.unit(site.pending.location.unit),
-            site.import,
+            vm.units.unit(request.location.unit),
+            request.import,
             vm.memory.aggs(),
             self.continuation
                 .host_results
@@ -482,12 +463,13 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         );
         let outcome = vm
             .host
-            .call(site.symbol, site.signature, args, values, context);
-        self.complete_pending(values, outcome)
+            .call(site.symbol, request.signature, args, values, context);
+        self.complete_pending(request, values, outcome)
     }
 
     fn complete_pending(
         &mut self,
+        request: &PendingHost,
         values: &mut [Value],
         mut outcome: Result<u64, HostError>,
     ) -> Result<(), TrapInfo> {
@@ -517,10 +499,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 ),
                 &self.continuation.args,
                 self.vm.memory.aggs(),
-                self.continuation
-                    .control
-                    .pending_host
-                    .expect("pending guard"),
+                request,
                 values,
                 outcome,
                 work,
@@ -539,10 +518,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
                 ),
                 &self.continuation.args,
                 self.vm.memory.aggs(),
-                self.continuation
-                    .control
-                    .pending_host
-                    .expect("pending guard"),
+                request,
                 values,
                 outcome,
                 work,
@@ -647,7 +623,7 @@ fn finish_pending<P: TracePolicy>(
     code: Code<'_>,
     root_args: &[Value],
     heap: &AggHeap,
-    pending: PendingHost,
+    request: &PendingHost,
     values: &mut [Value],
     outcome: Result<u64, HostError>,
     work: DataWork,
@@ -655,16 +631,22 @@ fn finish_pending<P: TracePolicy>(
     trace: &mut TraceCtx<'_>,
     register_state: &mut P::RegisterState,
 ) -> Result<Option<HostThrow>, TrapInfo> {
-    let site = site(code, ctx, pending);
-    let program = code.of(pending.location.unit).program();
+    let site = request.resolve(code);
+    let location = request.location;
+    let program = request.program(code).program();
     if P::values_enabled(trace) {
-        let args: Vec<_> =
-            arguments(ctx, code.sources(root_args, heap), site.base, site.args).collect();
+        let args: Vec<_> = arguments(
+            ctx,
+            code.sources(root_args, heap),
+            request.base(ctx),
+            site.args,
+        )
+        .collect();
         P::values(trace, program, || ValueEvent::HostCall {
-            location: site.pending.location,
-            host_sig: site.import,
+            location,
+            host_sig: request.import,
             args: &args,
-            outcome: observed(code.units, site.pending.location.unit, values, &outcome),
+            outcome: observed(code.units, location.unit, values, &outcome),
             aggregates: heap,
             work,
             created: created.as_ref().ok().unwrap_or(&(0..0)),
@@ -672,9 +654,9 @@ fn finish_pending<P: TracePolicy>(
     }
     created.map_err(|error| {
         ctx.trap(
-            site.pending.location.func,
-            site.pending.location.pc,
-            site.span,
+            location.func,
+            location.pc,
+            request.span,
             Trap::AggError(error),
         )
     })?;
@@ -685,36 +667,36 @@ fn finish_pending<P: TracePolicy>(
         ctx,
         budget,
         HostReturnSite {
-            location: site.pending.location,
-            span: site.span,
-            base: site.base,
+            location,
+            span: request.span,
+            base: *request.base(ctx),
             symbol: site.symbol,
-            signature: site.signature,
+            signature: request.signature,
             expected: site.ret_types,
             destinations: site.destinations,
         },
         values,
         outcome,
     )?;
-    let signature = program.host_sig(site.import).expect("verified import");
+    let signature = program.host_sig(request.import).expect("verified import");
     P::host_scope_exit(
         trace,
         program,
-        site.import,
+        request.import,
         signature.symbol,
         signature.sig_hash,
         ctx.frames.len(),
-        site.pending.location.func,
-        site.pending.location.pc,
-        site.span,
+        location.func,
+        location.pc,
+        request.span,
     );
     P::registers(
         register_state,
         trace,
         program,
         ctx,
-        site.pending.location,
-        site.base,
+        location,
+        *request.base(ctx),
         code.sources(root_args, heap),
         crate::trace::RegisterPhase::Outputs,
     );

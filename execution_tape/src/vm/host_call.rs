@@ -4,11 +4,23 @@
 //! The common admission boundary for a host outcome, after its raw observation.
 
 use super::*;
+use crate::host::SigHash;
+use crate::program::{HostSigId, SymbolId};
+use crate::typed::VRegSlice;
 
+/// An admitted host instruction waiting for the embedding, decoded once at admission.
+///
+/// Holds no borrows, so a request view keeps a copy beside its exclusive invocation borrow and
+/// borrows code-owned slices on demand.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingHost {
     pub(super) location: TraceLocation,
-    pub(super) instruction: usize,
+    pub(super) span: Option<u64>,
+    pub(super) import: HostSigId,
+    pub(super) symbol: SymbolId,
+    pub(super) signature: SigHash,
+    pub(super) args: VRegSlice,
+    pub(super) rets: VRegSlice,
     // Admitting guest frame. A poisoned callback can leave this parent operation suspended
     // below a new guest leaf; inspection must not assign the parent's location to that leaf.
     pub(super) depth: usize,
@@ -22,7 +34,7 @@ pub(super) struct HostReturnSite<'a> {
     pub(super) span: Option<u64>,
     pub(super) base: RegBase,
     pub(super) symbol: &'a str,
-    pub(super) signature: crate::host::SigHash,
+    pub(super) signature: SigHash,
     pub(super) expected: &'a [ValueType],
     pub(super) destinations: &'a [VReg],
 }
