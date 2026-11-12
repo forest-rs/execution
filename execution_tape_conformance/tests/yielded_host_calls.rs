@@ -290,6 +290,32 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
 }
 
 #[test]
+fn a_pending_request_reaches_its_host_without_releasing_the_request() {
+    let f = fixture(1, false);
+    let args = args();
+    let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut call = vm
+        .start(
+            FuncRef::new(unit, f.entry),
+            &args,
+            InvocationOptions::default().yield_host_calls(),
+        )
+        .unwrap();
+    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let mut request = call.pending_host_call().unwrap();
+    let message = request.arguments().next().unwrap().to_value();
+    // A driver consults and updates its runtime state, then answers on the same view.
+    request.host_mut().calls += 10;
+    assert_eq!(request.host().calls, 10);
+    assert_eq!(request.symbol(), "echo");
+    request.dispatch().unwrap();
+    assert_eq!(call.host().calls, 11, "dispatch reaches the updated host");
+    assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(call.result().unwrap().unwrap(), [message]);
+}
+
+#[test]
 fn return_arity_kind_payload_and_owned_host_errors_use_normal_admission_and_rollback() {
     let f = fixture(1, true);
     let args = args();

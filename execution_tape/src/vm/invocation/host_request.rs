@@ -209,6 +209,21 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn aggregates(&self) -> &AggHeap {
         self.running.vm.memory.aggs()
     }
+    /// Borrows host state for read-only inspection while this request waits.
+    #[must_use]
+    pub fn host(&self) -> &H {
+        &self.running.vm.host
+    }
+    /// Mutates host state while this request waits, without releasing the request.
+    ///
+    /// This is [`Invocation::host_mut`] reached through the request, so a driver can consult or
+    /// update its runtime and then complete, dispatch or call back on the same view. The borrow
+    /// is exclusive: copy what you need from [`Self::arguments`] first, as handles stay valid
+    /// (see [handle validity](Self#handle-validity)). Preserve the validity of object handles the
+    /// guest still holds.
+    pub fn host_mut(&mut self) -> &mut H {
+        &mut self.running.vm.host
+    }
     /// Borrows the actual caller's frames and initialized registers while this request waits.
     ///
     /// Analysis is lazy and read-only, as with [`Invocation::inspect`]. The pending call is
