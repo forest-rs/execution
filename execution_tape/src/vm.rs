@@ -2548,6 +2548,7 @@ impl<H: Host> Vm<H> {
                         .host_sig_rets(hs)
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::ConstOutOfBounds))?;
 
+                    let (arg_slice, ret_slice) = (*args, *rets);
                     let args = vf.vregs(*args);
 
                     // Inline small argument lists; larger declared ABIs use the Vec fallback.
@@ -2604,7 +2605,12 @@ impl<H: Host> Vm<H> {
                                 func: func_id,
                                 pc,
                             },
-                            instruction: instr_ix,
+                            span: span_id,
+                            import: *host_sig,
+                            symbol: hs.symbol,
+                            signature: hs.sig_hash,
+                            args: arg_slice,
+                            rets: ret_slice,
                             depth: frame_index + 1,
                             abandoned: false,
                             callback_returned: false,
