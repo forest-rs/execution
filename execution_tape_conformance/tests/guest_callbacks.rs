@@ -213,14 +213,14 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
             vec![Value::I64(40)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut inner = run.pending_host_call().unwrap();
     assert_eq!(inner.symbol(), "lookup");
     let mut result = inner.take_callback_results().unwrap();
     assert_eq!(result, [Value::I64(41)]);
     assert!(inner.take_callback_results().is_none());
     inner.complete(&mut result, Ok(0)).unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert!(
         run.result().is_none(),
         "callback completion is not invocation completion"
@@ -233,6 +233,51 @@ fn guest_handler_can_wait_and_reenter_again_without_losing_the_signaling_stack()
     outer.complete(&mut result, Ok(0)).unwrap();
     assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(run.result().unwrap().unwrap(), [Value::I64(41)]);
+}
+
+#[test]
+fn a_callback_return_is_its_own_status_until_the_request_completes() {
+    let f = fixture();
+    let args = [Value::I64(1)];
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(FuncRef::new(unit, f.entry), &args, options())
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    run.pending_host_call()
+        .unwrap()
+        .call_guest(
+            Value::Func(FuncRef::new(unit, f.plus_one)),
+            vec![Value::I64(1)],
+        )
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    // The status describes the request, not whether its results were taken.
+    let results = run.pending_host_call().unwrap().take_callback_results();
+    assert_eq!(results, Some(vec![Value::I64(2)]));
+    assert_eq!(run.resume(0).unwrap(), RunStatus::CallbackReturned);
+    assert_eq!(run.pending_host_call().unwrap().symbol(), "signal");
+
+    // Calling back again from the returned request yields a fresh nested request first.
+    run.pending_host_call()
+        .unwrap()
+        .call_guest(
+            Value::Func(FuncRef::new(unit, f.handler)),
+            vec![Value::I64(3)],
+        )
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let inner = run.pending_host_call().unwrap();
+    assert_eq!(inner.symbol(), "lookup");
+    assert_eq!(inner.callback_results(), None);
+    inner.complete(&mut [Value::I64(4)], Ok(0)).unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    let mut outer = run.pending_host_call().unwrap();
+    assert_eq!(outer.take_callback_results(), Some(vec![Value::I64(4)]));
+    outer.complete(&mut [Value::I64(5)], Ok(0)).unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    assert_eq!(run.result().unwrap().unwrap(), [Value::I64(5)]);
 }
 
 #[test]
@@ -259,7 +304,7 @@ fn promoted_host_handles_survive_guest_allocations_and_later_host_construction()
             vec![Value::Agg(staged)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut host = run.pending_host_call().unwrap();
     let returned = host.take_callback_results().unwrap();
     let [Value::Agg(wrapped)] = returned.as_slice() else {
@@ -328,7 +373,7 @@ fn typed_closure_environment_can_come_from_parent_host_staging() {
             vec![Value::I64(2)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert_eq!(
         run.pending_host_call().unwrap().take_callback_results(),
         Some(vec![Value::I64(42)])

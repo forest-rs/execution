@@ -19,11 +19,25 @@ pub enum RunStatus {
     Suspended,
     /// An admitted host instruction is waiting for embedding-supplied completion.
     /// Query [`Invocation::pending_host_call`]; resuming alone does not invoke the host.
-    /// A guest callback return restores its original request in this same state; take the
-    /// callback results before choosing and completing the host outcome.
     AwaitingHost,
+    /// A guest callback returned to the host request that started it.
+    ///
+    /// That original request is pending again. Take the callback's results with
+    /// [`PendingHostCall::take_callback_results`], then complete the request or call back again.
+    /// Resuming alone does not invoke the host.
+    CallbackReturned,
     /// The root returned and its results were committed.
     Complete,
+}
+
+impl RunStatus {
+    fn waiting(pending: host_call::PendingHost) -> Self {
+        if pending.callback_returned {
+            Self::CallbackReturned
+        } else {
+            Self::AwaitingHost
+        }
+    }
 }
 
 /// Optional borrowed or owned observers of one logical invocation.
@@ -242,8 +256,9 @@ impl<H: Host> Invocation<'_, H> {
     /// these. Host extra fuel is charged against hard fuel, not against the instruction quantum.
     /// Prepared block declarations take no steps; an edge transfer belongs to its branch step.
     /// A yielded host call spends its instruction/host-call debit once and returns
-    /// [`RunStatus::AwaitingHost`]. Resuming while it waits spends nothing and never dispatches
-    /// the host. Completing the request finishes that instruction without admitting another.
+    /// [`RunStatus::AwaitingHost`]; a guest callback returning to its request reports
+    /// [`RunStatus::CallbackReturned`]. Resuming while a request waits spends nothing, reports
+    /// the same status again and never dispatches the host. Completing the request finishes that instruction without admitting another.
     pub fn resume(&mut self, quantum: u64) -> Result<RunStatus, TrapInfo> {
         if let Some(outcome) = &self.continuation.outcome {
             return outcome.clone().map(|()| RunStatus::Complete);
@@ -252,14 +267,19 @@ impl<H: Host> Invocation<'_, H> {
             if pending.abandoned {
                 return Err(self.running().finish_abandoned_host(pending));
             }
-            return Ok(RunStatus::AwaitingHost);
+            return Ok(RunStatus::waiting(pending));
         }
         let result = self
             .continuation
             .advance(&mut self.vm, &mut self.budget, quantum)
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
-                Progress::AwaitingHost => Ok(RunStatus::AwaitingHost),
+                Progress::AwaitingHost => Ok(RunStatus::waiting(
+                    self.continuation
+                        .control
+                        .pending_host
+                        .expect("a waiting host request"),
+                )),
                 Progress::Returned(site) => {
                     let continuation = &mut self.continuation;
                     if continuation.trace.active() {
@@ -287,7 +307,7 @@ impl<H: Host> Invocation<'_, H> {
                 }
             });
         match &result {
-            Ok(RunStatus::Suspended | RunStatus::AwaitingHost) => {}
+            Ok(RunStatus::Suspended | RunStatus::AwaitingHost | RunStatus::CallbackReturned) => {}
             Ok(RunStatus::Complete) => self.running().finish(Ok(())),
             Err(error) => self.running().finish(Err(error.clone())),
         }

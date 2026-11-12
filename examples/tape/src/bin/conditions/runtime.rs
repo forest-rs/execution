@@ -548,17 +548,21 @@ impl Runtime {
         self.masks.retain(|mask| live.contains(&mask.callback));
     }
     fn step(&mut self, quantum: u64) -> Result<Status, Error> {
-        match self.run.resume(quantum)? {
+        let returned = match self.run.resume(quantum)? {
             RunStatus::Suspended => return Ok(Status::Running),
             RunStatus::Complete => return Ok(Status::Complete),
-            RunStatus::AwaitingHost => {}
-        }
+            RunStatus::AwaitingHost => false,
+            RunStatus::CallbackReturned => true,
+        };
         let key = self.key()?;
         let mut request = self
             .run
             .pending_host_call()
             .ok_or(Error::Abi("missing pending request"))?;
-        if let Some(values) = request.take_callback_results() {
+        if returned {
+            let values = request
+                .take_callback_results()
+                .ok_or(Error::Abi("callback results already taken"))?;
             drop(request);
             // The returned callback is the newest one entered from this request.
             let index = self

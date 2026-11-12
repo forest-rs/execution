@@ -382,6 +382,7 @@ impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
             match self.call.resume(u64::MAX) {
                 Err(error) => return Poll::Ready(Err(error)),
                 Ok(RunStatus::Suspended) => unreachable!("unlimited quantum"),
+                Ok(RunStatus::CallbackReturned) => unreachable!("no guest callbacks"),
                 Ok(RunStatus::AwaitingHost) => {
                     access.read_host_state(execution_graph::HostOpId::new(1), 0);
                     let Some(reply) = self.reply.borrow_mut().take() else {

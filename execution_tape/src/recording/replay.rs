@@ -1202,7 +1202,10 @@ impl Recording {
                         Ok(crate::vm::RunStatus::Complete) => {
                             break Ok(invocation.take_outputs().expect("completed replay outputs"));
                         }
-                        Ok(crate::vm::RunStatus::AwaitingHost) => {
+                        Ok(
+                            crate::vm::RunStatus::AwaitingHost
+                            | crate::vm::RunStatus::CallbackReturned,
+                        ) => {
                             let mut request = invocation
                                 .pending_host_call()
                                 .expect("yielded replay request");
@@ -1568,7 +1571,7 @@ mod tests {
             .unwrap()
             .call_guest(Value::Func(FuncRef::new(unit, handler)), args.to_vec())
             .unwrap();
-        assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+        assert_eq!(run.resume(100).unwrap(), RunStatus::CallbackReturned);
         let mut request = run.pending_host_call().unwrap();
         let mut results = request.take_callback_results().unwrap();
         request.complete(&mut results, Ok(0)).unwrap();

@@ -314,8 +314,8 @@
 //!
 //! The embedding owns the async executor, message lookup, effects and external object retention.
 //! Waiting spends no additional fuel or host-call count; completion validates the raw outcome
-//! before continuing and does not execute the next guest instruction. Match all three run
-//! statuses in a yielding driver. A polled producer abandoned before completion cannot be
+//! before continuing and does not execute the next guest instruction. Match every run status in
+//! a yielding driver. A polled producer abandoned before completion cannot be
 //! redispatched: resumption reports `HostCallAbandoned` and recording remains incomplete.
 //! Ordinary runs and `Host` implementations keep their existing signatures and behavior.
 //!
@@ -324,8 +324,9 @@
 //! `PendingHostCall::call_guest` enters a function or closure in this invocation's original
 //! program/heap while retaining the admitted host instruction and its callers. Drive the same
 //! invocation with `resume`: the callback can yield further host requests, which can reenter
-//! guest code in turn. Its return exposes the original pending request, with result slots
-//! available through `callback_results`/`take_callback_results`. The embedding still chooses and supplies the
+//! guest code in turn. When it returns, `resume` reports `RunStatus::CallbackReturned`: the
+//! original request is pending again, with result slots available through
+//! `callback_results`/`take_callback_results`. The embedding still chooses and supplies the
 //! final host outcome. Callback and host result signatures are independent.
 //!
 //! ```no_run
@@ -334,7 +335,7 @@
 //!     args: Vec<Value>) -> Result<(), TrapInfo> {
 //!     run.pending_host_call().expect("AwaitingHost").call_guest(handler, args)
 //! }
-//! // Resume and handle nested host requests normally. Once this original request returns:
+//! // Resume and handle nested host requests normally. Once `resume` reports `CallbackReturned`:
 //! fn accept_handler<H: Host>(run: &mut Invocation<'_, H>) -> Result<(), TrapInfo> {
 //!     let mut request = run.pending_host_call().expect("original request restored");
 //!     let mut results = request.take_callback_results().expect("handler returned");

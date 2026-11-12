@@ -283,6 +283,7 @@ fn run(options: &Options) -> Result<Report> {
     let outcome = loop {
         match call.resume(64) {
             Ok(RunStatus::Suspended) => {}
+            Ok(RunStatus::CallbackReturned) => unreachable!("the caller starts no guest callbacks"),
             Err(error) => break Err(error),
             Ok(RunStatus::Complete) => {
                 let [Value::Agg(tuple)] = call

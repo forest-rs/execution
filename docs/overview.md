@@ -292,7 +292,7 @@ value of any installed unit, including one installed while the request waits.
 An admitted host request can explicitly reenter a guest function or closure of any unit with
 `call_guest`. It retains the host instruction, original frames, heap, activation identities and
 all hard budgets. The same invocation driver handles nested host waits and further callbacks.
-When a callback returns, `AwaitingHost` identifies the original request again; its callback
+When a callback returns, `CallbackReturned` identifies the original request again; its callback
 result slots are available separately from the host operation's eventual return. The callback
 may have a different result signature. Arguments, closure environments and results undergo the
 ordinary boundary checks. Bad admission or a guest trap terminates the whole invocation.
