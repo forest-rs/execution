@@ -64,17 +64,23 @@ fn saved_capture_resolves_instruction_locations_against_saved_program() {
                     let OwnedLabelValue::Unsigned(value) = argument.value() else {
                         panic!("unsigned instruction field");
                     };
-                    u32::try_from(*value).unwrap()
+                    *value
                 };
-                let function = program.function(FuncId(number("func"))).unwrap();
+                // Function arguments carry the unit in their high 32 bits. Every run installs
+                // the same saved program, so each unit resolves through it.
+                let code = number("func");
+                let unit = UnitId(u32::try_from(code >> 32).unwrap());
+                let function = program
+                    .function(FuncId(u32::try_from(code & u64::from(u32::MAX)).unwrap()))
+                    .unwrap();
                 let instruction = function
                     .instructions()
-                    .find(|instruction| instruction.pc == number("pc"))
+                    .find(|instruction| u64::from(instruction.pc) == number("pc"))
                     .expect("captured PC is an instruction boundary");
-                assert_eq!(u32::from(instruction.opcode as u8), number("opcode"));
+                assert_eq!(u64::from(instruction.opcode as u8), number("opcode"));
                 let source = bound
                     .lookup(TraceLocation {
-                        unit: UnitId(0),
+                        unit,
                         func: function.id(),
                         pc: instruction.pc,
                     })

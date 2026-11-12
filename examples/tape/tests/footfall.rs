@@ -80,7 +80,11 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let all = sink.mask() | TraceMask::INSTR;
     let arguments = [Value::Bool(true), Value::I64(41)];
     let start = runtime.snapshot().next_cursor();
+    // A second install runs as unit 1, which every function argument names in its high bits.
+    vm.install(program.clone()).unwrap();
     let unit = vm.install(program.clone()).unwrap();
+    let entry = (u64::from(unit.0) << 32) | u64::from(ENTRY.0);
+    assert_eq!(entry >> 32, 1);
     assert_eq!(
         vm.run(FuncRef::new(unit, ENTRY), &arguments, all, Some(&mut sink))
             .unwrap(),
@@ -115,8 +119,7 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
             Observation::Message { name, args, .. }
                 if *name == "execution_tape.instr_end"
                     && args.get("pc") == attempted_pc
-                    && args.get("func").and_then(|value| value.as_unsigned())
-                        == Some(u64::from(ENTRY.0)) =>
+                    && args.get("func").and_then(|value| value.as_unsigned()) == Some(entry) =>
             {
                 branch_target = args.get("next_pc").and_then(|value| value.as_unsigned());
             }
@@ -142,7 +145,8 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
     let skipped_target = skipped.events().iter().find_map(|event| {
         if let Observation::Message { name, args, .. } = event.observation()
             && *name == "execution_tape.instr_end"
-            && args.get("func").and_then(|value| value.as_unsigned()) == Some(u64::from(ENTRY.0))
+            && args.get("func").and_then(|value| value.as_unsigned())
+                == Some((u64::from(unit.0) << 32) | u64::from(ENTRY.0))
             && args.get("pc").and_then(|value| value.as_unsigned()) == Some(0)
         {
             args.get("next_pc").and_then(|value| value.as_unsigned())

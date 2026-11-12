@@ -503,3 +503,67 @@ fn join_declarations_cannot_create_unreachable_breakpoints_and_transfers_are_ato
     key(&mut view, KeyCode::Char(' '));
     assert!(view.status.starts_with("RETURNED"));
 }
+
+/// A unit whose `apply(f)` calls the function value `f` with 20.
+fn applies() -> VerifiedProgram {
+    let mut b = ProgramBuilder::new();
+    let signature = b
+        .call_sig(FunctionSig {
+            arg_types: vec![ValueType::I64],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let apply = b
+        .declare_function(FunctionSig {
+            arg_types: vec![ValueType::Func],
+            ret_types: vec![ValueType::I64],
+        })
+        .unwrap();
+    let mut a = b.function_asm(apply).unwrap();
+    let callee = b.argument(apply, 0).unwrap();
+    let twenty = a.alloc_register(ValueType::I64);
+    a.const_i64(twenty, 20);
+    let [result] = b
+        .emit_call(
+            &mut a,
+            execution_tape::asm::CallTarget::Indirect { signature, callee },
+            &[twenty],
+        )
+        .unwrap();
+    a.ret(0, &[result]);
+    b.define_function(apply, a).unwrap();
+    b.set_function_name(apply, "apply").unwrap();
+    b.build_verified().unwrap()
+}
+
+#[test]
+fn stepping_into_another_unit_shows_that_units_code_and_keys_its_breakpoints() {
+    let (callee, _, _, _) = program(false);
+    let mut vm = Vm::new(Counter::default(), Limits::default());
+    let caller = vm.install(applies()).unwrap();
+    let other = vm.install(callee).unwrap();
+    let args = [Value::Func(FuncRef::new(other, FuncId(0)))];
+    let invocation = vm
+        .start(
+            FuncRef::new(caller, FuncId(0)),
+            &args,
+            InvocationOptions::default(),
+        )
+        .unwrap();
+    let mut view = LiveExplorer::new(invocation);
+    assert_eq!(view.code_func, Some((caller, FuncId(0))));
+    view.step().unwrap(); // const
+    view.step().unwrap(); // call.indirect into the other unit
+    assert_eq!(view.frames[0].location.unit, other);
+    assert_eq!(view.code_func, Some((other, FuncId(0))));
+    let text = view.render_text(120, 36).unwrap();
+    assert!(text.contains("double"), "the callee unit's names: {text}");
+    // A breakpoint names its unit: the same function and pc in the caller's unit differ.
+    key(&mut view, KeyCode::Char('b'));
+    let location = view.location().unwrap();
+    assert!(view.breakpoints.contains(&breakpoint(location)));
+    assert!(!view.breakpoints.contains(&breakpoint(TraceLocation {
+        unit: caller,
+        ..location
+    })));
+}
