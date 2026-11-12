@@ -292,6 +292,13 @@ This release has an [MSRV][] of 1.88.
   `function.func` where a program-local ID is needed; add `unit` to `TraceLocation` literals;
   use `CodeLocation { func, pc }` for source mappings and watches.
 
+- Trace hooks name the unit they observe. `TraceSink::instr`, `scope_enter` and `scope_exit`
+  take a `TraceLocation` in place of the `func` and `pc` pair, `TraceSink::run_start` takes the
+  entry `FuncRef`, and `ScopeKind::CallFrame::func` is a `FuncRef`; each hook's `program` is the
+  program of that location's unit. Migration: replace `func: FuncId, pc: u32` hook parameters with
+  `location: TraceLocation` and read `location.func`/`location.pc`, read `entry.func` and
+  `func.func` where a program-local ID is needed, and keep per-program state keyed by unit.
+
 - `AggType::Struct` and `AggType::Array` carry a heap `ShapeId` instead of a program `TypeId` or
   `ElemTypeId`, and `AggHeap::struct_new`, `AggHeap::array_new` and their `AggOverlay` forms take a
   `ShapeId`, rejecting unknown shapes with `AggError::UnknownShape` and wrong struct field counts

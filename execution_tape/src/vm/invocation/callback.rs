@@ -296,8 +296,11 @@ impl<H: Host> Running<'_, '_, H> {
         self.continuation.trace.call_scope_enter_if_enabled(
             program,
             self.continuation.ctx.frames.len(),
-            function,
-            prepared.pc_at_ix(0).unwrap_or(0),
+            TraceLocation {
+                unit,
+                func: function,
+                pc: prepared.pc_at_ix(0).unwrap_or(0),
+            },
             prepared.span_at_ix(0).map(|span| span.get()),
             Some(pending.location),
         );
@@ -363,7 +366,7 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
         callback_returned: true,
         ..waiting.host
     });
-    P::call_scope_exit(trace, program, depth, location.func, location.pc, span);
+    P::call_scope_exit(trace, program, depth, location, span);
     // The guest returns to embedding code. Its parent host instruction is still pending;
     // pointing at that instruction would falsely imply that it executes a second time.
     P::instr_end(trace, program, None);

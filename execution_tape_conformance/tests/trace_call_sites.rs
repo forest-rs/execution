@@ -9,7 +9,7 @@ use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
-use execution_tape::value::{FuncId, Value};
+use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
 
 struct NeverHost;
@@ -37,8 +37,7 @@ impl TraceSink for Calls {
         _: &Program,
         kind: ScopeKind,
         depth: usize,
-        _: FuncId,
-        _: u32,
+        _location: TraceLocation,
         _: Option<u64>,
     ) {
         self.entered.push((kind, depth));
@@ -48,11 +47,11 @@ impl TraceSink for Calls {
         _: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let (func, pc) = (location.func, location.pc);
         self.exited.push((
             kind,
             depth,
@@ -161,14 +160,14 @@ fn direct_function_and_closure_calls_preserve_entry_provenance_on_every_exit() {
                 [
                     (
                         ScopeKind::CallFrame {
-                            func: caller,
+                            func: FuncRef::new(UnitId(0), caller),
                             caller: None
                         },
                         1
                     ),
                     (
                         ScopeKind::CallFrame {
-                            func: leaf,
+                            func: FuncRef::new(UnitId(0), leaf),
                             caller: Some(TraceLocation {
                                 unit: UnitId(0),
                                 func: caller,

@@ -34,7 +34,7 @@ impl TraceSink for Observe {
         TraceMask::VALUES | TraceMask::RUN
     }
 
-    fn run_start(&mut self, _: &Program, _: FuncId, _: usize) {
+    fn run_start(&mut self, _: &Program, _: FuncRef, _: usize) {
         self.order.push("run_start");
     }
 

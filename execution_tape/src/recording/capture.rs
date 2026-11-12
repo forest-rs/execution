@@ -16,7 +16,7 @@ use crate::trace::{
     HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask,
     TraceOutcome, TraceSink, ValueEvent,
 };
-use crate::value::{FuncId, UnitId};
+use crate::value::UnitId;
 use crate::verifier::VerifiedProgram;
 use crate::vm::Trap;
 use alloc::sync::Arc;
@@ -569,7 +569,7 @@ impl TraceSink for Recorder {
             }
     }
 
-    fn run_start(&mut self, program: &Program, _: FuncId, _: usize) {
+    fn run_start(&mut self, program: &Program, _: crate::value::FuncRef, _: usize) {
         if self.started || self.entry.is_some() {
             self.fail(CaptureFault::MultipleRuns);
         }
@@ -586,8 +586,7 @@ impl TraceSink for Recorder {
     fn instr(
         &mut self,
         program: &Program,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: u32,
         _: Option<u64>,
         opcode: u8,
@@ -595,18 +594,11 @@ impl TraceSink for Recorder {
         if !self.check(program) {
             return;
         }
+        let location = self.local(location);
         let Some(history) = &mut self.history else {
             return;
         };
-        history.record_instruction(
-            TraceLocation {
-                unit: RECORDED_UNIT,
-                func,
-                pc,
-            },
-            opcode,
-            self.top,
-        );
+        history.record_instruction(location, opcode, self.top);
     }
 
     fn instr_end(
@@ -655,8 +647,7 @@ impl TraceSink for Recorder {
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
     ) {
         let ScopeKind::CallFrame {
@@ -670,11 +661,9 @@ impl TraceSink for Recorder {
             return;
         }
         let caller = caller.map(|caller| self.local(caller));
-        let location = Some(TraceLocation {
-            unit: RECORDED_UNIT,
-            func,
-            pc,
-        });
+        let location = self.local(location);
+        let (callee, func) = (callee.func, location.func);
+        let location = Some(location);
         let expected_depth = self
             .top
             .map_or(1, |top| self.frames[top.index()].depth.saturating_add(1));
@@ -723,8 +712,7 @@ impl TraceSink for Recorder {
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
@@ -739,11 +727,8 @@ impl TraceSink for Recorder {
             return;
         }
         let caller = caller.map(|caller| self.local(caller));
-        let location = TraceLocation {
-            unit: RECORDED_UNIT,
-            func,
-            pc,
-        };
+        let callee = callee.func;
+        let location = self.local(location);
         let Some(top) = self.top else {
             self.fail_at(CaptureFault::InvalidSequence, Some(location));
             return;

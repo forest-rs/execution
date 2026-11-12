@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use execution_tape::program::ValueType;
-use execution_tape::trace::TraceSink;
+use execution_tape::trace::{TraceLocation, TraceSink};
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
@@ -175,30 +175,29 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
             program: &Program,
             kind: ScopeKind,
             depth: usize,
-            func: FuncId,
-            pc: u32,
+            location: TraceLocation,
             span: Option<u64>,
         ) {
+            let (func, pc) = (location.func, location.pc);
             let source = self
                 .sink
                 .source_location(program, CodeLocation { func, pc })
                 .expect("scope maps to its own function/PC");
             self.locations
                 .push((func, source.document().name.clone(), source.start().line));
-            self.sink.scope_enter(program, kind, depth, func, pc, span);
+            self.sink.scope_enter(program, kind, depth, location, span);
         }
         fn scope_exit(
             &mut self,
             program: &Program,
             kind: ScopeKind,
             depth: usize,
-            func: FuncId,
-            pc: u32,
+            location: TraceLocation,
             span: Option<u64>,
             outcome: TraceOutcome<'_>,
         ) {
             self.sink
-                .scope_exit(program, kind, depth, func, pc, span, outcome);
+                .scope_exit(program, kind, depth, location, span, outcome);
         }
     }
     let (program, entry, expected_sig) = build_program();

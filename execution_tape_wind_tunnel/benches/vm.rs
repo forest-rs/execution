@@ -1163,7 +1163,7 @@ impl TraceSink for CountingTrace {
         TraceMask::RUN
     }
 
-    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {
+    fn run_start(&mut self, _program: &Program, _entry: FuncRef, _arg_count: usize) {
         // Intentionally minimal: we want to measure VM overhead, not sink work.
         self._count = self._count.wrapping_add(1);
     }
@@ -1188,8 +1188,7 @@ impl TraceSink for CountingHostScopes {
         _program: &Program,
         _kind: ScopeKind,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: execution_tape::trace::TraceLocation,
         _span_id: Option<u64>,
     ) {
         self._count = self._count.wrapping_add(1);
@@ -1200,8 +1199,7 @@ impl TraceSink for CountingHostScopes {
         _program: &Program,
         _kind: ScopeKind,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: execution_tape::trace::TraceLocation,
         _span_id: Option<u64>,
         _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
@@ -1222,8 +1220,7 @@ impl TraceSink for CountingInstr {
     fn instr(
         &mut self,
         _program: &Program,
-        _func: FuncId,
-        _pc: u32,
+        _location: execution_tape::trace::TraceLocation,
         _next_pc: u32,
         _span_id: Option<u64>,
         _opcode: u8,

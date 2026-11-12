@@ -56,8 +56,11 @@ impl<'a> Continuation<'a> {
         work: DataWork,
     ) -> Result<(), TrapInfo> {
         budget.select(&self.control);
-        self.trace
-            .run_start(self.program.program(), self.entry, self.args.len());
+        self.trace.run_start(
+            self.program.program(),
+            FuncRef::new(self.unit, self.entry),
+            self.args.len(),
+        );
         self.trace
             .values(self.program.program(), || ValueEvent::Entry {
                 entry: FuncRef::new(self.unit, self.entry),

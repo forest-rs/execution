@@ -465,7 +465,6 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
             RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask, TraceOutcome,
             ValueEvent,
         },
-        value::FuncId,
     };
     #[derive(Default)]
     struct Events {
@@ -501,7 +500,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         fn registers(&mut self, _: &Program, _: RegisterEvent<'_>) {
             panic!("register filtering was not forwarded");
         }
-        fn run_start(&mut self, _: &Program, _: FuncId, _: usize) {
+        fn run_start(&mut self, _: &Program, _: FuncRef, _: usize) {
             self.starts += 1;
         }
         fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
@@ -511,7 +510,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         fn values(&mut self, _: &Program, _: ValueEvent<'_>) {
             self.values += 1;
         }
-        fn instr(&mut self, _: &Program, _: FuncId, _: u32, _: u32, _: Option<u64>, _: u8) {
+        fn instr(&mut self, _: &Program, _location: TraceLocation, _: u32, _: Option<u64>, _: u8) {
             self.instructions += 1;
         }
         fn instr_end(
@@ -528,8 +527,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
             _: &Program,
             _: ScopeKind,
             _: usize,
-            _: FuncId,
-            _: u32,
+            _location: TraceLocation,
             _: Option<u64>,
         ) {
             self.enters += 1;
@@ -539,8 +537,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
             _: &Program,
             _: ScopeKind,
             _: usize,
-            _: FuncId,
-            _: u32,
+            _location: TraceLocation,
             _: Option<u64>,
             _: TraceOutcome<'_>,
         ) {

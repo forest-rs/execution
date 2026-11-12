@@ -53,7 +53,15 @@ struct Observe {
     writes: Vec<(u32, Value)>,
 }
 impl TraceSink for Observe {
-    fn instr(&mut self, _: &Program, _: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
+    fn instr(
+        &mut self,
+        _: &Program,
+        location: execution_tape::trace::TraceLocation,
+        _: u32,
+        _: Option<u64>,
+        opcode: u8,
+    ) {
+        let (_, pc) = (location.func, location.pc);
         self.instructions.push((pc, opcode));
     }
     fn registers(&mut self, _: &Program, event: RegisterEvent<'_>) {

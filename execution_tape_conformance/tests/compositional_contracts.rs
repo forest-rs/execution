@@ -642,8 +642,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             _: &Program,
             kind: ScopeKind,
             _: usize,
-            _: execution_tape::value::FuncId,
-            _: u32,
+            _location: TraceLocation,
             _: Option<u64>,
             outcome: TraceOutcome<'_>,
         ) {

@@ -772,10 +772,12 @@ fn cancellation_of_a_pending_host_call_is_incomplete_and_releases_only_new_aggre
 #[derive(Clone, Default)]
 struct Log(Rc<RefCell<Vec<String>>>);
 impl TraceSink for Log {
-    fn run_start(&mut self, _: &Program, entry: FuncId, count: usize) {
+    fn run_start(&mut self, _: &Program, entry: FuncRef, count: usize) {
+        let entry = entry.func;
         self.0.borrow_mut().push(format!("start {entry:?} {count}"));
     }
-    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, next: u32, _: Option<u64>, _: u8) {
+    fn instr(&mut self, _: &Program, location: TraceLocation, next: u32, _: Option<u64>, _: u8) {
+        let (func, pc) = (location.func, location.pc);
         self.0
             .borrow_mut()
             .push(format!("instruction {func:?} {pc} {next}"));
@@ -796,10 +798,10 @@ impl TraceSink for Log {
         _: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
     ) {
+        let (func, pc) = (location.func, location.pc);
         self.0
             .borrow_mut()
             .push(format!("enter {kind:?} {depth} {func:?} {pc}"));
@@ -809,11 +811,11 @@ impl TraceSink for Log {
         _: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let (func, pc) = (location.func, location.pc);
         self.0
             .borrow_mut()
             .push(format!("exit {kind:?} {depth} {func:?} {pc} {outcome:?}"));

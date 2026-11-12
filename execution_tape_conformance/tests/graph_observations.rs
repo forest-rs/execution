@@ -273,7 +273,7 @@ impl TraceSink for RunOnly {
     fn run_mask(&mut self, _: &execution_tape::program::Program, mask: TraceMask) {
         self.masks.push(mask);
     }
-    fn run_start(&mut self, _: &execution_tape::program::Program, _: FuncId, _: usize) {
+    fn run_start(&mut self, _: &execution_tape::program::Program, _: FuncRef, _: usize) {
         self.starts += 1;
     }
     fn run_end(
@@ -288,8 +288,7 @@ impl TraceSink for RunOnly {
         _: &execution_tape::program::Program,
         _: execution_tape::trace::ScopeKind,
         _: usize,
-        _: FuncId,
-        _: u32,
+        _location: execution_tape::trace::TraceLocation,
         _: Option<u64>,
     ) {
         panic!("internal strict-deps events must not leak");
