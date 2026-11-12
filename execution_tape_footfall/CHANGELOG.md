@@ -18,6 +18,13 @@ This release has an [MSRV][] of 1.88.
 - Report cancelled resumable invocations distinctly and close logical scopes across quanta.
   Elapsed scope time includes suspension; already performed host effects remain. ([#205][] by [@waywardmonkeys][])
 
+### Changed
+
+- Name the unit of every function argument. `func`, `next_func` and `entry` carry
+  `(unit << 32) | func`, since one invocation can run several installed units; captures of unit 0
+  keep plain function IDs. Migration: split those arguments into unit and function before
+  resolving them, and resolve each unit through its own program.
+
 ## [0.1.0][] (2026-10-27)
 
 This release has an [MSRV][] of 1.88.

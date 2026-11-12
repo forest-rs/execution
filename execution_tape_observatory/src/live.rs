@@ -9,7 +9,7 @@ use execution_tape::{
     host::{Host, ValueRef},
     source::{BoundSources, SourceError, SourceMap},
     trace::TraceLocation,
-    value::{AggHandle, AggType, Obj, Value},
+    value::{AggHandle, AggType, Obj, UnitId, Value},
     vm::{ActivationId, Invocation, ObjectRootOrigin, PausedFrame, RunStatus, TrapInfo},
 };
 mod objects;
@@ -95,7 +95,8 @@ pub struct LiveExplorer<'view, 'vm, H: Host> {
     selected_frame: usize,
     focus: Focus,
     code: Vec<(u32, String)>,
-    code_func: Option<execution_tape::value::FuncId>,
+    /// Unit and function whose disassembly [`Self::code`] holds.
+    code_func: Option<(UnitId, execution_tape::value::FuncId)>,
     code_selected: usize,
     flow: Flow,
     values: Vec<String>,
@@ -106,7 +107,8 @@ pub struct LiveExplorer<'view, 'vm, H: Host> {
     source_lines: Vec<String>,
     source_offset: usize,
     roots: bool,
-    breakpoints: BTreeSet<(u32, u32)>,
+    /// Breakpoints as unit, function and pc.
+    breakpoints: BTreeSet<(u32, u32, u32)>,
     motion: Option<Motion>,
     skip_breakpoint: bool,
     status: String,
@@ -242,14 +244,10 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
     }
 
     fn location(&self) -> Option<TraceLocation> {
-        self.code_func.and_then(|func| {
+        self.code_func.and_then(|(unit, func)| {
             self.code
                 .get(self.code_selected)
-                .map(|&(pc, _)| TraceLocation {
-                    unit: self.invocation.unit(),
-                    func,
-                    pc,
-                })
+                .map(|&(pc, _)| TraceLocation { unit, func, pc })
         })
     }
 
@@ -261,6 +259,13 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             self.sources
         };
         self.source_lines = match (sources, self.location()) {
+            // The attached map describes the entry unit's program; other units may run others.
+            (Some(_), Some(loc)) if !self.showing_origin && !self.entry_code(loc.unit) => {
+                vec![format!(
+                    "Unit u{} runs a program without this source map.",
+                    loc.unit.0
+                )]
+            }
             (Some(map), Some(loc)) => source_context::context_lines(map, loc, 6, 100),
             _ => vec![
                 "No frontend source attached.".into(),
@@ -273,11 +278,12 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.show_location_in(location, false);
     }
     fn show_location_in(&mut self, location: TraceLocation, origin: bool) {
-        let changed = self.code_func != Some(location.func) || self.showing_origin != origin;
+        let changed =
+            self.code_func != Some((location.unit, location.func)) || self.showing_origin != origin;
         self.showing_origin = origin;
         if changed {
             let (flow, code) = {
-                let program = self.code_program();
+                let program = self.code_program(location.unit).program();
                 match disassemble_function(program, location.func) {
                     Ok(source) => (
                         Flow::new(&source),
@@ -291,7 +297,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
             };
             self.flow = flow;
             self.code = code;
-            self.code_func = Some(location.func);
+            self.code_func = Some((location.unit, location.func));
         }
         self.code_selected = self
             .code
@@ -569,11 +575,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                 self.motion = None;
                 break;
             };
-            if !self.skip_breakpoint
-                && self
-                    .breakpoints
-                    .contains(&(leaf.location.func.0, leaf.location.pc))
-            {
+            if !self.skip_breakpoint && self.breakpoints.contains(&breakpoint(leaf.location)) {
                 self.motion = None;
                 self.status = "PAUSED · instruction breakpoint (before execution)".into();
                 break;
@@ -666,10 +668,10 @@ fn value_text(value: ValueRef<'_>) -> String {
             object.handle.0, object.host_type.0
         ),
         ValueRef::Agg(handle) => format!("aggregate @{} · Enter to inspect", handle.0),
-        ValueRef::Func(func) => format!("function f{}", func.func.0),
+        ValueRef::Func(func) => format!("function u{}:f{}", func.unit.0, func.func.0),
         ValueRef::Closure(closure) => format!(
-            "closure f{} · environment @{}",
-            closure.func.func.0, closure.env.0
+            "closure u{}:f{} · environment @{}",
+            closure.func.unit.0, closure.func.func.0, closure.env.0
         ),
     }
 }
@@ -744,8 +746,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                 }
                 if let Some(loc) = self.location() {
                     if !self
-                        .invocation
-                        .program()
+                        .code_program(loc.unit)
                         .function(loc.func)
                         .is_some_and(|f| f.instructions().any(|i| i.pc == loc.pc))
                     {
@@ -755,7 +756,7 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
                         }
                         return true;
                     }
-                    let point = (loc.func.0, loc.pc);
+                    let point = breakpoint(loc);
                     if !self.breakpoints.remove(&point) {
                         self.breakpoints.insert(point);
                     }
@@ -804,3 +805,8 @@ impl<H: Host> Screen for LiveExplorer<'_, '_, H> {
 mod request_tests;
 #[cfg(test)]
 mod tests;
+
+/// A breakpoint key: unit, function and pc.
+fn breakpoint(location: TraceLocation) -> (u32, u32, u32) {
+    (location.unit.0, location.func.0, location.pc)
+}

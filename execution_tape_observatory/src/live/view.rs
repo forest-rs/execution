@@ -239,11 +239,12 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             .skip(start)
             .take(height)
             .map(|(index, (pc, text))| {
-                let active = current.is_some_and(|l| Some(l.func) == self.code_func && l.pc == *pc);
+                let active = current
+                    .is_some_and(|l| Some((l.unit, l.func)) == self.code_func && l.pc == *pc);
                 let point = !self.showing_origin
                     && self
                         .code_func
-                        .is_some_and(|f| self.breakpoints.contains(&(f.0, *pc)));
+                        .is_some_and(|(u, f)| self.breakpoints.contains(&(u.0, f.0, *pc)));
                 let mut spans = vec![Span::styled(
                     format!(
                         "{}{} {:06} ",
@@ -272,7 +273,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
             .collect();
         let function = self.code_func.map_or_else(
             || "no function".into(),
-            |f| describe::function(self.code_program(), f),
+            |(u, f)| describe::function(self.code_program(u).program(), f),
         );
         frame.render_widget(
             Paragraph::new(lines).block(

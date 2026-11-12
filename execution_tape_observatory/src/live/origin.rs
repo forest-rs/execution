@@ -135,11 +135,23 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
         self.invocation
     }
 
-    pub(super) fn code_program(&self) -> &execution_tape::program::Program {
+    /// The program shown for `unit`: the external caller's, or that unit's in this VM.
+    pub(super) fn code_program(&self, unit: UnitId) -> &VerifiedProgram {
         if self.showing_origin {
-            self.origin.as_ref().expect("caller code").program.program()
+            self.origin.as_ref().expect("caller code").program
         } else {
-            self.invocation.program().program()
+            self.invocation
+                .units()
+                .program(unit)
+                .map_or_else(|| &**self.invocation.program(), |program| &**program)
         }
+    }
+
+    /// Whether `unit` runs the entry unit's program, which attached sources describe.
+    pub(super) fn entry_code(&self, unit: UnitId) -> bool {
+        self.invocation
+            .units()
+            .program(unit)
+            .is_some_and(|program| std::sync::Arc::ptr_eq(program, self.invocation.program()))
     }
 }

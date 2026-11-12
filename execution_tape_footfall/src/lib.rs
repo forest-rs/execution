@@ -4,7 +4,11 @@
 //! Semantic Footfall observations for Execution Tape.
 //!
 //! [`FootfallSink`] translates VM tracing callbacks into run, call and host scopes, with
-//! structured function/import IDs and source PCs. Pass its recommended [`TraceSink::mask`]
+//! structured function and import IDs and source PCs. One invocation can run several installed
+//! units, so every function argument (`func`, `next_func`, `entry`) packs the unit into its high
+//! 32 bits: `(unit << 32) | func`. Captures of unit 0 therefore carry plain function IDs. Import
+//! IDs belong to the program of the scope's unit; resolve each unit's program with
+//! [`execution_tape::vm::Units::program`]. Pass its recommended [`TraceSink::mask`]
 //! to the ordinary VM run. Add [`TraceMask::INSTR`] explicitly for instruction attempts,
 //! outcomes and actual control-flow successors.
 //!
@@ -14,7 +18,7 @@
 //!
 //! Authored source is resolved after capture using [`execution_tape::source::SourceMap`]. Export
 //! the exact program and optional source sidecar together, keyed by the application's context.
-//! Resolve recorded function/PC pairs through a map bound to that program; never interpret an
+//! Resolve recorded function/PC pairs through a map bound to that unit's program; never interpret an
 //! opaque span ID as a line or byte range. No source text is copied or looked up by this sink.
 //!
 //! Footfall capture is bounded: inspect its loss/window metadata before drawing conclusions.
@@ -36,8 +40,13 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use execution_tape::program::Program;
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
-use execution_tape::value::FuncRef;
+use execution_tape::value::{FuncId, FuncRef, UnitId};
 use footfall::{Args, ContextHandle, EventDesc, ScopeDesc, ScopeGuard};
+
+/// A function argument: the unit in the high 32 bits, the program-local function below.
+fn code(unit: UnitId, func: FuncId) -> u64 {
+    (u64::from(unit.0) << 32) | u64::from(func.0)
+}
 
 static RUN: ScopeDesc = ScopeDesc::new("execution_tape.run");
 static CALL: ScopeDesc = ScopeDesc::new("execution_tape.call");
@@ -137,10 +146,9 @@ impl TraceSink for FootfallSink {
     }
 
     fn run_start(&mut self, _program: &Program, entry: FuncRef, arg_count: usize) {
-        let entry = entry.func;
         self.close_scopes();
         let args = Args::none()
-            .with("entry", entry.0)
+            .with("entry", code(entry.unit, entry.func))
             .with("arg_count", arg_count as u64);
         self.run = Some(footfall::scope_with(&RUN, self.context, &args));
     }
@@ -153,7 +161,9 @@ impl TraceSink for FootfallSink {
             args = args.with("scope_token", run.token().get());
         }
         if let TraceOutcome::Trap(error) = outcome {
-            args = args.with("func", error.func.0).with("pc", error.pc);
+            args = args
+                .with("func", code(error.unit, error.func))
+                .with("pc", error.pc);
         }
         self.outcome(&RUN_END, &RUN_TRAP, &args, outcome);
         self.close_scopes();
@@ -167,10 +177,9 @@ impl TraceSink for FootfallSink {
         span_id: Option<u64>,
         opcode: u8,
     ) {
-        let (func, pc) = (location.func, location.pc);
         let mut args = Args::none()
-            .with("func", func.0)
-            .with("pc", pc)
+            .with("func", code(location.unit, location.func))
+            .with("pc", location.pc)
             .with("opcode", opcode);
         if let Some(span) = span_id {
             args = args.with("span_id", span);
@@ -186,10 +195,12 @@ impl TraceSink for FootfallSink {
         outcome: TraceOutcome<'_>,
     ) {
         let mut args = Args::none()
-            .with("func", location.func.0)
+            .with("func", code(location.unit, location.func))
             .with("pc", location.pc);
         if let Some(next) = next {
-            args = args.with("next_func", next.func.0).with("next_pc", next.pc);
+            args = args
+                .with("next_func", code(next.unit, next.func))
+                .with("next_pc", next.pc);
         }
         self.outcome(&INSTR_END, &INSTR_TRAP, &args, outcome);
     }
@@ -202,10 +213,9 @@ impl TraceSink for FootfallSink {
         location: TraceLocation,
         _span_id: Option<u64>,
     ) {
-        let (func, pc) = (location.func, location.pc);
         let args = Args::none()
-            .with("func", func.0)
-            .with("pc", pc)
+            .with("func", code(location.unit, location.func))
+            .with("pc", location.pc)
             .with("depth", depth as u64);
         let (desc, args) = match kind {
             ScopeKind::CallFrame { .. } => (&CALL, args),
@@ -224,10 +234,9 @@ impl TraceSink for FootfallSink {
         _span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
-        let (func, pc) = (location.func, location.pc);
         let mut args = Args::none()
-            .with("func", func.0)
-            .with("pc", pc)
+            .with("func", code(location.unit, location.func))
+            .with("pc", location.pc)
             .with("depth", depth as u64);
         if let Some(scope) = self.scopes.last()
             && scope.token().is_valid()

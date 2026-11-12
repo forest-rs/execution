@@ -305,6 +305,11 @@ This release has an [MSRV][] of 1.88.
   a location's program with `Recording::unit`, handle `ValueEvent::Installed` and `units` in
   exhaustive matches, and compare host-raised tags as `TagRef`s.
 
+- The observatory follows execution into other units. Recording views resolve functions,
+  disassembly and facts through each location's unit, and the live explorer shows the code of the
+  unit a frame runs and keys breakpoints by unit. Attached source maps describe the entry unit's
+  program; other units' locations say so instead of resolving through the wrong program.
+
 - Serve several programs from one bound host. `HostBindings::bind` validates and adds another
   program's imports, so units installed from any bound program call the same `BoundHost`, and
   `HostBindings::program_count` reports them. `HostBindings::import_count` now counts the slots
