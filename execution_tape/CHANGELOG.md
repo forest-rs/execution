@@ -49,7 +49,9 @@ This release has an [MSRV][] of 1.88.
   dec_div}`. Rescale and division take the target scale from a `u64` register and a
   `DecimalRounding` immediate (half-even, half-away-from-zero, toward-zero, floor, ceiling); they
   round once from the exact result and trap with `DecimalOverflow` when it does not fit (or the
-  scale exceeds 255), and division traps with `DivByZero` on a zero divisor. The verifier rejects
+  scale exceeds 255), and division traps with `DivByZero` on a zero divisor. Division costs one
+  fuel, plus one per long-division bit step when its scaled numerator exceeds 128 bits (up to 256
+  more), charged before it divides. The verifier rejects
   unknown modes with `VerifyError::InvalidDecimalRounding`, and disassembly shows them as
   `InputIndex::Rounding`. Migration: handle the new `Opcode`, `OperandRole::Rounding`,
   `InputIndex::Rounding` and `VerifyError::InvalidDecimalRounding` variants in exhaustive matches.

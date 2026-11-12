@@ -944,7 +944,7 @@ pub enum Opcode {
     DecScale = 0x9E,
     /// `dst = rescale(a, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; exact when widening, rounded when narrowing; traps on overflow).
     DecRescale = 0x9F,
-    /// `dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow).
+    /// `dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow; one fuel plus one per long-division bit step beyond 128 bits).
     DecDiv = 0xA0,
     /// `(dst, overflow) = a + b` (`i64` wrapped sum; `bool` true if the signed sum overflowed).
     I64AddOvf = 0xA1,

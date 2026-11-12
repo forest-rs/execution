@@ -16,7 +16,7 @@ use execution_tape::value::{Decimal, DecimalRounding, FuncId, Value};
 use execution_tape::verifier::{
     MetadataTable, VerifiedProgram, VerifyConfig, VerifyError, verify_program, verify_program_owned,
 };
-use execution_tape::vm::{Limits, Trap, TrapInfo, Vm};
+use execution_tape::vm::{InvocationOptions, Limits, RunStatus, Trap, TrapInfo, Vm};
 
 struct NoHost;
 impl Host for NoHost {
@@ -317,6 +317,61 @@ fn rescale_and_division_round_by_mode() {
             assert_eq!(out[3], dec(want, 0), "{value}/10 / 1 {mode:?}");
         }
     }
+}
+
+#[test]
+fn division_charges_fuel_for_each_long_division_step() {
+    let program = function(
+        &[ValueType::Decimal, ValueType::Decimal, ValueType::U64],
+        &[ValueType::Decimal],
+        |body, _| {
+            let quotient = body.alloc_register(ValueType::Decimal);
+            body.dec_div(quotient, 1, 2, 3, DecimalRounding::HalfEven)
+                .ret(0, &[quotient]);
+        },
+    );
+    let run_with = |fuel: u64, a: Value, b: Value, scale: u64| {
+        let mut vm = Vm::new(
+            NoHost,
+            Limits {
+                fuel,
+                ..Limits::default()
+            },
+        );
+        let unit = vm.install(program.clone()).unwrap();
+        let args = [a, b, Value::U64(scale)];
+        let mut run = vm
+            .start(
+                FuncRef::new(unit, FuncId(0)),
+                &args,
+                InvocationOptions::default(),
+            )
+            .unwrap();
+        let status = run.resume(u64::MAX);
+        let fuel = run.work().fuel;
+        let result = run
+            .result()
+            .map(|r| r.map(<[Value]>::to_vec).map_err(Clone::clone));
+        (status, fuel, result)
+    };
+    // Native 128-bit division: one fuel each for `dec_div` and `ret`.
+    let (status, fuel, _) = run_with(u64::MAX, dec(10, 0), dec(3, 0), 4);
+    assert_eq!((status.unwrap(), fuel), (RunStatus::Complete, 2));
+    // 10^30 at scale 20 is the 167-bit numerator 10^50: 167 more for its long division.
+    let ten_30 = 10_i128.pow(30);
+    let (status, fuel, result) = run_with(u64::MAX, dec(ten_30, 0), dec(ten_30, 0), 20);
+    assert_eq!((status.unwrap(), fuel), (RunStatus::Complete, 2 + 167));
+    assert_eq!(result.unwrap().unwrap(), [dec(10_i128.pow(20), 20)]);
+    // A 130-bit numerator, 10^39, divided by 10^37.
+    let (_, fuel, result) = run_with(u64::MAX, dec(1, 0), dec(10_i128.pow(37), 0), 39);
+    assert_eq!(fuel, 2 + 130);
+    assert_eq!(result.unwrap().unwrap(), [dec(100, 39)]);
+    // The steps are charged before dividing; short of them, the division traps.
+    let (status, fuel, _) = run_with(167, dec(ten_30, 0), dec(ten_30, 0), 20);
+    let error = status.unwrap_err();
+    assert!(matches!(error.trap, Trap::FuelExceeded));
+    assert_eq!(error.pc, 0, "the division traps, not the return");
+    assert_eq!(fuel, 1, "a refused charge is not debited");
 }
 
 #[test]

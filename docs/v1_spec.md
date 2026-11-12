@@ -212,7 +212,8 @@ handle and contract ID until the run ends; they never survive heap compaction or
 reset. Exceeding the budget traps with the function, argument/result position and configured limit.
 Traversals are iterative; sharing does not cause repeated expansion of proven subgraphs.
 
-- `fuel`: each executable instruction costs one; successful host calls may charge additional fuel.
+- `fuel`: each executable instruction costs one; `dec_div` charges its long-division steps and
+  successful host calls may charge additional fuel.
 - `max_call_depth`: caps guest frames.
 - `max_host_calls`: caps executed host calls.
 - `max_contract_work`: bounds boundary-contract traversal as described above.
@@ -597,7 +598,8 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 ### Conventions
 - `rX` denotes a register index.
 - All destination registers are written exactly once per dynamic execution of the instruction.
-- Unless specified, each instruction costs 1 fuel.
+- Unless specified, each instruction costs 1 fuel. `dec_div` costs more when its quotient needs
+  long division beyond 128 bits (see decimal semantics).
 - **Register convention**:
   - `r0` is the effect token register.
   - Value arguments (for a function with `arg_count = N`) are in `r1..=rN`.
@@ -674,6 +676,13 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
   fractional digits. The operand scales do not constrain the result scale (`1.5 / 0.25` at scale
   0 is `6`). A zero divisor traps with `DivByZero`; a rounded result outside `i128` traps with
   `DecimalOverflow`.
+- `dec_div` fuel follows its work. The numerator is `|a.mantissa| × 10^e` for
+  `e = r_scale + b.scale - a.scale` when `e >= 0`, and the divisor `|b.mantissa| × 10^-e`
+  otherwise. When both fit in 128 bits, or the numerator is smaller than the divisor, the division
+  costs the ordinary one fuel. Otherwise it runs binary long division with one step per numerator
+  bit and costs one fuel plus that bit length (129 to 256 more). The extra fuel is charged after
+  `DivByZero` and numerator-overflow checks and before dividing; when too little remains, the
+  instruction traps with `FuelExceeded` and debits no extra fuel.
 - `dec_rescale` returns `a` at `r_scale`: exactly when the scale does not decrease (trapping with
   `DecimalOverflow` if the mantissa overflows), otherwise rounded once by the mode.
 - `dec_cmp` returns `-1`, `0` or `1` comparing numeric values, ignoring scale (`1.0` and `1.00`

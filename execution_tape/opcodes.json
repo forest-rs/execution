@@ -3534,7 +3534,7 @@
       "byte": "0xA0",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow).",
+      "doc": "`dst = round(a / b, scale, rounding)` (`Decimal` at the `u64` scale in `scale`; traps on zero divisor or overflow; one fuel plus one per long-division bit step beyond 128 bits).",
       "operands": [
         {
           "kind": "reg",

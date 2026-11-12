@@ -1791,13 +1791,24 @@ impl<H: Host> Vm<H> {
                         .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::DecimalOverflow))?;
                     let da = ctx.read_decimal(base, *a);
                     let db = ctx.read_decimal(base, *b);
-                    let out = decimal::div(da, db, scale, *rounding).map_err(|error| {
+                    let trap = |ctx: &Registers, error| {
                         let trap = match error {
                             DecimalError::Overflow => Trap::DecimalOverflow,
                             DecimalError::DivisionByZero => Trap::DivByZero,
                         };
                         ctx.trap(func_id, pc, span_id, trap)
-                    })?;
+                    };
+                    let division =
+                        decimal::Division::new(da, db, scale).map_err(|error| trap(ctx, error))?;
+                    // Long division beyond 128 bits costs one more fuel per bit step.
+                    let steps = u64::from(division.steps());
+                    if budget.fuel < steps {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::FuelExceeded));
+                    }
+                    budget.fuel -= steps;
+                    let out = division
+                        .round(*rounding)
+                        .map_err(|error| trap(ctx, error))?;
                     ctx.write_decimal(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
