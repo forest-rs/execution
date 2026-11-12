@@ -469,7 +469,7 @@ impl<H: Host> Invocation<'_, H> {
         &mut self,
         program: impl Into<Arc<VerifiedProgram>>,
     ) -> Result<UnitId, InstallError> {
-        self.vm.install(program)
+        install_observed(&mut self.vm, &mut self.continuation, program.into())
     }
 
     /// Inspects the units installed in this invocation's VM.
@@ -711,4 +711,22 @@ impl Callable {
         args.insert(0, Value::Agg(closure.env));
         Ok((checkpoint, args, work))
     }
+}
+
+/// Installs `program` while an invocation is suspended and reports it to the invocation's trace.
+pub(super) fn install_observed<H: Host>(
+    vm: &mut Vm<H>,
+    continuation: &mut continuation::Continuation<'_>,
+    program: Arc<VerifiedProgram>,
+) -> Result<UnitId, InstallError> {
+    let unit = vm.install(program)?;
+    let units = vm.units();
+    let installed = units.program(unit).expect("installed unit");
+    continuation
+        .trace
+        .values(installed.program(), || ValueEvent::Installed {
+            unit,
+            units,
+        });
+    Ok(unit)
 }

@@ -296,13 +296,17 @@ impl Tag {
     }
 }
 
-/// How installation binds a program's imported tags.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Imports {
-    /// Each import must name a defined VM tag with an equal payload.
-    Require,
-    /// Unresolved imports define their tag from the program's declaration, as replay needs.
-    DefineMissing,
+/// One change to a VM's units and tags, in the order it happened.
+///
+/// [`Units::log`] lists them. Repeating the same installs and tag definitions in the same order
+/// in a fresh VM reproduces every [`UnitId`] and [`TagRef`], which is how replay rebuilds a
+/// recorded VM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreEvent {
+    /// [`Vm::install`] created this unit.
+    Installed(UnitId),
+    /// [`Vm::define_tag`] created this tag.
+    DefinedTag(TagRef),
 }
 
 /// The VM's append-only table of installed units.
@@ -313,6 +317,8 @@ pub(crate) struct UnitTable {
     tags: Vec<Tag>,
     /// Tags that programs can import, by name.
     defined: BTreeMap<Box<str>, TagRef>,
+    /// Installs and tag definitions in order.
+    log: Vec<StoreEvent>,
 }
 
 impl fmt::Debug for UnitTable {
@@ -348,35 +354,22 @@ impl UnitTable {
         program: Arc<VerifiedProgram>,
         heap: &mut AggHeap,
     ) -> Result<UnitId, InstallError> {
-        self.install_with(program, heap, Imports::Require)
-    }
-
-    pub(crate) fn install_with(
-        &mut self,
-        program: Arc<VerifiedProgram>,
-        heap: &mut AggHeap,
-        imports: Imports,
-    ) -> Result<UnitId, InstallError> {
         let id = u32::try_from(self.units.len())
             .ok()
             .filter(|&id| id < u32::MAX)
             .map(UnitId)
             .ok_or(InstallError::CapacityExceeded)?;
         let mut unit = Unit::new(program, heap, &mut self.canon)?;
-        unit.tags = self.bind_tags(id, &unit, imports)?;
+        unit.tags = self.bind_tags(id, &unit)?;
         self.units.push(unit);
+        self.log.push(StoreEvent::Installed(id));
         Ok(id)
     }
 
     /// Binds every tag of `unit`'s program: imports to defined tags, others to new tags.
     ///
     /// Imports are resolved before any tag is created, so a rejected install creates no tag.
-    fn bind_tags(
-        &mut self,
-        id: UnitId,
-        unit: &Unit,
-        imports: Imports,
-    ) -> Result<Box<[TagRef]>, InstallError> {
+    fn bind_tags(&mut self, id: UnitId, unit: &Unit) -> Result<Box<[TagRef]>, InstallError> {
         let program = unit.program.program();
         let declared = |tag: TagId| {
             let entry = program.tag(tag).expect("verified tag");
@@ -396,7 +389,6 @@ impl UnitTable {
             (name, payload, kinds)
         };
         let mut bound: Vec<Option<TagRef>> = vec![None; program.tags.len()];
-        let mut missing = Vec::new();
         for &import in &program.tag_imports {
             let (name, payload, _) = declared(import);
             match self.defined.get(name) {
@@ -404,7 +396,6 @@ impl UnitTable {
                     bound[import.0 as usize] = Some(tag);
                 }
                 Some(_) => return Err(InstallError::TagPayloadMismatch { name: name.into() }),
-                None if imports == Imports::DefineMissing => missing.push(import),
                 None => return Err(InstallError::UnresolvedTag { name: name.into() }),
             }
         }
@@ -420,10 +411,6 @@ impl UnitTable {
             let local = TagId(u32::try_from(index).expect("verified tag count"));
             let (name, payload, kinds) = declared(local);
             let tag = TagRef(u32::try_from(self.tags.len()).expect("checked tag capacity"));
-            let import = missing.contains(&local);
-            if import {
-                self.defined.insert(name.into(), tag);
-            }
             self.tags.push(Tag {
                 name: name.into(),
                 kinds,
@@ -469,6 +456,7 @@ impl UnitTable {
             definer: None,
         });
         self.defined.insert(name.into(), tag);
+        self.log.push(StoreEvent::DefinedTag(tag));
         Ok(tag)
     }
 }
@@ -593,6 +581,18 @@ impl<'a> Units<'a> {
         self.table.tag(tag).map(Tag::kinds)
     }
 
+    /// Every tag of `unit`'s program, in [`TagId`] order, bound to its VM tag.
+    #[must_use]
+    pub fn tags(&self, unit: UnitId) -> Option<&'a [TagRef]> {
+        self.table.get(unit).map(|unit| &*unit.tags)
+    }
+
+    /// Installs and tag definitions in the order they happened.
+    #[must_use]
+    pub fn log(&self) -> &'a [StoreEvent] {
+        &self.table.log
+    }
+
     /// The defined tag that programs import by `name`.
     #[must_use]
     pub fn defined_tag(&self, name: &str) -> Option<TagRef> {
@@ -626,18 +626,6 @@ impl<H: Host> Vm<H> {
         program: impl Into<Arc<VerifiedProgram>>,
     ) -> Result<UnitId, InstallError> {
         self.units.install(program.into(), self.memory.aggs_mut())
-    }
-
-    /// Installs `program`, defining each unresolved import from the program's own declaration.
-    ///
-    /// Replay installs a recorded program into a fresh VM this way: the recording names tags
-    /// locally, so their definitions need only agree with the program.
-    pub(crate) fn install_defining_imports(
-        &mut self,
-        program: Arc<VerifiedProgram>,
-    ) -> Result<UnitId, InstallError> {
-        self.units
-            .install_with(program, self.memory.aggs_mut(), Imports::DefineMissing)
     }
 
     /// Defines a tag that installed programs can import by `name`.

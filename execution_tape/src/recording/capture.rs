@@ -3,10 +3,10 @@
 
 use crate::host::ValueRef;
 use crate::program::Program;
-use crate::recording::RECORDED_UNIT;
 use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry, InstructionCapture,
-    InstructionOutcome, InstructionStatus, Propagation, RecordLimits, Recording, Thrown,
+    InstructionOutcome, InstructionStatus, Propagation, RecordLimits, Recording, Store, TagRecord,
+    Thrown, UnitRecord,
     control::{Action, Command, Returned},
     frames::{ActivationExit, ActivationOutcome, Frame, FrameId},
     instructions::History,
@@ -16,14 +16,18 @@ use crate::trace::{
     HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask,
     TraceOutcome, TraceSink, ValueEvent,
 };
-use crate::value::UnitId;
+use crate::value::{FuncRef, UnitId};
 use crate::verifier::VerifiedProgram;
-use crate::vm::Trap;
+use crate::vm::{StoreEvent, Trap, Units};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-/// Owns boundary observations for one invocation of a shared prepared program.
+/// Owns boundary observations for one invocation and the units it runs.
+///
+/// At entry the recorder snapshots the VM's units and tags, sharing their programs; installs
+/// while the invocation is suspended are recorded where they happen. Replay rebuilds the same
+/// units and tags with the same identities.
 ///
 /// Pass [`Self::mask`] to the ordinary VM run, then consume the recorder with [`Self::finish`].
 /// Capture failure stops value/graph retention; guest execution and live host effects continue.
@@ -48,12 +52,17 @@ pub struct Recorder {
     fault: Option<CaptureFault>,
     fault_location: Option<TraceLocation>,
     started: bool,
-    /// The VM unit the recorded invocation entered; locations record it as [`RECORDED_UNIT`].
-    unit: Option<UnitId>,
+    /// The recorded VM's units, indexed by [`UnitId`].
+    units: Vec<UnitRecord>,
+    store: Vec<Store>,
+    /// Entries of the VM's store log already recorded.
+    logged: usize,
 }
 
 impl Recorder {
-    /// Creates a recorder sharing `program`; execution must use this same prepared instance.
+    /// Creates a recorder for an invocation entering a unit of `program`.
+    ///
+    /// The entry unit must run this same prepared instance; other units may run any program.
     pub fn new(program: Arc<VerifiedProgram>, limits: RecordLimits) -> Self {
         Self {
             history: None,
@@ -72,9 +81,11 @@ impl Recorder {
             propagations: Vec::new(),
             end: None,
             fault: None,
-            unit: None,
             fault_location: None,
             started: false,
+            units: Vec::new(),
+            store: Vec::new(),
+            logged: 0,
         }
     }
 
@@ -125,6 +136,8 @@ impl Recorder {
         Recording {
             history: self.history,
             program: self.program,
+            units: self.units,
+            store: self.store,
             arena,
             initial,
             entry: self.entry,
@@ -156,6 +169,7 @@ impl Recorder {
             self.fault_location = location;
         }
     }
+    /// Checks that `program` is the entry program, before the unit table is known.
     fn check(&mut self, program: &Program) -> bool {
         if !core::ptr::eq(program, self.program.program()) {
             self.fail(CaptureFault::ProgramMismatch);
@@ -163,27 +177,58 @@ impl Recorder {
         self.fault.is_none()
     }
 
-    /// Records a VM location as a location of the recorded unit.
+    /// Checks that an event's `program` is the program of the recorded `unit`.
+    fn check_at(&mut self, program: &Program, unit: UnitId) -> bool {
+        match self.units.get(unit.0 as usize) {
+            Some(record) if core::ptr::eq(program, record.program.program()) => {}
+            Some(_) => self.fail(CaptureFault::ProgramMismatch),
+            None => self.fail(CaptureFault::ForeignUnit),
+        }
+        self.fault.is_none()
+    }
+
+    /// Checks that a location names a unit whose installation was recorded.
+    fn known(&mut self, location: TraceLocation) -> TraceLocation {
+        if location.unit.0 as usize >= self.units.len() {
+            self.fail(CaptureFault::ForeignUnit);
+        }
+        location
+    }
+
+    /// Records the VM's installs and tag definitions not yet recorded.
     ///
-    /// A recording describes one unit; replay installs it as [`RECORDED_UNIT`]. Execution in any
-    /// other unit cannot be recorded yet.
-    fn local(&mut self, location: TraceLocation) -> TraceLocation {
-        match self.unit {
-            Some(unit) if unit != location.unit => self.fail(CaptureFault::ForeignUnit),
-            Some(_) => {}
-            None => self.unit = Some(location.unit),
+    /// `installed` is the observation sequence for installs during the invocation.
+    fn record_store(&mut self, units: Units<'_>, installed: Option<usize>) {
+        for &event in &units.log()[self.logged.min(units.log().len())..] {
+            match event {
+                StoreEvent::Installed(unit) => {
+                    if unit.0 as usize != self.units.len() {
+                        self.fail(CaptureFault::ForeignUnit);
+                        return;
+                    }
+                    self.store.push(Store::Unit(self.units.len()));
+                    self.units.push(UnitRecord {
+                        unit,
+                        program: Arc::clone(units.program(unit).expect("logged unit")),
+                        tags: units.tags(unit).expect("logged unit").into(),
+                        installed,
+                    });
+                }
+                StoreEvent::DefinedTag(tag) => self.store.push(Store::Tag(TagRecord {
+                    tag,
+                    name: units.tag_name(tag).expect("logged tag").into(),
+                    payload: units.tag_payload(tag).expect("logged tag").into(),
+                })),
+            }
         }
-        TraceLocation {
-            unit: RECORDED_UNIT,
-            ..location
-        }
+        self.logged = units.log().len();
     }
 
     fn check_location(&self, location: TraceLocation) -> Result<(), CaptureFault> {
-        if self
-            .top
-            .is_some_and(|index| self.frames[index.index()].func != location.func)
-        {
+        if self.top.is_some_and(|index| {
+            let func = self.frames[index.index()].func;
+            (func.unit, func.func) != (location.unit, location.func)
+        }) {
             Err(CaptureFault::InvalidSequence)
         } else {
             Ok(())
@@ -207,6 +252,8 @@ impl Recorder {
 
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
+            // The unit table is recorded before capture; see `values`.
+            ValueEvent::Installed { .. } => {}
             ValueEvent::CallbackEnter {
                 location,
                 callee,
@@ -295,6 +342,7 @@ impl Recorder {
                 aggregates,
                 limits,
                 work,
+                ..
             } => {
                 if self.entry.is_some() || self.end.is_some() {
                     return Err(CaptureFault::MultipleRuns);
@@ -304,7 +352,7 @@ impl Recorder {
                     .builder
                     .roots(args.iter().map(ValueRef::from_value), aggregates)?;
                 self.entry = Some(Entry {
-                    func: entry.func,
+                    func: entry,
                     args,
                     limits: limits.clone(),
                     work,
@@ -337,8 +385,8 @@ impl Recorder {
                         fuel: extra_fuel,
                     },
                     HostCallOutcome::Failed(error) => CallOutcome::Failed(error.clone()),
-                    HostCallOutcome::Threw { local, payload, .. } => CallOutcome::Threw {
-                        tag: local.ok_or(CaptureFault::ForeignTag)?,
+                    HostCallOutcome::Threw { tag, payload, .. } => CallOutcome::Threw {
+                        tag,
                         payload: self
                             .builder
                             .roots(payload.iter().map(ValueRef::from_value), aggregates)?,
@@ -375,13 +423,12 @@ impl Recorder {
             }
             ValueEvent::Thrown {
                 location,
-                local,
+                tag,
                 values,
                 aggregates,
                 ..
             } => {
                 self.check_raise()?;
-                let tag = local.ok_or(CaptureFault::ForeignTag)?;
                 let values = self
                     .builder
                     .roots(values.iter().map(ValueRef::from_value), aggregates)?;
@@ -399,12 +446,11 @@ impl Recorder {
             }
             ValueEvent::Rethrown {
                 location,
-                local,
+                tag,
                 exception,
                 origin,
                 ..
             } => {
-                let tag = local.ok_or(CaptureFault::ForeignTag)?;
                 self.check_raise()?;
                 // A rethrow links to its original throw; the payload is never recorded twice.
                 if !self
@@ -423,7 +469,7 @@ impl Recorder {
             }
             ValueEvent::Caught {
                 location,
-                local,
+                tag,
                 handler,
                 depth,
                 region,
@@ -431,7 +477,6 @@ impl Recorder {
                 unwound_callbacks,
                 ..
             } => {
-                let tag = local.ok_or(CaptureFault::ForeignTag)?;
                 let thrown = &self.thrown;
                 let Some(last) = self.propagations.last_mut().filter(|last| {
                     last.caught.is_none()
@@ -487,14 +532,13 @@ impl TraceSink for Recorder {
         }
     }
     fn wants_registers(&self, location: TraceLocation, _: RegisterPhase) -> bool {
-        if self.unit.is_some_and(|unit| unit != location.unit) {
-            return false;
-        }
-        let location = TraceLocation {
-            unit: RECORDED_UNIT,
-            ..location
-        };
-        self.fault.is_none()
+        // Watches name locations of the recorder's program, in any unit running it.
+        let watched = self
+            .units
+            .get(location.unit.0 as usize)
+            .is_some_and(|unit| core::ptr::eq(unit.program.program(), self.program.program()));
+        watched
+            && self.fault.is_none()
             && self.history.as_ref().is_some_and(|h| {
                 h.status != InstructionStatus::Incomplete
                     && h.current()
@@ -504,10 +548,12 @@ impl TraceSink for Recorder {
     }
 
     fn registers(&mut self, program: &Program, event: RegisterEvent<'_>) {
-        if !self.check(program) || !self.wants_registers(event.location, event.phase) {
+        if !self.check_at(program, event.location.unit)
+            || !self.wants_registers(event.location, event.phase)
+        {
             return;
         }
-        let location = self.local(event.location);
+        let location = event.location;
         let history = self.history.as_mut().expect("enabled history");
         let index = history.current().expect("pending attempt");
         let watch = history
@@ -569,7 +615,7 @@ impl TraceSink for Recorder {
             }
     }
 
-    fn run_start(&mut self, program: &Program, _: crate::value::FuncRef, _: usize) {
+    fn run_start(&mut self, program: &Program, _: FuncRef, _: usize) {
         if self.started || self.entry.is_some() {
             self.fail(CaptureFault::MultipleRuns);
         }
@@ -591,10 +637,9 @@ impl TraceSink for Recorder {
         _: Option<u64>,
         opcode: u8,
     ) {
-        if !self.check(program) {
+        if !self.check_at(program, location.unit) {
             return;
         }
-        let location = self.local(location);
         let Some(history) = &mut self.history else {
             return;
         };
@@ -608,11 +653,10 @@ impl TraceSink for Recorder {
         next: Option<TraceLocation>,
         outcome: TraceOutcome<'_>,
     ) {
-        if !self.check(program) {
+        if !self.check_at(program, location.unit) {
             return;
         }
-        let location = self.local(location);
-        let next = next.map(|next| self.local(next));
+        let next = next.map(|next| self.known(next));
         let Some(history) = &mut self.history else {
             return;
         };
@@ -620,13 +664,33 @@ impl TraceSink for Recorder {
     }
 
     fn values(&mut self, program: &Program, event: ValueEvent<'_>) {
-        if let ValueEvent::Entry { entry, .. } = event {
-            self.unit = Some(entry.unit);
-            self.builder.unit = Some(entry.unit);
-        }
-        let event = event.map_locations(|location| self.local(location));
+        let unit = match event {
+            ValueEvent::Entry { entry, units, .. } => {
+                if self.units.is_empty() && self.fault.is_none() {
+                    self.record_store(units, None);
+                }
+                entry.unit
+            }
+            ValueEvent::Installed { unit, units } => {
+                if self.entry.is_none() || self.end.is_some() {
+                    self.fail(CaptureFault::InvalidSequence);
+                }
+                if self.fault.is_none() {
+                    self.record_store(units, Some(self.sequence));
+                }
+                self.check_at(program, unit);
+                return;
+            }
+            ValueEvent::HostCall { location, .. }
+            | ValueEvent::CallbackEnter { location, .. }
+            | ValueEvent::CallbackReturn { location, .. }
+            | ValueEvent::ReturnCandidate { location, .. }
+            | ValueEvent::Thrown { location, .. }
+            | ValueEvent::Rethrown { location, .. }
+            | ValueEvent::Caught { location, .. } => location.unit,
+        };
         let location = match event {
-            ValueEvent::Entry { .. } => None,
+            ValueEvent::Entry { .. } | ValueEvent::Installed { .. } => None,
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
@@ -635,7 +699,7 @@ impl TraceSink for Recorder {
             | ValueEvent::Rethrown { location, .. }
             | ValueEvent::Caught { location, .. } => Some(location),
         };
-        if self.check(program)
+        if self.check_at(program, unit)
             && let Err(error) = self.capture(event)
         {
             self.fail_at(error, location);
@@ -657,12 +721,11 @@ impl TraceSink for Recorder {
         else {
             return;
         };
-        if !self.check(program) {
+        if !self.check_at(program, location.unit) {
             return;
         }
-        let caller = caller.map(|caller| self.local(caller));
-        let location = self.local(location);
-        let (callee, func) = (callee.func, location.func);
+        let caller = caller.map(|caller| self.known(caller));
+        let func = FuncRef::new(location.unit, location.func);
         let location = Some(location);
         let expected_depth = self
             .top
@@ -675,7 +738,9 @@ impl TraceSink for Recorder {
                         .as_ref()
                         .is_some_and(|entry| entry.func == callee)
             }
-            (Some(parent), Some(site)) => self.frames[parent.index()].func == site.func,
+            (Some(parent), Some(site)) => {
+                self.frames[parent.index()].func == FuncRef::new(site.unit, site.func)
+            }
             _ => false,
         };
         if self.end.is_some()
@@ -723,12 +788,10 @@ impl TraceSink for Recorder {
         else {
             return;
         };
-        if !self.check(program) {
+        if !self.check_at(program, location.unit) {
             return;
         }
-        let caller = caller.map(|caller| self.local(caller));
-        let callee = callee.func;
-        let location = self.local(location);
+        let caller = caller.map(|caller| self.known(caller));
         let Some(top) = self.top else {
             self.fail_at(CaptureFault::InvalidSequence, Some(location));
             return;
@@ -794,12 +857,9 @@ impl TraceSink for Recorder {
                 if let Trap::Uncaught(exception) = &error.trap
                     && !self.propagations.last().is_some_and(|last| {
                         last.caught.is_none()
-                            && Some(self.thrown[last.exception].tag) == exception.local_tag()
-                            && self.thrown[last.exception].location
-                                == TraceLocation {
-                                    unit: RECORDED_UNIT,
-                                    ..exception.origin()
-                                }
+                            && self.thrown[last.exception].tag == exception.tag()
+                            && self.thrown[last.exception].location == exception.origin()
+                            && last.location.unit == error.unit
                             && last.location.func == error.func
                             && last.location.pc == error.pc
                     })
@@ -810,16 +870,13 @@ impl TraceSink for Recorder {
                     self.fail_at(
                         fault,
                         Some(TraceLocation {
-                            unit: RECORDED_UNIT,
+                            unit: error.unit,
                             func: error.func,
                             pc: error.pc,
                         }),
                     );
                 } else {
-                    // Traps in another unit already faulted through its events.
-                    let mut error = error.clone();
-                    error.unit = RECORDED_UNIT;
-                    self.end = Some(End::Trapped(error));
+                    self.end = Some(End::Trapped(error.clone()));
                 }
             }
         }

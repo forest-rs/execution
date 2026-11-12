@@ -46,13 +46,19 @@ impl TraceSink for Observe {
             ValueEvent::Thrown { .. } | ValueEvent::Rethrown { .. } | ValueEvent::Caught { .. } => {
                 panic!("fixture raises no exceptions")
             }
+            ValueEvent::Installed { .. } => panic!("fixture installs nothing while running"),
             ValueEvent::Entry {
                 entry,
                 args,
                 aggregates,
                 limits,
                 work,
+                units,
             } => {
+                assert!(
+                    units.program(entry.unit).is_some(),
+                    "the entry unit is installed"
+                );
                 assert_eq!(
                     work,
                     execution_tape::vm::DataWork::default(),
@@ -469,6 +475,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                     s.as_ptr() as usize
                 }
                 ValueEvent::ReturnCandidate { .. }
+                | ValueEvent::Installed { .. }
                 | ValueEvent::Thrown { .. }
                 | ValueEvent::Rethrown { .. }
                 | ValueEvent::Caught { .. } => return,

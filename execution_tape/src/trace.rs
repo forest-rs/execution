@@ -19,7 +19,7 @@ use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, RegionId, SymbolId, TagId};
 use crate::value::{FuncId, FuncRef, TagRef, UnitId, Value};
-use crate::vm::{DataWork, Limits, TrapInfo};
+use crate::vm::{DataWork, Limits, TrapInfo, Units};
 
 /// A set of trace events requested by a [`TraceSink`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -299,6 +299,19 @@ pub enum ValueEvent<'a> {
         limits: &'a Limits,
         /// Input preparation already debited against these limits.
         work: DataWork,
+        /// The VM's units and tags when the invocation starts. Installs while it is suspended
+        /// are reported by [`Self::Installed`].
+        units: Units<'a>,
+    },
+    /// A unit was installed while this invocation was suspended, through
+    /// [`crate::vm::Invocation::install`] or [`crate::vm::PendingHostCall::install`].
+    ///
+    /// Observers that rebuild the VM, such as recordings, repeat the install at the same point.
+    Installed {
+        /// The new unit.
+        unit: UnitId,
+        /// The VM's units and tags, including the new unit.
+        units: Units<'a>,
     },
     /// Raw host outcome after the call, before fuel debit and return validation.
     ///
@@ -393,112 +406,6 @@ pub enum ValueEvent<'a> {
     },
 }
 
-impl ValueEvent<'_> {
-    /// Applies `map` to every location this event carries.
-    pub(crate) fn map_locations(self, mut map: impl FnMut(TraceLocation) -> TraceLocation) -> Self {
-        match self {
-            Self::CallbackEnter {
-                location,
-                callee,
-                args,
-                work,
-                created,
-                aggregates,
-            } => Self::CallbackEnter {
-                location: map(location),
-                callee,
-                args,
-                work,
-                created,
-                aggregates,
-            },
-            Self::CallbackReturn {
-                location,
-                caller,
-                values,
-                aggregates,
-            } => Self::CallbackReturn {
-                location: map(location),
-                caller: map(caller),
-                values,
-                aggregates,
-            },
-            event @ Self::Entry { .. } => event,
-            Self::HostCall {
-                location,
-                host_sig,
-                args,
-                outcome,
-                work,
-                created,
-                aggregates,
-            } => Self::HostCall {
-                location: map(location),
-                host_sig,
-                args,
-                outcome,
-                work,
-                created,
-                aggregates,
-            },
-            Self::ReturnCandidate {
-                location,
-                values,
-                aggregates,
-            } => Self::ReturnCandidate {
-                location: map(location),
-                values,
-                aggregates,
-            },
-            Self::Thrown {
-                location,
-                tag,
-                local,
-                values,
-                aggregates,
-            } => Self::Thrown {
-                location: map(location),
-                tag,
-                local,
-                values,
-                aggregates,
-            },
-            Self::Rethrown {
-                location,
-                tag,
-                local,
-                exception,
-                origin,
-            } => Self::Rethrown {
-                location: map(location),
-                tag,
-                local,
-                exception,
-                origin: map(origin),
-            },
-            Self::Caught {
-                location,
-                tag,
-                local,
-                handler,
-                depth,
-                region,
-                clause,
-                unwound_callbacks,
-            } => Self::Caught {
-                location: map(location),
-                tag,
-                local,
-                handler: map(handler),
-                depth,
-                region,
-                clause,
-                unwound_callbacks,
-            },
-        }
-    }
-}
-
 impl core::fmt::Debug for ValueEvent<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Inspect selected values without dumping unrelated backing heap contents.
@@ -531,12 +438,18 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
+            Self::Installed { unit, units } => f
+                .debug_struct("Installed")
+                .field("unit", unit)
+                .field("units", units)
+                .finish(),
             Self::Entry {
                 entry,
                 args,
                 aggregates,
                 limits,
                 work,
+                units: _,
             } => f
                 .debug_struct("Entry")
                 .field("entry", entry)

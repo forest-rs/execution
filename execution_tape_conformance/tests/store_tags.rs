@@ -7,7 +7,7 @@ use execution_tape::{
     asm::{CallTarget, Catch, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{Program, TagId, ValueType},
-    recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
+    recording::{RecordLimits, RecordedTag, Recorder, ReplayOutcome, StoreRecord},
     trace::{TraceMask, TraceSink},
     value::{FuncId, FuncRef, TagRef, UnitId, Value},
     verifier::{VerifiedProgram, VerifyConfig, verify_program},
@@ -239,6 +239,26 @@ fn units_importing_one_tag_catch_each_others_exceptions() {
         [Value::I64(7)],
         "a clause naming the imported tag catches another unit's throw"
     );
+    // A recording rebuilds the defined tag and both importers, then catches again.
+    let mut recorder = Recorder::new(Arc::clone(&a.program), RecordLimits::default());
+    vm.run(
+        FuncRef::new(catcher, a.typed),
+        &[func(thrower, b.fail)],
+        recorder.mask(),
+        Some(&mut recorder),
+    )
+    .unwrap();
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    assert!(matches!(
+        recording.store().next(),
+        Some(StoreRecord::DefinedTag(RecordedTag { tag, name: "boom", .. })) if tag == boom
+    ));
+    assert_eq!(recording.unit(thrower).unwrap().tags, [boom]);
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay returns like the recorded run");
+    };
+    assert_eq!(values.values(), [Value::I64(7)]);
 }
 
 #[test]
@@ -364,7 +384,7 @@ fn a_host_throw_of_a_tag_the_caller_cannot_name_reaches_only_catch_all() {
         call(&mut vm, unit, m.host_all, Value::I64(5)).unwrap(),
         [Value::I64(-1)]
     );
-    // Recordings name tags in the recorded program, which cannot name this one.
+    // Recordings keep VM tags, so replay delivers a tag the calling program cannot name.
     let mut recorder = Recorder::new(Arc::clone(&m.program), RecordLimits::default());
     let _ = vm.run(
         FuncRef::new(unit, m.host_all),
@@ -372,10 +392,13 @@ fn a_host_throw_of_a_tag_the_caller_cannot_name_reaches_only_catch_all() {
         recorder.mask(),
         Some(&mut recorder),
     );
-    assert_eq!(
-        recorder.finish().status().unwrap_err(),
-        &CaptureFault::ForeignTag
-    );
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    assert_eq!(recording.tag_name(foreign), Some("foreign"));
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay catches the foreign tag with catch-all again");
+    };
+    assert_eq!(values.values(), [Value::I64(-1)]);
 }
 
 #[test]

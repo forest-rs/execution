@@ -953,12 +953,12 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
     let handler = *handler;
     let mut view = View::new(&record);
     assert_eq!(view.selected, 1);
-    assert_eq!(view.location().unwrap().func, root);
+    assert_eq!(view.location().unwrap().func, root.func);
     let screen = text(&mut view, 180, 42);
     assert!(screen.contains("CALLBACK #0 INPUTS"), "{screen}");
     assert!(screen.contains("42"));
     press(&mut view, KeyCode::Down);
-    assert_eq!(view.location().unwrap().func, handler);
+    assert_eq!(view.location().unwrap().func, handler.func);
     assert_eq!(view.stack().unwrap().len(), 2);
     let screen = text(&mut view, 180, 42);
     assert!(screen.contains("CALLBACK #0 RESULT"), "{screen}");
@@ -967,7 +967,7 @@ fn callback_boundaries_keep_parent_host_pending_and_show_actual_guest_source() {
         "{screen}"
     );
     press(&mut view, KeyCode::Down);
-    assert_eq!(view.location().unwrap().func, root);
+    assert_eq!(view.location().unwrap().func, root.func);
     assert!(text(&mut view, 180, 42).contains("signal"));
     press(&mut view, KeyCode::Char('i'));
     press(&mut view, KeyCode::Down);

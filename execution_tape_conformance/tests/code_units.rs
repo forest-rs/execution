@@ -11,7 +11,7 @@ use execution_tape::{
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     host_binding::HostFunctions,
     program::{StructTypeDef, ValueType},
-    recording::{CaptureFault, RecordLimits, Recorder},
+    recording::{ActivationOutcome, RecordLimits, Recorder, ReplayOutcome},
     trace::{TraceMask, TraceSink},
     value::{AggType, Closure, FuncId, FuncRef, UnitId, Value},
     verifier::VerifiedProgram,
@@ -646,37 +646,101 @@ fn exceptions() -> Exceptions {
 }
 
 #[test]
-fn recordings_describe_one_unit_and_fault_when_execution_leaves_it() {
+fn recordings_follow_calls_and_exceptions_into_other_units() {
     let fixture = exceptions();
     let mut vm = Vm::new(NoHost, Limits::default());
     let first = vm.install(Arc::clone(&fixture.program)).unwrap();
     let second = vm.install(Arc::clone(&fixture.program)).unwrap();
-    // Within its unit, a recording of a later-installed unit replays as unit 0.
-    let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
-    let target = Value::Func(FuncRef::new(second, fixture.fail));
-    vm.run(
-        FuncRef::new(second, fixture.all),
-        core::slice::from_ref(&target),
-        recorder.mask(),
-        Some(&mut recorder),
-    )
-    .unwrap();
-    let recording = recorder.finish();
-    recording.status().unwrap();
-    recording.replay().unwrap();
-    // Calling another unit cannot be recorded yet.
+    // `second` catches, with catch-all, the exception `first` throws.
     let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
     let foreign = Value::Func(FuncRef::new(first, fixture.fail));
-    let _ = vm.run(
-        FuncRef::new(second, fixture.all),
-        core::slice::from_ref(&foreign),
-        recorder.mask(),
-        Some(&mut recorder),
-    );
+    let result = vm
+        .run(
+            FuncRef::new(second, fixture.all),
+            core::slice::from_ref(&foreign),
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+        .unwrap();
+    assert_eq!(result, [Value::I64(-1)]);
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    let units: Vec<_> = recording
+        .units()
+        .map(|unit| (unit.unit, unit.installed))
+        .collect();
+    assert_eq!(units, [(first, None), (second, None)]);
+    assert_eq!(recording.invocation().unwrap().entry.unit, second);
+    // Each activation names the unit that ran it, not the entry unit.
+    let [root, callee] = recording.activations().collect::<Vec<_>>()[..] else {
+        panic!("entry and the foreign callee");
+    };
+    assert_eq!(root.func, FuncRef::new(second, fixture.all));
+    assert_eq!(callee.func, FuncRef::new(first, fixture.fail));
+    let caller = callee.caller.expect("the indirect call");
+    assert_eq!((caller.unit, caller.func), (second, fixture.all));
+    assert_eq!(callee.parent, Some(root.ordinal));
+    let exit = callee.exit.expect("the throw unwinds the callee");
+    assert_eq!(exit.location.unit, first);
+    assert_eq!(exit.outcome, ActivationOutcome::Caught { depth: 1 });
     assert_eq!(
-        recorder.finish().status().unwrap_err(),
-        &CaptureFault::ForeignUnit
+        root.exit.map(|exit| (exit.location.unit, exit.outcome)),
+        Some((second, ActivationOutcome::Returned))
     );
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay returns like the recorded run");
+    };
+    assert_eq!(values.values(), [Value::I64(-1)]);
+}
+
+#[test]
+fn recordings_replay_code_installed_while_suspended() {
+    let program = dispatcher();
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let caller = vm.install(Arc::clone(&program)).unwrap();
+    let old = vm.install(pausing_method()).unwrap();
+    let mut recorder = Recorder::new(program, RecordLimits::default());
+    let options = InvocationOptions::default()
+        .yield_host_calls()
+        .trace(recorder.mask(), &mut recorder);
+    let mut run = vm
+        .start(FuncRef::new(caller, FuncId(0)), &[Value::I64(10)], options)
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    run.pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::Func(FuncRef::new(old, FuncId(0)))], Ok(0))
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    let mut request = run.pending_host_call().unwrap();
+    let new = request.install(adds(100)).unwrap();
+    request.complete(&mut [], Ok(0)).unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    run.pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::Func(FuncRef::new(new, FuncId(0)))], Ok(0))
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(run);
+    let recording = recorder.finish();
+    recording.status().unwrap();
+    let installed: Vec<_> = recording
+        .units()
+        .map(|unit| (unit.unit, unit.installed.is_some()))
+        .collect();
+    assert_eq!(
+        installed,
+        [(caller, false), (old, false), (new, true)],
+        "the replacement is recorded where it was installed"
+    );
+    let ReplayOutcome::Returned(values) = recording.replay().unwrap() else {
+        panic!("replay returns like the recorded run");
+    };
+    let [Value::Agg(pair)] = values.values() else {
+        panic!("pair result");
+    };
+    let results = [0, 1].map(|index| values.aggregates().tuple_get(*pair, index).unwrap());
+    assert_eq!(results, [Value::I64(11), Value::I64(110)]);
 }
 
 #[test]

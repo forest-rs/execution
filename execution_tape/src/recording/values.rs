@@ -4,7 +4,7 @@
 use crate::aggregates::AggHeap;
 use crate::host::ValueRef;
 use crate::recording::{CaptureFault, CaptureResource, RecordLimits};
-use crate::value::{AggHandle, AggType, Decimal, FuncId, Obj};
+use crate::value::{AggHandle, AggType, Decimal, FuncRef, Obj};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -47,12 +47,12 @@ pub enum RecordedValue {
     Obj(Obj),
     /// Aggregate identity within this recording.
     Agg(AggregateId),
-    /// Function in the recorded program.
-    Func(FuncId),
+    /// Function of a recorded unit.
+    Func(FuncRef),
     /// Function and captured environment.
     Closure {
-        /// Closure body in the recorded program.
-        func: FuncId,
+        /// Closure body and its unit.
+        func: FuncRef,
         /// Environment in this recording.
         env: AggregateId,
     },
@@ -106,8 +106,6 @@ impl Arena {
 
 pub(crate) struct Builder {
     pub arena: Arena,
-    /// The recorded unit; function values of any other unit cannot be recorded.
-    pub unit: Option<crate::value::UnitId>,
     pub limits: RecordLimits,
     pub initial_count: u32,
     handles: BTreeMap<u32, AggregateId>,
@@ -120,7 +118,6 @@ impl Builder {
     pub(crate) fn new(limits: RecordLimits) -> Self {
         Self {
             arena: Arena::default(),
-            unit: None,
             limits,
             initial_count: 0,
             handles: BTreeMap::new(),
@@ -186,14 +183,6 @@ impl Builder {
         Ok(start..end)
     }
 
-    /// Records a function of the recorded unit by its program-local ID.
-    fn function(&self, function: crate::value::FuncRef) -> Result<FuncId, CaptureFault> {
-        match self.unit {
-            Some(unit) if unit != function.unit => Err(CaptureFault::ForeignUnit),
-            _ => Ok(function.func),
-        }
-    }
-
     fn push(&mut self, value: RecordedValue) -> Result<(), CaptureFault> {
         if self.arena.values.len() >= self.limits.values {
             return Err(CaptureFault::Budget {
@@ -238,10 +227,10 @@ impl Builder {
             ValueRef::F64(value) => RecordedValue::F64(value.to_bits()),
             ValueRef::Decimal(value) => RecordedValue::Decimal(*value),
             ValueRef::Obj(value) => RecordedValue::Obj(value),
-            ValueRef::Func(value) => RecordedValue::Func(self.function(value)?),
+            ValueRef::Func(value) => RecordedValue::Func(value),
             ValueRef::Agg(handle) => RecordedValue::Agg(self.handle(handle, heap)?),
             ValueRef::Closure(value) => RecordedValue::Closure {
-                func: self.function(value.func)?,
+                func: value.func,
                 env: self.handle(value.env, heap)?,
             },
             ValueRef::Str(value) => {

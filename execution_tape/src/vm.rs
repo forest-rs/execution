@@ -54,7 +54,7 @@ mod units;
 mod work;
 pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
 use ownership::BorrowedOrOwned;
-pub use units::{InstallError, TagError, Units};
+pub use units::{InstallError, StoreEvent, TagError, Units};
 pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -1240,6 +1240,7 @@ impl<H: Host> Vm<H> {
                 aggregates: self.memory.aggs(),
                 limits: &self.limits,
                 work: DataWork::default(),
+                units: self.units(),
             });
             self.run_body::<WithTracePolicy>(
                 ctx, budget, program, unit, entry, args, outputs, checkpoint, &mut trace, access,

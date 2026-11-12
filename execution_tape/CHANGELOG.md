@@ -219,9 +219,8 @@ This release has an [MSRV][] of 1.88.
   throw of a tag its program imports, and a tag it neither declares nor imports reaches only
   `catch_all` clauses. `Units::{tag, tag_name, tag_payload, defined_tag}` inspect tags.
   `ValueEvent::{Thrown, Rethrown, Caught}` and `HostCallOutcome::Threw` report the `TagRef` and
-  the program-local `TagId`, if any, as `local`. Recordings name tags by the recorded program's
-  `TagId` and report `CaptureFault::ForeignTag` for a tag that program cannot name; replay defines
-  the recorded program's imported tags in its fresh VM.
+  the program-local `TagId`, if any, as `local`. Recordings keep the `TagRef`, which replay
+  reproduces; `Recording::tag_name` names it.
   Migration: `UncaughtException::tag` now returns the `TagRef`, `UncaughtException::local_tag`
   returns `Option<TagId>`, and `UncaughtException::unit` is removed (use `origin().unit`). Hosts
   raising a program's tag resolve it with `HostContext::tag` or `Units::tag`. Handle `local` in
@@ -242,9 +241,7 @@ This release has an [MSRV][] of 1.88.
   `PendingHostCall::install` install while an invocation is suspended, and
   `PendingHostCall::unit` and `Invocation::units` report units. Indirect calls compare exact
   contract signatures interned per VM, and callable contracts compare canonical contracts across
-  units. Source maps
-  and recording watches use the new program-local `CodeLocation`. A recording describes one unit,
-  names it `RECORDED_UNIT`, and reports `CaptureFault::ForeignUnit` when execution leaves it.
+  units. Source maps and recording watches use the new program-local `CodeLocation`.
   `CallableError::MixedUnits` rejects a closure capturing another unit's functions.
 
 ### Removed
@@ -291,6 +288,22 @@ This release has an [MSRV][] of 1.88.
   `TraceLocation`. Migration: build function values with `FuncRef::new(unit, func)` and read
   `function.func` where a program-local ID is needed; add `unit` to `TraceLocation` literals;
   use `CodeLocation { func, pc }` for source mappings and watches.
+
+- Record and replay invocations that span units. At entry a recording snapshots the VM's
+  installs and tag definitions (`ValueEvent::Entry::units`, `Units::log`, `StoreEvent`), and
+  installs while the invocation is suspended arrive as `ValueEvent::Installed`. Replay repeats
+  them in order in a fresh VM, including installs during the run at their recorded point, and
+  checks that every unit and tag keeps its identity; a mismatch is `Divergence::Unit` or
+  `Divergence::Tag` at `ReplayBoundary::Store`. Locations, activations (`Activation::func`),
+  function values (`RecordedValue::Func` and `Closure` hold a `FuncRef`), the entry
+  (`recording::Invocation::entry`), host-raised tags (`HostOutcome::Threw`) and exceptions keep
+  the VM's `UnitId`s and `TagRef`s.
+  `Recording::{unit, units, store, tag_name}` inspect the recorded VM, `Units::tags` and
+  `PendingHostCall::units` inspect a live one, and `CaptureFault::ForeignUnit` now means a unit
+  whose install the recording never observed. Register watches apply to units running the
+  recorder's program. Migration: read `entry.func` and `func.func` for program-local IDs, resolve
+  a location's program with `Recording::unit`, handle `ValueEvent::Installed` and `units` in
+  exhaustive matches, and compare host-raised tags as `TagRef`s.
 
 - Serve several programs from one bound host. `HostBindings::bind` validates and adds another
   program's imports, so units installed from any bound program call the same `BoundHost`, and
