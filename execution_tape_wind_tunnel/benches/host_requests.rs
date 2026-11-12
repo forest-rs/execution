@@ -106,6 +106,7 @@ fn host_requests(c: &mut Criterion) {
                     loop {
                         match run.resume(u64::MAX).unwrap() {
                             RunStatus::Suspended => unreachable!("unlimited quantum"),
+                            RunStatus::CallbackReturned => unreachable!("no guest callbacks"),
                             RunStatus::Complete => break,
                             RunStatus::AwaitingHost => {
                                 let request = run.pending_host_call().unwrap();

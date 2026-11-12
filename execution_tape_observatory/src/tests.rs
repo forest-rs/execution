@@ -929,7 +929,7 @@ fn callback_recording() -> Recording {
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, handler)), args.to_vec())
         .unwrap();
-    assert_eq!(run.resume(100).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(100).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let mut returned = request.take_callback_results().unwrap();
     request.complete(&mut returned, Ok(0)).unwrap();

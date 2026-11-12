@@ -254,6 +254,14 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- A guest callback returning to the request that started it now reports
+  `RunStatus::CallbackReturned` instead of `AwaitingHost`, so drivers no longer infer the return
+  from `take_callback_results` being `Some`. The status describes the request: `resume` keeps
+  reporting it, even after the results are taken, until the request completes or calls back
+  again, and fresh requests still report `AwaitingHost`. Migration: handle
+  `RunStatus::CallbackReturned` in exhaustive matches; drivers that start callbacks take the
+  results there, and drivers that never call `call_guest` can treat it as unreachable.
+
 - Execution enters an installed unit instead of a borrowed program. `Vm::run`, `Vm::run_with_ctx`
   and `Vm::start` take an entry `FuncRef` in place of the `&VerifiedProgram` and `FuncId` pair,
   and `Callable::start`/`start_owned` take the `UnitId` that runs the callable's program.

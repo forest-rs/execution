@@ -582,7 +582,7 @@ fn a_host_request_can_call_back_into_another_unit() {
             vec![Value::I64(41)],
         )
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let mut results = request.take_callback_results().unwrap();
     assert_eq!(results, [Value::I64(42)]);

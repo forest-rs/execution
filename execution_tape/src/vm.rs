@@ -2596,6 +2596,7 @@ impl<H: Host> Vm<H> {
                             instruction: instr_ix,
                             depth: frame_index + 1,
                             abandoned: false,
+                            callback_returned: false,
                         });
                         return Ok(Progress::AwaitingHost);
                     }

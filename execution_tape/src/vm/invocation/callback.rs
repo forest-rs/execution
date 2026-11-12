@@ -48,8 +48,9 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     ///
     /// Consumes the view, not the host operation. Drive the same invocation with `resume`:
     /// the callback may yield further host requests, whose guards support the same operation.
-    /// When the callback returns, `resume` reports `AwaitingHost` for this original request.
-    /// Take its callback results, then complete the host operation explicitly. Repeated calls
+    /// When the callback returns, `resume` reports [`RunStatus::CallbackReturned`] and this
+    /// original request is pending again. Take its callback results, then complete the host
+    /// operation explicitly or call back again. Repeated calls
     /// discard any untaken previous callback results.
     ///
     /// The target may belong to any unit of this VM, including one installed while this request
@@ -358,7 +359,10 @@ pub(in crate::vm) fn return_to_host<H: Host, P: TracePolicy>(
     budget.frames -= 1;
     ctx.truncate_to(base);
     control.leave();
-    control.pending_host = Some(waiting.host);
+    control.pending_host = Some(PendingHost {
+        callback_returned: true,
+        ..waiting.host
+    });
     P::call_scope_exit(trace, program, depth, location.func, location.pc, span);
     // The guest returns to embedding code. Its parent host instruction is still pending;
     // pointing at that instruction would falsely imply that it executes a second time.

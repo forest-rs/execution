@@ -251,6 +251,7 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
     loop {
         match call.resume(1).unwrap() {
             RunStatus::Suspended => {}
+            RunStatus::CallbackReturned => unreachable!("no guest callbacks"),
             RunStatus::AwaitingHost => {
                 let before = call.remaining_fuel();
                 let mut request = call.pending_host_call().unwrap();
@@ -865,6 +866,7 @@ fn yielded_dispatch_has_exactly_the_same_trace_register_phases_and_fuel_as_sync_
             match call.resume(1).unwrap() {
                 RunStatus::Complete => break,
                 RunStatus::Suspended => {}
+                RunStatus::CallbackReturned => unreachable!("no guest callbacks"),
                 RunStatus::AwaitingHost => {
                     let before = mirror.0.borrow().len();
                     assert!(

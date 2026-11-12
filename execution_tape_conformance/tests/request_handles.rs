@@ -148,7 +148,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request
         .call_guest(Value::Func(FuncRef::new(unit, f.make)), vec![Value::I64(5)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let [Value::Closure(closure)] = request.take_callback_results().unwrap()[..] else {
         panic!("closure callback result");
@@ -172,13 +172,13 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request
         .call_guest(Value::Closure(closure), vec![Value::I64(1)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results(), Some(vec![Value::I64(6)]));
     request
         .call_guest(Value::Func(wrap), vec![Value::Agg(data)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     let mut boxed = request.take_callback_results().unwrap();
     let [Value::Agg(boxed_handle)] = boxed[..] else {
@@ -187,7 +187,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request.complete(&mut boxed, Ok(0)).unwrap();
 
     // Back at the outer request: every handle read so far still names the same node.
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.symbol(), "ask");
     assert_eq!(
@@ -201,7 +201,7 @@ fn handles_from_any_request_stay_valid_until_the_root_commits() {
     request
         .call_guest(Value::Closure(closure), vec![Value::I64(2)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     let mut request = run.pending_host_call().unwrap();
     assert_eq!(request.take_callback_results(), Some(vec![Value::I64(7)]));
     let before_commit = request.aggregates().len_u32();
@@ -238,7 +238,7 @@ fn rolling_back_discards_every_handle_the_requests_exposed() {
         .unwrap()
         .call_guest(Value::Func(FuncRef::new(unit, f.make)), vec![Value::I64(5)])
         .unwrap();
-    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
     assert!(
         run.aggregates().len_u32() >= 2,
         "data and closure environment"

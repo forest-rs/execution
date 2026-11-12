@@ -192,7 +192,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
         .unwrap();
     assert_eq!(
         run.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost,
+        RunStatus::CallbackReturned,
         "closure returns to inner request"
     );
     let mut inner = run.pending_host_call().unwrap();
@@ -200,7 +200,7 @@ fn nested_recording(max_steps: Option<usize>, limits: RecordLimits) -> Recording
     inner.complete(&mut values, Ok(2)).unwrap();
     assert_eq!(
         run.resume(u64::MAX).unwrap(),
-        RunStatus::AwaitingHost,
+        RunStatus::CallbackReturned,
         "outer callback returns to original request"
     );
     let mut outer = run.pending_host_call().unwrap();
@@ -504,7 +504,7 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
                 .unwrap()
                 .complete(&mut [Value::Agg(input)], Ok(0))
                 .unwrap();
-            assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+            assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
         }
         drop(run);
         let record = finish(recorder);

@@ -225,6 +225,9 @@ impl Runtime {
             RunStatus::Suspended => return Ok(Status::Running),
             RunStatus::Complete => return Ok(Status::Complete),
             RunStatus::AwaitingHost => {}
+            RunStatus::CallbackReturned => {
+                return Err("the block runtime starts no callbacks".into());
+            }
         }
         let site = self.site()?;
         let request = self
