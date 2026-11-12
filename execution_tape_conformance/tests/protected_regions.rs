@@ -111,7 +111,7 @@ fn a_throw_is_caught_by_the_innermost_matching_clause() {
     else {
         panic!("no region catches `other`");
     };
-    assert_eq!(exception.local_tag(), other);
+    assert_eq!(exception.local_tag(), Some(other));
 }
 
 #[test]

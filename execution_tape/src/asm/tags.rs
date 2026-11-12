@@ -118,6 +118,29 @@ impl ProgramBuilder {
         name: &str,
         payload: &[ContractRef],
     ) -> Result<TagId, TagBuildError> {
+        self.add_tag(name, payload, false)
+    }
+
+    /// Declares a tag this program imports by `name` instead of defining.
+    ///
+    /// Installing the program binds it to the VM tag defined under that name (see
+    /// [`crate::vm::Vm::define_tag`]), which must carry exactly these payload contracts. Units
+    /// importing one tag throw and catch the same exception. The returned ID is used like any
+    /// declared tag.
+    pub fn import_tag(
+        &mut self,
+        name: &str,
+        payload: &[ContractRef],
+    ) -> Result<TagId, TagBuildError> {
+        self.add_tag(name, payload, true)
+    }
+
+    fn add_tag(
+        &mut self,
+        name: &str,
+        payload: &[ContractRef],
+        import: bool,
+    ) -> Result<TagId, TagBuildError> {
         let abi = FunctionAbi {
             args: payload.to_vec(),
             rets: Vec::new(),
@@ -137,7 +160,11 @@ impl ProgramBuilder {
             .map_err(TagBuildError::Contract)?;
         let name = self.symbol(name);
         let id = TagId(u32::try_from(self.tags.len()).unwrap_or(u32::MAX));
-        self.tags.push(TagDef { name, payload });
+        self.tags.push(TagDef {
+            name,
+            payload,
+            import,
+        });
         Ok(id)
     }
 

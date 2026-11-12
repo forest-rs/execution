@@ -54,6 +54,15 @@ pub struct FuncRef {
     pub func: FuncId,
 }
 
+/// An exception tag of one VM: the identity that `throw` raises and catch clauses compare.
+///
+/// A program's [`crate::program::TagId`]s name tags locally; installing the program binds each
+/// to a `TagRef`. A tag the program defines is new for every install, while an imported tag
+/// binds to a tag defined in the VM ([`crate::vm::Vm::define_tag`]), so every unit importing it
+/// throws and catches the same exception. Like a [`UnitId`], it belongs to the VM that issued it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TagRef(pub u32);
+
 impl FuncRef {
     /// Qualifies `func` with the unit whose program defines it.
     #[must_use]

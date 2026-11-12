@@ -230,6 +230,9 @@ pub enum CaptureFault {
     InvalidSequence,
     /// Execution or a function value left the recorded unit. A recording describes one unit.
     ForeignUnit,
+    /// An exception's tag is neither declared nor imported by the recorded program, so the
+    /// recording cannot name it. Recorded tags are program-local [`TagId`]s.
+    ForeignTag,
 }
 
 /// The unit every location and function value in a recording names.

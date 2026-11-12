@@ -18,7 +18,7 @@ use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, RegionId, SymbolId, TagId};
-use crate::value::{FuncId, UnitId, Value};
+use crate::value::{FuncId, TagRef, UnitId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo};
 
 /// A set of trace events requested by a [`TraceSink`].
@@ -241,8 +241,10 @@ pub enum HostCallOutcome<'a> {
     /// The host raised a guest exception with [`HostError::throw`]. Payload aggregates have been
     /// adopted into the invocation heap; tag and payload are validated after observation.
     Threw {
-        /// Raised tag.
-        tag: TagId,
+        /// Raised VM tag, not yet checked to exist.
+        tag: TagRef,
+        /// The tag's ID in the calling program, if that program declares or imports it.
+        local: Option<TagId>,
         /// Raw payload values.
         payload: &'a [Value],
     },
@@ -341,8 +343,11 @@ pub enum ValueEvent<'a> {
     Thrown {
         /// Throwing instruction.
         location: TraceLocation,
-        /// Program-local tag being raised.
-        tag: TagId,
+        /// VM tag being raised.
+        tag: TagRef,
+        /// The tag's ID in the throwing program, if it declares or imports it. A guest `throw`
+        /// always names its tag; a host may raise one the calling program cannot name.
+        local: Option<TagId>,
         /// Payload values in tag order.
         values: &'a [Value],
         /// Storage containing payload aggregates at the throw site.
@@ -355,8 +360,10 @@ pub enum ValueEvent<'a> {
     Rethrown {
         /// Rethrowing instruction.
         location: TraceLocation,
-        /// The exception's original tag.
-        tag: TagId,
+        /// The exception's original VM tag.
+        tag: TagRef,
+        /// The tag's ID in the rethrowing program, if that program declares or imports it.
+        local: Option<TagId>,
         /// Zero-based ordinal of the original [`Self::Thrown`] among this invocation's raises.
         exception: usize,
         /// The original throwing instruction.
@@ -368,8 +375,11 @@ pub enum ValueEvent<'a> {
     Caught {
         /// Throwing instruction.
         location: TraceLocation,
-        /// Caught tag.
-        tag: TagId,
+        /// Caught VM tag.
+        tag: TagRef,
+        /// The tag's ID in the program of [`Self::Caught::handler`], if it declares or imports
+        /// it; `None` when a catch-all clause caught a tag that program cannot name.
+        local: Option<TagId>,
         /// First executable instruction of the handler, in the catching activation.
         handler: TraceLocation,
         /// Stack depth of the catching activation; the root activation has depth one.
@@ -443,28 +453,33 @@ impl ValueEvent<'_> {
             Self::Thrown {
                 location,
                 tag,
+                local,
                 values,
                 aggregates,
             } => Self::Thrown {
                 location: map(location),
                 tag,
+                local,
                 values,
                 aggregates,
             },
             Self::Rethrown {
                 location,
                 tag,
+                local,
                 exception,
                 origin,
             } => Self::Rethrown {
                 location: map(location),
                 tag,
+                local,
                 exception,
                 origin: map(origin),
             },
             Self::Caught {
                 location,
                 tag,
+                local,
                 handler,
                 depth,
                 region,
@@ -473,6 +488,7 @@ impl ValueEvent<'_> {
             } => Self::Caught {
                 location: map(location),
                 tag,
+                local,
                 handler: map(handler),
                 depth,
                 region,
@@ -560,30 +576,35 @@ impl core::fmt::Debug for ValueEvent<'_> {
             Self::Thrown {
                 location,
                 tag,
+                local,
                 values,
                 aggregates,
             } => f
                 .debug_struct("Thrown")
                 .field("location", location)
                 .field("tag", tag)
+                .field("local", local)
                 .field("values", values)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::Rethrown {
                 location,
                 tag,
+                local,
                 exception,
                 origin,
             } => f
                 .debug_struct("Rethrown")
                 .field("location", location)
                 .field("tag", tag)
+                .field("local", local)
                 .field("exception", exception)
                 .field("origin", origin)
                 .finish(),
             Self::Caught {
                 location,
                 tag,
+                local,
                 handler,
                 depth,
                 region,
@@ -593,6 +614,7 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .debug_struct("Caught")
                 .field("location", location)
                 .field("tag", tag)
+                .field("local", local)
                 .field("handler", handler)
                 .field("depth", depth)
                 .field("region", region)

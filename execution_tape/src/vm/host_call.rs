@@ -40,7 +40,11 @@ pub(super) fn adopted_roots<'a>(
 }
 
 /// The raw outcome as observers see it.
+///
+/// `unit` is the calling unit, which names a raised tag locally when it binds it.
 pub(super) fn observed<'a>(
+    units: &UnitTable,
+    unit: UnitId,
     values: &'a [Value],
     outcome: &'a Result<u64, HostError>,
 ) -> HostCallOutcome<'a> {
@@ -51,6 +55,7 @@ pub(super) fn observed<'a>(
         },
         Err(HostError::Throw(thrown)) => HostCallOutcome::Threw {
             tag: thrown.tag,
+            local: units.unit(unit).local_tag(thrown.tag),
             payload: &thrown.payload,
         },
         Err(error) => HostCallOutcome::Failed(error),

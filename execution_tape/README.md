@@ -435,9 +435,13 @@ fn answer_with_edit<H: Host>(run: &mut Invocation<'_, H>, edited: Arc<VerifiedPr
 }
 ```
 
-Exception tags are still local to their unit: a `catch tag` clause catches only its own
-unit's tags, and exceptions from other units are reachable through `catch_all`. A recording
-describes one unit and reports `CaptureFault::ForeignUnit` when execution leaves it.
+Exceptions carry a VM `TagRef`. Each install of a program defines fresh tags for the tags it
+declares, while tags it imports (`ProgramBuilder::import_tag`) bind at install to the tag the
+embedding defined under that name with `Vm::define_tag`, provided the payloads agree. A
+`catch tag` clause therefore catches every unit's throw of a tag its program imports, and a
+tag the program cannot name reaches only `catch_all`. A recording describes one unit and
+reports `CaptureFault::ForeignUnit` when execution leaves it, or `CaptureFault::ForeignTag`
+for an exception whose tag the recorded program cannot name.
 
 ## Paused frames and host-object roots
 

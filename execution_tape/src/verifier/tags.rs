@@ -49,6 +49,18 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         }
         names.insert(name, tag);
     }
+    // Imports name existing tags, each once, in increasing order.
+    let mut previous = None;
+    for (index, &tag) in program.tag_imports.iter().enumerate() {
+        if tag.0 as usize >= program.tags.len() || previous.is_some_and(|last| tag.0 <= last) {
+            return Err(VerifyError::InvalidMetadata {
+                table: MetadataTable::TagImports,
+                entry: u32::try_from(index).unwrap_or(u32::MAX),
+                error: DecodeError::OutOfBounds,
+            });
+        }
+        previous = Some(tag.0);
+    }
     Ok(())
 }
 

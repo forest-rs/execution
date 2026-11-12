@@ -111,7 +111,11 @@ fn assert_uncaught(fixture: &Fixture, error: &TrapInfo, code: i64) {
     let Trap::Uncaught(exception) = &error.trap else {
         panic!("expected an uncaught exception, got {error}");
     };
-    assert_eq!(exception.local_tag(), fixture.failed, "thrown tag identity");
+    assert_eq!(
+        exception.local_tag(),
+        Some(fixture.failed),
+        "thrown tag identity"
+    );
     assert_eq!(exception.name(), "failed", "thrown tag name");
     let payload = exception.payload();
     let [Value::I64(actual), Value::Str(text), Value::Agg(tuple)] = payload.values() else {
@@ -257,6 +261,7 @@ impl TraceSink for Observe {
             tag,
             values,
             aggregates,
+            ..
         } = event
         {
             let Value::Agg(tuple) = values[2] else {

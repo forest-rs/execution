@@ -54,7 +54,7 @@ mod units;
 mod work;
 pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
 use ownership::BorrowedOrOwned;
-pub use units::{InstallError, Units};
+pub use units::{InstallError, TagError, Units};
 pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -279,10 +279,10 @@ pub enum Trap {
     InvalidUtf8,
     /// Explicit trap instruction.
     TrapCode(u32),
-    /// A host raised a tag that the calling program does not declare.
-    TagOutOfBounds {
+    /// A host raised a tag that this VM never issued.
+    UnknownTag {
         /// Requested tag.
-        tag: crate::program::TagId,
+        tag: crate::value::TagRef,
     },
     /// An exception reference would cross the invocation boundary.
     ///
@@ -389,8 +389,8 @@ impl fmt::Display for Trap {
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
             Self::TrapCode(code) => write!(f, "trap({code})"),
-            Self::TagOutOfBounds { tag } => {
-                write!(f, "host raised tag#{}, which the program does not declare", tag.0)
+            Self::UnknownTag { tag } => {
+                write!(f, "host raised tag#{}, which this VM never issued", tag.0)
             }
             Self::ExceptionBoundary => f.write_str(
                 "exception references cannot cross the invocation boundary",
@@ -2661,7 +2661,12 @@ impl<H: Host> Vm<H> {
                             },
                             host_sig: *host_sig,
                             args: &observed_args,
-                            outcome: host_call::observed(ret_slots, &host_result),
+                            outcome: host_call::observed(
+                                &self.units,
+                                unit_id,
+                                ret_slots,
+                                &host_result,
+                            ),
                             work,
                             created: created.as_ref().ok().unwrap_or(&(0..0)),
                             aggregates: self.memory.aggs(),

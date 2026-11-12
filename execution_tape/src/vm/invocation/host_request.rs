@@ -6,7 +6,8 @@
 use super::*;
 use crate::host::HostThrow;
 use crate::host::SigHash;
-use crate::program::{HostSigId, TagId};
+use crate::program::HostSigId;
+use crate::value::TagRef;
 use crate::vm::host_call::{HostReturnSite, PendingHost, admit_return, adopted_roots, observed};
 
 struct Site<'a> {
@@ -317,7 +318,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// This is [`Self::complete`] with [`HostError::throw`]: protected regions around the call can
     /// catch it, and a wrong tag, arity or payload kind traps. Aggregate payload values built with
     /// [`Self::context`] are adopted like returned values.
-    pub fn throw(self, tag: TagId, payload: Vec<Value>) -> Result<(), TrapInfo> {
+    pub fn throw(self, tag: TagRef, payload: Vec<Value>) -> Result<(), TrapInfo> {
         self.complete(&mut [], Err(HostError::throw(tag, payload)))
     }
     /// Produces and admits an external outcome asynchronously, with cancellation tracking.
@@ -629,7 +630,7 @@ fn finish_pending<P: TracePolicy>(
             location: site.pending.location,
             host_sig: site.import,
             args: &args,
-            outcome: observed(values, &outcome),
+            outcome: observed(code.units, site.pending.location.unit, values, &outcome),
             aggregates: heap,
             work,
             created: created.as_ref().ok().unwrap_or(&(0..0)),

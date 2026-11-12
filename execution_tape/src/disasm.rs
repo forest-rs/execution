@@ -1299,6 +1299,9 @@ impl fmt::Display for Disassembly<'_> {
             for index in 0..self.program.tags.len() {
                 let tag = TagId(u32::try_from(index).unwrap_or(u32::MAX));
                 write!(f, "tag#{}", tag.0)?;
+                if self.program.tag_imports.contains(&tag) {
+                    write!(f, " import")?;
+                }
                 match self.program.tag_name(tag) {
                     Some(name) => write!(f, " \"{name}\"")?,
                     None => write!(f, " <invalid name>")?,

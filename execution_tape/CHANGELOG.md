@@ -43,13 +43,14 @@ This release has an [MSRV][] of 1.88.
   Cranelift's `sadd_overflow`/`uadd_overflow` family. Disassembly lists both destinations.
   Migration: handle the new `Opcode` variants in exhaustive matches.
 
-- Raise guest exceptions from hosts. A host returns `HostError::throw(tag, payload)`, and a
-  yielded request can complete with `PendingHostCall::throw`; the exception is raised at the
-  `host_call` and is caught by protected regions like a guest `throw`. Undeclared tags trap with
-  `Trap::TagOutOfBounds`. Observers see `HostCallOutcome::Threw`, and recordings keep the payload
-  as `HostOutcome::Threw` so replay delivers the same exception.
+- Raise guest exceptions from hosts. A host returns `HostError::throw(tag, payload)` with a VM
+  `TagRef`, and a yielded request can complete with `PendingHostCall::throw`; the exception is
+  raised at the `host_call` and is caught by protected regions like a guest `throw`.
+  `HostContext::tag` resolves the calling program's `TagId` to its `TagRef`. Tags the VM never
+  issued trap with `Trap::UnknownTag`. Observers see `HostCallOutcome::Threw`, and recordings keep
+  the payload as `HostOutcome::Threw` so replay delivers the same exception.
   Migration: handle `HostError::Throw`, `HostCallOutcome::Threw`, `HostOutcome::Threw` and
-  `Trap::TagOutOfBounds` in exhaustive matches.
+  `Trap::UnknownTag` in exhaustive matches.
 
 - Rethrow caught exceptions by reference. The new `ValueType::Exn` register kind holds a caught
   exception; `Catch::TagRef` and `Catch::AllRef` (`CatchClause::TagRef`/`AllRef`) bind it as the
@@ -188,6 +189,24 @@ This release has an [MSRV][] of 1.88.
   installed from a different program traps with `Trap::UnitProgramMismatch`. `Invocation::unit`
   reports the entry unit.
 
+- Share exception tags between units. A `TagRef` names a tag of one VM. Installing a program binds
+  each tag it declares to a new `TagRef`, so two installs of one program throw distinct
+  exceptions, and each tag it imports with `ProgramBuilder::import_tag` to the tag defined under
+  that name with `Vm::define_tag`. Imports live in the optional `tag_imports` section (`15`) and
+  `Program::tag_imports`, and resolve at install by name and canonical payload contracts;
+  `InstallError::UnresolvedTag` and `InstallError::TagPayloadMismatch` reject the install without
+  creating a unit or tag. Exceptions carry their `TagRef`, so a `catch tag` clause catches every unit's
+  throw of a tag its program imports, and a tag it neither declares nor imports reaches only
+  `catch_all` clauses. `Units::{tag, tag_name, tag_payload, defined_tag}` inspect tags.
+  `ValueEvent::{Thrown, Rethrown, Caught}` and `HostCallOutcome::Threw` report the `TagRef` and
+  the program-local `TagId`, if any, as `local`. Recordings name tags by the recorded program's
+  `TagId` and report `CaptureFault::ForeignTag` for a tag that program cannot name; replay defines
+  the recorded program's imported tags in its fresh VM.
+  Migration: `UncaughtException::tag` now returns the `TagRef`, `UncaughtException::local_tag`
+  returns `Option<TagId>`, and `UncaughtException::unit` is removed (use `origin().unit`). Hosts
+  raising a program's tag resolve it with `HostContext::tag` or `Units::tag`. Handle `local` in
+  exhaustive event patterns, and initialize `Program::tag_imports` when constructing a `Program`.
+
 - Struct and array types are structural shapes interned in the VM heap. `AggHeap::intern_shape`,
   `AggHeap::shape`, `AggHeap::import_shape`, `AggHeap::shape_count` and `AggHeap::take_nodes`
   manage them, `AggShape` describes one, and `Recording::shape` resolves recorded shapes.
@@ -203,8 +222,7 @@ This release has an [MSRV][] of 1.88.
   `PendingHostCall::install` install while an invocation is suspended, and
   `PendingHostCall::unit` and `Invocation::units` report units. Indirect calls compare exact
   contract signatures interned per VM, and callable contracts compare canonical contracts across
-  units. Tags remain local to their unit: `UncaughtException::unit` names it, a `catch tag` clause
-  catches only its own unit's tags, and `catch_all` catches exceptions from any unit. Source maps
+  units. Source maps
   and recording watches use the new program-local `CodeLocation`. A recording describes one unit,
   names it `RECORDED_UNIT`, and reports `CaptureFault::ForeignUnit` when execution leaves it.
   `CallableError::MixedUnits` rejects a closure capturing another unit's functions.

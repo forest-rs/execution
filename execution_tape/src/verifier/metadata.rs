@@ -41,6 +41,8 @@ pub enum MetadataTable {
     Tags,
     /// Protected region, clause and run ranges, indexed by function.
     Regions,
+    /// Imported tag IDs, indexed by import.
+    TagImports,
 }
 
 fn invalid(table: MetadataTable, entry: usize, error: DecodeError) -> VerifyError {

@@ -332,9 +332,10 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `12 = contracts`
 - `13 = tags` (optional)
 - `14 = regions` (optional)
+- `15 = tag_imports` (optional)
 
-Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs`, `13 = tags` and
-`14 = regions` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
+Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs`, `13 = tags`,
+`14 = regions` and `15 = tag_imports` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -531,6 +532,22 @@ omitted when the program declares no tags:
 
 Payload contracts use the shared contract table, like call signatures. Decoding packs them into
 `Program::contract_ids` after call signatures.
+
+Installing a program in a VM binds each tag to a VM tag (`TagRef`). A tag the program declares
+becomes a new VM tag for every install, so two installs of one program throw distinct exceptions.
+A tag listed in `tag_imports` instead binds to the VM tag defined under its name
+(`Vm::define_tag`), whose payload contracts must equal the declared ones after canonicalisation;
+otherwise the install fails with `UnresolvedTag` or `TagPayloadMismatch` and creates no unit
+or tag.
+
+## Tag imports (optional)
+Marks tags of the `tags` section as imported rather than defined. The section is omitted when
+the program defines all its tags:
+- `count: ULEB128`
+- `tag_ids[count]: ULEB128...` (strictly increasing; each names an entry of `tags`)
+
+An imported tag keeps its `tags` entry: its name is the import key, and its payload contracts
+are both the import's expected payload and the contracts `throw` checks in this program.
 
 ## Regions (optional)
 Protected regions attach catch clauses to instructions. Each function owns a region tree and a
@@ -741,9 +758,11 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     `host_call` that entered the activation above it. Within an activation, the clauses of the
     instruction's innermost region are tried in order, then its parent's, and so on. A
     `catch tag` clause catches only that tag; `catch_all` catches every exception.
-  - Tags are local to the unit whose program declares them. An activation of another unit
-    cannot name the tag, so only its `catch_all`/`catch_all_ref` clauses catch that exception;
-    a `catch tag` clause never matches another unit's tag, even one with the same name.
+  - Exceptions carry a VM tag. Each activation compares the VM tags its own unit binds to its
+    clauses' `tag_id`s, so units importing one tag catch each other's throws of it. A tag an
+    activation's program neither declares nor imports reaches only its `catch_all`/`catch_all_ref`
+    clauses; a `catch tag` clause never matches another install's declared tag, even one with
+    the same name.
   - A catch abandons every activation above the catching one, including guest callbacks entered
     from a pending host request and that request itself, releasing their frames. The payload is
     written to the handler block's parameters and execution continues at the handler.
@@ -776,8 +795,11 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
     - or failure, which becomes `HostCallFailed { symbol, sig_hash, error }`
     - or `HostError::throw(tag, payload)` (`PendingHostCall::throw` for yielded requests), which
       raises a guest exception at the `host_call` exactly as `throw` would there. Payload
-      aggregates built with the call's context are adopted like results. An undeclared tag traps
-      with `TagOutOfBounds`; a wrong payload arity or kind traps like an invalid return.
+      aggregates built with the call's context are adopted like results. The tag is a VM tag:
+      one defined with `Vm::define_tag`, or a program tag resolved with `HostContext::tag`. A tag
+      the VM never issued traps with `UnknownTag`; a wrong payload arity or kind traps like an
+      invalid return. Refined payload contracts are checked through the calling unit's binding of
+      the tag, or else the unit that declared it.
 
 ## Opcode encodings
 The schema in `execution_tape/opcodes.json` defines instruction names, bytes, operands and
