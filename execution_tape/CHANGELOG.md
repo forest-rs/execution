@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Reach the host from a waiting request with `PendingHostCall::host` and `host_mut`. A driver
+  can consult or update its runtime and then complete, dispatch or call back on the same view,
+  instead of copying the request out, dropping it, using `Invocation::host_mut` and querying the
+  request again. Migration: no caller changes are required.
+
 - Document the lifetime of handles read from yielded requests. Aggregate, closure and function
   handles read from any request of an invocation (arguments, callback results and what they
   reach) stay valid until the invocation commits its root or rolls back, and may be passed to
