@@ -169,10 +169,15 @@ fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
     assert_eq!(
         record.outcome_location(),
         Some(execution_tape::trace::TraceLocation {
-            unit: UnitId(0),
+            unit: UnitId(1),
             func: trap.func,
             pc: trap.pc
         })
+    );
+    assert_eq!(
+        trap.unit,
+        UnitId(1),
+        "recordings keep the VM's unit identities"
     );
     assert_ne!(
         trap.pc, 0,

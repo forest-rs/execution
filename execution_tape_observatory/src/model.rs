@@ -3,11 +3,13 @@
 
 use super::flow::Flow;
 use execution_tape::disasm::{FunctionDisassembly, disassemble_function};
+use execution_tape::program::Program;
 use execution_tape::recording::{
     AggregateId, CallStack, ControlAction, ControlCommand, GuestReturn, HostCall, HostOutcome,
     Outcome, RecordedValue, Recording, ReplayOutcome,
 };
 use execution_tape::trace::TraceLocation;
+use execution_tape::value::UnitId;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +39,8 @@ pub(super) struct View<'a> {
     pub(super) path: Vec<(AggregateId, usize)>,
     pub(super) replay: String,
     pub(super) source: Option<FunctionDisassembly<'a>>,
+    /// Unit whose program [`Self::source`] disassembles.
+    pub(super) source_unit: Option<UnitId>,
     pub(super) source_index: usize,
     pub(super) flow: Flow,
     pub(super) fact_lines: Vec<String>,
@@ -46,11 +50,32 @@ pub(super) struct View<'a> {
     step_location: Option<TraceLocation>,
     sources: Option<execution_tape::source::BoundSources<'a>>,
     fact_analysis: Option<execution_tape::verifier::FunctionAnalysis<'a>>,
-    fact_function: Option<execution_tape::value::FuncId>,
+    fact_function: Option<(UnitId, execution_tape::value::FuncId)>,
     pub(super) page_rows: usize,
 }
 
 impl<'a> View<'a> {
+    /// The program a recorded unit runs; locations of any unit resolve through it.
+    pub(super) fn code(&self, unit: UnitId) -> &'a Program {
+        let record = self.record;
+        record
+            .unit(unit)
+            .map_or_else(|| record.program().program(), |unit| unit.program.program())
+    }
+
+    /// The program [`Self::source`] disassembles.
+    pub(super) fn source_code(&self) -> &'a Program {
+        match self.source_unit {
+            Some(unit) => self.code(unit),
+            None => self.record.program().program(),
+        }
+    }
+
+    /// Whether the bound source map describes `unit`'s program: it maps the entry program only.
+    fn mapped(&self, unit: UnitId) -> bool {
+        core::ptr::eq(self.code(unit), self.record.program().program())
+    }
+
     #[cfg(test)]
     pub(super) fn new(record: &'a Recording) -> Self {
         Self::with_options(record, None, false)
@@ -92,6 +117,7 @@ impl<'a> View<'a> {
             path: Vec::new(),
             replay: "not checked · r to replay".into(),
             source: None,
+            source_unit: None,
             source_index: 0,
             flow: Flow::default(),
             fact_lines: Vec::new(),
@@ -152,8 +178,8 @@ impl<'a> View<'a> {
         }
         if self.selected == 0 {
             return self.record.invocation().map(|entry| TraceLocation {
-                unit: execution_tape::recording::RECORDED_UNIT,
-                func: entry.entry,
+                unit: entry.entry.unit,
+                func: entry.entry.func,
                 pc: 0,
             });
         }
@@ -178,12 +204,15 @@ impl<'a> View<'a> {
 
     fn update_source(&mut self, previous: Option<TraceLocation>) {
         let location = self.location();
-        let source_changed =
-            self.source.as_ref().map(FunctionDisassembly::func) != location.map(|loc| loc.func);
+        let source_changed = self
+            .source
+            .as_ref()
+            .map(|source| (self.source_unit, source.func()))
+            != location.map(|loc| (Some(loc.unit), loc.func));
         if source_changed {
-            self.source = location.and_then(|loc| {
-                disassemble_function(self.record.program().program(), loc.func).ok()
-            });
+            self.source_unit = location.map(|loc| loc.unit);
+            self.source =
+                location.and_then(|loc| disassemble_function(self.code(loc.unit), loc.func).ok());
             self.flow = self.source.as_ref().map_or_else(Flow::default, Flow::new);
         }
         if location != previous || source_changed {
@@ -200,7 +229,16 @@ impl<'a> View<'a> {
         self.source_lines = self.sources.map_or_else(Vec::new, |sources| {
             location.map_or_else(
                 || vec!["Source: no captured instruction location".into()],
-                |location| super::source_context::context_lines(sources, location, 2, 48),
+                |location| {
+                    if self.mapped(location.unit) {
+                        super::source_context::context_lines(sources, location, 2, 48)
+                    } else {
+                        vec![format!(
+                            "Source: unit u{} runs a program without this source map",
+                            location.unit.0
+                        )]
+                    }
+                },
             )
         });
         let step_location = self
@@ -237,14 +275,12 @@ impl<'a> View<'a> {
                         }),
                     ))
                 };
-                if let Some(source) = self
-                    .source
-                    .as_ref()
-                    .filter(|source| source.func() == location.func)
-                {
+                if let Some(source) = self.source.as_ref().filter(|source| {
+                    (self.source_unit, source.func()) == (Some(location.unit), location.func)
+                }) {
                     extract(source)
                 } else {
-                    disassemble_function(self.record.program().program(), location.func)
+                    disassemble_function(self.code(location.unit), location.func)
                         .ok()
                         .and_then(|source| extract(&source))
                 }
@@ -259,11 +295,14 @@ impl<'a> View<'a> {
         let Some(location) = location else {
             return;
         };
-        if self.fact_function != Some(location.func) {
+        if self.fact_function != Some((location.unit, location.func)) {
+            let code = self
+                .record
+                .unit(location.unit)
+                .map_or_else(|| self.record.program(), |unit| &**unit.program);
             self.fact_analysis =
-                execution_tape::verifier::ProgramAnalysis::from(self.record.program())
-                    .function(location.func);
-            self.fact_function = Some(location.func);
+                execution_tape::verifier::ProgramAnalysis::from(code).function(location.func);
+            self.fact_function = Some((location.unit, location.func));
         }
         let Some(facts) = self
             .fact_analysis

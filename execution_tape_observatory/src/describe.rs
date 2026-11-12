@@ -7,7 +7,7 @@ use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands};
 use execution_tape::host::HostError;
 use execution_tape::program::{HostSigId, Program, TagId, ValueType};
 use execution_tape::recording::{AggregateId, RecordedValue, Recording};
-use execution_tape::value::{AggType, FuncId};
+use execution_tape::value::{AggType, FuncId, FuncRef, TagRef, UnitId};
 
 #[derive(Debug)]
 pub(super) struct VerificationDiagnostic {
@@ -159,6 +159,29 @@ pub(super) fn host(program: &Program, id: HostSigId) -> String {
         .host_sig(id)
         .and_then(|entry| program.symbol_str(entry.symbol).ok())
         .map_or_else(|| format!("host #{}", id.0), |name| preview(name, 28))
+}
+
+/// The program a recorded unit runs, or the entry program for a unit the recording lacks.
+pub(super) fn code(record: &Recording, unit: UnitId) -> &Program {
+    record
+        .unit(unit)
+        .map_or_else(|| record.program().program(), |unit| unit.program.program())
+}
+
+/// A function of any recorded unit, prefixed by its unit when that is not the entry unit.
+pub(super) fn function_ref(record: &Recording, func: FuncRef) -> String {
+    let name = function(code(record, func.unit), func.func);
+    match record.invocation() {
+        Some(entry) if entry.entry.unit != func.unit => format!("u{}:{name}", func.unit.0),
+        _ => name,
+    }
+}
+
+/// A VM tag of the recorded invocation.
+pub(super) fn vm_tag(record: &Recording, tag: TagRef) -> String {
+    record
+        .tag_name(tag)
+        .map_or_else(|| format!("tag #{}", tag.0), |name| preview(name, 28))
 }
 
 pub(super) fn exception_tag(program: &Program, id: TagId) -> String {
@@ -360,11 +383,11 @@ fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
         RecordedValue::Obj(value) => {
             format!("object #{} token {}", value.host_type.0, value.handle.0)
         }
-        RecordedValue::Func(id) => function(record.program().program(), *id),
+        RecordedValue::Func(id) => function_ref(record, *id),
         RecordedValue::Closure { func, env } => {
             format!(
                 "{} [environment @{}]",
-                function(record.program().program(), *func),
+                function_ref(record, *func),
                 env.get()
             )
         }

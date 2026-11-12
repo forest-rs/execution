@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::trace::{TraceLocation, TraceOutcome};
-use crate::value::{FuncId, FuncRef};
+use crate::value::FuncRef;
 use core::num::NonZeroU32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,7 +23,7 @@ impl FrameId {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frame {
-    pub(crate) func: FuncId,
+    pub(crate) func: FuncRef,
     pub(crate) caller: Option<TraceLocation>,
     pub(crate) parent: Option<FrameId>,
     pub(crate) depth: u32,
@@ -35,8 +35,7 @@ impl Frame {
     pub(crate) fn view(&self, ordinal: usize) -> Activation {
         Activation {
             ordinal,
-            // A recording describes one unit; its frames all run the recorded unit.
-            func: FuncRef::new(super::RECORDED_UNIT, self.func),
+            func: self.func,
             caller: self.caller,
             parent: self.parent.map(FrameId::index),
             depth: self.depth as usize,

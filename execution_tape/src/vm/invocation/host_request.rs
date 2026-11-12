@@ -182,7 +182,12 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
         &mut self,
         program: impl Into<Arc<VerifiedProgram>>,
     ) -> Result<UnitId, InstallError> {
-        self.running.vm.install(program)
+        install_observed(self.running.vm, self.running.continuation, program.into())
+    }
+    /// Inspects the units installed in this request's VM.
+    #[must_use]
+    pub fn units(&self) -> Units<'_> {
+        self.running.vm.units()
     }
     /// Program-local declared import. Its identity belongs to [`Self::program`].
     #[must_use]

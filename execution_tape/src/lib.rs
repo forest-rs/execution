@@ -442,9 +442,11 @@
 //! declares, while tags it imports (`ProgramBuilder::import_tag`) bind at install to the tag the
 //! embedding defined under that name with `Vm::define_tag`, provided the payloads agree. A
 //! `catch tag` clause therefore catches every unit's throw of a tag its program imports, and a
-//! tag the program cannot name reaches only `catch_all`. A recording describes one unit and
-//! reports `CaptureFault::ForeignUnit` when execution leaves it, or `CaptureFault::ForeignTag`
-//! for an exception whose tag the recorded program cannot name.
+//! tag the program cannot name reaches only `catch_all`.
+//!
+//! A recording follows execution into every unit. It snapshots the VM's installs and tag
+//! definitions at entry and records installs made while the invocation is suspended; replay
+//! repeats them in a fresh VM and checks that each unit and tag keeps its `UnitId` or `TagRef`.
 //!
 //! ## Paused frames and host-object roots
 //!

@@ -68,6 +68,7 @@ impl<'a> Continuation<'a> {
                 aggregates: vm.memory.aggs(),
                 limits: &vm.limits,
                 work,
+                units: vm.units(),
             });
         budget
             .charge_import(work)

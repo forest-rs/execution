@@ -8,7 +8,10 @@
 //! ordinary VM execution retains no recordings.
 //!
 //! Share a prepared program in `Arc`, construct [`Recorder::new`], and pass [`TraceSink::mask`]
-//! and `Some(&mut recorder)` to ordinary VM execution. Consume it with [`Recorder::finish`]
+//! and `Some(&mut recorder)` to ordinary VM execution. Execution may enter any installed unit:
+//! the recording snapshots the VM's units and tags at entry, records installs made while the
+//! invocation is suspended, and keeps the VM's unit and tag identities in every location and
+//! value. Replay repeats those installs and tag definitions in order and checks the identities. Consume it with [`Recorder::finish`]
 //! and inspect [`Recording::status`]. [`Recording::replay`] executes the guest
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
@@ -132,11 +135,12 @@ mod replay;
 mod values;
 
 use crate::host::HostError;
-use crate::program::{HostSigId, RegionId, TagId};
+use crate::program::{HostSigId, RegionId, ValueType};
 use crate::trace::TraceLocation;
-use crate::value::FuncId;
+use crate::value::{FuncRef, TagRef, UnitId};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{Limits, TrapInfo};
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -230,18 +234,11 @@ pub enum CaptureFault {
     },
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,
-    /// Execution or a function value left the recorded unit. A recording describes one unit.
+    /// Execution named a unit whose installation the recording never observed, so replay could
+    /// not rebuild it. Installs while the invocation is suspended must go through
+    /// [`crate::vm::Invocation::install`] or [`crate::vm::PendingHostCall::install`].
     ForeignUnit,
-    /// An exception's tag is neither declared nor imported by the recorded program, so the
-    /// recording cannot name it. Recorded tags are program-local [`TagId`]s.
-    ForeignTag,
 }
-
-/// The unit every location and function value in a recording names.
-///
-/// A recording describes one installed unit, whatever its ID in the recorded VM. Replay installs
-/// the recorded program as the first unit of a fresh VM, which is this ID.
-pub const RECORDED_UNIT: crate::value::UnitId = crate::value::UnitId(0);
 
 impl core::fmt::Display for CaptureFault {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -250,11 +247,65 @@ impl core::fmt::Display for CaptureFault {
 }
 impl core::error::Error for CaptureFault {}
 
+/// One installed unit of the recorded VM: its program, tag bindings and when it was installed.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordedUnit<'a> {
+    /// The unit's identity, which replay reproduces.
+    pub unit: UnitId,
+    /// The installed program.
+    pub program: &'a Arc<VerifiedProgram>,
+    /// The VM tag of each program tag, in [`crate::program::TagId`] order; imports are among them.
+    pub tags: &'a [TagRef],
+    /// The observation sequence before which the unit was installed while the invocation was
+    /// suspended, or `None` for a unit installed before the invocation started.
+    pub installed: Option<usize>,
+}
+
+/// One tag the recorded VM's embedding defined with [`crate::vm::Vm::define_tag`].
+#[derive(Clone, Copy, Debug)]
+pub struct RecordedTag<'a> {
+    /// The tag's identity, which replay reproduces.
+    pub tag: TagRef,
+    /// The name programs import it by.
+    pub name: &'a str,
+    /// Payload storage kinds.
+    pub payload: &'a [ValueType],
+}
+
+/// One install or tag definition of the recorded VM, in the order it happened.
+#[derive(Clone, Copy, Debug)]
+pub enum StoreRecord<'a> {
+    /// A program was installed.
+    Installed(RecordedUnit<'a>),
+    /// The embedding defined a tag.
+    DefinedTag(RecordedTag<'a>),
+}
+
+#[derive(Debug)]
+struct UnitRecord {
+    unit: UnitId,
+    program: Arc<VerifiedProgram>,
+    tags: Box<[TagRef]>,
+    installed: Option<usize>,
+}
+#[derive(Debug)]
+struct TagRecord {
+    tag: TagRef,
+    name: Box<str>,
+    payload: Box<[ValueType]>,
+}
+#[derive(Debug)]
+enum Store {
+    /// Index into [`Recording::units`]; units are recorded in [`UnitId`] order.
+    Unit(usize),
+    Tag(TagRecord),
+}
+
 /// Invocation inputs, borrowed from a recording.
 #[derive(Debug)]
 pub struct Invocation<'a> {
-    /// Requested entry function, including rejected entries.
-    pub entry: FuncId,
+    /// Requested entry function and its unit, including rejected entries.
+    pub entry: FuncRef,
     /// Captured entry values in argument order.
     pub args: &'a [RecordedValue],
     /// Execution limits used by the original invocation.
@@ -277,8 +328,8 @@ pub enum HostOutcome<'a> {
     Failed(&'a HostError),
     /// The host raised a guest exception. Replay delivers the same tag and payload.
     Threw {
-        /// Raised tag.
-        tag: TagId,
+        /// Raised VM tag, which replay reproduces.
+        tag: TagRef,
         /// Captured payload values.
         payload: &'a [RecordedValue],
     },
@@ -336,7 +387,7 @@ pub struct RecordStats {
 
 #[derive(Debug)]
 struct Entry {
-    func: FuncId,
+    func: FuncRef,
     args: Range<usize>,
     limits: Limits,
     work: crate::vm::DataWork,
@@ -356,7 +407,7 @@ struct Call {
 enum CallOutcome {
     Returned { values: Range<usize>, fuel: u64 },
     Failed(HostError),
-    Threw { tag: TagId, payload: Range<usize> },
+    Threw { tag: TagRef, payload: Range<usize> },
 }
 #[derive(Debug)]
 enum End {
@@ -367,7 +418,7 @@ enum End {
 #[derive(Debug)]
 struct Thrown {
     location: TraceLocation,
-    tag: TagId,
+    tag: TagRef,
     values: Range<usize>,
 }
 /// One propagation of an exception: its `throw`, or a later `throw_ref` linking back to it.
@@ -395,8 +446,10 @@ struct Caught {
 /// this recording, not to a VM heap. Incomplete recordings remain inspectable, but replay rejects
 /// them before executing guest code. Callback arguments and outcome payloads are never formatted.
 pub struct Recording {
-    history: Option<alloc::boxed::Box<instructions::History>>,
+    history: Option<Box<instructions::History>>,
     program: Arc<VerifiedProgram>,
+    units: Vec<UnitRecord>,
+    store: Vec<Store>,
     arena: values::Arena,
     initial: Vec<AggregateId>,
     entry: Option<Entry>,
@@ -481,9 +534,58 @@ impl Recording {
         self.fault_location
     }
 
-    /// Borrows the shared prepared program that gives function/import IDs their meaning.
+    /// Borrows the entry unit's program, the one given to [`Recorder::new`].
+    ///
+    /// Function and import IDs mean something in the program of the unit that names them; see
+    /// [`Self::unit`].
     pub fn program(&self) -> &VerifiedProgram {
         &self.program
+    }
+
+    /// Looks up one unit of the recorded VM.
+    #[must_use]
+    pub fn unit(&self, unit: UnitId) -> Option<RecordedUnit<'_>> {
+        self.units.get(unit.0 as usize).map(UnitRecord::view)
+    }
+
+    /// Iterates the recorded VM's units in installation order, including units installed while
+    /// the invocation was suspended.
+    pub fn units(&self) -> impl ExactSizeIterator<Item = RecordedUnit<'_>> {
+        self.units.iter().map(UnitRecord::view)
+    }
+
+    /// The name of a tag of the recorded VM: a defined tag, or a tag a recorded program declares.
+    #[must_use]
+    pub fn tag_name(&self, tag: TagRef) -> Option<&str> {
+        self.store
+            .iter()
+            .find_map(|record| match record {
+                Store::Tag(defined) if defined.tag == tag => Some(&*defined.name),
+                _ => None,
+            })
+            .or_else(|| {
+                self.units.iter().find_map(|unit| {
+                    let local = unit.tags.iter().position(|&bound| bound == tag)?;
+                    unit.program
+                        .program()
+                        .tag_name(crate::program::TagId(u32::try_from(local).ok()?))
+                })
+            })
+    }
+
+    /// Iterates the recorded VM's installs and tag definitions in the order they happened.
+    ///
+    /// Replay repeats them in a fresh VM and checks that every unit and tag gets its recorded
+    /// identity.
+    pub fn store(&self) -> impl ExactSizeIterator<Item = StoreRecord<'_>> {
+        self.store.iter().map(|record| match record {
+            Store::Unit(index) => StoreRecord::Installed(self.units[*index].view()),
+            Store::Tag(tag) => StoreRecord::DefinedTag(RecordedTag {
+                tag: tag.tag,
+                name: &tag.name,
+                payload: &tag.payload,
+            }),
+        })
     }
 
     /// Borrows invocation values and limits, if captured.
@@ -609,6 +711,17 @@ impl Recording {
             control_commands: self.commands.len(),
             call_frames: self.frames.len(),
             payload_bytes: self.arena.payload_bytes,
+        }
+    }
+}
+
+impl UnitRecord {
+    fn view(&self) -> RecordedUnit<'_> {
+        RecordedUnit {
+            unit: self.unit,
+            program: &self.program,
+            tags: &self.tags,
+            installed: self.installed,
         }
     }
 }

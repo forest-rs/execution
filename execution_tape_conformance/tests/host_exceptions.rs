@@ -227,7 +227,9 @@ fn recordings_capture_and_replay_host_throws() {
         let call = recording.host_calls().next().unwrap();
         assert!(matches!(
             call.outcome,
-            execution_tape::recording::HostOutcome::Threw { tag, payload } if tag == f.failed && payload.len() == 1
+            execution_tape::recording::HostOutcome::Threw { tag, payload }
+                if Some(tag) == recording.unit(UnitId(0)).map(|unit| unit.tags[f.failed.0 as usize])
+                    && payload.len() == 1
         ));
         match recording.replay().unwrap() {
             ReplayOutcome::Returned(values) => {

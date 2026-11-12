@@ -39,6 +39,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
             let boundary = match boundary {
                 ReplayBoundary::Instruction { index } => format!("instruction #{index}"),
                 ReplayBoundary::InitialState => "initial state".into(),
+                ReplayBoundary::Store { index } => format!("install or tag #{index}"),
                 ReplayBoundary::HostCall { index } => format!("host #{index}"),
                 ReplayBoundary::ReturnCandidate => "return candidate".into(),
                 ReplayBoundary::Thrown { index } => format!("thrown exception #{index}"),
@@ -90,6 +91,17 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                     format!("observation order: expected {expected}, observed {actual}")
                 }
                 Divergence::Instruction => "instruction path mismatch".into(),
+                Divergence::Unit { expected, actual } => format!(
+                    "unit expected u{}, got {}",
+                    expected.0,
+                    actual.map_or_else(|| "a failed install".into(), |unit| format!("u{}", unit.0))
+                ),
+                Divergence::Tag { expected, actual } => format!(
+                    "tag expected #{}, got {}",
+                    expected.0,
+                    actual
+                        .map_or_else(|| "a failed definition".into(), |tag| format!("#{}", tag.0))
+                ),
             };
             format!("FAILED · {boundary}{location} · {reason}")
         }
@@ -97,7 +109,10 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
 }
 
 fn import_name(view: &View<'_>, index: usize) -> String {
-    describe::host(view.record.program().program(), view.calls[index].import)
+    describe::host(
+        view.code(view.calls[index].location.unit),
+        view.calls[index].import,
+    )
 }
 
 fn history_status(view: &View<'_>) -> String {
@@ -176,7 +191,7 @@ fn title(view: &View<'_>, index: usize) -> String {
             |step| {
                 format!(
                     "#{index} {}:{:06} {}",
-                    describe::function(view.record.program().program(), step.location.func),
+                    describe::function(view.code(step.location.unit), step.location.func),
                     step.location.pc,
                     execution_tape::opcode::Opcode::from_byte(step.opcode)
                         .map_or_else(|| "unknown".into(), |op| format!("{op:?}"))
@@ -187,12 +202,7 @@ fn title(view: &View<'_>, index: usize) -> String {
     if index == 0 {
         return view.record.invocation().map_or_else(
             || "Invocation · missing".into(),
-            |entry| {
-                format!(
-                    "App → {}",
-                    describe::function(view.record.program().program(), entry.entry)
-                )
-            },
+            |entry| format!("App → {}", describe::function_ref(view.record, entry.entry)),
         );
     }
     if let Some(boundary) = view.boundary(index) {
@@ -299,7 +309,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             view.record.program().program().name().map_or_else(
                 || view.record.invocation().map_or_else(
                     || "Unknown invocation".into(),
-                    |entry| describe::function(view.record.program().program(), entry.entry)
+                    |entry| describe::function_ref(view.record, entry.entry)
                 ),
                 |name| preview(name, 44)
             ),
@@ -334,7 +344,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 |entry| {
                     format!(
                         " Application → {}({}) · VM invocation",
-                        describe::function(view.record.program().program(), entry.entry),
+                        describe::function_ref(view.record, entry.entry),
                         describe::arguments(view.record, entry.args),
                     )
                 },
@@ -399,7 +409,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                         || "none".into(),
                         |loc| format!(
                             "{}:{:06}",
-                            describe::function(view.record.program().program(), loc.func),
+                            describe::function(view.code(loc.unit), loc.func),
                             loc.pc
                         )
                     ),
@@ -417,7 +427,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             HostOutcome::Failed(error) => format!("failed: {}", host_error(error)),
             HostOutcome::Threw { tag, payload } => format!(
                 "raised {}{}",
-                describe::exception_tag(view.record.program().program(), tag),
+                describe::vm_tag(view.record, tag),
                 describe::values(view.record, payload)
             ),
         };
@@ -425,7 +435,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
             "Call #{}: {name}({}) {response}\nSignature: {}",
             index,
             describe::arguments(view.record, call.args),
-            describe::signature(view.record.program().program(), call.import)
+            describe::signature(view.code(call.location.unit), call.import)
         );
         if let HostOutcome::Returned { extra_fuel, .. } = call.outcome
             && extra_fuel != 0
@@ -558,7 +568,7 @@ fn stack(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             ListItem::new(Line::styled(
                 format!(
                     "#{index} {}",
-                    describe::function(view.record.program().program(), location.func)
+                    describe::function(view.code(location.unit), location.func)
                 ),
                 Style::default().fg(if index == 0 { GREEN } else { BLUE }),
             ))
@@ -669,7 +679,7 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
             .and_then(|index| view.record.instruction(index))
             .map_or_else(
                 || "unavailable".into(),
-                |step| describe::function(view.record.program().program(), step.location.func),
+                |step| describe::function(view.code(step.location.unit), step.location.func),
             );
         let block = panel(
             format!(" OBSERVED REGISTERS · {function} "),
@@ -714,7 +724,7 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                     " INPUTS TO {} ",
                     view.record.invocation().map_or_else(
                         || "GUEST".into(),
-                        |entry| describe::function(view.record.program().program(), entry.entry)
+                        |entry| describe::function_ref(view.record, entry.entry)
                     )
                 ),
                 note: "Values supplied when execution started".into(),
@@ -868,7 +878,7 @@ fn call_values(
                 panel(
                     format!(
                         " CALL VALUES · {} ",
-                        describe::host(view.record.program().program(), call.import)
+                        describe::host(view.code(call.location.unit), call.import)
                     ),
                     view.focus == Focus::Values,
                 )
@@ -958,11 +968,7 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
             spans.extend(view.flow.gutter(instruction.pc(), first, last));
             spans.push(Span::raw(" "));
             spans.extend(
-                syntax::source(&describe::instruction(
-                    view.record.program().program(),
-                    instruction,
-                ))
-                .spans,
+                syntax::source(&describe::instruction(view.source_code(), instruction)).spans,
             );
             Line::from(spans).style(if current {
                 Style::default()
@@ -978,7 +984,7 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
             panel(
                 format!(
                     " SOURCE · {} · {} ",
-                    describe::function(view.record.program().program(), source.func()),
+                    describe::function(view.source_code(), source.func()),
                     if view.frame_selected > 0 {
                         "suspended caller"
                     } else if view.instruction.is_some() {
