@@ -14,6 +14,7 @@ use execution_tape::recording::{
     InstructionCapture, RecordLimits, Recorder, Recording, RegisterWatch,
 };
 use execution_tape::trace::TraceSink;
+use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
 use std::sync::Arc;
@@ -171,7 +172,13 @@ fn demo_recording() -> Result<Recording, Box<dyn std::error::Error>> {
             max_steps: 1000,
             watches,
         });
-    let output = vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder))?;
+    let unit = vm.install(program.clone()).unwrap();
+    let output = vm.run(
+        FuncRef::new(unit, entry),
+        &[],
+        recorder.mask(),
+        Some(&mut recorder),
+    )?;
     if output != [Value::I64(42)] || vm.host().state() != &[[0, 7, 14], [1, 5, 10], [2, 9, 18]] {
         return Err("demo did not produce the expected stored samples and sum".into());
     }

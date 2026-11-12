@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{HostContext, HostError, HostSig, SigHash},
@@ -165,8 +166,13 @@ fn host_object_inspection_is_lazy_read_only_refreshable_and_never_guesses_local_
         .tuple_new(vec![Value::I64(999)])
         .unwrap();
     let args = [Value::Obj(object(42))];
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     let reads = Rc::clone(&queries);
     let mut view =
@@ -233,8 +239,13 @@ fn missing_inspector_and_omitted_fields_are_explicit_and_root_rows_navigate_corr
     let (p, entry) = object_program();
     let mut vm = Vm::new(Counter::default(), Limits::default());
     let args = [Value::Obj(object(42))];
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.focus = Focus::Values;
@@ -291,8 +302,9 @@ fn live_frames_source_stepping_and_aggregate_contents_are_real() {
             handle: execution_tape::value::ObjHandle(42),
         })])
         .unwrap();
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
     assert_eq!(view.invocation.host().calls, 0);
@@ -355,8 +367,9 @@ fn live_frames_source_stepping_and_aggregate_contents_are_real() {
 fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
     let (p, entry, publish, _) = program(false);
     let mut vm = Vm::new(Counter::default(), Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.step().unwrap();
@@ -367,8 +380,9 @@ fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
     assert_eq!(view.frames[0].location.pc, publish);
     // Move back to entry in a fresh run; set a future instruction breakpoint through UI keys.
     drop(view);
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.code_selected = view.code.iter().position(|i| i.0 == publish).unwrap();
@@ -388,8 +402,9 @@ fn breakpoints_stop_before_effects_and_step_over_stops_after_callee_return() {
 fn terminal_trap_has_no_fabricated_live_values_and_keeps_source_location() {
     let (p, entry, _, sources) = program(true);
     let mut vm = Vm::new(Counter::default(), Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
     let error = view.resume(100).unwrap_err();
@@ -415,8 +430,9 @@ fn terminal_trap_has_no_fabricated_live_values_and_keeps_source_location() {
 fn focus_uses_double_borders_and_color_and_small_terminal_reports_current_size() {
     let (p, entry, _, sources) = program(false);
     let mut vm = Vm::new(Counter::default(), Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation).sources(&sources).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
@@ -461,8 +477,9 @@ fn join_declarations_cannot_create_unreachable_breakpoints_and_transfers_are_ato
     b.define_function(entry, a).unwrap();
     let p = b.build_verified().unwrap();
     let mut vm = Vm::new(Counter::default(), Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let invocation = vm
-        .start(&p, entry, &[], InvocationOptions::default())
+        .start(FuncRef::new(unit, entry), &[], InvocationOptions::default())
         .unwrap();
     let mut view = LiveExplorer::new(invocation);
     view.code_selected = view.code.iter().position(|i| i.0 == declaration).unwrap();

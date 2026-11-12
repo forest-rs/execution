@@ -4,6 +4,7 @@
 #[path = "../src/authoring.rs"]
 mod authoring;
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     host::{Host, HostContext, HostError, SigHash, ValueRef},
     trace::TraceMask,
@@ -34,10 +35,10 @@ fn streaming_registers_and_join_arguments_preserve_the_result() {
         let program = verify_program_owned(source, &VerifyConfig::default()).unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
         for input in [-42, 0, 42] {
+            let unit = vm.install(program.clone()).unwrap();
             assert_eq!(
                 vm.run(
-                    &program,
-                    FuncId(0),
+                    FuncRef::new(unit, FuncId(0)),
                     &[Value::I64(input)],
                     TraceMask::NONE,
                     None
@@ -75,10 +76,10 @@ fn lowered_callers_preserve_closure_contracts_and_source_metadata() {
                 .unwrap();
             assert_eq!(spans.len(), 1);
             assert_eq!(spans[0].span_id.get(), u64::from(function) + 1);
+            let unit = vm.install(program.clone()).unwrap();
             assert_eq!(
                 vm.run(
-                    &program,
-                    FuncId(function),
+                    FuncRef::new(unit, FuncId(function)),
                     &[Value::I64(-17)],
                     TraceMask::NONE,
                     None

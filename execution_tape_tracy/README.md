@@ -12,11 +12,11 @@ update dependency/import paths to `execution_tape_tracy`.
 Then pass the sink into `Vm::run`:
 
 ```rust,no_run
-# use execution_tape::{host::Host, trace::TraceSink, value::FuncId, verifier::VerifiedProgram, vm::{TrapInfo, Vm}};
-# fn profile<H: Host>(vm: &mut Vm<H>, program: &VerifiedProgram, entry: FuncId) -> Result<(), TrapInfo> {
+# use execution_tape::{host::Host, trace::TraceSink, value::FuncRef, vm::{TrapInfo, Vm}};
+# fn profile<H: Host>(vm: &mut Vm<H>, entry: FuncRef) -> Result<(), TrapInfo> {
 let mut sink = execution_tape_tracy::ProfilingTraceSink::new();
 let mask = sink.mask();
-vm.run(program, entry, &[], mask, Some(&mut sink))?;
+vm.run(entry, &[], mask, Some(&mut sink))?;
 # Ok(()) }
 ```
 

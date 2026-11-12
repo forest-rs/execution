@@ -339,6 +339,7 @@ mod tests {
     use crate::program::ValueType;
     use crate::trace::TraceMask;
     use crate::value::FuncId;
+    use crate::value::FuncRef;
     use crate::vm::{ExecutionContext, Limits, Trap, Vm};
     use alloc::vec;
 
@@ -427,7 +428,7 @@ mod tests {
                 panic!("unexpected write");
             }
         }
-        let p = program("increment");
+        let p = alloc::sync::Arc::new(program("increment"));
         let bindings = {
             let mut functions = HostFunctions::new();
             functions
@@ -438,14 +439,26 @@ mod tests {
         assert_eq!(bindings.import_count(), 1);
         let mut a = Vm::new(bindings.with_state(0), Limits::default());
         let mut b = Vm::new(bindings.with_state(100), Limits::default());
+        let unit = a.install(alloc::sync::Arc::clone(&p)).unwrap();
         assert_eq!(
-            a.run(&p, FuncId(0), &[Value::I64(40)], TraceMask::NONE, None)
-                .unwrap(),
+            a.run(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::I64(40)],
+                TraceMask::NONE,
+                None
+            )
+            .unwrap(),
             [Value::I64(41)]
         );
+        let unit = b.install(alloc::sync::Arc::clone(&p)).unwrap();
         assert_eq!(
-            b.run(&p, FuncId(0), &[Value::I64(40)], TraceMask::NONE, None)
-                .unwrap(),
+            b.run(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::I64(40)],
+                TraceMask::NONE,
+                None
+            )
+            .unwrap(),
             [Value::I64(141)]
         );
         assert_eq!(*a.host().state(), 1);
@@ -453,10 +466,10 @@ mod tests {
         let mut ctx = ExecutionContext::new();
         let mut outputs = Vec::new();
         let mut reads = Reads::default();
+        let unit = a.install(alloc::sync::Arc::clone(&p)).unwrap();
         a.run_with_ctx(
             &mut ctx,
-            &p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::I64(40)],
             &mut outputs,
             TraceMask::NONE,
@@ -471,9 +484,10 @@ mod tests {
 
     #[test]
     fn program_identity_is_checked_before_a_callback_can_run() {
-        let p = program("increment");
-        let clone = p.clone();
-        let other = program("different");
+        let p = alloc::sync::Arc::new(program("increment"));
+        // An equal copy is still different code identity.
+        let clone = alloc::sync::Arc::new(VerifiedProgram::clone(&p));
+        let other = alloc::sync::Arc::new(program("different"));
         let mut functions = HostFunctions::new();
         functions
             .register("increment", signature(), increment)
@@ -481,8 +495,14 @@ mod tests {
         let bindings = functions.bind(&p).unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
         for wrong in [&clone, &other] {
+            let unit = vm.install(alloc::sync::Arc::clone(wrong)).unwrap();
             let error = vm
-                .run(wrong, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
+                .run(
+                    FuncRef::new(unit, FuncId(0)),
+                    &[Value::I64(1)],
+                    TraceMask::NONE,
+                    None,
+                )
                 .unwrap_err();
             assert!(matches!(
                 error.trap,
@@ -493,9 +513,15 @@ mod tests {
             ));
             assert_eq!(*vm.host().state(), 0);
         }
+        let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
         assert_eq!(
-            vm.run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
-                .unwrap(),
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::I64(1)],
+                TraceMask::NONE,
+                None
+            )
+            .unwrap(),
             [Value::I64(2)]
         );
     }
@@ -532,7 +558,7 @@ mod tests {
             Err(RegistrationError::HashCollision { .. })
         ));
         functions.register("increment", overload, fail).unwrap();
-        let p = program("increment");
+        let p = alloc::sync::Arc::new(program("increment"));
         let mut colliding = HostFunctions::new();
         colliding
             .insert(
@@ -551,9 +577,15 @@ mod tests {
         );
         let bindings = functions.bind(&p).unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
+        let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
         assert_eq!(
-            vm.run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
-                .unwrap(),
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::I64(1)],
+                TraceMask::NONE,
+                None
+            )
+            .unwrap(),
             [Value::I64(2)]
         );
     }
@@ -578,16 +610,24 @@ mod tests {
             rets[0] = args[0].to_value();
             Ok(1_000_000)
         }
-        let p = program("increment");
+        let p = alloc::sync::Arc::new(program("increment"));
         for (callback, fuel_trap) in [(wrong_type as HostCallback<()>, false), (costly, true)] {
             let mut functions = HostFunctions::new();
             functions
                 .register("increment", signature(), callback)
                 .unwrap();
             let bindings = functions.bind(&p).unwrap();
-            let error = Vm::new(bindings.with_state(()), Limits::default())
-                .run(&p, FuncId(0), &[Value::I64(1)], TraceMask::NONE, None)
-                .unwrap_err();
+            let error = {
+                let mut vm = Vm::new(bindings.with_state(()), Limits::default());
+                let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
+                vm.run(
+                    FuncRef::new(unit, FuncId(0)),
+                    &[Value::I64(1)],
+                    TraceMask::NONE,
+                    None,
+                )
+            }
+            .unwrap_err();
             if fuel_trap {
                 assert!(matches!(error.trap, Trap::FuelExceeded));
             } else {

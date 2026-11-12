@@ -3,6 +3,7 @@
 
 //! Independently stored invocations use the same budgets, evidence and cancellation boundary.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     aggregates::AggHeap,
     asm::{FunctionAbi, FunctionSig, ProgramBuilder},
@@ -126,15 +127,18 @@ fn an_owned_invocation_moves_between_containers_and_keeps_borrowed_inputs_stable
     let effects = Rc::new(Effects::default());
     let input = String::from("owned input payload");
     let pointer = input.as_ptr();
+    let mut owned_vm = Vm::new(
+        Echo(Rc::clone(&effects)),
+        Limits {
+            fuel: 100,
+            ..Limits::default()
+        },
+    );
+    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
     let call = callable
         .start_owned(
-            Vm::new(
-                Echo(Rc::clone(&effects)),
-                Limits {
-                    fuel: 100,
-                    ..Limits::default()
-                },
-            ),
+            owned_vm,
+            unit,
             vec![Value::Str(input)],
             InvocationOptions::default().yield_host_calls(),
         )
@@ -200,12 +204,14 @@ fn owned_and_borrowed_entries_share_work_fuel_resource_observations_and_replay()
                 .access(&mut access)
         };
         let mut call = if owned {
+            let unit = vm.install(Arc::clone(callable.program())).unwrap();
             callable
-                .start_owned(vm, vec![Value::Str("hello".into())], options)
+                .start_owned(vm, unit, vec![Value::Str("hello".into())], options)
                 .unwrap()
         } else {
+            let unit = vm.install(Arc::clone(callable.program())).unwrap();
             callable
-                .start(&mut vm, vec![Value::Str("hello".into())], options)
+                .start(&mut vm, unit, vec![Value::Str("hello".into())], options)
                 .unwrap()
         };
         while call.resume(1).unwrap() == RunStatus::Suspended {}
@@ -249,9 +255,12 @@ fn cancellation_releases_the_owned_vm_and_retains_explicitly_incomplete_evidence
         RecordLimits::default(),
     )));
     let mask = recorder.borrow().mask();
+    let mut owned_vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
+    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
         .start_owned(
-            Vm::new(Echo(Rc::clone(&effects)), Limits::default()),
+            owned_vm,
+            unit,
             vec![Value::Str("cancel".into())],
             InvocationOptions::default()
                 .yield_host_calls()
@@ -277,28 +286,34 @@ fn cancellation_releases_the_owned_vm_and_retains_explicitly_incomplete_evidence
 #[test]
 fn failed_entry_and_failed_capture_admission_release_owned_host_state_without_effects() {
     let effects = Rc::new(Effects::default());
+    let mut owned_vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
+    let echo = echo();
+    let unit = owned_vm.install(Arc::clone(echo.program())).unwrap();
     assert!(matches!(
-        echo()
-            .start_owned(
-                Vm::new(Echo(Rc::clone(&effects)), Limits::default()),
-                vec![Value::I64(7)],
-                InvocationOptions::default()
-            )
-            .unwrap_err()
-            .trap,
+        echo.start_owned(
+            owned_vm,
+            unit,
+            vec![Value::I64(7)],
+            InvocationOptions::default()
+        )
+        .unwrap_err()
+        .trap,
         Trap::TypeMismatch { .. }
     ));
     let closure = retained_closure();
+    let mut owned_vm = Vm::new(
+        Echo(Rc::clone(&effects)),
+        Limits {
+            max_aggregate_work: 1,
+            ..Limits::default()
+        },
+    );
+    let unit = owned_vm.install(Arc::clone(closure.program())).unwrap();
     assert!(matches!(
         closure
             .start_owned(
-                Vm::new(
-                    Echo(Rc::clone(&effects)),
-                    Limits {
-                        max_aggregate_work: 1,
-                        ..Limits::default()
-                    }
-                ),
+                owned_vm,
+                unit,
                 vec![Value::I64(2)],
                 InvocationOptions::default()
             )
@@ -319,15 +334,18 @@ fn owned_closure_entry_uses_the_same_capture_import_work_and_recording_contract(
         RecordLimits::default(),
     )));
     let mask = recorder.borrow().mask();
+    let mut owned_vm = Vm::new(
+        Echo(Rc::clone(&effects)),
+        Limits {
+            max_aggregate_work: 2,
+            ..Limits::default()
+        },
+    );
+    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
         .start_owned(
-            Vm::new(
-                Echo(Rc::clone(&effects)),
-                Limits {
-                    max_aggregate_work: 2,
-                    ..Limits::default()
-                },
-            ),
+            owned_vm,
+            unit,
             vec![Value::I64(2)],
             InvocationOptions::default().trace_owned(mask, Rc::clone(&recorder)),
         )
@@ -398,8 +416,11 @@ fn graph_owned_guest_tasks_cancel_old_vms_and_reject_their_late_replies() {
                 move |inputs: &[String], _| {
                     let reply = Rc::new(RefCell::new(None));
                     replies.borrow_mut().push(Rc::clone(&reply));
+                    let mut owned_vm = Vm::new(Echo(Rc::clone(&effects)), Limits::default());
+                    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
                     let call = callable.start_owned(
-                        Vm::new(Echo(Rc::clone(&effects)), Limits::default()),
+                        owned_vm,
+                        unit,
                         vec![Value::Str(inputs[0].clone())],
                         InvocationOptions::default().yield_host_calls(),
                     )?;
@@ -524,9 +545,12 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
     let observer = Rc::new(RefCell::new(Events::default()));
     assert_eq!(observer.mask(), mask());
     let callable = echo();
+    let mut owned_vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
+    let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
         .start_owned(
-            Vm::new(Echo(Rc::new(Effects::default())), Limits::default()),
+            owned_vm,
+            unit,
             vec![Value::Str("observed".into())],
             InvocationOptions::default().trace_owned(mask(), Rc::clone(&observer)),
         )
@@ -561,9 +585,13 @@ fn owning_the_vm_does_not_require_host_resources_to_be_static() {
     }
     let calls = Cell::new(0);
     {
-        let mut call = echo()
+        let mut owned_vm = Vm::new(BorrowedHost(&calls), Limits::default());
+        let echo = echo();
+        let unit = owned_vm.install(Arc::clone(echo.program())).unwrap();
+        let mut call = echo
             .start_owned(
-                Vm::new(BorrowedHost(&calls), Limits::default()),
+                owned_vm,
+                unit,
                 vec![Value::Str("scoped".into())],
                 InvocationOptions::default(),
             )
@@ -597,19 +625,19 @@ fn consume_owned_results_without_copying_their_nested_payloads() {
     let target = pack_text();
     let code = Arc::downgrade(target.program());
     let effects = Rc::new(Effects::default());
+    let mut owned_vm = Vm::new(Echo(effects.clone()), Limits::default());
+    let unit = owned_vm.install(Arc::clone(target.program())).unwrap();
     let mut call = target
         .start_owned(
-            Vm::new(Echo(effects.clone()), Limits::default()),
+            owned_vm,
+            unit,
             vec![Value::Str("packed".into())],
             InvocationOptions::default(),
         )
         .unwrap();
     drop(target);
     call.resume(u64::MAX).unwrap();
-    let owner = call
-        .program_owner()
-        .cloned()
-        .expect("callable code retained");
+    let owner = Arc::clone(call.program());
     assert!(Arc::ptr_eq(&owner, &code.upgrade().unwrap()));
     let Value::Agg(root) = call.result().unwrap().unwrap()[0] else {
         panic!("root")
@@ -647,17 +675,17 @@ fn consume_borrowed_results_preserves_raw_handles_and_unfinished_consumption_can
     let target = pack_text();
     let mut vm = Vm::new(Echo(Rc::new(Effects::default())), Limits::default());
     let args = [Value::Str("borrowed".into())];
+    let unit = vm.install(target.program().clone()).unwrap();
     let mut call = vm
         .start(
-            target.program(),
-            target.function_id(),
+            FuncRef::new(unit, target.function_id()),
             &args,
             InvocationOptions::default(),
         )
         .unwrap();
     assert!(
-        call.program_owner().is_none(),
-        "raw entry only borrows its code"
+        Arc::ptr_eq(call.program(), target.program()),
+        "every entry retains its installed code"
     );
     call.resume(u64::MAX).unwrap();
     let Value::Agg(original) = call.result().unwrap().unwrap()[0] else {
@@ -676,12 +704,10 @@ fn consume_borrowed_results_preserves_raw_handles_and_unfinished_consumption_can
         Ok(Value::Str("borrowed".into()))
     );
     let effects = Rc::new(Effects::default());
+    let mut owned_vm = Vm::new(Echo(effects.clone()), Limits::default());
+    let unit = owned_vm.install(Arc::clone(target.program())).unwrap();
     let call = target
-        .start_owned(
-            Vm::new(Echo(effects.clone()), Limits::default()),
-            args.to_vec(),
-            InvocationOptions::default(),
-        )
+        .start_owned(owned_vm, unit, args.to_vec(), InvocationOptions::default())
         .unwrap();
     assert!(call.into_snapshot().unwrap().is_none());
     assert_eq!(effects.drops.get(), 1);

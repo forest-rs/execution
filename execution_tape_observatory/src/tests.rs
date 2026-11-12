@@ -7,6 +7,7 @@ use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, Value
 use execution_tape::program::ValueType;
 use execution_tape::recording::{RecordLimits, RecordedValue, Recorder};
 use execution_tape::trace::TraceSink;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -123,9 +124,9 @@ fn recording_with_options(
             watches,
         });
     }
+    let unit = vm.install(program.clone()).unwrap();
     let _ = vm.run(
-        &program,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::Agg(root)],
         if calls {
             recorder.mask()
@@ -324,9 +325,9 @@ fn wide_nodes_render_only_the_selected_viewport() {
         .tuple_new((0..20_000).map(Value::I64).collect())
         .unwrap();
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let unit = vm.install(program.clone()).unwrap();
     vm.run(
-        &program,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::Agg(root)],
         recorder.mask(),
         Some(&mut recorder),
@@ -427,20 +428,22 @@ fn source_register_previews_report_omissions() {
         .unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-    Vm::new(
-        Echo {
-            effects: Arc::new(AtomicUsize::new(0)),
-            error: None,
-        },
-        Limits::default(),
-    )
-    .run(
-        &program,
-        FuncId(0),
-        &vec![Value::I64(42); 12],
-        recorder.mask(),
-        Some(&mut recorder),
-    )
+    {
+        let mut vm = Vm::new(
+            Echo {
+                effects: Arc::new(AtomicUsize::new(0)),
+                error: None,
+            },
+            Limits::default(),
+        );
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &vec![Value::I64(42); 12],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+    }
     .unwrap();
     let shown = render_text(&recorder.finish(), 180, 36).unwrap();
     assert!(shown.contains("r1, r2, r3, r4, r5, r6, r7, r8, … +4 more"));
@@ -483,20 +486,22 @@ fn successful_void_return_is_not_presented_as_missing_capture() {
         .unwrap();
     let program = Arc::new(builder.build_verified().unwrap());
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-    Vm::new(
-        Echo {
-            effects: Arc::new(AtomicUsize::new(0)),
-            error: None,
-        },
-        Limits::default(),
-    )
-    .run(
-        &program,
-        FuncId(0),
-        &[],
-        recorder.mask(),
-        Some(&mut recorder),
-    )
+    {
+        let mut vm = Vm::new(
+            Echo {
+                effects: Arc::new(AtomicUsize::new(0)),
+                error: None,
+            },
+            Limits::default(),
+        );
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &[],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+    }
     .unwrap();
     let record = recorder.finish();
     let initial = render_text(&record, 80, 24).unwrap();
@@ -569,14 +574,22 @@ fn selecting_a_caller_frame_moves_source_to_its_recorded_call_site() {
     b.set_function_name(caller, "caller").unwrap();
     let p = Arc::new(b.build_verified().unwrap());
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
-    Vm::new(
-        Echo {
-            effects: Arc::new(AtomicUsize::new(0)),
-            error: None,
-        },
-        Limits::default(),
-    )
-    .run(&p, caller, &[], recorder.mask(), Some(&mut recorder))
+    {
+        let mut vm = Vm::new(
+            Echo {
+                effects: Arc::new(AtomicUsize::new(0)),
+                error: None,
+            },
+            Limits::default(),
+        );
+        let unit = vm.install(p.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, caller),
+            &[],
+            recorder.mask(),
+            Some(&mut recorder),
+        )
+    }
     .unwrap();
     let record = recorder.finish();
     let mut view = View::new(&record);
@@ -839,8 +852,14 @@ fn branch_explanation_survives_selecting_its_suspended_caller() {
         },
         Limits::default(),
     );
-    vm.run(&program, root, &[], recorder.mask(), Some(&mut recorder))
-        .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
+    vm.run(
+        FuncRef::new(unit, root),
+        &[],
+        recorder.mask(),
+        Some(&mut recorder),
+    )
+    .unwrap();
     let record = recorder.finish();
     let mut view = View::with_options(&record, None, true);
     press(&mut view, KeyCode::Down);
@@ -892,10 +911,10 @@ fn callback_recording() -> Recording {
         Limits::default(),
     );
     let args = [Value::I64(42)];
+    let unit = vm.install(program.clone()).unwrap();
     let mut run = vm
         .start(
-            &program,
-            root,
+            FuncRef::new(unit, root),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()

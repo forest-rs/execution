@@ -10,6 +10,7 @@ use execution_tape::program::{HostSigId, Program, ValueType};
 use execution_tape::trace::{
     HostCallOutcome, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
+use execution_tape::value::FuncRef;
 use execution_tape::value::{AggHandle, FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{ExecutionContext, Limits, Trap, TrapInfo, Vm};
@@ -205,10 +206,10 @@ fn value_delivery_is_independent_of_metadata_masks() {
         TraceMask::VALUES | TraceMask::RUN,
     ] {
         let mut sink = Observe::default();
+        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
             vm.run(
-                &program,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::I64(42)],
                 mask,
                 Some(&mut sink)
@@ -254,8 +255,14 @@ fn entry_values_and_limits_precede_rejected_invocation_validation() {
     for (entry, args, limits) in cases {
         let mut vm = Vm::new(NeverHost, limits.clone());
         let mut sink = Observe::default();
-        vm.run(&program, entry, &args, sink.mask(), Some(&mut sink))
-            .unwrap_err();
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, entry),
+            &args,
+            sink.mask(),
+            Some(&mut sink),
+        )
+        .unwrap_err();
         assert_eq!(sink.order, ["run_start", "entry", "run_end"]);
         let observed = sink.entry.unwrap();
         assert_eq!(observed.0, entry);
@@ -304,9 +311,9 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
             Limits::default(),
         );
         let mut sink = Observe::default();
+        let unit = vm.install(program.clone()).unwrap();
         let result = vm.run(
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::I64(7)],
             sink.mask(),
             Some(&mut sink),
@@ -352,9 +359,9 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
         Limits::default(),
     );
     let mut sink = Observe::default();
+    let unit = vm.install(program.clone()).unwrap();
     vm.run(
-        &program,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[Value::I64(7)],
         sink.mask(),
         Some(&mut sink),
@@ -375,10 +382,10 @@ fn host_raw_values_errors_and_fuel_precede_vm_validation() {
         },
     );
     let mut sink = Observe::default();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::I64(7)],
             sink.mask(),
             Some(&mut sink),
@@ -408,8 +415,14 @@ fn borrowed_host_failure_can_be_retained_without_flattening_its_typed_payload() 
         Limits::default(),
     );
     let mut sink = Observe::default();
+    let unit = vm.install(program.clone()).unwrap();
     let failure = vm
-        .run(&program, FuncId(0), &[], sink.mask(), Some(&mut sink))
+        .run(
+            FuncRef::new(unit, FuncId(0)),
+            &[],
+            sink.mask(),
+            Some(&mut sink),
+        )
         .unwrap_err();
     drop(vm);
     let Trap::HostCallFailed {
@@ -470,10 +483,10 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
     };
     let program = host_program(&[ValueType::Str], ValueType::Str);
     let mut vm = Vm::new(EchoHost, Limits::default());
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
         vm.run(
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &args,
             TraceMask::VALUES,
             Some(&mut sink)
@@ -522,10 +535,10 @@ fn return_candidates_preserve_pre_compaction_identity_and_exclude_output_prefix(
     let mut vm = Vm::new(EchoHost, Limits::default());
     let mut sink = Observe::default();
     let mut outputs = vec![Value::I64(99)];
+    let unit = vm.install(program.clone()).unwrap();
     vm.run_with_ctx(
         &mut ExecutionContext::new(),
-        &program,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &[],
         &mut outputs,
         sink.mask(),
@@ -573,11 +586,11 @@ fn dangling_host_and_root_values_remain_observable_before_the_commit_trap() {
     );
     let mut sink = Observe::default();
     let mut outputs = vec![Value::I64(99)];
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run_with_ctx(
             &mut ExecutionContext::new(),
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[],
             &mut outputs,
             sink.mask(),
@@ -624,8 +637,14 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         .unwrap();
     live.host_mut().values[0] = Value::Agg(root);
     let mut capture = Observe::default();
-    live.run(&program, FuncId(0), &[], capture.mask(), Some(&mut capture))
-        .unwrap();
+    let unit = live.install(program.clone()).unwrap();
+    live.run(
+        FuncRef::new(unit, FuncId(0)),
+        &[],
+        capture.mask(),
+        Some(&mut capture),
+    )
+    .unwrap();
     assert_eq!(capture.entry.unwrap().2, 2);
     let snapshot = capture.host_returns.pop().unwrap().4.unwrap();
     drop(live);
@@ -641,8 +660,9 @@ fn a_retained_host_graph_absent_from_entry_args_can_be_restored_before_replay() 
         Limits::default(),
     );
     replay.host_mut().values = replay.aggregates_mut().import(&snapshot).unwrap();
+    let unit = replay.install(program.clone()).unwrap();
     let outputs = replay
-        .run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
         .unwrap();
     let Value::Agg(restored) = outputs[0] else {
         panic!("replayed graph");
@@ -692,9 +712,9 @@ fn nested_function_returns_do_not_emit_root_candidates() {
     let program = builder.build_verified().unwrap();
     let mut vm = Vm::new(NeverHost, Limits::default());
     let mut sink = Observe::default();
+    let unit = vm.install(program.clone()).unwrap();
     vm.run(
-        &program,
-        entry,
+        FuncRef::new(unit, entry),
         &[Value::I64(42)],
         sink.mask(),
         Some(&mut sink),

@@ -9,6 +9,7 @@ use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
 use execution_tape::vm::{Limits, Vm};
 
@@ -80,13 +81,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = std::env::args_os().nth(1) {
         std::fs::write(path, program.program().encode())?;
     }
-    let result = Vm::new(NoHost, Limits::default()).run(
-        &program,
-        entry,
-        &[Value::Func(target)],
-        TraceMask::NONE,
-        None,
-    )?;
+    let result = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, entry),
+            &[Value::Func(target)],
+            TraceMask::NONE,
+            None,
+        )
+    }?;
     assert_eq!(result, vec![Value::I64(42)]);
     println!(
         "{}",

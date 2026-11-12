@@ -234,8 +234,10 @@ fn invoke(callback: &Callback, host: &Cells) -> Result<i64> {
         Arc::clone(callback.target.program()),
         RecordLimits::default(),
     );
+    let unit = vm.install(Arc::clone(callback.target.program())).unwrap();
     let mut call = callback.target.start(
         &mut vm,
+        unit,
         vec![],
         InvocationOptions::default().trace(recorder.mask(), &mut recorder),
     )?;
@@ -341,8 +343,10 @@ fn run(view: View, old: &Revision, new: &Revision) -> Result<Story> {
     let peer = graph_callback(slot.current(), &host)?;
     let mut vm = Vm::new(host.clone(), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(first.target.program()), RecordLimits::default());
+    let unit = vm.install(Arc::clone(first.target.program())).unwrap();
     let mut paused = first.target.start(
         &mut vm,
+        unit,
         vec![],
         InvocationOptions::default().trace(recorder.mask(), &mut recorder),
     )?;

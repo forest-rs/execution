@@ -3,6 +3,7 @@
 
 //! Unit has no runtime payload; verification and source observations still distinguish registers.
 
+use execution_tape::value::FuncRef;
 use std::sync::Arc;
 
 use execution_tape::{
@@ -124,10 +125,10 @@ fn unit_operations_preserve_source_instructions_registers_and_fuel() {
                 ..Limits::default()
             },
         );
+        let unit = vm.install(program.clone()).unwrap();
         let result = vm
             .run(
-                &program,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Bool(condition)],
                 TraceMask::INSTR | TraceMask::REGISTERS,
                 Some(&mut observe),
@@ -153,20 +154,22 @@ fn unit_operations_preserve_source_instructions_registers_and_fuel() {
                 (5, Value::Unit)
             ]
         );
-        let error = Vm::new(
-            UnitHost { bad_return: false },
-            Limits {
-                fuel: 4,
-                ..Limits::default()
-            },
-        )
-        .run(
-            &program,
-            FuncId(0),
-            &[Value::Bool(condition)],
-            TraceMask::NONE,
-            None,
-        )
+        let error = {
+            let mut vm = Vm::new(
+                UnitHost { bad_return: false },
+                Limits {
+                    fuel: 4,
+                    ..Limits::default()
+                },
+            );
+            let unit = vm.install(program.clone()).unwrap();
+            vm.run(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::Bool(condition)],
+                TraceMask::NONE,
+                None,
+            )
+        }
         .unwrap_err();
         assert!(matches!(error.trap, Trap::FuelExceeded));
         assert_eq!(error.pc, instructions[4].pc);
@@ -234,9 +237,9 @@ fn repeated_guest_host_unit_boundaries_validate_kinds_and_replay() {
     for bad_return in [false, true] {
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
         let mut vm = Vm::new(UnitHost { bad_return }, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         let result = vm.run(
-            &program,
-            entry,
+            FuncRef::new(unit, entry),
             &vec![Value::Unit; 10],
             recorder.mask(),
             Some(&mut recorder),
@@ -259,9 +262,12 @@ fn repeated_guest_host_unit_boundaries_validate_kinds_and_replay() {
     }
     let mut bad_args = vec![Value::Unit; 10];
     bad_args[9] = Value::Bool(true);
-    let error = Vm::new(UnitHost { bad_return: false }, Limits::default())
-        .run(&program, entry, &bad_args, TraceMask::NONE, None)
-        .unwrap_err();
+    let error = {
+        let mut vm = Vm::new(UnitHost { bad_return: false }, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, entry), &bad_args, TraceMask::NONE, None)
+    }
+    .unwrap_err();
     assert!(matches!(
         error.trap,
         Trap::TypeMismatch {

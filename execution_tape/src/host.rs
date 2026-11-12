@@ -81,7 +81,7 @@ use crate::value::Value;
 /// };
 /// use execution_tape::program::ValueType;
 /// use execution_tape::trace::TraceMask;
-/// use execution_tape::value::{FuncId, Value};
+/// use execution_tape::value::{FuncId, FuncRef, Value};
 /// use execution_tape::vm::{ExecutionContext, Limits, Vm};
 ///
 /// #[derive(Debug, Default)]
@@ -206,11 +206,11 @@ use crate::value::Value;
 /// let mut ctx = ExecutionContext::new();
 /// let mut access = RecordingAccessSink::default();
 ///
+/// let unit = vm.install(program).unwrap();
 /// let mut out = Vec::new();
 /// vm.run_with_ctx(
 ///         &mut ctx,
-///         &program,
-///         FuncId(0),
+///         FuncRef::new(unit, FuncId(0)),
 ///         &[],
 ///         &mut out,
 ///         TraceMask::NONE,

@@ -8,6 +8,7 @@ use execution_tape::format::{DecodeError, Reader};
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::{HostTypeId, Program, ValueType};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::vm::{Limits, Vm};
 
@@ -244,9 +245,12 @@ fn block_parameter_kinds_come_from_the_function() {
     )
     .unwrap();
     assert!(verified.function(FuncId(0)).is_some());
-    let outputs = Vm::new(NoHost, Limits::default())
-        .run(&verified, FuncId(0), &[], TraceMask::NONE, None)
-        .unwrap();
+    let outputs = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(verified.clone()).unwrap();
+        vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+    }
+    .unwrap();
     assert!(matches!(outputs.as_slice(), [Value::I64(7)]));
 }
 
@@ -319,9 +323,12 @@ fn nested_projection_overwriting_its_source_keeps_the_inner_proof() {
     let prepared = verify_program_owned(decoded.clone(), &config).unwrap();
     verify_program_owned_with_lints(decoded, &config).unwrap();
     assert_eq!(
-        Vm::new(NoHost, Limits::default())
-            .run(&prepared, FuncId(0), &[], TraceMask::NONE, None)
-            .unwrap(),
+        {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(prepared.clone()).unwrap();
+            vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+        }
+        .unwrap(),
         vec![Value::I64(7)]
     );
 }

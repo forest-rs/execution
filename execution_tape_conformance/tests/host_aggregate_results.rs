@@ -3,6 +3,7 @@
 
 //! A host can build rich results without mutating borrowed inputs or exporting foreign handles.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     callable::Callable,
@@ -171,8 +172,9 @@ fn synchronous_and_yielded_hosts_build_shared_structures_and_replay_identically(
         } else {
             options
         };
+        let unit = vm.install(Arc::clone(target.program())).unwrap();
         let mut run = target
-            .start_owned(vm, vec![Value::Agg(input)], options)
+            .start_owned(vm, unit, vec![Value::Agg(input)], options)
             .unwrap();
         if yielded {
             assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
@@ -216,9 +218,11 @@ fn pending_views_share_staging_and_retention_copies_only_the_reachable_graph() {
     let target = program();
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start_owned(
             vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().yield_host_calls(),
         )
@@ -275,9 +279,11 @@ fn host_failure_discards_staging_but_replay_preserves_spent_work_and_original_er
         RecordLimits::default(),
     )));
     let mask = capture.mask();
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start(
             &mut vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().trace_owned(mask, capture.clone()),
         )
@@ -329,9 +335,11 @@ fn denied_construction_can_fall_back_without_allocating_or_spending_the_denied_d
             RecordLimits::default(),
         )));
         let mask = capture.mask();
+        let unit = vm.install(Arc::clone(target.program())).unwrap();
         let mut run = target
             .start_owned(
                 vm,
+                unit,
                 vec![Value::Agg(input)],
                 InvocationOptions::default()
                     .yield_host_calls()
@@ -376,9 +384,11 @@ fn construction_rejects_invalid_nominal_shapes_and_dangling_children_before_muta
     let target = program();
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start(
             &mut vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().yield_host_calls(),
         )
@@ -411,9 +421,11 @@ fn cancelling_staged_results_preserves_only_explicitly_retained_roots() {
     let input = input(&mut vm);
     let retained;
     {
+        let unit = vm.install(Arc::clone(target.program())).unwrap();
         let mut run = target
             .start(
                 &mut vm,
+                unit,
                 vec![Value::Agg(input)],
                 InvocationOptions::default().yield_host_calls(),
             )
@@ -433,10 +445,10 @@ fn cancelling_staged_results_preserves_only_explicitly_retained_roots() {
         retained.aggregates().tuple_get(root, 0),
         Ok(Value::Bytes(vec![0; 1024]))
     );
+    let unit = vm.install(target.program().clone()).unwrap();
     assert_eq!(
         vm.run(
-            target.program(),
-            target.function_id(),
+            FuncRef::new(unit, target.function_id()),
             &[Value::Agg(input)],
             TraceMask::NONE,
             None
@@ -463,9 +475,11 @@ fn staged_work_uses_the_guest_budget_and_replay_does_not_replenish_it() {
         RecordLimits::default(),
     )));
     let mask = capture.mask();
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start(
             &mut vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().trace_owned(mask, capture.clone()),
         )
@@ -501,9 +515,11 @@ fn bad_return_validation_keeps_raw_evidence_and_discards_unreturned_staging() {
             RecordLimits::default(),
         )));
         let mask = capture.mask();
+        let unit = vm.install(Arc::clone(target.program())).unwrap();
         let mut run = target
             .start(
                 &mut vm,
+                unit,
                 vec![Value::Agg(input)],
                 InvocationOptions::default()
                     .yield_host_calls()
@@ -551,9 +567,11 @@ fn abandoning_an_async_producer_retires_its_staging_and_never_redispatches() {
     let target = program();
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start(
             &mut vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().yield_host_calls(),
         )
@@ -605,10 +623,10 @@ fn guest_created_values_between_host_results_keep_their_identity_during_replay()
     let input = input(&mut vm);
     let mut recorder = Recorder::new(target.program().clone(), RecordLimits::default());
     let mask = recorder.mask();
+    let unit = vm.install(target.program().clone()).unwrap();
     let result = vm
         .run(
-            target.program(),
-            target.function_id(),
+            FuncRef::new(unit, target.function_id()),
             &[Value::Agg(input)],
             mask,
             Some(&mut recorder),
@@ -648,9 +666,11 @@ fn retiring_an_owned_invocation_moves_rich_payloads_into_its_snapshot() {
     let target = program();
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start_owned(
             vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default().yield_host_calls(),
         )
@@ -689,9 +709,11 @@ fn consuming_a_borrowed_invocation_preserves_its_vms_existing_raw_handles() {
     let target = program();
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
         .start(
             &mut vm,
+            unit,
             vec![Value::Agg(input)],
             InvocationOptions::default(),
         )
@@ -709,15 +731,18 @@ fn nominal_result_code_owners_survive_dropped_lookup_handles_and_vm_retirement()
     let expected = Arc::downgrade(target.program());
     let mut vm = Vm::new(Build::default(), Limits::default());
     let input = input(&mut vm);
+    let unit = vm.install(Arc::clone(target.program())).unwrap();
     let mut run = target
-        .start_owned(vm, vec![Value::Agg(input)], InvocationOptions::default())
+        .start_owned(
+            vm,
+            unit,
+            vec![Value::Agg(input)],
+            InvocationOptions::default(),
+        )
         .unwrap();
     drop(target);
     run.resume(u64::MAX).unwrap();
-    let owner = run
-        .program_owner()
-        .cloned()
-        .expect("callable entry retains its code");
+    let owner = Arc::clone(run.program());
     assert!(Arc::ptr_eq(&owner, &expected.upgrade().unwrap()));
     let snapshot = run.into_snapshot().unwrap().unwrap();
     let values = execution_graph::TapeValue::from_snapshot(snapshot, Some(owner)).unwrap();

@@ -3,6 +3,7 @@
 
 //! Cooperative quanta preserve the ordinary VM's execution and ownership contracts.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
@@ -89,7 +90,8 @@ fn every_instruction_boundary_preserves_values_sharing_recording_and_host_effect
         let mut vm = Vm::new(Echo::default(), Limits::default());
         let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
         let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
-        let mut invocation = vm.start(&p, entry, &args, options).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let mut invocation = vm.start(FuncRef::new(unit, entry), &args, options).unwrap();
         assert_eq!(invocation.resume(0).unwrap(), RunStatus::Suspended);
         assert_eq!(invocation.host().calls, 0);
         assert!(invocation.result().is_none());
@@ -172,7 +174,8 @@ fn cancellation_rolls_back_only_new_aggregates_without_undoing_host_effects() {
             TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
             &mut events,
         );
-        let mut invocation = vm.start(&p, entry, &args, options).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let mut invocation = vm.start(FuncRef::new(unit, entry), &args, options).unwrap();
         // Root call, child host call, child tuple creation; both frames remain active.
         assert_eq!(invocation.resume(3).unwrap(), RunStatus::Suspended);
         assert_eq!(invocation.host().calls, 1);
@@ -187,7 +190,11 @@ fn cancellation_rolls_back_only_new_aggregates_without_undoing_host_effects() {
     assert_eq!(events.cancelled_scopes, 2);
     assert_eq!(events.cancelled_runs, 1);
     assert_eq!(events.entered, 3); // one completed host scope, two cancelled guest frames
-    assert!(vm.run(&p, entry, &args, TraceMask::NONE, None).is_ok());
+    let unit = vm.install(p.clone()).unwrap();
+    assert!(
+        vm.run(FuncRef::new(unit, entry), &args, TraceMask::NONE, None)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -198,7 +205,8 @@ fn dropping_a_partial_recording_is_explicitly_incomplete_and_not_replayable() {
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
     {
         let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
-        let mut invocation = vm.start(&p, entry, &args, options).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let mut invocation = vm.start(FuncRef::new(unit, entry), &args, options).unwrap();
         invocation.resume(3).unwrap();
     }
     let record = recorder.finish();
@@ -237,13 +245,19 @@ fn hard_limits_accumulate_across_resumes_and_terminal_traps_do_not_repeat_effect
     ];
     for limits in cases {
         let mut uninterrupted = Vm::new(Echo::default(), limits.clone());
+        let unit = uninterrupted.install(p.clone()).unwrap();
         let expected = uninterrupted
-            .run(&p, entry, &args, TraceMask::NONE, None)
+            .run(FuncRef::new(unit, entry), &args, TraceMask::NONE, None)
             .unwrap_err();
         for quantum in [1, 2, 7] {
             let mut vm = Vm::new(Echo::default(), limits.clone());
+            let unit = vm.install(p.clone()).unwrap();
             let mut invocation = vm
-                .start(&p, entry, &args, InvocationOptions::default())
+                .start(
+                    FuncRef::new(unit, entry),
+                    &args,
+                    InvocationOptions::default(),
+                )
                 .unwrap();
             let actual = loop {
                 match invocation.resume(quantum) {
@@ -274,10 +288,10 @@ fn rejected_entry_emits_its_trap_without_a_cancellation_or_host_call() {
     let (p, entry) = fixture();
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(&p), RecordLimits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let error = vm
         .start(
-            &p,
-            entry,
+            FuncRef::new(unit, entry),
             &[],
             InvocationOptions::default().trace(recorder.mask(), &mut recorder),
         )
@@ -311,7 +325,8 @@ fn host_panic_unwinding_cancels_scopes_and_restores_the_vm() {
             TraceMask::RUN | TraceMask::CALL | TraceMask::HOST,
             &mut events,
         );
-        let mut invocation = vm.start(&p, entry, &args, options).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let mut invocation = vm.start(FuncRef::new(unit, entry), &args, options).unwrap();
         invocation.resume(u64::MAX).unwrap();
     }));
     assert!(result.is_err());
@@ -319,7 +334,11 @@ fn host_panic_unwinding_cancels_scopes_and_restores_the_vm() {
     assert_eq!(events.cancelled_runs, 1);
     assert_eq!(vm.aggregates().len_u32(), 0);
     vm.host_mut().panic = false;
-    assert!(vm.run(&p, entry, &args, TraceMask::NONE, None).is_ok());
+    let unit = vm.install(p.clone()).unwrap();
+    assert!(
+        vm.run(FuncRef::new(unit, entry), &args, TraceMask::NONE, None)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -383,10 +402,10 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
         };
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let unit = vm.install(program.clone()).unwrap();
                 let mut invocation = vm
                     .start(
-                        &program,
-                        entry,
+                        FuncRef::new(unit, entry),
                         &[],
                         InvocationOptions::default()
                             .trace(TraceMask::CALL | TraceMask::INSTR, &mut observer),
@@ -402,7 +421,11 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
             vm.aggregates().tuple_get(retained, 0).unwrap(),
             Value::I64(99)
         );
-        assert!(vm.run(&program, entry, &[], TraceMask::NONE, None).is_ok());
+        let unit = vm.install(program.clone()).unwrap();
+        assert!(
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+                .is_ok()
+        );
     }
 }
 
@@ -444,8 +467,13 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
     );
     let root = vm.aggregates_mut().tuple_new(vec![Value::I64(42)]).unwrap();
     let args = [Value::Agg(root)];
+    let unit = vm.install(p.clone()).unwrap();
     let mut invocation = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     let error = loop {
         match invocation.resume(1) {
@@ -482,10 +510,10 @@ fn resource_observer_is_retained_across_quanta() {
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut reads = Reads::default();
     {
+        let unit = vm.install(p.clone()).unwrap();
         let mut invocation = vm
             .start(
-                &p,
-                entry,
+                FuncRef::new(unit, entry),
                 &args,
                 InvocationOptions::default().access(&mut reads),
             )

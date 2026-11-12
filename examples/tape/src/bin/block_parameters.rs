@@ -7,6 +7,7 @@
 mod workload;
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncId;
+use execution_tape::value::FuncRef;
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use execution_tape::vm::{Limits, Vm};
 
@@ -15,13 +16,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let program =
             verify_program_owned(workload::rotation(8, 64, typed), &VerifyConfig::default())?;
         let function = program.function(FuncId(0)).unwrap();
-        let outputs = Vm::new(workload::NoHost, Limits::default()).run(
-            &program,
-            FuncId(0),
-            &[],
-            TraceMask::NONE,
-            None,
-        )?;
+        let outputs = {
+            let mut vm = Vm::new(workload::NoHost, Limits::default());
+            let unit = vm.install(program.clone()).unwrap();
+            vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+        }?;
         println!(
             "{}: {:?}\nrequirements: {:?}",
             if typed {

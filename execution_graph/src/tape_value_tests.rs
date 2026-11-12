@@ -67,16 +67,27 @@ fn exported_graph_closure_survives_output_removal_and_executor_destruction() {
     );
     assert!(weak.upgrade().is_some(), "export owns its code");
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
-        .start(&mut vm, vec![Value::I64(2)], InvocationOptions::default())
+        .start(
+            &mut vm,
+            unit,
+            vec![Value::I64(2)],
+            InvocationOptions::default(),
+        )
         .unwrap();
     drop(callable);
     while call.resume(1).unwrap() == RunStatus::Suspended {}
     assert_eq!(call.take_outputs(), Some(vec![Value::I64(42)]));
     drop(call);
-    assert!(weak.upgrade().is_none());
     assert_eq!(vm.aggregates().len_u32(), 0);
     assert_eq!(vm.host().calls, 0);
+    assert!(
+        weak.upgrade().is_some(),
+        "the VM retains its installed unit"
+    );
+    drop(vm);
+    assert!(weak.upgrade().is_none());
 }
 
 #[test]
@@ -96,8 +107,9 @@ fn exported_function_uses_original_program_and_raw_values_explain_missing_owners
         .unwrap();
     drop(graph);
     let mut vm = Vm::new(HostProbe::default(), Limits::default());
+    let unit = vm.install(Arc::clone(callable.program())).unwrap();
     let mut call = callable
-        .start(&mut vm, vec![], InvocationOptions::default())
+        .start(&mut vm, unit, vec![], InvocationOptions::default())
         .unwrap();
     call.resume(u64::MAX).unwrap();
     assert_eq!(call.take_outputs(), Some(vec![Value::I64(11)]));

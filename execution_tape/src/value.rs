@@ -24,9 +24,41 @@ pub struct Obj {
     pub handle: ObjHandle,
 }
 
-/// A function identifier.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// A function identifier, local to one program.
+///
+/// Bytecode operands and program tables use this local index. Executable values qualify it with
+/// the [`UnitId`] that interprets it; see [`FuncRef`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FuncId(pub u32);
+
+/// One verified program installed in a VM store.
+///
+/// [`crate::vm::Vm::install`] assigns these in installation order. An ID belongs to the VM that
+/// issued it: it does not retain that VM, and another VM may assign the same number to unrelated
+/// code. Units are never removed, so an ID keeps its meaning for the lifetime of its VM.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnitId(pub u32);
+
+/// A function in one installed unit: the store-qualified identity of executable code.
+///
+/// Calls, function values and closures carry this pair, so a value moving between independently
+/// compiled units keeps its meaning. Like an [`AggHandle`], it is a plain store address: it
+/// belongs to the VM that installed [`Self::unit`], and the VM validates it when it is used.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FuncRef {
+    /// Installed unit whose program interprets [`Self::func`].
+    pub unit: UnitId,
+    /// Function index in that unit's program.
+    pub func: FuncId,
+}
+
+impl FuncRef {
+    /// Qualifies `func` with the unit whose program defines it.
+    #[must_use]
+    pub const fn new(unit: UnitId, func: FuncId) -> Self {
+        Self { unit, func }
+    }
+}
 
 /// A handle to an aggregate heap value.
 ///

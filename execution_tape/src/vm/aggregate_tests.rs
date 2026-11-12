@@ -69,11 +69,11 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
             let retained = vm.aggregates_mut().tuple_new(vec![Value::I64(99)]).unwrap();
             let mut ctx = ExecutionContext::new();
             let mut outputs = vec![Value::Bool(true)];
+            let unit = vm.install(program.clone()).unwrap();
             let error = vm
                 .run_with_ctx(
                     &mut ctx,
-                    &program,
-                    FuncId(0),
+                    FuncRef::new(unit, FuncId(0)),
                     &[Value::I64(7)],
                     &mut outputs,
                     TraceMask::NONE,
@@ -97,10 +97,10 @@ fn constructors_charge_nodes_and_fields_before_allocation_and_reset_each_run() {
             vm.limits.max_aggregate_work = 2 * cost;
             for _ in 0..2 {
                 outputs.clear();
+                let unit = vm.install(program.clone()).unwrap();
                 vm.run_with_ctx(
                     &mut ctx,
-                    &program,
-                    FuncId(0),
+                    FuncRef::new(unit, FuncId(0)),
                     &[Value::I64(7)],
                     &mut outputs,
                     TraceMask::NONE,
@@ -153,7 +153,13 @@ fn aggregate_budget_is_shared_by_guest_calls_and_checked_replay() {
             },
         );
         let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
-        let result = vm.run(&program, entry, &[], recorder.mask(), Some(&mut recorder));
+        let unit = vm.install(program.clone()).unwrap();
+        let result = vm.run(
+            FuncRef::new(unit, entry),
+            &[],
+            recorder.mask(),
+            Some(&mut recorder),
+        );
         let recording = recorder.finish();
         drop(vm);
         if limit == 2 {
@@ -223,8 +229,14 @@ fn borrowed_nested_aggregates_charge_only_new_immediate_fields() {
         .aggregates_mut()
         .tuple_new(vec![Value::I64(7); 4096])
         .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let output = vm
-        .run(&program, entry, &[Value::Agg(input)], TraceMask::NONE, None)
+        .run(
+            FuncRef::new(unit, entry),
+            &[Value::Agg(input)],
+            TraceMask::NONE,
+            None,
+        )
         .unwrap();
     let Value::Agg(root) = output[0] else {
         panic!("aggregate result")

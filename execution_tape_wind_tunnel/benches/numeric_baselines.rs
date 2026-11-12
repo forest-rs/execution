@@ -3,6 +3,7 @@
 
 //! Primitive addition on bounded inputs, with preparation and output checking outside timing.
 
+use execution_tape::value::FuncRef;
 use std::{hint::black_box, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -95,10 +96,10 @@ fn numeric(c: &mut Criterion) {
             let mut vm = Vm::new(NoHost, Limits::default());
             let args = [input];
             let mut outputs = Vec::new();
+            let unit = vm.install(program.clone()).unwrap();
             vm.run_with_ctx(
                 &mut context,
-                &program,
-                entry,
+                FuncRef::new(unit, entry),
                 &args,
                 &mut outputs,
                 TraceMask::NONE,
@@ -120,8 +121,7 @@ fn numeric(c: &mut Criterion) {
                 b.iter(|| {
                     vm.run_with_ctx(
                         &mut context,
-                        black_box(&program),
-                        entry,
+                        FuncRef::new(unit, entry),
                         black_box(&args),
                         &mut outputs,
                         TraceMask::NONE,
@@ -195,10 +195,10 @@ fn boundaries(c: &mut Criterion) {
             let mut vm = Vm::new(EchoHost, Limits::default());
             let mut context = ExecutionContext::new();
             let mut outputs = Vec::new();
+            let unit = vm.install(program.clone()).unwrap();
             vm.run_with_ctx(
                 &mut context,
-                &program,
-                entry,
+                FuncRef::new(unit, entry),
                 &[],
                 &mut outputs,
                 TraceMask::NONE,
@@ -211,8 +211,7 @@ fn boundaries(c: &mut Criterion) {
                 b.iter(|| {
                     vm.run_with_ctx(
                         &mut context,
-                        black_box(&program),
-                        entry,
+                        FuncRef::new(unit, entry),
                         &[],
                         &mut outputs,
                         TraceMask::NONE,

@@ -55,6 +55,7 @@ impl ExecutionWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::FuncRef;
     use crate::{
         asm::{FunctionAbi, ProgramBuilder},
         contract::Contract,
@@ -109,10 +110,10 @@ mod tests {
     fn staging_promotion_and_success_do_not_double_count_work() {
         let program = program();
         let mut vm = Vm::new(Producer, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         let mut invocation = vm
             .start(
-                &program,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[],
                 InvocationOptions::default().yield_host_calls(),
             )
@@ -151,8 +152,9 @@ mod tests {
         assert_eq!(invocation.resume(10).unwrap(), RunStatus::Complete);
         assert_eq!(invocation.work(), work);
         drop(invocation);
+        let unit = vm.install(program.clone()).unwrap();
         // The ordinary unobserved path remains usable without a work observer.
-        vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+        vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap();
     }
 
@@ -166,10 +168,10 @@ mod tests {
                 ..Limits::default()
             },
         );
+        let unit = vm.install(program.clone()).unwrap();
         let mut invocation = vm
             .start(
-                &program,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[],
                 InvocationOptions::default().yield_host_calls(),
             )

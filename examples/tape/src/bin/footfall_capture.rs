@@ -9,6 +9,7 @@ mod demo;
 use demo::{Behavior, DemoHost, ENTRY, GUEST_TRAP};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncId;
+use execution_tape::value::FuncRef;
 use execution_tape::value::Value;
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
@@ -43,9 +44,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sink = FootfallSink::new(context.handle());
     let mask = sink.mask() | TraceMask::INSTR;
     for (condition, expected) in [(true, 42), (false, 0)] {
+        let unit = vm.install(program.clone()).unwrap();
         let result = vm.run(
-            &program,
-            ENTRY,
+            FuncRef::new(unit, ENTRY),
             &[Value::Bool(condition), Value::I64(41)],
             mask,
             Some(&mut sink),
@@ -54,16 +55,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for behavior in [Behavior::Failure, Behavior::InvalidReturn] {
         vm.host_mut().behavior = behavior;
+        let unit = vm.install(program.clone()).unwrap();
         vm.run(
-            &program,
-            ENTRY,
+            FuncRef::new(unit, ENTRY),
             &[Value::Bool(true), Value::I64(41)],
             mask,
             Some(&mut sink),
         )
         .expect_err("intentional host failure");
     }
-    vm.run(&program, GUEST_TRAP, &[], mask, Some(&mut sink))
+    let unit = vm.install(program.clone()).unwrap();
+    vm.run(FuncRef::new(unit, GUEST_TRAP), &[], mask, Some(&mut sink))
         .expect_err("intentional guest failure");
     drop(sink);
 

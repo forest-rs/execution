@@ -6,6 +6,7 @@
 //! Run with:
 //! `cargo test -p execution_tape_tracy`
 
+use execution_tape::value::FuncRef;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -142,9 +143,10 @@ fn profiling_sink_handles_real_scope_stream() {
         host_calls: host_scopes.clone(),
     };
     let mut sink = ProfilingTraceSink::with_resolver(resolver);
+    let unit = vm.install(program.clone()).unwrap();
 
     let out = vm
-        .run(&program, entry, &[], sink.mask(), Some(&mut sink))
+        .run(FuncRef::new(unit, entry), &[], sink.mask(), Some(&mut sink))
         .unwrap();
 
     assert_eq!(out, vec![Value::I64(42)]);
@@ -200,6 +202,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
         }
     }
     let (program, entry, expected_sig) = build_program();
+    let program = Arc::new(program);
     let mut mappings = Vec::new();
     for function in [FuncId(0), entry] {
         mappings.extend(
@@ -244,9 +247,15 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
             .unwrap(),
         locations: Vec::new(),
     };
+    let unit = vm.install(Arc::clone(&program)).unwrap();
     assert_eq!(
-        vm.run(&program, entry, &[], observe.mask(), Some(&mut observe))
-            .unwrap(),
+        vm.run(
+            FuncRef::new(unit, entry),
+            &[],
+            observe.mask(),
+            Some(&mut observe)
+        )
+        .unwrap(),
         [Value::I64(42)]
     );
     assert_eq!(
@@ -279,7 +288,8 @@ fn host_panic_unwinds_active_scopes_and_a_fresh_sink_can_run_again() {
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut vm = Vm::new(PanicHost, Limits::default());
         let mut sink = ProfilingTraceSink::new();
-        let _ = vm.run(&program, entry, &[], sink.mask(), Some(&mut sink));
+        let unit = vm.install(program.clone()).unwrap();
+        let _ = vm.run(FuncRef::new(unit, entry), &[], sink.mask(), Some(&mut sink));
     }));
     assert!(panic.is_err());
     let mut vm = Vm::new(
@@ -290,8 +300,9 @@ fn host_panic_unwinds_active_scopes_and_a_fresh_sink_can_run_again() {
         Limits::default(),
     );
     let mut sink = ProfilingTraceSink::new();
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
-        vm.run(&program, entry, &[], sink.mask(), Some(&mut sink))
+        vm.run(FuncRef::new(unit, entry), &[], sink.mask(), Some(&mut sink))
             .unwrap(),
         [Value::I64(42)]
     );

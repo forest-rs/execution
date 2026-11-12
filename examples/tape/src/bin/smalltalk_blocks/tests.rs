@@ -3,6 +3,7 @@
 
 use super::super::program;
 use super::*;
+use execution_tape::value::FuncRef;
 use execution_tape::{
     recording::{
         CaptureFault, ControlAction, HostOutcome, InstructionStatus, Recording, ReplayError,
@@ -315,9 +316,12 @@ fn requiring_a_block_checks_a_dynamic_payload_before_typed_invocation() {
     body.ret(0, &[block]);
     program.define_function(entry, body).unwrap();
     let program = program.build_verified().unwrap();
-    let failure = Vm::new(Cells::default(), Limits::default())
-        .run(&program, entry, &[], TraceMask::NONE, None)
-        .unwrap_err();
+    let failure = {
+        let mut vm = Vm::new(Cells::default(), Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+    }
+    .unwrap_err();
     assert!(
         matches!(failure.trap, Trap::HostCallFailed { symbol, error: HostError::SignatureMismatch, .. }
         if symbol.as_ref() == "Object.requireBlock")

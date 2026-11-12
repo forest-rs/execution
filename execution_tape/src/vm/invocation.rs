@@ -12,8 +12,6 @@ mod host_request;
 pub use host_request::PendingHostCall;
 pub(super) mod callback;
 
-use super::continuation::ProgramRef;
-
 /// Progress after executing an invocation's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunStatus {
@@ -97,9 +95,9 @@ impl<'a> InvocationOptions<'a> {
 /// One invocation that may suspend between instructions or at an admitted host request.
 ///
 /// `Vm::start` and `Callable::start` borrow their VM. `Callable::start_owned` transfers its VM
-/// into this same invocation type. Observers can be borrowed or owned. Raw entries borrow
-/// code/inputs; callable entries retain their exact code and inputs. These domains remain
-/// intact while suspended. Host calls dispatch synchronously by default; opting into yielded
+/// into this same invocation type. Observers can be borrowed or owned. Every entry runs an
+/// installed unit and retains its program; raw entries borrow their inputs, while callable
+/// entries own theirs. These domains remain intact while suspended. Host calls dispatch synchronously by default; opting into yielded
 /// requests retains an admitted host instruction until the embedding supplies its completion.
 /// Dropping an active invocation cancels it, discards its new aggregates, and closes trace scopes
 /// with [`TraceOutcome::Cancelled`]. External host effects are not rolled back.
@@ -162,44 +160,35 @@ impl<H: Host> fmt::Debug for Invocation<'_, H> {
 }
 
 impl<H: Host> Vm<H> {
-    /// Starts an invocation without executing an instruction.
+    /// Starts an invocation of the installed function `entry` without executing an instruction.
     ///
     /// Validates entry arguments and contracts, initializes the root frame, and emits requested
     /// entry observations. Use [`Invocation::resume`] to execute bounded scheduling quanta.
-    /// A rejected entry returns its ordinary trap and leaves no new aggregates behind.
+    /// A rejected entry returns its ordinary trap and leaves no new aggregates behind. A unit
+    /// this VM did not install traps with [`Trap::UnknownUnit`] before any observation.
     pub fn start<'a>(
         &'a mut self,
-        program: &'a VerifiedProgram,
-        entry: FuncId,
+        entry: FuncRef,
         args: &'a [Value],
         options: InvocationOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
-        self.start_prepaid(program, entry, args, options, DataWork::default())
+        self.start_prepaid(entry, args, options, DataWork::default())
     }
 
     pub(crate) fn start_prepaid<'a>(
         &'a mut self,
-        program: &'a VerifiedProgram,
-        entry: FuncId,
+        entry: FuncRef,
         args: &'a [Value],
         options: InvocationOptions<'a>,
         work: DataWork,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         let checkpoint = self.memory.checkpoint();
-        self.start_with_inputs(
-            ProgramRef::Borrowed(program),
-            entry,
-            Cow::Borrowed(args),
-            options,
-            checkpoint,
-            work,
-        )
+        self.start_with_inputs(entry, Cow::Borrowed(args), options, checkpoint, work)
     }
 
     fn start_with_inputs<'a>(
         &'a mut self,
-        program: ProgramRef<'a>,
-        entry: FuncId,
+        entry: FuncRef,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
         checkpoint: Checkpoint,
@@ -207,7 +196,6 @@ impl<H: Host> Vm<H> {
     ) -> Result<Invocation<'a, H>, TrapInfo> {
         Invocation::prepare(
             BorrowedOrOwned::Borrowed(self),
-            program,
             entry,
             args,
             options,
@@ -220,13 +208,13 @@ impl<H: Host> Vm<H> {
 impl<'a, H: Host> Invocation<'a, H> {
     fn prepare(
         vm: BorrowedOrOwned<'a, Vm<H>>,
-        program: ProgramRef<'a>,
-        entry: FuncId,
+        entry: FuncRef,
         args: Cow<'a, [Value]>,
         options: InvocationOptions<'a>,
         checkpoint: Checkpoint,
         work: DataWork,
     ) -> Result<Self, TrapInfo> {
+        let program = Arc::clone(vm.entry_program(entry.unit)?);
         let budget = Budget::new(&vm.limits);
         let mut invocation = Invocation {
             vm,
@@ -318,9 +306,9 @@ impl<H: Host> Invocation<'_, H> {
 
     /// Takes committed owned outputs, leaving an empty result buffer. Returns `None` before a
     /// successful return. Aggregate handles remain owned by this invocation's VM heap.
-    /// These are raw ABI values: function/closure/nominal IDs still need their original code
-    /// owner. Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
-    /// invocation when its lookup handle has already been discarded.
+    /// These are raw ABI values: function and closure references name units of this VM.
+    /// Retain returned callbacks with [`Self::retain_callable`] before dropping an owned
+    /// invocation to keep them independently of the VM.
     pub fn take_outputs(&mut self) -> Option<Vec<Value>> {
         matches!(self.continuation.outcome, Some(Ok(())))
             .then(|| core::mem::take(&mut self.continuation.outputs))
@@ -331,7 +319,7 @@ impl<H: Host> Invocation<'_, H> {
     /// An owned VM transfers its reachable aggregate graph without copying byte/string payloads.
     /// A borrowed VM copies reachable aggregates, leaving its existing retained handles valid.
     /// Both paths move root payloads, preserve sharing and discard unreachable snapshot nodes.
-    /// Function/closure/nominal IDs still need their original program; clone [`Self::program_owner`]
+    /// Function/closure/nominal IDs still need their original program; clone [`Self::program`]
     /// before consumption to retain that exact owner. Host objects stay host-owned. Snapshot work
     /// is explicit embedding work outside guest budgets.
     ///
@@ -356,10 +344,9 @@ impl<H: Host> Invocation<'_, H> {
 
     /// Retains one successful function/closure result with its exact code and captures.
     ///
-    /// Start through [`Callable::start`] to supply the owning program handle. A raw `Vm::start`
-    /// only borrows its program and returns [`CallableError::MissingCodeOwner`]. The result
-    /// remains in the invocation; retention explicitly copies its reachable immutable captures
-    /// outside guest work budgets. The retained callable survives this invocation and VM.
+    /// The result remains in the invocation; retention explicitly copies its reachable immutable
+    /// captures outside guest work budgets. The retained callable survives this invocation and
+    /// VM.
     pub fn retain_callable(&self, index: usize) -> Result<Callable, CallableError> {
         let outputs = self
             .result()
@@ -374,11 +361,8 @@ impl<H: Host> Invocation<'_, H> {
                 actual: value.value_type(),
             });
         }
-        let ProgramRef::Owned(program) = &self.continuation.program else {
-            return Err(CallableError::MissingCodeOwner);
-        };
         Callable::retain(
-            Arc::clone(program),
+            Arc::clone(&self.continuation.program),
             self.aggregates(),
             ValueRef::from_value(value),
         )
@@ -431,24 +415,19 @@ impl<H: Host> Invocation<'_, H> {
         }
     }
 
-    /// The immutable verified program whose local identities this invocation uses.
+    /// The entry unit's program, retained by this invocation.
+    ///
+    /// Clone this handle before consuming the invocation when a retained aggregate snapshot
+    /// contains function, closure or nominal type IDs.
     #[must_use]
-    pub fn program(&self) -> &VerifiedProgram {
+    pub fn program(&self) -> &Arc<VerifiedProgram> {
         &self.continuation.program
     }
 
-    /// Exact retained code owner for callable entries, including independently owned executions.
-    ///
-    /// Clone this handle before consuming the invocation when a retained aggregate snapshot
-    /// contains function, closure or nominal type IDs. It remains available after the original
-    /// callable lookup is dropped. Raw `Vm::start` entries only borrow code and return `None`;
-    /// their embedding remains responsible for that program's lifetime and identity.
+    /// The installed unit this invocation entered.
     #[must_use]
-    pub fn program_owner(&self) -> Option<&Arc<VerifiedProgram>> {
-        match &self.continuation.program {
-            ProgramRef::Borrowed(_) => None,
-            ProgramRef::Owned(program) => Some(program),
-        }
+    pub fn unit(&self) -> UnitId {
+        self.continuation.unit
     }
 
     /// Borrows aggregate storage. Values observed while suspended belong to this heap.
@@ -565,6 +544,8 @@ impl<H: Host> Drop for Invocation<'_, H> {
 impl Callable {
     /// Starts this exact retained target in a VM, without executing a guest instruction.
     ///
+    /// `unit` must be a unit of `vm` installed from this callable's exact program (the same
+    /// [`Arc`]); otherwise entry traps with [`Trap::UnitProgramMismatch`] before any work.
     /// Takes ownership of the supplied arguments, excluding the hidden environment, without
     /// cloning their byte/string payloads. Raw argument handles must belong to the destination
     /// VM and this program's identity domain. A closure imports its retained graph and prepends
@@ -581,13 +562,13 @@ impl Callable {
     pub fn start<'a, H: Host>(
         &self,
         vm: &'a mut Vm<H>,
+        unit: UnitId,
         args: Vec<Value>,
         options: InvocationOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
-        let (checkpoint, args, work) = self.prepare_inputs(vm, args)?;
+        let (checkpoint, args, work) = self.prepare_inputs(vm, unit, args)?;
         vm.start_with_inputs(
-            ProgramRef::Owned(Arc::clone(self.program())),
-            self.function_id(),
+            FuncRef::new(unit, self.function_id()),
             Cow::Owned(args),
             options,
             checkpoint,
@@ -596,6 +577,8 @@ impl Callable {
     }
 
     /// Starts an invocation that owns its VM, exact code and inputs.
+    ///
+    /// `unit` follows the same rule as [`Self::start`].
     ///
     /// Transfer this invocation into a task or scheduler without borrowing VM storage or using
     /// self-references. It uses the same interpreter, limits, tracing and cancellation as `start`.
@@ -607,14 +590,14 @@ impl Callable {
     pub fn start_owned<'a, H: Host + 'a>(
         &self,
         mut vm: Vm<H>,
+        unit: UnitId,
         args: Vec<Value>,
         options: InvocationOptions<'a>,
     ) -> Result<Invocation<'a, H>, TrapInfo> {
-        let (checkpoint, args, work) = self.prepare_inputs(&mut vm, args)?;
+        let (checkpoint, args, work) = self.prepare_inputs(&mut vm, unit, args)?;
         Invocation::prepare(
             BorrowedOrOwned::Owned(Box::new(vm)),
-            ProgramRef::Owned(Arc::clone(self.program())),
-            self.function_id(),
+            FuncRef::new(unit, self.function_id()),
             Cow::Owned(args),
             options,
             checkpoint,
@@ -625,9 +608,18 @@ impl Callable {
     fn prepare_inputs<H: Host>(
         &self,
         vm: &mut Vm<H>,
+        unit: UnitId,
         mut args: Vec<Value>,
     ) -> Result<(Checkpoint, Vec<Value>, DataWork), TrapInfo> {
         let entry = self.function_id();
+        if !Arc::ptr_eq(vm.entry_program(unit)?, self.program()) {
+            return Err(TrapInfo {
+                func: entry,
+                pc: 0,
+                span_id: None,
+                trap: Trap::UnitProgramMismatch { unit },
+            });
+        }
         let Some(capture) = self.capture() else {
             let checkpoint = vm.memory.checkpoint();
             return Ok((checkpoint, args, DataWork::default()));

@@ -6,6 +6,7 @@
 //! No protected region exists yet, so every raised exception leaves the invocation as
 //! `Trap::Uncaught` with a payload snapshot that survives rollback.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{BuildError, FunctionSig, ProgramBuilder, TagBuildError},
     contract::{Contract, ContractId, ContractPosition},
@@ -138,8 +139,14 @@ fn uncaught_exception_detaches_its_payload_before_rollback() {
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
     let before = vm.aggregates().len_u32();
+    let unit = vm.install(f.program.clone()).unwrap();
     let error = vm
-        .run(&f.program, f.entry, &[Value::I64(7)], TraceMask::NONE, None)
+        .run(
+            FuncRef::new(unit, f.entry),
+            &[Value::I64(7)],
+            TraceMask::NONE,
+            None,
+        )
         .unwrap_err();
     assert_uncaught(&f, &error, 7);
     assert_eq!(
@@ -147,9 +154,15 @@ fn uncaught_exception_detaches_its_payload_before_rollback() {
         before,
         "the failed invocation's aggregates are rolled back; the payload survives in the trap"
     );
+    let unit = vm.install(f.program.clone()).unwrap();
     // The VM remains usable after an uncaught exception.
     let again = vm
-        .run(&f.program, f.entry, &[Value::I64(8)], TraceMask::NONE, None)
+        .run(
+            FuncRef::new(unit, f.entry),
+            &[Value::I64(8)],
+            TraceMask::NONE,
+            None,
+        )
         .unwrap_err();
     assert_uncaught(&f, &again, 8);
 }
@@ -159,8 +172,13 @@ fn resumable_invocations_report_the_same_uncaught_trap() {
     let f = fixture();
     let mut vm = Vm::new(NoHost, Limits::default());
     let args = [Value::I64(3)];
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut run = vm
-        .start(&f.program, f.entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, f.entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     let error = loop {
         match run.resume(1) {
@@ -200,10 +218,10 @@ fn an_exception_escaping_a_guest_callback_ends_the_whole_invocation() {
     let program = b.build_verified().unwrap();
 
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(program.clone()).unwrap();
     let mut run = vm
         .start(
-            &program,
-            outer,
+            FuncRef::new(unit, outer),
             &[],
             InvocationOptions::default().yield_host_calls(),
         )
@@ -299,15 +317,17 @@ impl TraceSink for Observe {
 fn trace_observes_the_payload_and_closes_every_scope_at_the_throw() {
     let f = fixture();
     let mut sink = Observe::default();
-    let error = Vm::new(NoHost, Limits::default())
-        .run(
-            &f.program,
-            f.entry,
+    let error = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, f.entry),
             &[Value::I64(9)],
             sink.mask(),
             Some(&mut sink),
         )
-        .unwrap_err();
+    }
+    .unwrap_err();
     assert_uncaught(&f, &error, 9);
     let (raise, entry, pc) = (f.raise.0, f.entry.0, f.throw_pc);
     assert_eq!(
@@ -326,15 +346,17 @@ fn trace_observes_the_payload_and_closes_every_scope_at_the_throw() {
 fn recorded_uncaught_exceptions_replay_with_their_payload() {
     let f = fixture();
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
-    let error = Vm::new(NoHost, Limits::default())
-        .run(
-            &f.program,
-            f.entry,
+    let error = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, f.entry),
             &[Value::I64(4)],
             recorder.mask(),
             Some(&mut recorder),
         )
-        .unwrap_err();
+    }
+    .unwrap_err();
     assert_uncaught(&f, &error, 4);
     let recording = recorder.finish();
     recording.status().unwrap();
@@ -386,10 +408,10 @@ fn payload_contracts_are_checked_statically_and_where_the_exception_is_raised() 
         .aggregates_mut()
         .tuple_new(vec![Value::Bool(true)])
         .unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::Agg(wrong)],
             TraceMask::NONE,
             None,
@@ -404,10 +426,10 @@ fn payload_contracts_are_checked_statically_and_where_the_exception_is_raised() 
     assert!(error.to_string().contains("throw tag#0: payload[0]"));
 
     let right = vm.aggregates_mut().tuple_new(vec![Value::I64(1)]).unwrap();
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
         .run(
-            &program,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[Value::Agg(right)],
             TraceMask::NONE,
             None,

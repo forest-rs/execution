@@ -30,7 +30,7 @@ use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, ExnReg, F64Reg,
     FuncReg, I64Reg, ObjReg, StrReg, U64Reg, VReg, VRegSlice,
 };
-use crate::value::{AggHandle, Closure, Decimal, FuncId, Obj, ObjHandle, Value};
+use crate::value::{AggHandle, Closure, Decimal, FuncId, FuncRef, Obj, ObjHandle, UnitId, Value};
 use crate::verifier::VerifiedProgram;
 
 #[cfg(test)]
@@ -50,9 +50,12 @@ pub use inspection::{
 };
 mod observations;
 mod ownership;
+mod units;
 mod work;
 pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
 use ownership::BorrowedOrOwned;
+pub(crate) use units::UnitTable;
+pub use units::{InstallError, Units};
 pub use work::ExecutionWork;
 #[cfg(test)]
 mod payload_tests;
@@ -182,6 +185,16 @@ pub enum Trap {
     PayloadSizeOverflow,
     /// Attempted to access an invalid `pc` / instruction boundary.
     InvalidPc,
+    /// A function reference names a unit this VM did not install.
+    UnknownUnit {
+        /// The unknown unit.
+        unit: UnitId,
+    },
+    /// A retained callable was started in a unit installed from a different program.
+    UnitProgramMismatch {
+        /// The selected unit.
+        unit: UnitId,
+    },
     /// A register was out of bounds.
     RegOutOfBounds,
     /// A constant pool index was out of bounds.
@@ -311,6 +324,10 @@ impl fmt::Display for Trap {
             ),
             Self::PayloadSizeOverflow => write!(f, "payload size or work calculation overflowed"),
             Self::InvalidPc => write!(f, "invalid pc"),
+            Self::UnknownUnit { unit } => write!(f, "unit #{} is not installed in this VM", unit.0),
+            Self::UnitProgramMismatch { unit } => {
+                write!(f, "unit #{} does not run this callable's program", unit.0)
+            }
             Self::RegOutOfBounds => write!(f, "register out of bounds"),
             Self::ConstOutOfBounds => write!(f, "constant out of bounds"),
             Self::TypeMismatch { expected, actual } => {
@@ -586,6 +603,9 @@ enum Progress {
 pub struct Vm<H: Host> {
     host: H,
     limits: Limits,
+
+    /// Installed code. Append-only: frames and values name units by index.
+    units: UnitTable,
 
     /// Retained aggregates and temporary allocations from the active run.
     memory: ProgramMemory,
@@ -1168,11 +1188,14 @@ impl<H: Host> Vm<H> {
         Self {
             host,
             limits,
+            units: UnitTable::default(),
             memory: ProgramMemory::new(),
         }
     }
 
-    /// Executes `program` starting at `entry` with `args` as value arguments.
+    /// Executes the installed function `entry` with `args` as value arguments.
+    ///
+    /// Install the program first with [`Self::install`]; `entry` names a function in that unit.
     ///
     /// Convention:
     /// - `r0` is the effect token (initialized to `Unit` at entry).
@@ -1184,7 +1207,8 @@ impl<H: Host> Vm<H> {
     /// conformance (return arity and return types) at runtime.
     ///
     /// An incorrect entry argument count traps with [`Trap::ArityMismatch`]. An unknown entry
-    /// function traps with [`Trap::InvalidPc`].
+    /// function traps with [`Trap::InvalidPc`], and a unit this VM did not install traps with
+    /// [`Trap::UnknownUnit`] before any observation.
     ///
     /// Only new aggregates reachable from returned values survive a successful run. Traps
     /// discard all aggregates allocated during the run. Previously retained values stay valid.
@@ -1192,28 +1216,18 @@ impl<H: Host> Vm<H> {
     /// host state. A returned dangling aggregate or closure environment traps at `ret`.
     pub fn run(
         &mut self,
-        program: &VerifiedProgram,
-        entry: FuncId,
+        entry: FuncRef,
         args: &[Value],
         trace_mask: TraceMask,
         trace: Option<&mut dyn TraceSink>,
     ) -> Result<Vec<Value>, TrapInfo> {
         let mut ctx = ExecutionContext::new();
         let mut outputs = Vec::new();
-        self.run_with_ctx(
-            &mut ctx,
-            program,
-            entry,
-            args,
-            &mut outputs,
-            trace_mask,
-            trace,
-            None,
-        )?;
+        self.run_with_ctx(&mut ctx, entry, args, &mut outputs, trace_mask, trace, None)?;
         Ok(outputs)
     }
 
-    /// Executes a program using reusable scratch and appending returns to `outputs`.
+    /// Executes an installed function using reusable scratch and appending returns to `outputs`.
     ///
     /// Clear `outputs` before calling to replace previous results while keeping its capacity.
     /// A trap preserves its original contents. Successful calls append in signature order;
@@ -1222,8 +1236,7 @@ impl<H: Host> Vm<H> {
     pub fn run_with_ctx(
         &mut self,
         scratch: &mut ExecutionContext,
-        program: &VerifiedProgram,
-        entry: FuncId,
+        entry: FuncRef,
         args: &[Value],
         outputs: &mut Vec<Value>,
         trace_mask: TraceMask,
@@ -1234,6 +1247,9 @@ impl<H: Host> Vm<H> {
             registers: ctx,
             budget,
         } = scratch;
+        let program = Arc::clone(self.entry_program(entry.unit)?);
+        let program = &*program;
+        let entry = entry.func;
         budget.reset(&self.limits);
         let original_len = outputs.len();
         let checkpoint = self.memory.checkpoint();
@@ -1276,6 +1292,19 @@ impl<H: Host> Vm<H> {
         trace.run_end(program_ref, outcome);
 
         result
+    }
+
+    /// The program of an entry unit, or the trap for a unit this VM did not install.
+    fn entry_program(&self, unit: UnitId) -> Result<&Arc<VerifiedProgram>, TrapInfo> {
+        self.units
+            .get(unit)
+            .map(|unit| &unit.program)
+            .ok_or(TrapInfo {
+                func: FuncId(0),
+                pc: 0,
+                span_id: None,
+                trap: Trap::UnknownUnit { unit },
+            })
     }
 
     #[inline]
@@ -4467,11 +4496,11 @@ mod tests {
             let mut ctx = ExecutionContext::new();
             let mut outputs = Vec::new();
             for handle in [wrong, AggHandle(u32::MAX)] {
+                let unit = vm.install(p.clone()).unwrap();
                 let e = vm
                     .run_with_ctx(
                         &mut ctx,
-                        &p,
-                        entry,
+                        FuncRef::new(unit, entry),
                         &[Value::Agg(handle)],
                         &mut outputs,
                         TraceMask::NONE,
@@ -4485,10 +4514,10 @@ mod tests {
                     "mode={mode}: {e:?}"
                 );
             }
+            let unit = vm.install(p.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
-                &p,
-                entry,
+                FuncRef::new(unit, entry),
                 &[Value::Agg(good)],
                 &mut outputs,
                 TraceMask::NONE,
@@ -4628,7 +4657,8 @@ mod tests {
                 }
                 let mut vm = Vm::new(HostMode(mode), limits);
                 let mut sink = Sink::default();
-                let result = vm.run(&p, entry, &[], mask, Some(&mut sink));
+                let unit = vm.install(p.clone()).unwrap();
+                let result = vm.run(FuncRef::new(unit, entry), &[], mask, Some(&mut sink));
                 assert_eq!(result.is_ok(), mode == 6, "mode={mode}: {result:?}");
                 assert!(sink.pending.is_none());
                 assert!(sink.scopes.is_empty());
@@ -4763,8 +4793,14 @@ mod tests {
                 },
                 Limits::default(),
             );
+            let unit = vm.install(p.clone()).unwrap();
             let error = vm
-                .run(&p, entry, &[], TraceMask::INSTR, Some(&mut observer))
+                .run(
+                    FuncRef::new(unit, entry),
+                    &[],
+                    TraceMask::INSTR,
+                    Some(&mut observer),
+                )
                 .unwrap_err();
             assert_eq!(vm.aggregates().len_u32(), 0);
             error
@@ -4827,14 +4863,18 @@ mod tests {
             .unwrap();
         let program = pb.build_verified().unwrap();
         let mut vm = Vm::new(StateHost::default(), Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
-            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+                .unwrap(),
             [Value::I64(1), Value::I64(2)]
         );
         assert_eq!(vm.host().calls, [first, second]);
         vm.host_mut().offset = 10;
+        let unit = vm.install(program.clone()).unwrap();
         assert_eq!(
-            vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap(),
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+                .unwrap(),
             [Value::I64(11), Value::I64(12)]
         );
         assert_eq!(vm.host().calls, [first, second, first, second]);
@@ -4880,10 +4920,10 @@ mod tests {
             let mut outputs = vec![Value::Unit];
             for _ in 0..100 {
                 outputs.truncate(1);
+                let unit = vm.install(program.clone()).unwrap();
                 let result = vm.run_with_ctx(
                     &mut ctx,
-                    &program,
-                    entry,
+                    FuncRef::new(unit, entry),
                     &[Value::Agg(root)],
                     &mut outputs,
                     TraceMask::NONE,
@@ -4972,7 +5012,10 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         let mut prior = Vec::new();
         for run in 0..3 {
-            let outputs = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
+            let unit = vm.install(program.clone()).unwrap();
+            let outputs = vm
+                .run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+                .unwrap();
             assert_eq!(vm.aggregates().len_u32(), (run + 1) * 2);
             let [Value::Agg(root), Value::Closure(closure)] = outputs[..] else {
                 panic!("unexpected returned graph");
@@ -4996,10 +5039,10 @@ mod tests {
             );
             prior.push(root);
             for &old_root in &prior {
+                let unit = vm.install(program.clone()).unwrap();
                 assert_eq!(
                     vm.run(
-                        &program,
-                        read,
+                        FuncRef::new(unit, read),
                         &[Value::Agg(old_root)],
                         TraceMask::NONE,
                         None
@@ -5071,11 +5114,11 @@ mod tests {
             let mut outputs = vec![Value::I64(12)];
             let mut ctx = ExecutionContext::new();
             let mut ends = Ends::default();
+            let unit = vm.install(program.clone()).unwrap();
             let error = vm
                 .run_with_ctx(
                     &mut ctx,
-                    &program,
-                    entry,
+                    FuncRef::new(unit, entry),
                     &[arg],
                     &mut outputs,
                     TraceMask::INSTR | TraceMask::CALL,
@@ -5097,10 +5140,10 @@ mod tests {
             } else {
                 Value::Closure(Closure { func: entry, env })
             };
+            let unit = vm.install(program.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
-                &program,
-                entry,
+                FuncRef::new(unit, entry),
                 core::slice::from_ref(&valid),
                 &mut outputs,
                 TraceMask::NONE,
@@ -5169,7 +5212,8 @@ mod tests {
                 .unwrap();
             let program = pb.build_verified().unwrap();
             let mut vm = Vm::new(RetainingHost::default(), Limits::default());
-            let result = vm.run(&program, entry, &[], TraceMask::NONE, None);
+            let unit = vm.install(program.clone()).unwrap();
+            let result = vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None);
             assert_eq!(result.is_err(), trap);
             assert_eq!(vm.aggregates().len_u32(), u32::from(!trap));
             if let Ok(outputs) = result {
@@ -5239,10 +5283,10 @@ mod tests {
         outputs.push(Value::Unit);
         let pointer = outputs.as_ptr();
         let mut ctx = ExecutionContext::new();
+        let unit = vm.install(p.clone()).unwrap();
         vm.run_with_ctx(
             &mut ctx,
-            &p,
-            entry,
+            FuncRef::new(unit, entry),
             &args,
             &mut outputs,
             TraceMask::NONE,
@@ -5251,11 +5295,11 @@ mod tests {
         )
         .unwrap();
         let first = outputs.clone();
+        let unit = vm.install(p.clone()).unwrap();
         let error = vm
             .run_with_ctx(
                 &mut ctx,
-                &p,
-                failure,
+                FuncRef::new(unit, failure),
                 &[],
                 &mut outputs,
                 TraceMask::NONE,
@@ -5265,10 +5309,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error.trap, Trap::TrapCode(123)));
         assert_eq!(outputs, first);
+        let unit = vm.install(p.clone()).unwrap();
         vm.run_with_ctx(
             &mut ctx,
-            &p,
-            entry,
+            FuncRef::new(unit, entry),
             &args,
             &mut outputs,
             TraceMask::NONE,
@@ -5338,10 +5382,10 @@ mod tests {
         let mut outputs = Vec::new();
         for (bytes, text) in [(&b"first"[..], "\u{00e9}"), (&b"second"[..], "\u{1f980}")] {
             let p = program(bytes, text);
+            let unit = vm.install(p.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
-                &p,
-                FuncId(1),
+                FuncRef::new(unit, FuncId(1)),
                 &[],
                 &mut outputs,
                 TraceMask::NONE,
@@ -5472,8 +5516,10 @@ mod tests {
         .unwrap();
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(InspectHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         assert_eq!(
-            vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap(),
+            vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                .unwrap(),
             vec![
                 Value::Bytes(b"second".to_vec()),
                 Value::Str("second".into())
@@ -5556,7 +5602,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(7)]);
     }
 
@@ -5617,10 +5666,10 @@ mod tests {
             ends: 0,
             instrs: Vec::new(),
         };
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[],
                 TraceMask::RUN | TraceMask::INSTR,
                 Some(&mut trace),
@@ -5659,7 +5708,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
     }
 
@@ -5691,7 +5743,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(42)]);
     }
 
@@ -5722,8 +5777,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap_err();
         assert!(matches!(
             &err.trap,
@@ -5794,7 +5850,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         // "id" host echoes args back — verify ordering is preserved.
         let expected: Vec<Value> = (10..10 + i64::from(n)).map(Value::I64).collect();
         assert_eq!(out, expected);
@@ -5843,8 +5902,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(LazyHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap_err();
         assert!(matches!(
             err.trap,
@@ -5929,10 +5989,10 @@ mod tests {
         let mut access = CountingAccessSink::default();
 
         let mut out = Vec::new();
+        let unit = vm.install(p.clone()).unwrap();
         vm.run_with_ctx(
             &mut ctx,
-            &p,
-            FuncId(0),
+            FuncRef::new(unit, FuncId(0)),
             &[],
             &mut out,
             TraceMask::NONE,
@@ -6017,8 +6077,9 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(SumTupleHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
-            .run(&p, entry, &[], TraceMask::NONE, None)
+            .run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
             .expect("host should read tuple contents");
         assert_eq!(out, vec![Value::I64(42)]);
     }
@@ -6047,10 +6108,10 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(closure)],
                 TraceMask::NONE,
                 None,
@@ -6090,10 +6151,10 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(closure)],
                 TraceMask::NONE,
                 None,
@@ -6146,9 +6207,15 @@ mod tests {
             .aggregates_mut()
             .tuple_new(vec![Value::I64(11), Value::Bool(true)])
             .unwrap();
+        let unit = vm.install(p.clone()).unwrap();
 
         let out = vm
-            .run(&p, FuncId(0), &[Value::Agg(env)], TraceMask::NONE, None)
+            .run(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::Agg(env)],
+                TraceMask::NONE,
+                None,
+            )
             .unwrap();
         let closure = match out.as_slice() {
             [Value::Closure(c)] => *c,
@@ -6230,7 +6297,10 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(9)]);
     }
 
@@ -6308,7 +6378,10 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::U64(2)]);
     }
 
@@ -6372,7 +6445,10 @@ mod tests {
 
         let p = pb.build_verified().unwrap();
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(42)]);
     }
 
@@ -6437,10 +6513,10 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Func(FuncId(1))],
                 TraceMask::NONE,
                 None,
@@ -6510,10 +6586,10 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Func(FuncId(1))],
                 TraceMask::NONE,
                 None,
@@ -6563,10 +6639,10 @@ mod tests {
         let p = verify_program_owned(p, &VerifyConfig::default()).unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(Closure {
                     func: FuncId(99),
                     env: AggHandle(0),
@@ -6604,7 +6680,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(1)]);
     }
 
@@ -6634,7 +6713,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
         assert_eq!(out, vec![Value::I64(16)]);
     }
 
@@ -6668,10 +6750,10 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(closure)],
                 TraceMask::NONE,
                 None,
@@ -6719,10 +6801,10 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[
                     Value::Bool(true),
                     Value::Closure(closure_a),
@@ -6738,10 +6820,10 @@ mod tests {
         let mut vm = Vm::new(TestHost, Limits::default());
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
         vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
         let out = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[
                     Value::Bool(false),
                     Value::Closure(closure_a),
@@ -6850,8 +6932,9 @@ mod tests {
                 ..Limits::default()
             },
         );
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
-            .run(&p, FuncId(0), &[], TraceMask::NONE, None)
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap_err();
         assert!(matches!(err.trap, Trap::CallDepthExceeded));
     }
@@ -6920,7 +7003,10 @@ mod tests {
         let p = pb.build_verified().unwrap();
 
         let mut vm = Vm::new(TestHost, Limits::default());
-        let out = vm.run(&p, FuncId(0), &[], TraceMask::NONE, None).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
+        let out = vm
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+            .unwrap();
 
         // Each closure should have returned its own env
         let (env_a, env_b) = match out.as_slice() {
@@ -6998,10 +7084,10 @@ mod tests {
 
         let mut vm = Vm::new(TestHost, Limits::default());
         let env = vm.aggregates_mut().tuple_new(vec![]).unwrap();
+        let unit = vm.install(p.clone()).unwrap();
         let err = vm
             .run(
-                &p,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[Value::Closure(Closure {
                     func: FuncId(1),
                     env,

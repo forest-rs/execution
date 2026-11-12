@@ -9,6 +9,7 @@ mod workload;
 use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncId;
+use execution_tape::value::FuncRef;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,12 +24,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let program = workload::program(calls);
     let (mut vm, args) = workload::fixture(depth, payload);
-    let expected = vm.run(&program, FuncId(0), &args, TraceMask::NONE, None)?;
+    let unit = vm.install(program.clone()).unwrap();
+    let expected = vm.run(FuncRef::new(unit, FuncId(0)), &args, TraceMask::NONE, None)?;
     let before = vm.host().calls;
     let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+    let unit = vm.install(program.clone()).unwrap();
     let actual = vm.run(
-        &program,
-        FuncId(0),
+        FuncRef::new(unit, FuncId(0)),
         &args,
         recorder.mask(),
         Some(&mut recorder),

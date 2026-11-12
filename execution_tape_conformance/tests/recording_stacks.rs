@@ -10,6 +10,7 @@ use execution_tape::recording::{
     CaptureFault, CaptureResource, Outcome, RecordLimits, Recorder, Recording, ReplayOutcome,
 };
 use execution_tape::trace::{TraceMask, TraceSink};
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
@@ -90,7 +91,13 @@ fn record(
     } else {
         TraceMask::RUN | TraceMask::VALUES
     };
-    let _ = vm.run(p, FuncId(0), &[Value::I64(3)], mask, Some(&mut recorder));
+    let unit = vm.install(p.clone()).unwrap();
+    let _ = vm.run(
+        FuncRef::new(unit, FuncId(0)),
+        &[Value::I64(3)],
+        mask,
+        Some(&mut recorder),
+    );
     (recorder.finish(), vm.host().calls)
 }
 

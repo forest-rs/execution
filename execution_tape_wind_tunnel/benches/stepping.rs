@@ -4,6 +4,7 @@
 //! Keep scheduling, metadata, verifier-backed register inspection and object traversal distinct.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     callable::Callable,
@@ -52,12 +53,18 @@ fn stepping(c: &mut Criterion) {
     });
     let args = [object.clone()];
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let mut group = c.benchmark_group("live_execution");
     group.bench_function("ordinary_run_1000", |b| {
         b.iter(|| {
             black_box(
-                vm.run(&p, entry, black_box(&args), TraceMask::NONE, None)
-                    .unwrap(),
+                vm.run(
+                    FuncRef::new(unit, entry),
+                    black_box(&args),
+                    TraceMask::NONE,
+                    None,
+                )
+                .unwrap(),
             );
         })
     });
@@ -68,8 +75,7 @@ fn stepping(c: &mut Criterion) {
             outputs.clear();
             vm.run_with_ctx(
                 &mut ctx,
-                &p,
-                entry,
+                FuncRef::new(unit, entry),
                 black_box(&args),
                 &mut outputs,
                 TraceMask::NONE,
@@ -87,7 +93,11 @@ fn stepping(c: &mut Criterion) {
             |b, &quantum| {
                 b.iter(|| {
                     let mut run = vm
-                        .start(&p, entry, black_box(&args), InvocationOptions::default())
+                        .start(
+                            FuncRef::new(unit, entry),
+                            black_box(&args),
+                            InvocationOptions::default(),
+                        )
                         .unwrap();
                     while run.resume(quantum).unwrap() == RunStatus::Suspended {}
                     black_box(run.result().unwrap().unwrap());
@@ -106,14 +116,19 @@ fn stepping(c: &mut Criterion) {
             b.iter(|| {
                 let mut fresh = Vm::new(NoHost, Limits::default());
                 let mut invocation = if owned {
+                    let mut fresh = fresh;
+                    let unit = fresh.install(Arc::clone(callable.program())).unwrap();
                     callable.start_owned(
                         fresh,
+                        unit,
                         black_box(args.to_vec()),
                         InvocationOptions::default(),
                     )
                 } else {
+                    let unit = fresh.install(Arc::clone(callable.program())).unwrap();
                     callable.start(
                         &mut fresh,
+                        unit,
                         black_box(args.to_vec()),
                         InvocationOptions::default(),
                     )
@@ -129,7 +144,11 @@ fn stepping(c: &mut Criterion) {
     // These retained nodes make object inventory cost visible without growing the heap per sample.
     vm.aggregates_mut().tuple_new(vec![object; 1024]).unwrap();
     let mut run = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     run.resume(100).unwrap();
     let mut group = c.benchmark_group("live_inspection");
@@ -192,11 +211,12 @@ fn callback_free_calls(c: &mut Criterion) {
     b.define_function(callee, a).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(program.clone()).unwrap();
     let mut group = c.benchmark_group("callback_free_calls");
     group.bench_function("ordinary_1000", |b| {
         b.iter(|| {
             black_box(
-                vm.run(&program, caller, &[], TraceMask::NONE, None)
+                vm.run(FuncRef::new(unit, caller), &[], TraceMask::NONE, None)
                     .unwrap(),
             );
         })
@@ -204,7 +224,11 @@ fn callback_free_calls(c: &mut Criterion) {
     group.bench_function("scheduled_1000", |b| {
         b.iter(|| {
             let mut invocation = vm
-                .start(&program, caller, &[], InvocationOptions::default())
+                .start(
+                    FuncRef::new(unit, caller),
+                    &[],
+                    InvocationOptions::default(),
+                )
                 .unwrap();
             assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
             black_box(invocation.result().unwrap().unwrap());

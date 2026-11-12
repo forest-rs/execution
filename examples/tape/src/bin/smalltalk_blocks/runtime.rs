@@ -14,7 +14,7 @@ use execution_tape::{
     value::{Obj, ObjHandle, Value},
     vm::{ActivationId, Invocation, InvocationOptions, Limits, RunStatus, Vm},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 fn cell() -> Obj {
     Obj {
@@ -159,8 +159,11 @@ impl Runtime {
                 .with_instructions(InstructionCapture::default()),
         ));
         let callable = Callable::function(fixture.program.clone(), fixture.entry)?;
+        let mut owned_vm = Vm::new(Cells::default(), limits);
+        let unit = owned_vm.install(Arc::clone(callable.program())).unwrap();
         let run = callable.start_owned(
-            Vm::new(Cells::default(), limits),
+            owned_vm,
+            unit,
             vec![],
             InvocationOptions::default()
                 .yield_host_calls()

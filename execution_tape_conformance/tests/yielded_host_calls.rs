@@ -3,6 +3,7 @@
 
 //! Admitted host instructions can wait without replaying effects or weakening validation.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
@@ -130,10 +131,10 @@ fn pending_request_borrows_inputs_keeps_source_and_hides_unreturned_destinations
     };
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut access = Access::default();
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()
@@ -233,10 +234,10 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
     let args = args();
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()
@@ -299,10 +300,10 @@ fn return_arity_kind_payload_and_owned_host_errors_use_normal_admission_and_roll
         );
         let root = vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
         let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut call = vm
             .start(
-                &f.program,
-                f.entry,
+                FuncRef::new(unit, f.entry),
                 &args,
                 InvocationOptions::default()
                     .yield_host_calls()
@@ -388,10 +389,10 @@ fn hard_limits_deny_requests_before_external_effects_and_waiting_cannot_replenis
                 ..Limits::default()
             },
         );
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut call = vm
             .start(
-                &f.program,
-                f.entry,
+                FuncRef::new(unit, f.entry),
                 &args,
                 InvocationOptions::default().yield_host_calls(),
             )
@@ -415,10 +416,10 @@ fn hard_limits_deny_requests_before_external_effects_and_waiting_cannot_replenis
                 ..Limits::default()
             },
         );
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut call = vm
             .start(
-                &f.program,
-                f.entry,
+                FuncRef::new(unit, f.entry),
                 &args,
                 InvocationOptions::default().yield_host_calls(),
             )
@@ -444,10 +445,10 @@ fn async_producer_borrows_payload_across_a_real_pending_poll_then_completes_once
         unreachable!()
     };
     let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -502,10 +503,10 @@ fn cancelling_a_polled_async_delivery_prevents_redispatch_and_keeps_effects() {
     let effects = Cell::new(0);
     let mut vm = Vm::new(Echo::default(), Limits::default());
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()
@@ -557,10 +558,10 @@ fn an_unpolled_async_delivery_leaves_the_request_unclaimed() {
     let f = fixture(1, false);
     let args = args();
     let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -580,10 +581,10 @@ fn successful_completion_moves_payloads_from_reusable_slots_without_an_extra_cop
     let f = fixture(1, false);
     let args = args();
     let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default().yield_host_calls(),
         )
@@ -617,10 +618,12 @@ fn owned_code_and_inputs_survive_a_dropped_lookup_while_a_host_request_is_pendin
     let f = fixture(1, false);
     let weak = Arc::downgrade(&f.program);
     let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(Arc::clone(&f.program)).unwrap();
     let mut call = Callable::function(f.program, f.entry)
         .unwrap()
         .start(
             &mut vm,
+            unit,
             args().to_vec(),
             InvocationOptions::default().yield_host_calls(),
         )
@@ -632,6 +635,11 @@ fn owned_code_and_inputs_survive_a_dropped_lookup_while_a_host_request_is_pendin
     assert_eq!(call.resume(u64::MAX).unwrap(), RunStatus::Complete);
     assert_eq!(call.result().unwrap().unwrap(), &args());
     drop(call);
+    assert!(
+        weak.upgrade().is_some(),
+        "the VM retains its installed units"
+    );
+    drop(vm);
     assert!(weak.upgrade().is_none());
 }
 
@@ -681,10 +689,10 @@ fn empty_and_wide_host_boundaries_use_the_same_request_and_completion_contract()
         let args: Vec<_> = (0..count).map(|n| Value::I64(i64::from(n))).collect();
         for dispatch in [false, true] {
             let mut vm = Vm::new(Fill, Limits::default());
+            let unit = vm.install(p.clone()).unwrap();
             let mut call = vm
                 .start(
-                    &p,
-                    entry,
+                    FuncRef::new(unit, entry),
                     &args,
                     InvocationOptions::default().yield_host_calls(),
                 )
@@ -710,10 +718,10 @@ fn cancellation_of_a_pending_host_call_is_incomplete_and_releases_only_new_aggre
     let mut vm = Vm::new(Echo::default(), Limits::default());
     vm.aggregates_mut().tuple_new(vec![Value::I64(7)]).unwrap();
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()
@@ -812,10 +820,10 @@ fn yielded_dispatch_has_exactly_the_same_trace_register_phases_and_fuel_as_sync_
         let mirror = log.clone();
         let mut vm = Vm::new(Echo::default(), Limits::default());
         let options = InvocationOptions::default().trace(mask, &mut log);
+        let unit = vm.install(f.program.clone()).unwrap();
         let mut call = vm
             .start(
-                &f.program,
-                f.entry,
+                FuncRef::new(unit, f.entry),
                 &args,
                 if yielding {
                     options.yield_host_calls()
@@ -869,10 +877,10 @@ fn unwound_host_delivery_cannot_retry_effects_and_records_cancellation_instead_o
         Limits::default(),
     );
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()
@@ -932,10 +940,10 @@ fn abandonment_is_terminal_even_when_a_cancellation_observer_panics() {
     let cancellations = Rc::new(Cell::new(0));
     let mut observer = PanicOnCancellation(Rc::clone(&cancellations));
     let mut vm = Vm::new(Echo::default(), Limits::default());
+    let unit = vm.install(f.program.clone()).unwrap();
     let mut call = vm
         .start(
-            &f.program,
-            f.entry,
+            FuncRef::new(unit, f.entry),
             &args,
             InvocationOptions::default()
                 .yield_host_calls()

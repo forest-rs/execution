@@ -9,6 +9,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::recording::{
     InstructionCapture, InstructionStatus, RecordLimits, Recorder, RegisterWatch,
 };
+use execution_tape::value::FuncRef;
 use execution_tape::{
     disasm::disassemble_function,
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -41,8 +42,9 @@ fn observations(c: &mut Criterion) {
     for (name, program) in cases {
         let program = Arc::new(verify_program_owned(program, &VerifyConfig::default()).unwrap());
         let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         let expected = vm
-            .run(&program, FuncId(0), &[], TraceMask::NONE, None)
+            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
             .unwrap();
         let source = disassemble_function(program.program(), FuncId(0)).unwrap();
         let watches = source
@@ -71,8 +73,7 @@ fn observations(c: &mut Criterion) {
                 }
                 let result = vm
                     .run(
-                        &program,
-                        FuncId(0),
+                        FuncRef::new(unit, FuncId(0)),
                         &[],
                         recorder.mask(),
                         Some(&mut recorder),
@@ -99,7 +100,7 @@ fn observations(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("live", name), |b| {
             b.iter(|| {
                 black_box(
-                    vm.run(&program, FuncId(0), &[], TraceMask::NONE, None)
+                    vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
                         .unwrap(),
                 )
             });

@@ -9,6 +9,7 @@ use execution_tape::contract::Contract;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{Closure, Value};
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
 use std::{hint::black_box, time::Duration};
@@ -147,10 +148,10 @@ fn callables(c: &mut Criterion) {
                 let args = [callee, value.clone()];
                 let mut output = Vec::new();
                 let mut ctx = ExecutionContext::new();
+                let unit = vm.install(p.clone()).unwrap();
                 vm.run_with_ctx(
                     &mut ctx,
-                    &p,
-                    entry,
+                    FuncRef::new(unit, entry),
                     &args,
                     &mut output,
                     TraceMask::NONE,
@@ -169,8 +170,7 @@ fn callables(c: &mut Criterion) {
                             output.clear();
                             vm.run_with_ctx(
                                 &mut ctx,
-                                &p,
-                                entry,
+                                FuncRef::new(unit, entry),
                                 black_box(&args),
                                 &mut output,
                                 TraceMask::NONE,
@@ -234,10 +234,11 @@ fn retained_callables(c: &mut Criterion) {
             })
         });
         let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(Arc::clone(callable.program())).unwrap();
         group.bench_function(BenchmarkId::new("import_and_execute", fields), |b| {
             b.iter(|| {
                 let mut invocation = callable
-                    .start(&mut vm, vec![], InvocationOptions::default())
+                    .start(&mut vm, unit, vec![], InvocationOptions::default())
                     .unwrap();
                 assert_eq!(invocation.resume(u64::MAX).unwrap(), RunStatus::Complete);
                 black_box(invocation.result().unwrap().unwrap());

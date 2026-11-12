@@ -4,6 +4,7 @@
 //! Compare identical dependent host work through synchronous and yielded boundaries.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -86,11 +87,12 @@ fn host_requests(c: &mut Criterion) {
             ("yield_async_ready", Mode::AsyncReady),
         ] {
             let mut vm = Vm::new(Native, Limits::default());
+            let unit = vm.install(program.clone()).unwrap();
             group.bench_function(BenchmarkId::new(name, bytes), |b| {
                 b.iter(|| {
                     if matches!(mode, Mode::Ordinary) {
                         let out = vm
-                            .run(&program, FuncId(0), &[], TraceMask::NONE, None)
+                            .run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
                             .unwrap();
                         assert_eq!(out, [Value::I64((100 * bytes) as i64)]);
                         black_box(out);
@@ -100,7 +102,7 @@ fn host_requests(c: &mut Criterion) {
                     if !matches!(mode, Mode::Scheduled) {
                         options = options.yield_host_calls();
                     }
-                    let mut run = vm.start(&program, entry, &[], options).unwrap();
+                    let mut run = vm.start(FuncRef::new(unit, entry), &[], options).unwrap();
                     loop {
                         match run.resume(u64::MAX).unwrap() {
                             RunStatus::Suspended => unreachable!("unlimited quantum"),
@@ -188,9 +190,12 @@ fn host_aggregate_results(c: &mut Criterion) {
     let mut group = c.benchmark_group("host_aggregate_result");
     for bytes in [0, 32, 4096] {
         let mut vm = Vm::new(Rich { bytes }, Limits::default());
+        let unit = vm.install(program.clone()).unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(bytes), &bytes, |b, _| {
             b.iter(|| {
-                let output = vm.run(&program, entry, &[], TraceMask::NONE, None).unwrap();
+                let output = vm
+                    .run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+                    .unwrap();
                 assert_eq!(output, [Value::U64(2)], "rich result consumed by guest");
                 assert_eq!(
                     vm.aggregates().len_u32(),

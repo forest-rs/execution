@@ -3,6 +3,7 @@
 
 //! Paused source boundaries and object roots remain valid through calls and bank reuse.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
@@ -73,8 +74,13 @@ fn waiting_callers_show_the_pending_call_and_only_arrived_results() {
     let (p, entry, first, second) = calls();
     let args = [Value::Obj(object(42))];
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let mut run = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     let root = run.inspect().frames().next().unwrap().activation;
     assert_eq!(run.resume(2).unwrap(), RunStatus::Suspended); // initialize old, enter child
@@ -162,11 +168,21 @@ fn activation_ids_reject_other_invocations_and_remain_stable_across_large_quanta
     let args = [Value::Obj(object(42))];
     let mut a = Vm::new(NoHost, Limits::default());
     let mut b = Vm::new(NoHost, Limits::default());
+    let unit = a.install(p.clone()).unwrap();
     let mut left = a
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
+    let unit = b.install(p.clone()).unwrap();
     let right = b
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     let old = left.inspect().frames().next().unwrap().activation;
     let other = right.inspect().frames().next().unwrap().activation;
@@ -181,8 +197,13 @@ fn activation_ids_reject_other_invocations_and_remain_stable_across_large_quanta
         2
     );
     drop(left);
+    let unit = a.install(p.clone()).unwrap();
     let replacement = a
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     assert_ne!(
         replacement.inspect().frames().next().unwrap().activation,
@@ -214,8 +235,13 @@ fn paused_call_sites_resolve_to_exact_authored_source() {
     let bound = map.bind(p.program()).unwrap();
     let args = [Value::Obj(object(42))];
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(p.clone()).unwrap();
     let mut run = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     run.resume(2).unwrap();
     let caller = run.inspect().frames().nth(1).unwrap();
@@ -300,8 +326,13 @@ fn conservative_roots_support_a_real_host_collection_between_quanta() {
         .tuple_new(vec![Value::Obj(object(43))])
         .unwrap();
     let args = [Value::Obj(object(42))];
+    let unit = vm.install(p.clone()).unwrap();
     let mut run = vm
-        .start(&p, entry, &args, InvocationOptions::default())
+        .start(
+            FuncRef::new(unit, entry),
+            &args,
+            InvocationOptions::default(),
+        )
         .unwrap();
     run.resume(3).unwrap();
     let roots = {
@@ -400,8 +431,13 @@ fn indirect_functions_and_closures_keep_real_activation_and_environment_roots() 
         let p = b.build_verified().unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
         let args = [Value::Obj(object(42))];
+        let unit = vm.install(p.clone()).unwrap();
         let mut run = vm
-            .start(&p, entry, &args, InvocationOptions::default())
+            .start(
+                FuncRef::new(unit, entry),
+                &args,
+                InvocationOptions::default(),
+            )
             .unwrap();
         assert_eq!(
             run.resume(if closure { 4 } else { 2 }).unwrap(),

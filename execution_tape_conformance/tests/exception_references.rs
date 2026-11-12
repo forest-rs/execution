@@ -3,6 +3,7 @@
 
 //! Exception references: `catch_ref`, `catch_all_ref` and `throw_ref`.
 
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, Catch, FunctionSig, ProgramBuilder},
     disasm::disassemble,
@@ -147,13 +148,16 @@ fn fixture() -> Fixture {
 }
 
 fn run(f: &Fixture, entry: FuncId, code: i64, fail: bool) -> Result<Vec<Value>, TrapInfo> {
-    Vm::new(NoHost, Limits::default()).run(
-        &f.program,
-        entry,
-        &[Value::I64(code), Value::Bool(fail)],
-        TraceMask::NONE,
-        None,
-    )
+    {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, entry),
+            &[Value::I64(code), Value::Bool(fail)],
+            TraceMask::NONE,
+            None,
+        )
+    }
 }
 
 #[test]
@@ -236,13 +240,25 @@ fn catch_ref_binds_the_payload_and_the_reference() {
     b.define_function(function, asm).unwrap();
     let program = b.build_verified().unwrap();
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(program.clone()).unwrap();
     assert_eq!(
-        vm.run(&program, function, &[Value::I64(-3)], TraceMask::NONE, None)
-            .unwrap(),
+        vm.run(
+            FuncRef::new(unit, function),
+            &[Value::I64(-3)],
+            TraceMask::NONE,
+            None
+        )
+        .unwrap(),
         [Value::I64(-3)]
     );
+    let unit = vm.install(program.clone()).unwrap();
     let error = vm
-        .run(&program, function, &[Value::I64(3)], TraceMask::NONE, None)
+        .run(
+            FuncRef::new(unit, function),
+            &[Value::I64(3)],
+            TraceMask::NONE,
+            None,
+        )
         .unwrap_err();
     assert!(matches!(&error.trap, Trap::Uncaught(e) if e.payload().values() == [Value::I64(3)]));
     let text = disassemble(program.program()).to_string();
@@ -256,9 +272,12 @@ fn catch_ref_binds_the_payload_and_the_reference() {
 #[test]
 fn exception_references_cannot_cross_the_invocation_boundary() {
     let f = fixture();
-    let error = Vm::new(NoHost, Limits::default())
-        .run(&f.program, f.rethrow, &[], TraceMask::NONE, None)
-        .unwrap_err();
+    let error = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(FuncRef::new(unit, f.rethrow), &[], TraceMask::NONE, None)
+    }
+    .unwrap_err();
     assert!(matches!(error.trap, Trap::ExceptionBoundary), "{error}");
 }
 
@@ -266,15 +285,17 @@ fn exception_references_cannot_cross_the_invocation_boundary() {
 fn recordings_link_a_rethrow_to_its_original_exception() {
     let f = fixture();
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
-    let result = Vm::new(NoHost, Limits::default())
-        .run(
-            &f.program,
-            f.outer,
+    let result = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, f.outer),
             &[Value::I64(5), Value::Bool(false)],
             recorder.mask(),
             Some(&mut recorder),
         )
-        .unwrap();
+    }
+    .unwrap();
     assert_eq!(result, [Value::I64(105)]);
     let recording = recorder.finish();
     recording.status().unwrap();
@@ -284,15 +305,17 @@ fn recordings_link_a_rethrow_to_its_original_exception() {
     ));
 
     let mut recorder = Recorder::new(Arc::clone(&f.program), RecordLimits::default());
-    let error = Vm::new(NoHost, Limits::default())
-        .run(
-            &f.program,
-            f.protected,
+    let error = {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(f.program.clone()).unwrap();
+        vm.run(
+            FuncRef::new(unit, f.protected),
             &[Value::I64(5), Value::Bool(false)],
             recorder.mask(),
             Some(&mut recorder),
         )
-        .unwrap_err();
+    }
+    .unwrap_err();
     let recording = recorder.finish();
     recording.status().unwrap();
     let Ok(ReplayOutcome::Trapped(replayed)) = recording.replay() else {

@@ -229,6 +229,7 @@ impl ProgramBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::FuncRef;
     use crate::{
         host::{Host, HostContext, HostError, SigHash, ValueRef},
         trace::TraceMask,
@@ -299,9 +300,12 @@ mod tests {
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
         assert_eq!(
-            Vm::new(NoHost, Limits::default())
-                .run(&program, entry, &[], TraceMask::NONE, None)
-                .unwrap(),
+            {
+                let mut vm = Vm::new(NoHost, Limits::default());
+                let unit = vm.install(program.clone()).unwrap();
+                vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+            }
+            .unwrap(),
             [Value::I64(42)]
         );
     }
@@ -390,9 +394,12 @@ mod tests {
         body.ret(0, &[]);
         program.define_function(entry, body).unwrap();
         let program = program.build_verified().unwrap();
-        let failure = Vm::new(NoHost, Limits::default())
-            .run(&program, entry, &[], TraceMask::NONE, None)
-            .unwrap_err();
+        let failure = {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(program.clone()).unwrap();
+            vm.run(FuncRef::new(unit, entry), &[], TraceMask::NONE, None)
+        }
+        .unwrap_err();
         assert!(matches!(failure.trap, crate::vm::Trap::ContractMismatch {
             position: crate::contract::ContractPosition::Argument { callee, index: 0 }, ..
         } if callee == block.function()));

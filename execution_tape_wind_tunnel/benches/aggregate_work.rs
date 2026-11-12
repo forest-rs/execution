@@ -3,6 +3,7 @@
 
 //! Guest construction work, including empty nodes and repeated fields.
 
+use execution_tape::value::FuncRef;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -70,10 +71,10 @@ fn construction(c: &mut Criterion) {
             let mut context = ExecutionContext::new();
             let args = [Value::I64(7)];
             let mut outputs = Vec::new();
+            let unit = vm.install(program.clone()).unwrap();
             vm.run_with_ctx(
                 &mut context,
-                &program,
-                entry,
+                FuncRef::new(unit, entry),
                 &args,
                 &mut outputs,
                 TraceMask::NONE,
@@ -88,8 +89,7 @@ fn construction(c: &mut Criterion) {
                     outputs.clear();
                     vm.run_with_ctx(
                         &mut context,
-                        black_box(&program),
-                        entry,
+                        FuncRef::new(unit, entry),
                         black_box(&args),
                         &mut outputs,
                         TraceMask::NONE,

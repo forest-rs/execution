@@ -9,6 +9,7 @@
 mod workload;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::{VerifyConfig, verify_program_owned};
 use execution_tape::vm::{ExecutionContext, Limits, Vm};
@@ -33,10 +34,10 @@ fn benchmarks(c: &mut Criterion) {
             let mut vm = Vm::new(workload::NoHost, Limits::default());
             let mut ctx = ExecutionContext::new();
             let mut outputs = Vec::new();
+            let unit = vm.install(verified.clone()).unwrap();
             vm.run_with_ctx(
                 &mut ctx,
-                &verified,
-                FuncId(0),
+                FuncRef::new(unit, FuncId(0)),
                 &[],
                 &mut outputs,
                 TraceMask::NONE,
@@ -67,8 +68,7 @@ fn benchmarks(c: &mut Criterion) {
                     outputs.clear();
                     vm.run_with_ctx(
                         &mut ctx,
-                        black_box(&verified),
-                        FuncId(0),
+                        FuncRef::new(unit, FuncId(0)),
                         &[],
                         &mut outputs,
                         TraceMask::NONE,

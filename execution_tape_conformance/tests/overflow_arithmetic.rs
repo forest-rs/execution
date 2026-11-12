@@ -8,6 +8,7 @@ use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
 use execution_tape::program::{Program, ValueType};
 use execution_tape::trace::TraceMask;
+use execution_tape::value::FuncRef;
 use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::{
     VerifiedProgram, VerifyConfig, VerifyError, verify_program, verify_program_owned,
@@ -64,8 +65,14 @@ fn program(kind: ValueType) -> VerifiedProgram {
 }
 
 fn run(vm: &mut Vm<NoHost>, program: &VerifiedProgram, a: Value, b: Value) -> Vec<Value> {
-    vm.run(program, FuncId(0), &[a, b], TraceMask::NONE, None)
-        .unwrap()
+    let unit = vm.install(program.clone()).unwrap();
+    vm.run(
+        FuncRef::new(unit, FuncId(0)),
+        &[a, b],
+        TraceMask::NONE,
+        None,
+    )
+    .unwrap()
 }
 
 /// `SplitMix64`: a tiny deterministic generator for reproducible inputs.

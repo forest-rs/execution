@@ -5,6 +5,7 @@
 //! Grammar: signed integer literals, parentheses, +, -, *. All arithmetic wraps like the VM.
 
 use execution_tape::source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping};
+use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
@@ -310,9 +311,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         None
     };
     let mut vm = Vm::new(NoHost, Limits::default());
+    let unit = vm.install(prepared.clone()).unwrap();
     let result = vm.run(
-        &prepared,
-        execution_tape::value::FuncId(0),
+        FuncRef::new(unit, execution_tape::value::FuncId(0)),
         &[],
         recorder.as_ref().map_or(TraceMask::NONE, TraceSink::mask),
         recorder
@@ -389,10 +390,10 @@ mod tests {
         let (program, sources) = compile("example.expr".into(), EXAMPLE.into()).unwrap();
         let prepared = verify_program_owned(program.clone(), &Default::default()).unwrap();
         let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(prepared.clone()).unwrap();
         assert_eq!(
             vm.run(
-                &prepared,
-                execution_tape::value::FuncId(0),
+                FuncRef::new(unit, execution_tape::value::FuncId(0)),
                 &[],
                 TraceMask::NONE,
                 None
