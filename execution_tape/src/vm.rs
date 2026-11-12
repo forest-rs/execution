@@ -674,7 +674,7 @@ impl<'a> TraceCtx<'a> {
     }
 
     #[inline]
-    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+    fn run_start(&mut self, program: &Program, entry: FuncRef, arg_count: usize) {
         if self.mask != TraceMask::NONE
             && let Some(sink) = self.sink.as_mut()
         {
@@ -711,9 +711,7 @@ impl<'a> TraceCtx<'a> {
     fn instr_if_enabled(
         &mut self,
         program: &Program,
-        unit: UnitId,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
@@ -722,8 +720,8 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
-            self.pending = Some(TraceLocation { unit, func, pc });
-            t.instr(program, func, pc, next_pc, span_id, opcode);
+            self.pending = Some(location);
+            t.instr(program, location, next_pc, span_id, opcode);
         }
     }
 
@@ -732,8 +730,7 @@ impl<'a> TraceCtx<'a> {
         &mut self,
         program: &Program,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
         caller: Option<TraceLocation>,
     ) {
@@ -741,14 +738,14 @@ impl<'a> TraceCtx<'a> {
             && let Some(t) = self.sink.as_mut()
         {
             let t: &mut dyn TraceSink = &mut **t;
+            let func = FuncRef::new(location.unit, location.func);
             self.scopes
                 .push((ScopeKind::CallFrame { func, caller }, depth));
             t.scope_enter(
                 program,
                 ScopeKind::CallFrame { func, caller },
                 depth,
-                func,
-                pc,
+                location,
                 span_id,
             );
         }
@@ -759,8 +756,7 @@ impl<'a> TraceCtx<'a> {
         &mut self,
         program: &Program,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
         if self.enabled(TraceMask::CALL)
@@ -768,7 +764,7 @@ impl<'a> TraceCtx<'a> {
         {
             let t: &mut dyn TraceSink = &mut **t;
             let (kind, _) = self.scopes.pop().expect("entered call frame");
-            t.scope_exit(program, kind, depth, func, pc, span_id, TraceOutcome::Ok);
+            t.scope_exit(program, kind, depth, location, span_id, TraceOutcome::Ok);
         }
     }
 
@@ -780,8 +776,7 @@ impl<'a> TraceCtx<'a> {
         symbol: crate::program::SymbolId,
         sig_hash: crate::host::SigHash,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
         if self.enabled(TraceMask::HOST)
@@ -804,8 +799,7 @@ impl<'a> TraceCtx<'a> {
                     sig_hash,
                 },
                 depth,
-                func,
-                pc,
+                location,
                 span_id,
             );
         }
@@ -819,8 +813,7 @@ impl<'a> TraceCtx<'a> {
         symbol: crate::program::SymbolId,
         sig_hash: crate::host::SigHash,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
         if self.enabled(TraceMask::HOST)
@@ -836,8 +829,7 @@ impl<'a> TraceCtx<'a> {
                     sig_hash,
                 },
                 depth,
-                func,
-                pc,
+                location,
                 span_id,
                 TraceOutcome::Ok,
             );
@@ -867,29 +859,13 @@ impl<'a> TraceCtx<'a> {
         if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
             let (kind, depth) = self.scopes.pop().expect("open host scope");
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(
-                    program,
-                    kind,
-                    depth,
-                    location.func,
-                    location.pc,
-                    span_id,
-                    outcome,
-                );
+                sink.scope_exit(program, kind, depth, location, span_id, outcome);
             }
         }
         self.instr_end(program, None, outcome);
         while let Some((kind, depth)) = self.scopes.pop() {
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(
-                    program,
-                    kind,
-                    depth,
-                    location.func,
-                    location.pc,
-                    span_id,
-                    outcome,
-                );
+                sink.scope_exit(program, kind, depth, location, span_id, outcome);
             }
         }
     }
@@ -953,9 +929,7 @@ trait TracePolicy {
     fn instr(
         trace: &mut TraceCtx<'_>,
         program: &Program,
-        unit: UnitId,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
@@ -965,8 +939,7 @@ trait TracePolicy {
         trace: &mut TraceCtx<'_>,
         program: &Program,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
         caller: Option<TraceLocation>,
     );
@@ -975,8 +948,7 @@ trait TracePolicy {
         trace: &mut TraceCtx<'_>,
         program: &Program,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     );
 
@@ -987,8 +959,7 @@ trait TracePolicy {
         symbol: crate::program::SymbolId,
         sig_hash: crate::host::SigHash,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     );
 
@@ -999,8 +970,7 @@ trait TracePolicy {
         symbol: crate::program::SymbolId,
         sig_hash: crate::host::SigHash,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     );
 }
@@ -1015,9 +985,7 @@ impl TracePolicy for NoTracePolicy {
     fn instr(
         _trace: &mut TraceCtx<'_>,
         _program: &Program,
-        _unit: UnitId,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _next_pc: u32,
         _span_id: Option<u64>,
         _opcode: u8,
@@ -1029,8 +997,7 @@ impl TracePolicy for NoTracePolicy {
         _trace: &mut TraceCtx<'_>,
         _program: &Program,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
         _caller: Option<TraceLocation>,
     ) {
@@ -1041,8 +1008,7 @@ impl TracePolicy for NoTracePolicy {
         _trace: &mut TraceCtx<'_>,
         _program: &Program,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
     ) {
     }
@@ -1055,8 +1021,7 @@ impl TracePolicy for NoTracePolicy {
         _symbol: crate::program::SymbolId,
         _sig_hash: crate::host::SigHash,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
     ) {
     }
@@ -1069,8 +1034,7 @@ impl TracePolicy for NoTracePolicy {
         _symbol: crate::program::SymbolId,
         _sig_hash: crate::host::SigHash,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
     ) {
     }
@@ -1124,14 +1088,12 @@ impl TracePolicy for WithTracePolicy {
     fn instr(
         trace: &mut TraceCtx<'_>,
         program: &Program,
-        unit: UnitId,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
     ) {
-        trace.instr_if_enabled(program, unit, func, pc, next_pc, span_id, opcode);
+        trace.instr_if_enabled(program, location, next_pc, span_id, opcode);
     }
 
     #[inline(always)]
@@ -1139,12 +1101,11 @@ impl TracePolicy for WithTracePolicy {
         trace: &mut TraceCtx<'_>,
         program: &Program,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
         caller: Option<TraceLocation>,
     ) {
-        trace.call_scope_enter_if_enabled(program, depth, func, pc, span_id, caller);
+        trace.call_scope_enter_if_enabled(program, depth, location, span_id, caller);
     }
 
     #[inline(always)]
@@ -1152,11 +1113,10 @@ impl TracePolicy for WithTracePolicy {
         trace: &mut TraceCtx<'_>,
         program: &Program,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
-        trace.call_scope_exit_if_enabled(program, depth, func, pc, span_id);
+        trace.call_scope_exit_if_enabled(program, depth, location, span_id);
     }
 
     #[inline(always)]
@@ -1167,12 +1127,11 @@ impl TracePolicy for WithTracePolicy {
         symbol: crate::program::SymbolId,
         sig_hash: crate::host::SigHash,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
         trace.host_scope_enter_if_enabled(
-            program, host_sig, symbol, sig_hash, depth, func, pc, span_id,
+            program, host_sig, symbol, sig_hash, depth, location, span_id,
         );
     }
 
@@ -1184,12 +1143,11 @@ impl TracePolicy for WithTracePolicy {
         symbol: crate::program::SymbolId,
         sig_hash: crate::host::SigHash,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
         trace.host_scope_exit_if_enabled(
-            program, host_sig, symbol, sig_hash, depth, func, pc, span_id,
+            program, host_sig, symbol, sig_hash, depth, location, span_id,
         );
     }
 }
@@ -1269,7 +1227,7 @@ impl<H: Host> Vm<H> {
         let checkpoint = self.memory.checkpoint();
         let program_ref = program.program();
         let mut trace = TraceCtx::new(trace_mask, trace);
-        trace.run_start(program_ref, entry, args.len());
+        trace.run_start(program_ref, FuncRef::new(unit, entry), args.len());
 
         // Keep two interpreter-loop instantiations: one no-trace fast path and one trace-capable
         // path with per-mask checks, instead of specializing every trace-mask combination.
@@ -1418,8 +1376,11 @@ impl<H: Host> Vm<H> {
             trace,
             program_ref,
             ctx.frames.len(),
-            entry,
-            entry_vf.pc_at_ix(0).unwrap_or(0),
+            TraceLocation {
+                unit,
+                func: entry,
+                pc: entry_vf.pc_at_ix(0).unwrap_or(0),
+            },
             entry_vf.span_at_ix(0).map(|id| id.get()),
             None,
         );
@@ -1519,9 +1480,11 @@ impl<H: Host> Vm<H> {
             P::instr(
                 trace,
                 program_ref,
-                unit_id,
-                func_id,
-                pc,
+                TraceLocation {
+                    unit: unit_id,
+                    func: func_id,
+                    pc,
+                },
                 next_pc,
                 span_id,
                 opcode,
@@ -2398,8 +2361,11 @@ impl<H: Host> Vm<H> {
                         trace,
                         program_ref,
                         ctx.frames.len(),
-                        *callee,
-                        callee_vf.pc_at_ix(0).unwrap_or(0),
+                        TraceLocation {
+                            unit: unit_id,
+                            func: *callee,
+                            pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                        },
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation {
                             unit: unit_id,
@@ -2521,8 +2487,11 @@ impl<H: Host> Vm<H> {
                         trace,
                         program_ref,
                         ctx.frames.len() + 1,
-                        func_id,
-                        pc,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        },
                         span_id,
                     );
                 }
@@ -2593,8 +2562,11 @@ impl<H: Host> Vm<H> {
                         hs.symbol,
                         hs.sig_hash,
                         ctx.frames.len(),
-                        func_id,
-                        pc,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        },
                         span_id,
                     );
 
@@ -2735,8 +2707,11 @@ impl<H: Host> Vm<H> {
                         hs.symbol,
                         hs.sig_hash,
                         ctx.frames.len(),
-                        func_id,
-                        pc,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        },
                         span_id,
                     );
                     ctx.frames[frame_index].pc = next_pc;
@@ -2806,8 +2781,11 @@ impl<H: Host> Vm<H> {
                         trace,
                         callee_program,
                         ctx.frames.len(),
-                        target.func,
-                        callee_vf.pc_at_ix(0).unwrap_or(0),
+                        TraceLocation {
+                            unit: target.unit,
+                            func: target.func,
+                            pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                        },
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation {
                             unit: unit_id,
@@ -2926,8 +2904,11 @@ impl<H: Host> Vm<H> {
                         trace,
                         callee_program,
                         ctx.frames.len(),
-                        target.func,
-                        callee_vf.pc_at_ix(0).unwrap_or(0),
+                        TraceLocation {
+                            unit: target.unit,
+                            func: target.func,
+                            pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                        },
                         callee_vf.span_at_ix(0).map(|id| id.get()),
                         Some(TraceLocation {
                             unit: unit_id,
@@ -3655,14 +3636,7 @@ impl<H: Host> Vm<H> {
                 Trap::AggError(error),
             )
         })?;
-        P::call_scope_exit(
-            trace,
-            program,
-            ctx.frames.len(),
-            site.location.func,
-            site.location.pc,
-            site.span,
-        );
+        P::call_scope_exit(trace, program, ctx.frames.len(), site.location, site.span);
         P::instr_end(trace, program, None);
         budget.frames -= 1;
         Ok(())
@@ -4682,7 +4656,15 @@ mod tests {
             trapped_scopes: usize,
         }
         impl TraceSink for Sink {
-            fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, _: u8) {
+            fn instr(
+                &mut self,
+                _: &Program,
+                location: TraceLocation,
+                _: u32,
+                _: Option<u64>,
+                _: u8,
+            ) {
+                let (func, pc) = (location.func, location.pc);
                 assert!(
                     self.pending
                         .replace(TraceLocation {
@@ -4709,8 +4691,7 @@ mod tests {
                 _: &Program,
                 kind: ScopeKind,
                 depth: usize,
-                _: FuncId,
-                _: u32,
+                _location: TraceLocation,
                 _: Option<u64>,
             ) {
                 self.scopes.push((kind, depth));
@@ -4720,8 +4701,7 @@ mod tests {
                 _: &Program,
                 kind: ScopeKind,
                 depth: usize,
-                _: FuncId,
-                _: u32,
+                _location: TraceLocation,
                 _: Option<u64>,
                 outcome: TraceOutcome<'_>,
             ) {
@@ -5226,8 +5206,7 @@ mod tests {
                 _: &Program,
                 _: ScopeKind,
                 _: usize,
-                _: FuncId,
-                _: u32,
+                _location: TraceLocation,
                 _: Option<u64>,
                 outcome: TraceOutcome<'_>,
             ) {
@@ -5771,15 +5750,14 @@ mod tests {
                 TraceMask::RUN | TraceMask::INSTR
             }
 
-            fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {
+            fn run_start(&mut self, _program: &Program, _entry: FuncRef, _arg_count: usize) {
                 self.starts += 1;
             }
 
             fn instr(
                 &mut self,
                 _program: &Program,
-                _func: FuncId,
-                _pc: u32,
+                _location: TraceLocation,
                 _next_pc: u32,
                 _span_id: Option<u64>,
                 opcode: u8,

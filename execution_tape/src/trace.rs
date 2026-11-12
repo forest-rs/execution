@@ -18,7 +18,7 @@ use crate::aggregates::AggHeap;
 use crate::host::{HostError, SigHash, ValueRef};
 use crate::program::Program;
 use crate::program::{HostSigId, RegionId, SymbolId, TagId};
-use crate::value::{FuncId, TagRef, UnitId, Value};
+use crate::value::{FuncId, FuncRef, TagRef, UnitId, Value};
 use crate::vm::{DataWork, Limits, TrapInfo};
 
 /// A set of trace events requested by a [`TraceSink`].
@@ -145,8 +145,8 @@ impl core::fmt::Debug for RegisterEvent<'_> {
 pub enum ScopeKind {
     /// A VM call frame (function activation).
     CallFrame {
-        /// Function id for the frame being entered/exited.
-        func: FuncId,
+        /// Function of the frame being entered/exited, with the unit it runs.
+        func: FuncRef,
         /// Caller instruction that entered this activation; `None` for the root frame.
         /// Preserved unchanged when this scope exits, including trap unwinding.
         caller: Option<TraceLocation>,
@@ -290,7 +290,7 @@ pub enum ValueEvent<'a> {
     /// Invocation inputs, before entry, argument, shape or execution-limit validation.
     Entry {
         /// Requested entry function, which may be absent from its unit.
-        entry: crate::value::FuncRef,
+        entry: FuncRef,
         /// Supplied value arguments, excluding the effect token.
         args: &'a [Value],
         /// Aggregate storage at entry. Its length distinguishes initial from run-created nodes.
@@ -658,9 +658,9 @@ pub trait TraceSink {
     /// Called only if the run mask includes [`TraceMask::RUN`].
     ///
     /// - `program`: program being executed (unverified container data)
-    /// - `entry`: entry function id
+    /// - `entry`: entry function and its unit
     /// - `arg_count`: number of value arguments passed (not including the effect token)
-    fn run_start(&mut self, _program: &Program, _entry: FuncId, _arg_count: usize) {}
+    fn run_start(&mut self, _program: &Program, _entry: FuncRef, _arg_count: usize) {}
 
     /// Borrows values at an execution boundary without changing execution or retaining data.
     ///
@@ -679,16 +679,14 @@ pub trait TraceSink {
     /// Called only if the run mask includes [`TraceMask::INSTR`].
     ///
     /// - `program`: program being executed (unverified container data)
-    /// - `func`: current function id
-    /// - `pc`: current instruction pc (byte offset)
+    /// - `location`: unit, function and pc (byte offset) of the instruction
     /// - `next_pc`: lexical end of this instruction, not its control-flow successor
     /// - `span_id`: best-effort span id for tracing/source mapping
     /// - `opcode`: opcode byte
     fn instr(
         &mut self,
         _program: &Program,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _next_pc: u32,
         _span_id: Option<u64>,
         _opcode: u8,
@@ -724,23 +722,21 @@ pub trait TraceSink {
     /// - `program`: program being executed (unverified container data)
     /// - `kind`: the kind of scope being entered
     /// - `depth`: stack depth (frames) after entering the scope
-    /// - `func`: function id at the scope boundary
-    /// - `pc`: program counter at the scope boundary
+    /// - `location`: unit, function and pc at the scope boundary
     /// - `span_id`: best-effort span id at the scope boundary
     fn scope_enter(
         &mut self,
         _program: &Program,
         _kind: ScopeKind,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
     ) {
     }
 
     /// Called when exiting a profiling scope, including unwinding after a trap.
     ///
-    /// Each entered scope exits exactly once, inner scopes first. On a trap, `func`, `pc`, and
+    /// Each entered scope exits exactly once, inner scopes first. On a trap, `location` and
     /// `span_id` identify the trapping location; `kind` still identifies the scope being closed.
     /// Host success includes validation and installation of its returned values. Panic unwinding
     /// in the host or sink is outside this event contract.
@@ -752,16 +748,14 @@ pub trait TraceSink {
     /// - `program`: program being executed (unverified container data)
     /// - `kind`: the kind of scope being exited
     /// - `depth`: stack depth (frames) before exiting the scope
-    /// - `func`: function id at the scope boundary
-    /// - `pc`: program counter at the scope boundary
+    /// - `location`: unit, function and pc at the scope boundary
     /// - `span_id`: best-effort span id at the scope boundary
     fn scope_exit(
         &mut self,
         _program: &Program,
         _kind: ScopeKind,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
         _outcome: TraceOutcome<'_>,
     ) {
@@ -791,7 +785,7 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     fn mask(&self) -> TraceMask {
         self.as_ref().borrow().mask()
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, arg_count: usize) {
+    fn run_start(&mut self, program: &Program, entry: FuncRef, arg_count: usize) {
         self.as_ref()
             .borrow_mut()
             .run_start(program, entry, arg_count);
@@ -802,15 +796,14 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
     fn instr(
         &mut self,
         program: &Program,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
     ) {
         self.as_ref()
             .borrow_mut()
-            .instr(program, func, pc, next_pc, span_id, opcode);
+            .instr(program, location, next_pc, span_id, opcode);
     }
     fn instr_end(
         &mut self,
@@ -828,27 +821,25 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
     ) {
         self.as_ref()
             .borrow_mut()
-            .scope_enter(program, kind, depth, func, pc, span_id);
+            .scope_enter(program, kind, depth, location, span_id);
     }
     fn scope_exit(
         &mut self,
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
         self.as_ref()
             .borrow_mut()
-            .scope_exit(program, kind, depth, func, pc, span_id, outcome);
+            .scope_exit(program, kind, depth, location, span_id, outcome);
     }
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {
         self.as_ref().borrow_mut().run_end(program, outcome);

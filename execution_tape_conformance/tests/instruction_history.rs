@@ -442,7 +442,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
         func: FuncId(0),
         pc: 0,
     };
-    recorder.run_start(p.program(), FuncId(0), 0);
+    recorder.run_start(p.program(), FuncRef::new(UnitId(0), FuncId(0)), 0);
     recorder.values(
         p.program(),
         ValueEvent::Entry {
@@ -453,14 +453,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
             work: execution_tape::vm::DataWork::default(),
         },
     );
-    recorder.instr(
-        p.program(),
-        FuncId(0),
-        0,
-        ret,
-        None,
-        Opcode::ConstI64.byte(),
-    );
+    recorder.instr(p.program(), location, ret, None, Opcode::ConstI64.byte());
     recorder.instr_end(p.program(), location, Some(location), TraceOutcome::Ok); // false self-loop
     recorder.values(
         p.program(),

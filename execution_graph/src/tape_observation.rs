@@ -10,7 +10,7 @@ use execution_tape::trace::{
     RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink,
     ValueEvent,
 };
-use execution_tape::value::FuncId;
+use execution_tape::value::{FuncId, FuncRef};
 use execution_tape::verifier::VerifiedProgram;
 
 /// Correlates a tape invocation with the graph attempt that requested it.
@@ -138,7 +138,7 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
             observer.registers(program, event);
         }
     }
-    fn run_start(&mut self, program: &Program, entry: FuncId, count: usize) {
+    fn run_start(&mut self, program: &Program, entry: FuncRef, count: usize) {
         if let Some(observer) = self.observer(TraceMask::RUN) {
             observer.run_start(program, entry, count);
         }
@@ -151,14 +151,13 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
     fn instr(
         &mut self,
         program: &Program,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         next: u32,
         span: Option<u64>,
         opcode: u8,
     ) {
         if let Some(observer) = self.observer(TraceMask::INSTR) {
-            observer.instr(program, func, pc, next, span, opcode);
+            observer.instr(program, location, next, span, opcode);
         }
     }
     fn instr_end(
@@ -177,20 +176,19 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span: Option<u64>,
     ) {
         if self.strict_enabled {
             self.strict
-                .scope_enter(program, kind, depth, func, pc, span);
+                .scope_enter(program, kind, depth, location, span);
         }
         let mask = match kind {
             ScopeKind::CallFrame { .. } => TraceMask::CALL,
             ScopeKind::HostCall { .. } => TraceMask::HOST,
         };
         if let Some(observer) = self.observer(mask) {
-            observer.scope_enter(program, kind, depth, func, pc, span);
+            observer.scope_enter(program, kind, depth, location, span);
         }
     }
     fn scope_exit(
@@ -198,21 +196,20 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         span: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
         if self.strict_enabled {
             self.strict
-                .scope_exit(program, kind, depth, func, pc, span, outcome);
+                .scope_exit(program, kind, depth, location, span, outcome);
         }
         let mask = match kind {
             ScopeKind::CallFrame { .. } => TraceMask::CALL,
             ScopeKind::HostCall { .. } => TraceMask::HOST,
         };
         if let Some(observer) = self.observer(mask) {
-            observer.scope_exit(program, kind, depth, func, pc, span, outcome);
+            observer.scope_exit(program, kind, depth, location, span, outcome);
         }
     }
     fn run_end(&mut self, program: &Program, outcome: TraceOutcome<'_>) {

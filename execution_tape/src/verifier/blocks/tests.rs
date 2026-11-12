@@ -579,12 +579,12 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
         fn instr(
             &mut self,
             _: &Program,
-            _: FuncId,
-            pc: u32,
+            location: TraceLocation,
             end: u32,
             span: Option<u64>,
             opcode: u8,
         ) {
+            let (_, pc) = (location.func, location.pc);
             self.attempts.push((pc, end, span, opcode));
         }
         fn instr_end(
@@ -790,10 +790,10 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
             _: &Program,
             kind: ScopeKind,
             _: usize,
-            func: FuncId,
-            pc: u32,
+            location: TraceLocation,
             span: Option<u64>,
         ) {
+            let (func, pc) = (location.func, location.pc);
             if matches!(kind, ScopeKind::CallFrame { .. }) {
                 self.0.push((func, pc, span));
             }

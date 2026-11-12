@@ -6,7 +6,7 @@ use crate::resolver::{
 };
 use execution_tape::program::Program;
 use execution_tape::source::{BoundSources, SourceError, SourceMap, SourceRange};
-use execution_tape::trace::{CodeLocation, ScopeKind, TraceMask, TraceSink};
+use execution_tape::trace::{CodeLocation, ScopeKind, TraceLocation, TraceMask, TraceSink};
 use std::string::String;
 use std::vec::Vec;
 
@@ -127,8 +127,8 @@ impl<'a, R: LabelResolver> ProfilingTraceSink<'a, R> {
         match kind {
             ScopeKind::CallFrame { func, .. } => self
                 .resolver
-                .call_frame_label(func, program)
-                .unwrap_or_else(|| default_call_frame_label(func)),
+                .call_frame_label(func.func, program)
+                .unwrap_or_else(|| default_call_frame_label(func.func)),
             ScopeKind::HostCall { host_sig, .. } => self
                 .resolver
                 .host_call_label(host_sig, program)
@@ -181,11 +181,10 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: execution_tape::value::FuncId,
-        pc: u32,
+        location: TraceLocation,
         _span_id: Option<u64>,
     ) {
-        self.on_scope_enter(program, kind, depth, CodeLocation { func, pc });
+        self.on_scope_enter(program, kind, depth, location.code());
     }
 
     fn scope_exit(
@@ -193,8 +192,7 @@ impl<R: LabelResolver> TraceSink for ProfilingTraceSink<'_, R> {
         _program: &Program,
         kind: ScopeKind,
         depth: usize,
-        _func: execution_tape::value::FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
         _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
@@ -233,7 +231,7 @@ impl<R> Drop for ProfilingTraceSink<'_, R> {
 mod tests {
     use super::ProfilingTraceSink;
     use execution_tape::trace::ScopeKind;
-    use execution_tape::value::FuncId;
+    use execution_tape::value::{FuncId, FuncRef, UnitId};
 
     #[test]
     fn start_scope_without_tracy_client_does_not_panic() {
@@ -242,7 +240,7 @@ mod tests {
         let _guard = sink.start_scope(
             &program,
             ScopeKind::CallFrame {
-                func: FuncId(0),
+                func: FuncRef::new(UnitId(0), FuncId(0)),
                 caller: None,
             },
             "test",

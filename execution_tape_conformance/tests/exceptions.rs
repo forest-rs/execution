@@ -297,11 +297,11 @@ impl TraceSink for Observe {
         _: &Program,
         kind: ScopeKind,
         _: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let (func, pc) = (location.func, location.pc);
         let ScopeKind::CallFrame { func: frame, .. } = kind else {
             return;
         };
@@ -310,7 +310,7 @@ impl TraceSink for Observe {
             other => panic!("unexpected scope outcome {other:?}"),
         };
         self.events
-            .push(format!("exit f{} {outcome} at f{}:{pc}", frame.0, func.0));
+            .push(format!("exit f{} {outcome} at f{}:{pc}", frame.func.0, func.0));
     }
     fn run_end(&mut self, _: &Program, outcome: TraceOutcome<'_>) {
         assert!(

@@ -569,7 +569,7 @@ struct Trace {
     panic_callback_scope: bool,
 }
 impl TraceSink for Trace {
-    fn instr(&mut self, _: &Program, _: FuncId, _: u32, _: u32, _: Option<u64>, _: u8) {
+    fn instr(&mut self, _: &Program, _location: TraceLocation, _: u32, _: Option<u64>, _: u8) {
         self.instr += 1;
     }
     fn instr_end(
@@ -586,8 +586,7 @@ impl TraceSink for Trace {
         _: &Program,
         kind: ScopeKind,
         depth: usize,
-        _: FuncId,
-        _: u32,
+        _location: TraceLocation,
         _: Option<u64>,
     ) {
         self.enter += 1;
@@ -603,8 +602,7 @@ impl TraceSink for Trace {
         _: &Program,
         _: ScopeKind,
         _: usize,
-        _: FuncId,
-        _: u32,
+        _location: TraceLocation,
         _: Option<u64>,
         _: TraceOutcome<'_>,
     ) {

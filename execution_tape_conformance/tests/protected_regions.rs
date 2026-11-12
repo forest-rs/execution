@@ -634,15 +634,14 @@ impl TraceSink for Observe {
         _: &Program,
         kind: ScopeKind,
         _: usize,
-        _: FuncId,
-        _: u32,
+        _location: TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
         if let (ScopeKind::CallFrame { func, .. }, TraceOutcome::Caught { depth }) = (kind, outcome)
         {
             self.events
-                .push(format!("exit f{} caught at depth {depth}", func.0));
+                .push(format!("exit f{} caught at depth {depth}", func.func.0));
         }
     }
 }

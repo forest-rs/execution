@@ -20,7 +20,7 @@ use core::fmt;
 
 use execution_tape::aggregates::AggError;
 use execution_tape::host::{AccessSink, Host, ResourceKeyRef, SigHash};
-use execution_tape::trace::{ScopeKind, TraceMask, TraceSink};
+use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, FuncRef, UnitId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{ExecutionContext, InstallError, Limits, TrapInfo, Vm};
@@ -938,8 +938,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         _program: &execution_tape::program::Program,
         kind: ScopeKind,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
     ) {
         let ScopeKind::HostCall {
@@ -956,8 +955,7 @@ impl TraceSink for StrictDepsTrace<'_> {
         program: &execution_tape::program::Program,
         kind: ScopeKind,
         _depth: usize,
-        _func: FuncId,
-        _pc: u32,
+        _location: TraceLocation,
         _span_id: Option<u64>,
         outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {

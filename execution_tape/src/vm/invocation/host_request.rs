@@ -686,8 +686,7 @@ fn finish_pending<P: TracePolicy>(
         signature.symbol,
         signature.sig_hash,
         ctx.frames.len(),
-        location.func,
-        location.pc,
+        location,
         request.span,
     );
     P::registers(

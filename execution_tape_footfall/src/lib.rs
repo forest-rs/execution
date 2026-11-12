@@ -36,7 +36,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use execution_tape::program::Program;
 use execution_tape::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink};
-use execution_tape::value::FuncId;
+use execution_tape::value::FuncRef;
 use footfall::{Args, ContextHandle, EventDesc, ScopeDesc, ScopeGuard};
 
 static RUN: ScopeDesc = ScopeDesc::new("execution_tape.run");
@@ -136,7 +136,8 @@ impl TraceSink for FootfallSink {
         }
     }
 
-    fn run_start(&mut self, _program: &Program, entry: FuncId, arg_count: usize) {
+    fn run_start(&mut self, _program: &Program, entry: FuncRef, arg_count: usize) {
+        let entry = entry.func;
         self.close_scopes();
         let args = Args::none()
             .with("entry", entry.0)
@@ -161,12 +162,12 @@ impl TraceSink for FootfallSink {
     fn instr(
         &mut self,
         _program: &Program,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _next_pc: u32,
         span_id: Option<u64>,
         opcode: u8,
     ) {
+        let (func, pc) = (location.func, location.pc);
         let mut args = Args::none()
             .with("func", func.0)
             .with("pc", pc)
@@ -198,10 +199,10 @@ impl TraceSink for FootfallSink {
         _program: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _span_id: Option<u64>,
     ) {
+        let (func, pc) = (location.func, location.pc);
         let args = Args::none()
             .with("func", func.0)
             .with("pc", pc)
@@ -219,11 +220,11 @@ impl TraceSink for FootfallSink {
         _program: &Program,
         _kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _span_id: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
+        let (func, pc) = (location.func, location.pc);
         let mut args = Args::none()
             .with("func", func.0)
             .with("pc", pc)

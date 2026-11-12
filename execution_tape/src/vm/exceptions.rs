@@ -468,15 +468,7 @@ impl TraceCtx<'_> {
         if matches!(self.scopes.last(), Some((ScopeKind::HostCall { .. }, _))) {
             let (kind, depth) = self.scopes.pop().expect("entered host scope");
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(
-                    program,
-                    kind,
-                    depth,
-                    location.func,
-                    location.pc,
-                    span,
-                    outcome,
-                );
+                sink.scope_exit(program, kind, depth, location, span, outcome);
             }
         }
     }
@@ -495,15 +487,7 @@ impl TraceCtx<'_> {
                 "exit scopes follow actual guest activations"
             );
             if let Some(sink) = self.sink.as_mut() {
-                sink.scope_exit(
-                    program,
-                    kind,
-                    depth,
-                    location.func,
-                    location.pc,
-                    span,
-                    outcome,
-                );
+                sink.scope_exit(program, kind, depth, location, span, outcome);
             }
         }
     }

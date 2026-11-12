@@ -9,7 +9,7 @@ use crate::recording::{
     AggregateId, CallOutcome, CaptureFault, End, RECORDED_UNIT, RecordedValue, Recording,
 };
 use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent};
-use crate::value::{AggHandle, AggType, Closure, FuncId, FuncRef, Value};
+use crate::value::{AggHandle, AggType, Closure, FuncRef, Value};
 use crate::vm::{Trap, TrapInfo, Vm};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
@@ -711,8 +711,7 @@ impl TraceSink for Check<'_> {
         _: &Program,
         kind: ScopeKind,
         depth: usize,
-        func: FuncId,
-        pc: u32,
+        location: TraceLocation,
         _: Option<u64>,
     ) {
         let ScopeKind::CallFrame {
@@ -729,13 +728,12 @@ impl TraceSink for Check<'_> {
         let expected = self.record.frames.get(state.frames);
         if !expected.is_some_and(|frame| {
             (frame.func, frame.caller, frame.parent, frame.depth as usize)
-                == (callee, caller, state.top, depth)
+                == (callee.func, caller, state.top, depth)
         }) {
             state.boundary = ReplayBoundary::Completion;
             state.location = caller.or(Some(TraceLocation {
                 unit: RECORDED_UNIT,
-                func,
-                pc,
+                ..location
             }));
             state.error = Some(state.mismatch(Divergence::CallStack));
             return;
@@ -749,8 +747,7 @@ impl TraceSink for Check<'_> {
         _: &Program,
         kind: ScopeKind,
         _: usize,
-        _: FuncId,
-        _: u32,
+        _: TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
@@ -769,13 +766,13 @@ impl TraceSink for Check<'_> {
             .and_then(|top| self.record.frames[top.index()].parent);
     }
 
-    fn instr(&mut self, _: &Program, func: FuncId, pc: u32, _: u32, _: Option<u64>, opcode: u8) {
-        let mut state = self.state.borrow_mut();
-        state.location = Some(TraceLocation {
+    fn instr(&mut self, _: &Program, location: TraceLocation, _: u32, _: Option<u64>, opcode: u8) {
+        let location = TraceLocation {
             unit: RECORDED_UNIT,
-            func,
-            pc,
-        });
+            ..location
+        };
+        let mut state = self.state.borrow_mut();
+        state.location = Some(location);
         let index = state.instructions;
         state.instructions = state.instructions.saturating_add(1);
         if state.error.is_some() {
@@ -784,12 +781,7 @@ impl TraceSink for Check<'_> {
         if let Some(history) = &self.record.history {
             state.boundary = ReplayBoundary::Instruction { index };
             if let Some(step) = history.steps.get(index) {
-                if step.location
-                    != (TraceLocation {
-                        unit: RECORDED_UNIT,
-                        func,
-                        pc,
-                    })
+                if step.location != location
                     || step.opcode != opcode
                     || step.frame.is_some_and(|frame| Some(frame) != state.top)
                     || step.parent
@@ -1444,6 +1436,7 @@ mod tests {
     use crate::host::HostSig;
     use crate::program::ValueType;
     use crate::recording::{Call, RecordLimits, Recorder};
+    use crate::value::FuncId;
 
     use crate::vm::Limits;
     use alloc::vec;

@@ -139,8 +139,7 @@ impl TraceSink for Events {
         _: &Program,
         _: ScopeKind,
         _: usize,
-        _: FuncId,
-        _: u32,
+        _location: execution_tape::trace::TraceLocation,
         _: Option<u64>,
     ) {
         self.entered += 1;
@@ -150,8 +149,7 @@ impl TraceSink for Events {
         _: &Program,
         _: ScopeKind,
         _: usize,
-        _: FuncId,
-        _: u32,
+        _location: execution_tape::trace::TraceLocation,
         _: Option<u64>,
         outcome: TraceOutcome<'_>,
     ) {
@@ -370,8 +368,7 @@ fn return_observer_panic_releases_the_execution_lease_without_a_second_panic() {
             _: &Program,
             _: ScopeKind,
             _: usize,
-            _: FuncId,
-            _: u32,
+            _location: execution_tape::trace::TraceLocation,
             _: Option<u64>,
             outcome: TraceOutcome<'_>,
         ) {
