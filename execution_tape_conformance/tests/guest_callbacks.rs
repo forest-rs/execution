@@ -729,6 +729,92 @@ fn callback_commands_and_overlapping_attempts_replay_actual_guest_execution() {
     assert_eq!(snapshot.values(), [Value::I64(2)]);
 }
 #[test]
+fn recorded_activations_match_live_activation_identities() {
+    let f = fixture();
+    let recorder = Rc::new(RefCell::new(Recorder::new(
+        f.program.clone(),
+        RecordLimits::default(),
+    )));
+    let mut vm = Vm::new(NoHost, Limits::default());
+    let args = [Value::I64(1)];
+    let unit = vm.install(f.program.clone()).unwrap();
+    let mut run = vm
+        .start(
+            FuncRef::new(unit, f.entry),
+            &args,
+            options().trace_owned(recorder.mask(), recorder.clone()),
+        )
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    run.pending_host_call()
+        .unwrap()
+        .call_guest(
+            Value::Func(FuncRef::new(unit, f.handler)),
+            vec![Value::I64(1)],
+        )
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHost);
+    // entry -> signal waits in "signal" -> handler callback waits in "lookup".
+    let live: Vec<_> = run
+        .inspect()
+        .frames()
+        .map(|frame| (frame.activation.ordinal(), frame.caller))
+        .collect();
+    run.pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(2)], Ok(0))
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::CallbackReturned);
+    run.pending_host_call()
+        .unwrap()
+        .complete(&mut [Value::I64(3)], Ok(0))
+        .unwrap();
+    assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+    drop(run);
+    let record = Rc::try_unwrap(recorder)
+        .expect("observer retired")
+        .into_inner()
+        .finish();
+    record.status().unwrap();
+    for (ordinal, caller) in live {
+        let activation = record
+            .activation(usize::try_from(ordinal).unwrap())
+            .unwrap();
+        assert_eq!(activation.caller, caller);
+    }
+    let functions: Vec<_> = record
+        .activations()
+        .map(|activation| activation.func.func)
+        .collect();
+    assert_eq!(functions, [f.entry, f.signal, f.handler]);
+    let [entry, signal, handler] = record.activations().collect::<Vec<_>>()[..] else {
+        unreachable!()
+    };
+    assert_eq!(handler.parent, Some(signal.ordinal));
+    assert_eq!(
+        handler.caller,
+        Some(record.control_commands().next().unwrap().location)
+    );
+    // The callback was entered after its command and exited before the outer completion.
+    let [lookup, outer] = record
+        .host_calls()
+        .map(|call| call.sequence)
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("two host completions");
+    };
+    let command = record.control_commands().next().unwrap();
+    assert_eq!(handler.entered, command.sequence + 1);
+    assert!(handler.exit.unwrap().sequence > lookup);
+    assert!(handler.exit.unwrap().sequence <= outer);
+    assert!(signal.exit.unwrap().sequence > outer);
+    assert_eq!(
+        entry.exit.unwrap().location,
+        record.outcome_location().unwrap()
+    );
+}
+
+#[test]
 #[cfg(panic = "unwind")]
 fn observer_panic_after_entering_callback_prevents_retry_and_keeps_inspection_valid() {
     let f = fixture();

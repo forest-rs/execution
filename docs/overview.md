@@ -406,7 +406,9 @@ of the eventual VM trap. Missing completion, including panic unwinding, is incom
 `execution_tape::recording` builds owned boundary evidence and checked guest replay on these
 callbacks. Capture and replay are requested explicitly; ordinary runs do not retain recordings.
 Recordings preserve identity and sharing, but do not restore external object state or host effects
-and do not define a portable archive format.
+and do not define a portable archive format. `Recording::activations` lists every entered guest
+activation with its function, caller, parent, depth and how it exited, placed in the same
+observation sequence as host calls and callback commands, without instruction history.
 
 ## Future possibilities
 

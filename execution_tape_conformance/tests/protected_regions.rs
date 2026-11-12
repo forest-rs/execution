@@ -11,7 +11,10 @@ use execution_tape::{
     disasm::disassemble,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     program::{CatchClause, Program, RegionId, RegionRun, TagId, ValueType},
-    recording::{InstructionCapture, InstructionStatus, RecordLimits, Recorder, ReplayOutcome},
+    recording::{
+        ActivationOutcome, InstructionCapture, InstructionStatus, RecordLimits, Recorder,
+        ReplayOutcome,
+    },
     trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent},
     value::{FuncId, Value},
     verifier::{
@@ -387,6 +390,22 @@ fn recorded_callback_catches_replay_with_complete_instruction_history() {
     drive_callback(&program, outer, raise, Some(recorder.clone()));
     let recording = Rc::try_unwrap(recorder).ok().unwrap().into_inner().finish();
     recording.status().unwrap();
+    // The callback runs above the waiting request and is abandoned by its own throw.
+    let [root, callback] = recording.activations().collect::<Vec<_>>()[..] else {
+        panic!("root and callback activations");
+    };
+    assert_eq!(callback.func.func, raise);
+    assert_eq!(callback.parent, Some(root.ordinal));
+    assert_eq!(callback.depth, 2);
+    assert_eq!(
+        callback.caller.unwrap(),
+        recording.control_commands().next().unwrap().location
+    );
+    assert_eq!(
+        callback.exit.unwrap().outcome,
+        ActivationOutcome::Caught { depth: 1 }
+    );
+    assert_eq!(root.exit.unwrap().outcome, ActivationOutcome::Returned);
     assert_eq!(
         recording.instruction_status(),
         Some(InstructionStatus::Complete)
@@ -682,6 +701,20 @@ fn trace_and_recording_explain_and_replay_a_caught_exception() {
     assert_eq!(result, [Value::I64(1)]);
     let recording = recorder.finish();
     recording.status().unwrap();
+    // recurse(0) at depth 4 throws; recurse(1) at depth 3 catches and returns.
+    let outcomes: Vec<_> = recording
+        .activations()
+        .map(|activation| activation.exit.unwrap().outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ActivationOutcome::Returned,
+            ActivationOutcome::Returned,
+            ActivationOutcome::Returned,
+            ActivationOutcome::Caught { depth: 3 },
+        ]
+    );
     assert_eq!(
         recording.instruction_status(),
         Some(InstructionStatus::Complete)

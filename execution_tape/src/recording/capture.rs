@@ -8,7 +8,7 @@ use crate::recording::{
     Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry, InstructionCapture,
     InstructionOutcome, InstructionStatus, Propagation, RecordLimits, Recording, Thrown,
     control::{Action, Command, Returned},
-    frames::{Frame, FrameId},
+    frames::{ActivationExit, ActivationOutcome, Frame, FrameId},
     instructions::History,
     values::Builder,
 };
@@ -711,6 +711,8 @@ impl TraceSink for Recorder {
                 caller,
                 parent: self.top,
                 depth: expected_depth,
+                entered: self.sequence,
+                exit: None,
             });
             self.top = Some(top);
         }
@@ -755,6 +757,11 @@ impl TraceSink for Recorder {
             // The first exit still has the entire leaf-to-root ancestry. Later exits are unwind.
             self.outcome_frame = Some(top);
         }
+        self.frames[top.index()].exit = Some(ActivationExit {
+            location,
+            outcome: ActivationOutcome::of(outcome),
+            sequence: self.sequence,
+        });
         self.top = frame.parent;
     }
 

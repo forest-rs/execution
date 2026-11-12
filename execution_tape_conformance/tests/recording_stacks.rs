@@ -7,7 +7,8 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::program::ValueType;
 use execution_tape::recording::{
-    CaptureFault, CaptureResource, Outcome, RecordLimits, Recorder, Recording, ReplayOutcome,
+    ActivationOutcome, CaptureFault, CaptureResource, Outcome, RecordLimits, Recorder, Recording,
+    ReplayOutcome,
 };
 use execution_tape::trace::{TraceMask, TraceSink};
 use execution_tape::value::FuncRef;
@@ -126,6 +127,73 @@ fn recursive_boundaries_share_real_ancestry_after_the_vm_is_dropped() {
         record.replay().unwrap(),
         ReplayOutcome::Returned(_)
     ));
+}
+
+#[test]
+fn activations_list_every_entry_and_exit_without_instruction_history() {
+    let p = recursive();
+    let (recording, _) = record(&p, Limits::default(), RecordLimits::default(), false, true);
+    recording.status().unwrap();
+    assert_eq!(recording.instruction_status(), None);
+    let activations: Vec<_> = recording.activations().collect();
+    assert_eq!(activations.len(), 4);
+    let calls: Vec<_> = recording.host_calls().collect();
+    for (ordinal, activation) in activations.iter().enumerate() {
+        assert_eq!(activation.ordinal, ordinal);
+        assert_eq!(recording.activation(ordinal), Some(*activation));
+        assert_eq!(activation.func.func, FuncId(0));
+        assert_eq!(activation.depth, ordinal + 1);
+        assert_eq!(activation.parent, ordinal.checked_sub(1));
+        // Each activation enters its child at the same call, before any host call is observed.
+        assert_eq!(
+            activation.caller,
+            ordinal
+                .checked_sub(1)
+                .map(|_| activations[1].caller.unwrap())
+        );
+        assert_eq!(activation.entered, 0);
+        // The leaf calls the host first; each activation exits after its own host call.
+        let call = &calls[3 - ordinal];
+        assert_eq!(call.stack.as_ref().unwrap().len(), ordinal + 1);
+        let exit = activation.exit.unwrap();
+        assert_eq!(exit.outcome, ActivationOutcome::Returned);
+        assert_eq!(exit.sequence, call.sequence + 1);
+        assert_eq!(exit.location.func, FuncId(0));
+        assert!(exit.location.pc > call.location.pc, "exits at its return");
+    }
+    assert_eq!(
+        activations[0].exit.unwrap().location,
+        recording.outcome_location().unwrap()
+    );
+    assert_eq!(recording.activation(4), None);
+
+    // A trap in the leaf's host call unwinds every activation at that one observation.
+    let (recording, _) = record_trap(&p);
+    let exits: Vec<_> = recording
+        .activations()
+        .map(|activation| activation.exit.unwrap())
+        .collect();
+    assert_eq!(exits.len(), 4);
+    assert!(
+        exits
+            .iter()
+            .all(|exit| exit.outcome == ActivationOutcome::Trapped)
+    );
+    assert!(exits.iter().all(|exit| exit.sequence == 1));
+    assert!(
+        exits
+            .iter()
+            .all(|exit| exit.location == recording.outcome_location().unwrap()),
+        "unwound activations report the trapping instruction"
+    );
+
+    // Without call-frame observations there is nothing to list.
+    let (recording, _) = record(&p, Limits::default(), RecordLimits::default(), false, false);
+    assert_eq!(recording.activations().len(), 0);
+}
+
+fn record_trap(p: &Arc<VerifiedProgram>) -> (Recording, usize) {
+    record(p, Limits::default(), RecordLimits::default(), true, true)
 }
 
 #[test]
