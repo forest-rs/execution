@@ -229,6 +229,12 @@ pub enum Value {
     U64(u64),
     /// 64-bit float.
     F64(f64),
+    /// Signed 32-bit integer.
+    I32(i32),
+    /// Unsigned 32-bit integer.
+    U32(u32),
+    /// 32-bit float.
+    F32(f32),
     /// Decimal.
     Decimal(Decimal),
     /// Byte string.

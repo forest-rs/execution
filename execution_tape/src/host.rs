@@ -623,6 +623,12 @@ pub enum ValueRef<'a> {
     U64(u64),
     /// 64-bit float.
     F64(f64),
+    /// Signed 32-bit integer.
+    I32(i32),
+    /// Unsigned 32-bit integer.
+    U32(u32),
+    /// 32-bit float.
+    F32(f32),
     /// Decimal borrowed from its owning register or value.
     Decimal(&'a Decimal),
     /// Byte string.
@@ -649,6 +655,9 @@ impl<'a> ValueRef<'a> {
             Value::I64(v) => Self::I64(*v),
             Value::U64(v) => Self::U64(*v),
             Value::F64(v) => Self::F64(*v),
+            Value::I32(v) => Self::I32(*v),
+            Value::U32(v) => Self::U32(*v),
+            Value::F32(v) => Self::F32(*v),
             Value::Decimal(v) => Self::Decimal(v),
             Value::Bytes(v) => Self::Bytes(v.as_slice()),
             Value::Str(v) => Self::Str(v.as_str()),
@@ -672,6 +681,9 @@ impl<'a> ValueRef<'a> {
             Self::I64(i) => Value::I64(i),
             Self::U64(u) => Value::U64(u),
             Self::F64(f) => Value::F64(f),
+            Self::I32(i) => Value::I32(i),
+            Self::U32(u) => Value::U32(u),
+            Self::F32(f) => Value::F32(f),
             Self::Decimal(d) => Value::Decimal(*d),
             Self::Bytes(b) => Value::Bytes(b.to_vec()),
             Self::Str(s) => Value::Str(s.into()),
@@ -691,6 +703,9 @@ impl<'a> ValueRef<'a> {
             Self::I64(_) => ValueType::I64,
             Self::U64(_) => ValueType::U64,
             Self::F64(_) => ValueType::F64,
+            Self::I32(_) => ValueType::I32,
+            Self::U32(_) => ValueType::U32,
+            Self::F32(_) => ValueType::F32,
             Self::Decimal(_) => ValueType::Decimal,
             Self::Bytes(_) => ValueType::Bytes,
             Self::Str(_) => ValueType::Str,
@@ -779,6 +794,9 @@ fn encode_value_type_tag(t: ValueType) -> u8 {
         ValueType::Func => 10,
         ValueType::Closure => 11,
         ValueType::Exn => 12,
+        ValueType::I32 => 13,
+        ValueType::U32 => 14,
+        ValueType::F32 => 15,
     }
 }
 

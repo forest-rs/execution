@@ -126,7 +126,8 @@ impl<'a> VerifiedFunction<'a> {
 
     /// Returns the number of slots in the register bank used by `value_type` for one frame.
     ///
-    /// All host object type IDs share one bank. Unit counts describe declarations with no
+    /// All host object type IDs share one bank, and `I32`, `U32` and `F32` share one bank of
+    /// 32-bit slots. Unit counts describe declarations with no
     /// runtime bank or payload storage. This is a
     /// bank requirement, not a mapping from source register numbers to physical locations.
     #[must_use]
@@ -138,6 +139,7 @@ impl<'a> VerifiedFunction<'a> {
             ValueType::I64 => counts.i64s,
             ValueType::U64 => counts.u64s,
             ValueType::F64 => counts.f64s,
+            ValueType::I32 | ValueType::U32 | ValueType::F32 => counts.w32s,
             ValueType::Decimal => counts.decimals,
             ValueType::Bytes => counts.bytes,
             ValueType::Str => counts.strs,
@@ -192,6 +194,7 @@ impl<'a> VerifiedFunction<'a> {
                 counts.i64s,
                 counts.u64s,
                 counts.f64s,
+                counts.w32s,
                 counts.decimals,
                 counts.bytes,
                 counts.strs,
@@ -221,6 +224,7 @@ fn register_bytes(counts: RegCounts) -> usize {
         + counts.i64s * size_of::<i64>()
         + counts.u64s * size_of::<u64>()
         + counts.f64s * size_of::<f64>()
+        + counts.w32s * size_of::<u32>()
         + counts.decimals * size_of::<Decimal>()
         + counts.bytes * size_of::<BytesHandle>()
         + counts.strs * size_of::<StrHandle>()

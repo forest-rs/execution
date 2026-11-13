@@ -343,6 +343,7 @@ impl<'a> InvocationInspection<'a> {
                 &ctx.i64s,
                 &ctx.u64s,
                 &ctx.f64s,
+                &ctx.w32s,
                 &ctx.decimals,
                 &ctx.bytes,
                 &ctx.strs,

@@ -7,6 +7,7 @@ use super::*;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::disasm::RegIter;
 use crate::trace::{RegisterEvent, RegisterPhase, RegisterValues};
+use crate::typed::RegClass;
 use alloc::collections::btree_map::Entry;
 
 /// Per-run indexes owned only by the trace-capable interpreter policy.
@@ -85,6 +86,7 @@ pub(super) fn emit(
             &ctx.i64s,
             &ctx.u64s,
             &ctx.f64s,
+            &ctx.w32s,
             &ctx.decimals,
             &ctx.bytes,
             &ctx.strs,
@@ -114,11 +116,14 @@ pub(super) fn emit(
 /// Source-to-bank mapping requested by optional tracing or paused inspection.
 pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>> {
     let function = program.functions.get(func.0 as usize)?;
-    let mut counts = [0_u32; 13];
+    let mut counts = [0_u32; 16];
     let mut registers = Vec::with_capacity(function.reg_count as usize);
     for kind in function.register_types(program).ok()?.iter() {
-        let class = crate::typed::RegClass::of(kind);
-        let index = class as usize;
+        // `i32`, `u32` and `f32` registers share one 32-bit bank and so one index sequence.
+        let index = match RegClass::of(kind) {
+            RegClass::U32 | RegClass::F32 => RegClass::I32 as usize,
+            class => class as usize,
+        };
         let n = counts[index];
         counts[index] += 1;
         registers.push(match kind {
@@ -127,6 +132,9 @@ pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>>
             ValueType::I64 => VReg::I64(I64Reg(n)),
             ValueType::U64 => VReg::U64(U64Reg(n)),
             ValueType::F64 => VReg::F64(F64Reg(n)),
+            ValueType::I32 => VReg::I32(I32Reg(n)),
+            ValueType::U32 => VReg::U32(U32Reg(n)),
+            ValueType::F32 => VReg::F32(F32Reg(n)),
             ValueType::Decimal => VReg::Decimal(DecimalReg(n)),
             ValueType::Bytes => VReg::Bytes(BytesReg(n)),
             ValueType::Str => VReg::Str(StrReg(n)),

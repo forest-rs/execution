@@ -374,6 +374,30 @@ impl CopyScheduler {
                         counts.f64s += 1;
                         r
                     }
+                    VReg::I32(_) => {
+                        let r = VReg::I32(I32Reg(
+                            u32::try_from(counts.w32s)
+                                .expect("source register count bounds scratch index"),
+                        ));
+                        counts.w32s += 1;
+                        r
+                    }
+                    VReg::U32(_) => {
+                        let r = VReg::U32(U32Reg(
+                            u32::try_from(counts.w32s)
+                                .expect("source register count bounds scratch index"),
+                        ));
+                        counts.w32s += 1;
+                        r
+                    }
+                    VReg::F32(_) => {
+                        let r = VReg::F32(F32Reg(
+                            u32::try_from(counts.w32s)
+                                .expect("source register count bounds scratch index"),
+                        ));
+                        counts.w32s += 1;
+                        r
+                    }
                     VReg::Decimal(_) => {
                         let r = VReg::Decimal(DecimalReg(
                             u32::try_from(counts.decimals)

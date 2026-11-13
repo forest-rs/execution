@@ -660,6 +660,12 @@ pub enum ValueType {
     /// cannot appear in host signatures, invocation entry signatures, tag payloads or aggregates,
     /// and they have no [`crate::value::Value`] representation.
     Exn,
+    /// Signed 32-bit integer.
+    I32,
+    /// Unsigned 32-bit integer.
+    U32,
+    /// IEEE 754 32-bit float.
+    F32,
 }
 
 /// A host-call signature table entry.
@@ -2462,6 +2468,9 @@ enum ValueTypeTag {
     Func = 10,
     Closure = 11,
     Exn = 12,
+    I32 = 13,
+    U32 = 14,
+    F32 = 15,
 }
 
 impl ValueTypeTag {
@@ -2480,6 +2489,9 @@ impl ValueTypeTag {
             10 => Ok(Self::Func),
             11 => Ok(Self::Closure),
             12 => Ok(Self::Exn),
+            13 => Ok(Self::I32),
+            14 => Ok(Self::U32),
+            15 => Ok(Self::F32),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -2487,13 +2499,13 @@ impl ValueTypeTag {
 
 // Temporary construction index. Frozen programs retain only IDs and the type pool.
 struct TypeInterner {
-    scalar: [Option<u32>; 13],
+    scalar: [Option<u32>; 16],
     objects: BTreeMap<u64, u32>,
 }
 impl TypeInterner {
     fn new(types: &[ValueType]) -> Self {
         let mut index = Self {
-            scalar: [None; 13],
+            scalar: [None; 16],
             objects: BTreeMap::new(),
         };
         for (id, &ty) in types.iter().enumerate() {
@@ -2524,6 +2536,9 @@ impl TypeInterner {
             ValueType::Func => 10,
             ValueType::Closure => 11,
             ValueType::Exn => 12,
+            ValueType::I32 => 13,
+            ValueType::U32 => 14,
+            ValueType::F32 => 15,
         }
     }
     fn intern(&mut self, types: &mut Vec<ValueType>, ty: ValueType) -> Result<u32, DecodeError> {
@@ -2565,6 +2580,9 @@ pub(crate) fn write_value_type(out: &mut Vec<u8>, t: ValueType) {
         ValueType::Func => ValueTypeTag::Func,
         ValueType::Closure => ValueTypeTag::Closure,
         ValueType::Exn => ValueTypeTag::Exn,
+        ValueType::I32 => ValueTypeTag::I32,
+        ValueType::U32 => ValueTypeTag::U32,
+        ValueType::F32 => ValueTypeTag::F32,
     };
     out.push(tag as u8);
     if let ValueType::Obj(host_type) = t {
@@ -2588,6 +2606,9 @@ pub(crate) fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeE
         ValueTypeTag::Func => ValueType::Func,
         ValueTypeTag::Closure => ValueType::Closure,
         ValueTypeTag::Exn => ValueType::Exn,
+        ValueTypeTag::I32 => ValueType::I32,
+        ValueTypeTag::U32 => ValueType::U32,
+        ValueTypeTag::F32 => ValueType::F32,
     })
 }
 

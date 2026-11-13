@@ -69,6 +69,9 @@ The VM defines a closed set of value kinds:
 - `I64`
 - `U64`
 - `F64`
+- `I32`
+- `U32`
+- `F32`
 - `Decimal` (`mantissa: i128`, `scale: u8`)
 - `Bytes` (alloc-backed)
 - `Str` (alloc-backed, UTF-8)
@@ -86,7 +89,12 @@ signature contains `Exn` from outside the guest traps with `ExceptionBoundary`, 
 
 The VM stores payload-bearing registers in per-kind banks (`RegClass`), rather than as tagged
 `Value`s. The producer declares each register's kind, and verification enforces it before preparing
-typed operands. Unit/effect registers have no runtime payload bank.
+typed operands. Unit/effect registers have no runtime payload bank. `I32`, `U32` and `F32`
+registers share one bank of 32-bit slots; the verified kind decides how a slot's bits are read.
+
+The 32-bit kinds are distinct from their 64-bit counterparts: no instruction mixes widths or
+signedness, and the VM never promotes implicitly. Producers convert explicitly, so a language's
+promotion rules live in its compiler.
 
 ### `Decimal`
 - Per-value scale (`u8`) and mantissa (`i128`), including the full signed range.
@@ -402,6 +410,9 @@ Tags:
 - `10 Func`
 - `11 Closure`
 - `12 Exn`
+- `13 I32`
+- `14 U32`
+- `15 F32`
 
 ### Struct types
 Field names are interned once per Types payload; each struct field references that table by id.

@@ -662,6 +662,9 @@ fn value_text(value: ValueRef<'_>) -> String {
         ValueRef::I64(value) => value.to_string(),
         ValueRef::U64(value) => value.to_string(),
         ValueRef::F64(value) => value.to_string(),
+        ValueRef::I32(value) => value.to_string(),
+        ValueRef::U32(value) => value.to_string(),
+        ValueRef::F32(value) => value.to_string(),
         ValueRef::Decimal(value) => format!("{}e-{}", value.mantissa(), value.scale()),
         ValueRef::Obj(object) => format!(
             "object #{} · host type {} · Enter to inspect",

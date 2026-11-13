@@ -16,6 +16,15 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add 32-bit value types: `ValueType::{I32, U32, F32}`, `Value::{I32, U32, F32}`,
+  `ValueRef::{I32, U32, F32}` and `RecordedValue::{I32, U32, F32}` (`F32` records its bits). They
+  have wire type tags 13, 14 and 15 and host signature tags of the same numbers, so existing
+  signature hashes are unchanged. Registers of all three share one bank of 32-bit slots, so a
+  frame grows by one bank rather than three. `mov`, `select`, calls, returns, host calls,
+  aggregates, recording, replay and observation carry them like the 64-bit kinds. Migration:
+  handle the new `ValueType`, `Value`, `ValueRef` and `RecordedValue` variants in exhaustive
+  matches.
+
 - Reserve a prefixed opcode space so new instruction families have room beyond the single-byte
   opcodes. Lead bytes `0xF0..=0xFF` are prefixes; an assigned prefix is followed by exactly one
   opcode byte. `0xFC` (`OpcodePrefix::Extended`) is the first, and new families allocate the next
