@@ -178,6 +178,11 @@ pub enum TraceOutcome<'a> {
         /// Stack depth of the catching activation; the root activation has depth one.
         depth: usize,
     },
+    /// This activation's continuation suspended to a handler outside it.
+    ///
+    /// Only call-frame scopes close this way. The activation is not finished: resuming its
+    /// continuation enters a new scope for it, at its new depth, under its resumer.
+    Suspended,
     /// Trapped.
     Trap(&'a TrapInfo),
 }

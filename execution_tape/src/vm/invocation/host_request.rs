@@ -600,7 +600,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             Trap::HostCallAbandoned,
         );
         self.vm.memory.rollback(self.checkpoint);
-        self.budget.frames -= self.continuation.ctx.frames.len();
+        self.budget.frames -= self.continuation.ctx.held_frames();
         self.budget.contract_scratch.clear_proofs();
         self.continuation.outputs.clear();
         self.continuation.control.pending_host = None;

@@ -104,6 +104,9 @@ impl FootfallSink {
             TraceOutcome::Cancelled => {
                 footfall::message_with(ok_desc, self.context, "cancelled", args);
             }
+            TraceOutcome::Suspended => {
+                footfall::message_with(ok_desc, self.context, "suspended", args);
+            }
             TraceOutcome::Trap(_) => {
                 // Custom host diagnostics can be arbitrarily large. The VM result owns them;
                 // profiling records the outcome/location without formatting or copying payloads.

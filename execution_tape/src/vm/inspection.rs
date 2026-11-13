@@ -48,7 +48,7 @@ impl fmt::Debug for ActivationId {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Activation {
+pub(super) struct Activation {
     ordinal: u64,
     caller: Option<TraceLocation>,
 }
@@ -113,6 +113,24 @@ impl ExecutionControl {
     }
     pub(super) fn truncate(&mut self, count: usize) {
         self.frames.truncate(count);
+    }
+    /// Moves the activations from `depth` up into a suspended continuation's `saved` list.
+    pub(super) fn suspend(&mut self, depth: usize, saved: &mut Vec<Activation>) {
+        saved.clear();
+        if self.frames.len() > depth {
+            saved.extend(self.frames.drain(depth..));
+        }
+    }
+    /// Restores a continuation's activations above `resumer`, or enters its unstarted root.
+    ///
+    /// A resumed activation keeps its identity; its root's caller becomes the resumer.
+    pub(super) fn reinstate(&mut self, mut saved: Vec<Activation>, resumer: TraceLocation) {
+        if let Some(root) = saved.first_mut() {
+            root.caller = Some(resumer);
+            self.frames.append(&mut saved);
+        } else {
+            self.enter(resumer);
+        }
     }
     pub(super) fn leave(&mut self) {
         self.frames.pop().expect("active guest activation");

@@ -9,6 +9,7 @@
 
 mod blocks;
 mod contracts;
+mod control;
 use contracts::RefinementState;
 mod diagnostic;
 mod inspection;
@@ -45,7 +46,7 @@ use crate::program::{
     SymbolId, TagId, TypeId, ValueType,
 };
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
+    AggReg, BoolReg, BytesReg, ClosureReg, ContReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
     ExecInstr, ExecProtection, ExnReg, F32Reg, F64Reg, FuncReg, I32Reg, I64Reg, ObjReg, RegClass,
     RegCounts, RegLayout, StrReg, U32Reg, U64Reg, VReg, VRegSlice,
 };
@@ -161,7 +162,8 @@ impl VerifiedProgram {
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
-    /// A statically known callable contradicts an indirect call's exact signature.
+    /// A statically known callable contradicts the exact signature of an indirect call or of
+    /// the continuation `cont.new` creates.
     CallIndirectContractMismatch {
         /// Containing function.
         func: u32,
@@ -582,6 +584,14 @@ pub enum VerifyError {
         /// Where the `Exn` kind appeared.
         place: ExceptionPlace,
     },
+    /// A continuation reference appears where only embedding-visible values may.
+    ///
+    /// Continuations stay in guest registers, like exception references; a tag's payload and
+    /// results cannot carry one either.
+    ContinuationReference {
+        /// Where the `Cont` kind appeared.
+        place: ExceptionPlace,
+    },
     /// A protected region or one of its catch clauses is invalid.
     InvalidRegion {
         /// Function index within the program.
@@ -984,6 +994,9 @@ impl fmt::Display for VerifyError {
             Self::ExceptionReference { place } => {
                 write!(f, "exception references cannot appear in {place}")
             }
+            Self::ContinuationReference { place } => {
+                write!(f, "continuation references cannot appear in {place}")
+            }
             Self::InvalidRegion {
                 func,
                 region,
@@ -1157,16 +1170,30 @@ impl fmt::Display for ExceptionPlace {
     }
 }
 
-/// Rejects `Exn` anywhere a value could reach the embedding or the aggregate heap.
+/// Rejects `Exn` and `Cont` anywhere a value could reach the embedding or the aggregate heap.
 fn verify_exception_places(program: &Program) -> Result<(), VerifyError> {
-    let reject = |place| Err(VerifyError::ExceptionReference { place });
+    verify_guest_only_places(program, ValueType::Exn, |place| {
+        VerifyError::ExceptionReference { place }
+    })?;
+    verify_guest_only_places(program, ValueType::Cont, |place| {
+        VerifyError::ContinuationReference { place }
+    })
+}
+
+/// Rejects the guest-only `kind` in host signatures, tag payloads and results, and schemas.
+fn verify_guest_only_places(
+    program: &Program,
+    guest_only: ValueType,
+    error: impl Fn(ExceptionPlace) -> VerifyError,
+) -> Result<(), VerifyError> {
+    let reject = |place| Err(error(place));
     for (index, entry) in program.host_sigs.iter().enumerate() {
         let kinds = program
             .host_sig_args(entry)
             .into_iter()
             .chain(program.host_sig_rets(entry))
             .flatten();
-        if kinds.into_iter().any(|&kind| kind == ValueType::Exn) {
+        if kinds.into_iter().any(|&kind| kind == guest_only) {
             return reject(ExceptionPlace::HostSig {
                 host_sig: u32::try_from(index).unwrap_or(u32::MAX),
             });
@@ -1177,7 +1204,7 @@ fn verify_exception_places(program: &Program) -> Result<(), VerifyError> {
             .tag_payload(entry)
             .into_iter()
             .chain(program.tag_results(entry))
-            .any(|kinds| kinds.iter().any(|&kind| kind == ValueType::Exn))
+            .any(|kinds| kinds.iter().any(|&kind| kind == guest_only))
         {
             return reject(ExceptionPlace::TagPayload {
                 tag: u32::try_from(index).unwrap_or(u32::MAX),
@@ -1186,7 +1213,7 @@ fn verify_exception_places(program: &Program) -> Result<(), VerifyError> {
     }
     for (index, schema) in program.types.structs.iter().enumerate() {
         if let Ok(fields) = program.types.struct_field_types(schema)
-            && let Some(field) = fields.iter().position(|&kind| kind == ValueType::Exn)
+            && let Some(field) = fields.iter().position(|&kind| kind == guest_only)
         {
             return reject(ExceptionPlace::StructField {
                 type_id: u32::try_from(index).unwrap_or(u32::MAX),
@@ -1195,7 +1222,7 @@ fn verify_exception_places(program: &Program) -> Result<(), VerifyError> {
         }
     }
     for (index, &kind) in program.types.array_elems.iter().enumerate() {
-        if kind == ValueType::Exn {
+        if kind == guest_only {
             return reject(ExceptionPlace::ArrayElement {
                 elem_type_id: u32::try_from(index).unwrap_or(u32::MAX),
             });
@@ -1654,6 +1681,9 @@ fn verify_id_operands_in_bounds(
                 tag: *tag,
             });
         }
+        if err.is_none() {
+            err = control::check_ids(program, func, pc, &di.instr).err();
+        }
 
         if let Some(err) = err {
             return Err(err);
@@ -1909,6 +1939,11 @@ fn verify_function_bytecode(
                 counts.exns += 1;
                 VReg::Exn(r)
             }
+            RegClass::Cont => {
+                let r = ContReg(idx_u32(counts.conts));
+                counts.conts += 1;
+                VReg::Cont(r)
+            }
         };
         reg_map.push(v);
     }
@@ -2078,6 +2113,12 @@ fn verify_function_bytecode(
                 _ => Err(mismatch(reg, ValueType::Closure)),
             }
         };
+        let map_cont = |reg: u32| -> Result<ContReg, VerifyError> {
+            match map(reg)? {
+                VReg::Cont(r) => Ok(r),
+                _ => Err(mismatch(reg, ValueType::Cont)),
+            }
+        };
         let mut push_vregs = |regs: &[u32]| -> Result<VRegSlice, VerifyError> {
             let start = operands.len();
             operands.reserve(regs.len());
@@ -2099,6 +2140,62 @@ fn verify_function_bytecode(
                 ExecInstr::Throw {
                     tag: TagId(*tag),
                     args: push_vregs(args)?,
+                }
+            }
+            Instr::ContNew {
+                dst,
+                call_sig,
+                func: callee,
+            } => {
+                let dst = match map(*dst)? {
+                    VReg::Cont(dst) => dst,
+                    _ => return Err(mismatch(*dst, ValueType::Cont)),
+                };
+                let call_sig = CallSigId(*call_sig);
+                match map(*callee)? {
+                    VReg::Func(func) => ExecInstr::ContNewFunc {
+                        dst,
+                        call_sig,
+                        func,
+                    },
+                    VReg::Closure(func) => ExecInstr::ContNewClosure {
+                        dst,
+                        call_sig,
+                        func,
+                    },
+                    _ => return Err(mismatch(*callee, ValueType::Func)),
+                }
+            }
+            Instr::Resume {
+                eff_out,
+                call_sig,
+                cont,
+                eff_in,
+                args,
+                rets,
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::Resume {
+                    call_sig: CallSigId(*call_sig),
+                    cont: map_cont(*cont)?,
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
+                }
+            }
+            Instr::Suspend {
+                eff_out,
+                tag,
+                eff_in,
+                args,
+                rets,
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::Suspend {
+                    tag: TagId(*tag),
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
                 }
             }
             Instr::ThrowRef { eff_in, exn } => {
@@ -3645,6 +3742,7 @@ fn prepare_protection(
             clauses.push(ExecClause {
                 tag: catch.tag(),
                 binds_exception: catch.binds_exception(),
+                suspension: catch.handles_suspension(),
                 target_ix: exec_ix(catch.target()),
                 params: slice,
             });
@@ -3911,6 +4009,12 @@ fn validate_instr_reads_writes(
                 return Err(VerifyError::CallArityMismatch { func: func_id, pc });
             }
         }
+        Instr::ContNew { .. } | Instr::Resume { .. } | Instr::Suspend { .. } => {
+            control::check_structure(program, func_id, pc, instr, |eff_in, eff_out| {
+                require_eff_in_r0(eff_in)?;
+                require_eff_out_r0(eff_out)
+            })?;
+        }
         _ => {}
     }
 
@@ -3994,6 +4098,9 @@ fn validate_instr_types(
         }
         Instr::ThrowRef { exn, .. } => {
             check_expected(func_id, pc, *exn, t(*exn), ValueType::Exn)?;
+        }
+        Instr::ContNew { .. } | Instr::Resume { .. } | Instr::Suspend { .. } => {
+            control::check_types(program, func_id, pc, instr, types)?;
         }
         Instr::Nop
         | Instr::Trap { .. }
@@ -4676,14 +4783,19 @@ fn validate_instr_types(
             check_expected(func_id, pc, *env, t(*env), ValueType::Agg)?;
         }
         Instr::TupleNew { values, .. } => {
-            if let Some(&reg) = values.iter().find(|&&reg| t(reg) == Some(ValueType::Exn)) {
-                return Err(VerifyError::ExceptionReference {
-                    place: ExceptionPlace::Aggregate {
-                        func: func_id,
-                        pc,
-                        reg,
-                    },
-                });
+            for &reg in values {
+                let place = ExceptionPlace::Aggregate {
+                    func: func_id,
+                    pc,
+                    reg,
+                };
+                match t(reg) {
+                    Some(ValueType::Exn) => return Err(VerifyError::ExceptionReference { place }),
+                    Some(ValueType::Cont) => {
+                        return Err(VerifyError::ContinuationReference { place });
+                    }
+                    _ => {}
+                }
             }
         }
         Instr::TupleGet { tuple, .. } => {

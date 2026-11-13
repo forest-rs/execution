@@ -143,6 +143,7 @@ pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>>
             ValueType::Func => VReg::Func(FuncReg(n)),
             ValueType::Closure => VReg::Closure(ClosureReg(n)),
             ValueType::Exn => VReg::Exn(ExnReg(n)),
+            ValueType::Cont => VReg::Cont(ContReg(n)),
         });
     }
     Some(registers)

@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Which catch clauses each raising instruction can transfer to.
+//! Which catch and `on` clauses each raising instruction can transfer to.
 //!
 //! This assumes a function whose region tables have already been validated.
 
@@ -42,7 +42,8 @@ fn raises(instr: &Instr) -> Option<Raises> {
         Instr::Call { .. }
         | Instr::CallIndirect { .. }
         | Instr::HostCall { .. }
-        | Instr::ThrowRef { .. } => Some(Raises::Any),
+        | Instr::ThrowRef { .. }
+        | Instr::Resume { .. } => Some(Raises::Any),
         Instr::Throw { tag, .. } => Some(Raises::Tag(TagId(*tag))),
         _ => None,
     }
@@ -72,6 +73,9 @@ impl Protection {
                 let Some(raised) = raises(&di.instr) else {
                     return out;
                 };
+                // Only a resume reaches `on` clauses: they handle its continuation's suspensions.
+                let resumes = matches!(di.instr, Instr::Resume { .. });
+                let mut caught = false;
                 let mut region = innermost(runs, di.offset);
                 while let Some(id) = region {
                     let entry = &regions[id.0 as usize];
@@ -82,19 +86,29 @@ impl Protection {
                             clause: u32::try_from(index).expect("verified clause count"),
                             catch,
                         };
+                        if catch.handles_suspension() {
+                            if resumes {
+                                out.push(handler);
+                            }
+                            continue;
+                        }
+                        if caught {
+                            continue;
+                        }
                         match raised {
                             Raises::Tag(tag) if catch.catches(tag) => {
                                 out.push(handler);
-                                return out;
+                                caught = true;
                             }
                             Raises::Tag(_) => {}
                             Raises::Any => {
                                 out.push(handler);
-                                if catch.tag().is_none() {
-                                    return out;
-                                }
+                                caught = catch.tag().is_none();
                             }
                         }
+                    }
+                    if caught && !resumes {
+                        break;
                     }
                     region = entry.parent;
                 }

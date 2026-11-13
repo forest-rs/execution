@@ -95,6 +95,8 @@ pub enum ActivationOutcome {
         /// Stack depth of the catching activation; the root activation has depth one.
         depth: usize,
     },
+    /// Its continuation suspended. Resuming it records a new activation of the same frame.
+    Suspended,
     /// It was unwound by a trap. The trap itself is the recording's outcome.
     Trapped,
     /// The invocation was cancelled while it was active.
@@ -106,6 +108,7 @@ impl ActivationOutcome {
         match outcome {
             TraceOutcome::Ok => Self::Returned,
             TraceOutcome::Caught { depth } => Self::Caught { depth },
+            TraceOutcome::Suspended => Self::Suspended,
             TraceOutcome::Trap(_) => Self::Trapped,
             TraceOutcome::Cancelled => Self::Cancelled,
         }

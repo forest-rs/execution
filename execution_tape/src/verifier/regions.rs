@@ -35,7 +35,8 @@ pub enum RegionError {
     /// A clause target's block parameters do not receive exactly the clause's values.
     ///
     /// A tag clause's target declares one parameter per payload value; a catch-all target
-    /// declares none. Reference clauses add one final `Exn` parameter.
+    /// declares none. Reference clauses add one final `Exn` parameter and `on` clauses one
+    /// final `Cont` parameter.
     ClauseParams {
         /// Clause index within the region.
         clause: u32,
@@ -50,6 +51,13 @@ pub enum RegionError {
     },
     /// A `catch_ref` or `catch_all_ref` target's last parameter is not an `Exn` register.
     ClauseException {
+        /// Clause index within the region.
+        clause: u32,
+        /// The last parameter's declared kind.
+        actual: ValueType,
+    },
+    /// An `on` target's last parameter is not a `Cont` register.
+    ClauseContinuation {
         /// Clause index within the region.
         clause: u32,
         /// The last parameter's declared kind.
@@ -109,6 +117,10 @@ impl core::fmt::Display for RegionError {
             Self::ClauseException { clause, actual } => write!(
                 f,
                 "clause {clause} binds the exception to a parameter declared {actual:?}, not Exn"
+            ),
+            Self::ClauseContinuation { clause, actual } => write!(
+                f,
+                "clause {clause} binds the continuation to a parameter declared {actual:?}, not Cont"
             ),
             Self::ClauseParamKind {
                 clause,
@@ -201,7 +213,8 @@ pub(super) fn verify(
             }
             let params = super::blocks::declaration(decoded, target).unwrap_or(&[]);
             let expected = payload.as_ref().map_or(0, |(_, payload)| payload.len())
-                + usize::from(catch.binds_exception());
+                + usize::from(catch.binds_exception())
+                + usize::from(catch.handles_suspension());
             if params.len() != expected {
                 return Err(invalid(
                     index,
@@ -242,6 +255,16 @@ pub(super) fn verify(
                     return Err(invalid(
                         index,
                         RegionError::ClauseException { clause, actual },
+                    ));
+                }
+            }
+            if catch.handles_suspension() {
+                let last = *params.last().expect("checked parameter count");
+                let actual = function.register_type(program, last).map_err(malformed)?;
+                if actual != ValueType::Cont {
+                    return Err(invalid(
+                        index,
+                        RegionError::ClauseContinuation { clause, actual },
                     ));
                 }
             }

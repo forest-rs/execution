@@ -380,6 +380,17 @@ Traps, limits and cancellation are never caught and run no guest code. An except
 catches ends the invocation as `Trap::Uncaught` with a detached payload snapshot. Language
 condition classes, handler selection and restart policy remain above the core VM.
 
+### Stack switching
+
+One-shot continuations follow WebAssembly stack switching. `cont.new` wraps a function or
+closure as an unstarted continuation in a `Cont` register, and `resume` runs it on top of the
+resuming activation. `suspend` raises a tag to the nearest `on` clause protecting a `resume`
+that runs it; the handler receives the payload and the suspended activations as a new
+continuation, which a later `resume` continues with the tag's results. Continuations are typed
+by call signatures, checked across units, consumed by use, and live until resumed or the
+invocation ends; their frames count against the call-depth limit. Generators, coroutines and
+resumable conditions are guest code on these primitives.
+
 ## Owned executable callables
 
 [`callable::Callable`] retains an exact prepared program and an optional independent closure

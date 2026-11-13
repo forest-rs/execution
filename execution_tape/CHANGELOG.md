@@ -59,6 +59,25 @@ This release has an [MSRV][] of 1.88.
   `ctz` of zero are 64, and rotation amounts are masked with `& 63`. Migration: handle the new
   `Opcode` variants in exhaustive matches.
 
+- Switch stacks with one-shot continuations, shaped after WebAssembly stack switching.
+  `cont.new` (`0xFC 0x05`) makes an unstarted continuation of a `Func` or `Closure`, `resume`
+  (`0xFC 0x06`) runs one on top of the resuming activation, and `suspend` (`0xFC 0x07`) captures
+  the activations up to the nearest handler of a tag. Continuations live in the new
+  `ValueType::Cont` register kind, are typed by call signatures (checked at runtime against
+  canonical contracts, across units), and trap with `Trap::ContinuationConsumed` when reused.
+  Handlers are `on` clauses of protected regions (`CatchClause::On`, `Catch::On`): a suspension
+  consults the clauses protecting each `resume` outward, receives the payload and the suspended
+  continuation, and traps with `Trap::UnhandledSuspension` when none matches or
+  `Trap::SuspensionAcrossHost` when it would capture a pending host request. Suspended
+  activations close their profiling scopes with `TraceOutcome::Suspended`
+  (`ActivationOutcome::Suspended` in recordings) and re-enter them when resumed; their frames
+  count against `Limits::max_call_depth` until resumed or the invocation ends.
+  Defining a tag whose payload or results hold `Cont` fails with
+  `TagError::ContinuationPayload`, and checked replay compares the new traps.
+  Migration: handle `ValueType::Cont`, `TraceOutcome::Suspended`, `ActivationOutcome::Suspended`,
+  `CatchClause::On`, `Catch::On`, and the new `Trap`, `VerifyError`, `RegionError` and
+  `TagError` variants in exhaustive matches.
+
 - Declare the values that resume a suspension to a tag with
   `ProgramBuilder::declare_tag_with_results` and `import_tag_with_results`, or
   `Vm::define_tag_with_results` for embedding-defined tags, so the store tags that units share

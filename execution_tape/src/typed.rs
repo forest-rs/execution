@@ -33,6 +33,7 @@ pub(crate) enum RegClass {
     Func,
     Closure,
     Exn,
+    Cont,
 }
 
 impl RegClass {
@@ -54,6 +55,7 @@ impl RegClass {
             ValueType::Func => Self::Func,
             ValueType::Closure => Self::Closure,
             ValueType::Exn => Self::Exn,
+            ValueType::Cont => Self::Cont,
         }
     }
 }
@@ -88,6 +90,8 @@ pub(crate) struct FuncReg(pub u32);
 pub(crate) struct ClosureReg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExnReg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContReg(pub u32);
 
 /// A typed register reference (class + class-local index).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -109,6 +113,7 @@ pub(crate) enum VReg {
     Func(FuncReg),
     Closure(ClosureReg),
     Exn(ExnReg),
+    Cont(ContReg),
 }
 
 impl VReg {
@@ -131,6 +136,7 @@ impl VReg {
             Self::I32(reg) => (13, reg.0),
             Self::U32(reg) => (14, reg.0),
             Self::F32(reg) => (15, reg.0),
+            Self::Cont(reg) => (16, reg.0),
         }
     }
 }
@@ -170,6 +176,7 @@ pub(crate) struct RegCounts {
     pub(crate) funcs: usize,
     pub(crate) closures: usize,
     pub(crate) exns: usize,
+    pub(crate) conts: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +209,31 @@ pub(crate) enum ExecInstr {
     /// Rethrow a caught exception reference.
     ThrowRef {
         exn: ExnReg,
+    },
+    /// Create an unstarted continuation of a function value.
+    ContNewFunc {
+        dst: ContReg,
+        call_sig: CallSigId,
+        func: FuncReg,
+    },
+    /// Create an unstarted continuation of a closure, binding its environment.
+    ContNewClosure {
+        dst: ContReg,
+        call_sig: CallSigId,
+        func: ClosureReg,
+    },
+    /// Run a continuation on top of this activation.
+    Resume {
+        call_sig: CallSigId,
+        cont: ContReg,
+        args: VRegSlice,
+        rets: VRegSlice,
+    },
+    /// Suspend to the nearest handler of a tag.
+    Suspend {
+        tag: TagId,
+        args: VRegSlice,
+        rets: VRegSlice,
     },
 
     MovBool {
@@ -1486,6 +1518,8 @@ pub(crate) struct ExecClause {
     pub(crate) tag: Option<TagId>,
     /// Whether the last parameter receives the exception reference.
     pub(crate) binds_exception: bool,
+    /// Whether this is an `on` clause, which handles suspensions rather than exceptions.
+    pub(crate) suspension: bool,
     /// First executable instruction of the handler block.
     pub(crate) target_ix: u32,
     /// Handler block parameters receiving the payload, in payload order.
@@ -1505,6 +1539,20 @@ impl ExecProtection {
     /// `catches(local)` says whether this program's tag `local` is the raised tag; catch-all
     /// clauses catch every exception.
     pub(crate) fn catch(&self, ix: usize, catches: impl Fn(TagId) -> bool) -> Option<ExecCatch> {
+        self.select(ix, |clause| {
+            !clause.suspension && clause.tag.is_none_or(&catches)
+        })
+    }
+
+    /// Selects the first `on` clause handling a suspension to the tag `handles` accepts, for
+    /// a continuation resumed by instruction `ix`.
+    pub(crate) fn handle(&self, ix: usize, handles: impl Fn(TagId) -> bool) -> Option<ExecCatch> {
+        self.select(ix, |clause| {
+            clause.suspension && clause.tag.is_some_and(&handles)
+        })
+    }
+
+    fn select(&self, ix: usize, selects: impl Fn(&ExecClause) -> bool) -> Option<ExecCatch> {
         let ix = u32::try_from(ix).ok()?;
         let run = self
             .runs
@@ -1520,7 +1568,7 @@ impl ExecProtection {
                 .iter()
                 .enumerate()
             {
-                if clause.tag.is_none_or(&catches) {
+                if selects(clause) {
                     return Some(ExecCatch {
                         region,
                         clause: u32::try_from(offset).expect("verified clause count"),
