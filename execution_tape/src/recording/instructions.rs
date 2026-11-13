@@ -107,8 +107,8 @@ pub struct InstructionStep<'a> {
     /// Retained host attempt that remains outstanding while this callback instruction executes.
     /// `None` means no outstanding parent attempt; ordinary guest ancestry is in `stack`.
     pub parent_attempt: Option<usize>,
-    /// Source opcode byte.
-    pub opcode: u8,
+    /// Source opcode code (see [`Opcode::code`](crate::opcode::Opcode::code)).
+    pub opcode: u16,
     /// Actual guest successor, absent at root/callback return, trap or missing completion.
     pub next: Option<TraceLocation>,
     /// Observed instruction outcome, separate from the eventual invocation result.
@@ -124,7 +124,7 @@ pub(crate) struct Step {
     pub(crate) outputs: core::ops::Range<usize>,
     pub(crate) location: TraceLocation,
     pub(crate) parent: Option<usize>,
-    pub(crate) opcode: u8,
+    pub(crate) opcode: u16,
     pub(crate) next: Option<TraceLocation>,
     pub(crate) outcome: InstructionOutcome,
     pub(crate) frame: Option<FrameId>,
@@ -246,7 +246,7 @@ impl History {
     pub(crate) fn record_instruction(
         &mut self,
         location: TraceLocation,
-        opcode: u8,
+        opcode: u16,
         frame: Option<FrameId>,
     ) {
         if self.status == InstructionStatus::Incomplete {

@@ -256,10 +256,32 @@ and preserves the caller's previous output buffer. It cannot undo host effects.
 
 ### Instruction encoding
 Each instruction is:
-- `opcode: u8`
+- `opcode`: one byte, or a prefix byte followed by one byte
 - `operands: varint-encoded fields` (register indices, immediates, ids)
 
 Register operands are ULEB128 indices (`Reg`).
+
+#### Opcode prefixes
+Lead bytes `0xF0..=0xFF` are reserved for prefixes and never name a single-byte opcode. An
+assigned prefix is always followed by exactly one more byte, which selects an opcode within that
+prefix's space, so each prefix opens 256 opcodes. Both bytes are fixed-width: there is no varint
+form and no second spelling of an opcode, so an opcode's bytes identify it exactly and
+`codec::canonicalize` never rewrites them. Currently assigned:
+
+- `0xFC` (`OpcodePrefix::Extended`): general extension space.
+
+Every opcode has a 16-bit *code*: its byte for single-byte opcodes, and `prefix << 8 | byte` for
+prefixed ones (`0xFC 0x05` is code `0xFC05`). Traces, recordings and diagnostics report opcodes by
+code (`Opcode::code`, `Opcode::from_code`).
+
+Decoding rejects:
+- a lead byte that is neither a single-byte opcode nor an assigned prefix (including the
+  unassigned bytes of the reserved range), reported as its one-byte code;
+- an assigned prefix followed by a byte that names no opcode, reported as the two-byte code;
+- a prefix with no following byte, as truncated bytecode.
+
+The verifier reports the first two as `VerifyError::UnknownOpcode { func, pc, opcode }` and the
+last as `BytecodeDecode`.
 
 ### Program counter (PC)
 For control-flow instructions, `pc_*` operands are **byte offsets** into the function bytecode stream, and must
@@ -312,6 +334,9 @@ The tracing API supports:
 - scope events for profiling:
   - call frames (function enter/exit)
   - host calls (time spent in embedder code)
+
+Instruction events carry the opcode's code (see [Opcode prefixes](#opcode-prefixes)), so
+prefixed instructions are distinguishable from their prefix.
 
 `TraceMask` selects callbacks. `execution_tape_footfall` and `execution_tape_tracy` implement
 profiler adapters without adding their backend dependencies to the core. Borrowed value events
@@ -815,6 +840,13 @@ The schema in `execution_tape/opcodes.json` defines instruction names, bytes, op
 encodings. `execution_tape/src/opcode.rs` exposes the generated `Opcode` mapping. For register
 operands (`reg` and `reg_list`), the JSON spec also includes an `access` field (`read` or `write`) used by analysis tooling (e.g. reads/writes sets).
 
+### Allocating opcodes
+New instruction families are allocated under a prefix, not in the remaining single-byte gaps:
+give the opcode entry `"prefix": "0xFC"` and the next free `"byte"` in that space, then run
+`cargo run -p execution_tape_codegen`. Free single bytes are kept for instructions frequent
+enough that the saved byte matters. Existing opcodes are never renumbered. When `0xFC` fills, the
+next prefix is declared in the schema's `prefixes` list from the reserved range.
+
 All register indices and small integers are ULEB128 unless noted.
 
 - `0x00 nop`
@@ -1033,7 +1065,9 @@ Required checks:
 These checks apply alongside the structural and contract rules described above.
 
 - **Required sections present**: sections `1..=8` and `12` must exist exactly once; `names` and `call_sigs` are optional.
-- **Bytecode decode**: the function bytecode must decode cleanly as a sequence of opcodes.
+- **Bytecode decode**: the function bytecode must decode cleanly as a sequence of opcodes. An
+  unassigned opcode is `UnknownOpcode` with its code and pc; other malformed bytes are
+  `BytecodeDecode`.
 - **CFG targets**:
   - all `br/jmp` targets must be within `[0, bytecode_len)`
   - all `br/jmp` targets must be an instruction boundary (byte offset that starts an instruction)

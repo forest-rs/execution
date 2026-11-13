@@ -112,7 +112,7 @@ fn captures_control_flow_host_work_failures_masks_and_loss() {
         }
         match event.observation() {
             Observation::Message { name, args, .. } if *name == "execution_tape.instr" => {
-                if args.get("opcode").unwrap().as_unsigned() == Some(u64::from(Opcode::Br as u8)) {
+                if args.get("opcode").unwrap().as_unsigned() == Some(u64::from(Opcode::Br.code())) {
                     attempted_pc = Some(args.get("pc").unwrap());
                 }
             }

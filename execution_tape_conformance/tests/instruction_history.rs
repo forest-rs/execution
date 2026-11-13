@@ -119,16 +119,16 @@ fn actual_branches_calls_returns_and_zero_cost_headers_are_distinguished() {
         for pair in steps.windows(2) {
             assert_eq!(pair[0].next, Some(pair[1].location));
         }
-        assert_eq!(steps[0].opcode, Opcode::Br.byte());
-        assert_eq!(steps[3].opcode, Opcode::Call.byte());
+        assert_eq!(steps[0].opcode, Opcode::Br.code());
+        assert_eq!(steps[3].opcode, Opcode::Call.code());
         assert_eq!(steps[3].next.unwrap().func, FuncId(0));
         assert_eq!(steps[4].stack.as_ref().unwrap().len(), 2);
-        assert_eq!(steps[5].opcode, Opcode::Ret.byte());
+        assert_eq!(steps[5].opcode, Opcode::Ret.code());
         assert_eq!(steps[5].next.unwrap().func, FuncId(1));
         assert_eq!(steps[5].stack.as_ref().unwrap().len(), 2);
         assert_eq!(steps[6].next, None);
         assert!(steps.iter().all(
-            |s| s.outcome == InstructionOutcome::Completed && s.opcode != Opcode::Block.byte()
+            |s| s.outcome == InstructionOutcome::Completed && s.opcode != Opcode::Block.code()
         ));
         assert!(record.instruction(7).is_none());
         let ReplayOutcome::Returned(replayed) = record.replay().unwrap() else {
@@ -456,7 +456,7 @@ fn replay_rejects_a_retained_successor_that_was_not_executed() {
             units: vm.units(),
         },
     );
-    recorder.instr(p.program(), location, ret, None, Opcode::ConstI64.byte());
+    recorder.instr(p.program(), location, ret, None, Opcode::ConstI64.code());
     recorder.instr_end(p.program(), location, Some(location), TraceOutcome::Ok); // false self-loop
     recorder.values(
         p.program(),

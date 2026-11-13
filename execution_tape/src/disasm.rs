@@ -212,10 +212,12 @@ pub struct FunctionDisassembly<'a> {
 pub enum DisasmError {
     /// The underlying data failed to decode.
     Decode(DecodeError),
-    /// The opcode byte is not recognized.
+    /// An instruction starts with an unassigned opcode.
     UnknownOpcode {
-        /// The unrecognized opcode byte.
-        opcode: u8,
+        /// Byte offset of the opcode.
+        pc: u32,
+        /// The unassigned code: the lone byte, or `prefix << 8 | byte` (see [`Opcode::code`]).
+        opcode: u16,
     },
 }
 
@@ -223,7 +225,9 @@ impl DisasmError {
     fn from_bytecode(e: BytecodeError) -> Self {
         match e {
             BytecodeError::Decode(e) => Self::Decode(e),
-            BytecodeError::UnknownOpcode { opcode } => Self::UnknownOpcode { opcode },
+            BytecodeError::UnknownOpcode { offset, opcode } => {
+                Self::UnknownOpcode { pc: offset, opcode }
+            }
         }
     }
 }
@@ -401,8 +405,7 @@ impl<'a> InstrView<'a> {
     /// Decoded opcode.
     #[must_use]
     pub fn opcode(&self) -> Opcode {
-        // `DecodedInstr` is produced by the decoder, so `opcode` is known.
-        Opcode::from_u8(self.decoded.opcode).expect("decoded instruction opcode must be known")
+        self.decoded.opcode
     }
 
     /// Returns `true` if this instruction is a terminator (e.g. `br`, `jmp`, `ret`, `trap`).

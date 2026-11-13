@@ -15,10 +15,11 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::bytecode::{BytecodeError, read_opcode};
 use crate::format::{
     DecodeError as FormatDecodeError, Reader, write_sleb128_i64, write_uleb128_u64,
 };
-use crate::opcode::{Opcode, OperandEncoding, OperandKind};
+use crate::opcode::{CodeBytes, Opcode, OperandEncoding, OperandKind};
 use crate::program::{ConstId, ElemTypeId, HostSigId, TypeId};
 use crate::value::{Decimal, FuncId};
 
@@ -145,7 +146,7 @@ pub struct DecodedInstruction {
     pub opcode: Opcode,
     /// Operands for this instruction.
     pub operands: Vec<DecodedOperand>,
-    /// Total instruction byte length (including opcode byte).
+    /// Total instruction byte length, including the opcode's one or two bytes.
     pub byte_len: usize,
 }
 
@@ -225,10 +226,11 @@ impl core::error::Error for EncodeError {}
 pub enum DecodeError {
     /// Byte stream was malformed.
     Format(FormatDecodeError),
-    /// Unknown opcode byte.
+    /// The instruction starts with an unassigned opcode: an unknown byte, or an assigned
+    /// [prefix](crate::opcode::OpcodePrefix) followed by an unknown byte.
     UnknownOpcode {
-        /// The unrecognized opcode byte.
-        opcode: u8,
+        /// The unassigned code: the lone byte, or `prefix << 8 | byte` (see [`Opcode::code`]).
+        opcode: u16,
     },
     /// Operand kind/encoding pair is not supported by this codec.
     UnsupportedEncoding {
@@ -249,7 +251,7 @@ impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Format(e) => write!(f, "decode error: {e}"),
-            Self::UnknownOpcode { opcode } => write!(f, "unknown opcode {opcode:#04x}"),
+            Self::UnknownOpcode { opcode } => write!(f, "unknown opcode {}", CodeBytes(*opcode)),
             Self::UnsupportedEncoding {
                 opcode,
                 index,
@@ -287,7 +289,7 @@ pub fn encode_instruction(
         });
     }
 
-    out.push(opcode as u8);
+    opcode.encode(out);
     for (i, (operand, spec)) in operands.iter().copied().zip(schema.iter()).enumerate() {
         let got_kind = operand.kind();
         if got_kind != spec.kind {
@@ -371,8 +373,10 @@ fn read_u32_uleb(r: &mut Reader<'_>) -> Result<u32, DecodeError> {
 /// Decodes a single instruction from the start of `bytes`.
 pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeError> {
     let mut r = Reader::new(bytes);
-    let op_b = r.read_u8()?;
-    let opcode = Opcode::from_u8(op_b).ok_or(DecodeError::UnknownOpcode { opcode: op_b })?;
+    let opcode = read_opcode(&mut r, 0).map_err(|e| match e {
+        BytecodeError::Decode(e) => DecodeError::Format(e),
+        BytecodeError::UnknownOpcode { opcode, .. } => DecodeError::UnknownOpcode { opcode },
+    })?;
     let schema = opcode.operands();
 
     let mut operands: Vec<DecodedOperand> = Vec::with_capacity(schema.len());

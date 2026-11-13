@@ -16,6 +16,16 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Reserve a prefixed opcode space so new instruction families have room beyond the single-byte
+  opcodes. Lead bytes `0xF0..=0xFF` are prefixes; an assigned prefix is followed by exactly one
+  opcode byte. `0xFC` (`OpcodePrefix::Extended`) is the first, and new families allocate the next
+  free byte there in `opcodes.json`. Single-byte opcodes keep their bytes and decode as before.
+  `Opcode` gains `code`, `from_code`, `prefix`, `from_prefixed`, `encoded_len` and `encode`;
+  `Opcode::byte` is now the opcode's final byte. The verifier reports an unassigned opcode as
+  `VerifyError::UnknownOpcode` with its function, pc and code instead of `BytecodeDecode`.
+  Migration: handle `VerifyError::UnknownOpcode` in exhaustive matches; write opcodes with
+  `Opcode::encode` rather than `as u8`.
+
 - List every entered guest activation with `Recording::activations` and `Recording::activation`,
   without instruction history. Each `Activation` has its entry ordinal (the live
   `ActivationId::ordinal`), function and unit, caller, parent, depth and entry sequence, and an
@@ -259,6 +269,14 @@ This release has an [MSRV][] of 1.88.
   Abandoned work now closes with `TraceOutcome::Caught`.
 
 ### Changed
+
+- Opcodes are reported by 16-bit code (`Opcode::code`) rather than lead byte, so a prefixed
+  instruction is not mistaken for its prefix. `TraceSink::instr` and `InstructionStep::opcode`
+  carry a `u16` code; `codec::DecodeError::UnknownOpcode`, `DisasmError::UnknownOpcode`,
+  `VerifyError::InternalOpcodeSchemaMismatch` and `VerifyError::UnsupportedInstruction` carry a
+  `u16` code, and `DisasmError::UnknownOpcode` adds its `pc`. Codes of single-byte opcodes equal
+  their old bytes. Migration: change `opcode: u8` to `opcode: u16` in trace sinks and decode
+  recorded steps with `Opcode::from_code` instead of `Opcode::from_byte`.
 
 - A guest callback returning to the request that started it now reports
   `RunStatus::CallbackReturned` instead of `AwaitingHost`, so drivers no longer infer the return

@@ -776,7 +776,7 @@ impl TraceSink for Log {
         let entry = entry.func;
         self.0.borrow_mut().push(format!("start {entry:?} {count}"));
     }
-    fn instr(&mut self, _: &Program, location: TraceLocation, next: u32, _: Option<u64>, _: u8) {
+    fn instr(&mut self, _: &Program, location: TraceLocation, next: u32, _: Option<u64>, _: u16) {
         let (func, pc) = (location.func, location.pc);
         self.0
             .borrow_mut()

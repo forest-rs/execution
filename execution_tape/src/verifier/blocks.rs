@@ -113,7 +113,7 @@ pub(super) fn validate_structure(
             owner = Some(di.offset);
         }
         owners.push(owner);
-        if Opcode::from_u8(di.opcode).is_some_and(Opcode::is_terminator) {
+        if di.opcode.is_terminator() {
             owner = None;
         }
     }

@@ -1971,7 +1971,14 @@ fn verifier_rejects_unknown_opcode() {
         }],
     );
     let err = verify_program(&p, &VerifyConfig::default()).unwrap_err();
-    assert!(matches!(err, VerifyError::BytecodeDecode { .. }));
+    assert_eq!(
+        err,
+        VerifyError::UnknownOpcode {
+            func: 0,
+            pc: 0,
+            opcode: 0xFF
+        }
+    );
 }
 
 #[test]

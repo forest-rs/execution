@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::format::{DecodeError, Reader};
-use crate::opcode::Opcode;
+use crate::opcode::{Opcode, OpcodePrefix};
 use crate::program::{ConstId, HostSigId};
 use crate::program::{ElemTypeId, TypeId};
 use crate::register_operands::OperandIter;
@@ -24,10 +24,12 @@ use crate::value::Decimal;
 pub(crate) enum BytecodeError {
     /// The byte stream was malformed.
     Decode(DecodeError),
-    /// The opcode byte is not recognized.
+    /// The opcode is not assigned.
     UnknownOpcode {
-        /// The unrecognized opcode byte.
-        opcode: u8,
+        /// Byte offset of the opcode.
+        offset: u32,
+        /// The unassigned opcode code (see [`Opcode::code`]).
+        opcode: u16,
     },
 }
 
@@ -81,8 +83,8 @@ impl fmt::Display for EncodeError {
 pub(crate) struct DecodedInstr {
     /// Byte offset within the function bytecode stream.
     pub offset: u32,
-    /// Opcode byte.
-    pub opcode: u8,
+    /// Opcode.
+    pub opcode: Opcode,
     /// The instruction.
     pub instr: Instr,
 }
@@ -486,8 +488,7 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
     let mut out: Vec<DecodedInstr> = Vec::new();
     while r.offset() < bytes.len() {
         let offset = u32::try_from(r.offset()).map_err(|_| DecodeError::OutOfBounds)?;
-        let opcode = r.read_u8()?;
-        let op = Opcode::from_u8(opcode).ok_or(BytecodeError::UnknownOpcode { opcode })?;
+        let op = read_opcode(&mut r, offset)?;
         let instr = decode_instr(op, &mut r)?;
 
         #[cfg(debug_assertions)]
@@ -517,11 +518,34 @@ pub(crate) fn decode_instructions(bytes: &[u8]) -> Result<Vec<DecodedInstr>, Byt
         }
         out.push(DecodedInstr {
             offset,
-            opcode,
+            opcode: op,
             instr,
         });
     }
     Ok(out)
+}
+
+/// Reads one opcode, located at `offset`, from `r`.
+///
+/// Single-byte opcodes take one table lookup, as before prefixes existed; only a byte that is not
+/// a single-byte opcode is checked for a prefix.
+#[inline]
+pub(crate) fn read_opcode(r: &mut Reader<'_>, offset: u32) -> Result<Opcode, BytecodeError> {
+    let lead = r.read_u8()?;
+    if let Some(op) = Opcode::from_u8(lead) {
+        return Ok(op);
+    }
+    let Some(prefix) = OpcodePrefix::from_u8(lead) else {
+        return Err(BytecodeError::UnknownOpcode {
+            offset,
+            opcode: u16::from(lead),
+        });
+    };
+    let byte = r.read_u8()?;
+    Opcode::from_prefixed(prefix, byte).ok_or(BytecodeError::UnknownOpcode {
+        offset,
+        opcode: u16::from_be_bytes([lead, byte]),
+    })
 }
 
 #[allow(

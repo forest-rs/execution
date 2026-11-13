@@ -348,7 +348,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "#{index} f{}:{:06} · {:?} · {:?}",
                     step.location.func.0,
                     step.location.pc,
-                    execution_tape::opcode::Opcode::from_byte(step.opcode)
+                    execution_tape::opcode::Opcode::from_code(step.opcode)
                         .expect("verified opcode"),
                     source.text()
                 );
