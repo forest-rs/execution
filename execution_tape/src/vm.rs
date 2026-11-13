@@ -300,7 +300,7 @@ pub enum Trap {
     ContinuationBoundary,
     /// A continuation was resumed or bound after it was already consumed.
     ///
-    /// Continuations are one-shot: `resume` consumes theirs, and
+    /// Continuations are one-shot: `resume` and `resume_throw` consume theirs, and
     /// a suspension creates a new one. Every copy of a consumed reference is stale.
     ContinuationConsumed,
     /// A continuation's type differs from the call signature of the instruction consuming it.
@@ -561,7 +561,7 @@ struct ReturnTo {
     dst_rets: VRegSlice,
     /// Whether this frame is the root of a resumed continuation.
     ///
-    /// Its caller waits at `resume`, whose `on` clauses handle suspensions
+    /// Its caller waits at `resume` or `resume_throw`, whose `on` clauses handle suspensions
     /// from this frame and above. A return is an ordinary return to that caller.
     resumed: bool,
 }
@@ -1589,6 +1589,7 @@ impl<H: Host> Vm<H> {
                         ctx,
                         budget,
                         program,
+                        unit_id,
                         *tag,
                         vf.vregs(*args),
                         base,
@@ -1674,7 +1675,7 @@ impl<H: Host> Vm<H> {
                         location,
                         *call_sig,
                         cont,
-                        vf.vregs(*args),
+                        Some(vf.vregs(*args)),
                         *rets,
                     )
                     .map_err(|trap| TrapInfo {
@@ -1684,6 +1685,50 @@ impl<H: Host> Vm<H> {
                         span_id,
                         trap,
                     })?;
+                }
+                ExecInstr::ResumeThrow {
+                    call_sig,
+                    cont,
+                    tag,
+                    args,
+                    rets,
+                } => {
+                    let location = TraceLocation {
+                        unit: unit_id,
+                        func: func_id,
+                        pc,
+                    };
+                    let cont = ctx.read_cont(base, *cont);
+                    self.resume::<P, YIELD>(
+                        ctx, budget, trace, control, location, *call_sig, cont, None, *rets,
+                    )
+                    .map_err(|trap| TrapInfo {
+                        unit: unit_id,
+                        func: func_id,
+                        pc,
+                        span_id,
+                        trap,
+                    })?;
+                    // The exception starts at the continuation's suspension point, or here when
+                    // it never started; this unit still names the tag and holds the payload.
+                    let at = ctx.raising_location(&self.units);
+                    let raising = &self.units.unit(at.unit).program;
+                    let at_span = ctx.span_at(raising.program(), at.func, at.pc);
+                    self.raise::<P>(
+                        ctx,
+                        budget,
+                        raising,
+                        unit_id,
+                        *tag,
+                        vf.vregs(*args),
+                        base,
+                        sources,
+                        trace,
+                        control,
+                        at,
+                        at_span,
+                    )?;
+                    continue;
                 }
                 ExecInstr::Suspend { tag, args, rets } => {
                     self.suspend::<P>(

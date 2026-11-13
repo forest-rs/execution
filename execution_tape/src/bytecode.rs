@@ -137,6 +137,16 @@ pub(crate) enum Instr {
         args: Vec<u32>,
         rets: Vec<u32>,
     },
+    /// Resume `cont` by raising exception `tag` with payload `args` at its suspension point.
+    ResumeThrow {
+        eff_out: u32,
+        call_sig: u32,
+        cont: u32,
+        eff_in: u32,
+        tag: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
 
     /// `dst = ()`.
     ConstUnit { dst: u32 },

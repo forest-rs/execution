@@ -147,7 +147,7 @@ pub struct RegionId(pub u32);
 /// can rethrow it with `throw_ref`.
 ///
 /// [`Self::On`] clauses handle suspensions rather than exceptions: they apply only to a
-/// `resume` the region protects, and receive the tag's payload followed by
+/// `resume` or `resume_throw` the region protects, and receive the tag's payload followed by
 /// the suspended continuation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CatchClause {

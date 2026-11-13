@@ -886,7 +886,8 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
     receive the tag's payload contracts.
 
 ### Stack switching
-Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend`), adapted to registers, VM tags and protected regions.
+Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend`,
+`resume_throw`), adapted to registers, VM tags and protected regions.
 
 - A continuation is suspended or unstarted guest control: one or more activations whose bottom
   activation, once resumed, returns to its resumer. `Cont` registers hold references to them.
@@ -898,7 +899,7 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   its results the values it finally returns. Instructions name the signature they expect; the
   VM compares canonical contracts, so continuations cross units like indirect calls do. A
   different type traps with `ContinuationSignatureMismatch`.
-- Continuations are one-shot. `resume` consumes its continuation; every
+- Continuations are one-shot. `resume` and `resume_throw` consume theirs; every
   copy of a consumed reference traps with `ContinuationConsumed`. A continuation lives until it
   is consumed or its invocation ends. Its activations count against `max_call_depth` meanwhile,
   including the entry activation `cont.new` allocates.
@@ -919,6 +920,12 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   callback's root traps with `SuspensionAcrossHost`, since a pending host request cannot be
   suspended. Payload contracts are checked at the `suspend`, resume values against the resume
   signature's contracts.
+- `resume_throw r_eff_out, call_sig_id, r_cont, r_eff_in, tag_id, payload... -> rets...`:
+  consumes and reinstates a continuation like `resume`, then raises `tag` with `payload` at its
+  suspension point, where its own regions may catch it. The raise is located at that `suspend`
+  (its `Thrown` and `Caught` observations and its origin), while the tag and payload contracts
+  are the `resume_throw`'s. An unstarted continuation is discarded instead and the exception
+  raised at the `resume_throw`.
 - Each instruction costs one fuel. Switching is deterministic guest control: recordings need no
   new evidence and replay re-executes it. Activations whose continuation suspends close their
   call-frame scopes with `TraceOutcome::Suspended`; resuming enters new scopes for them at their
@@ -1042,6 +1049,7 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x05 cont.new dst, call_sig_id, func`
 - `0xFC 0x06 resume eff_out, call_sig_id, cont, eff_in, argc, args..., retc, rets...`
 - `0xFC 0x07 suspend eff_out, tag_id, eff_in, argc, payload..., retc, rets...`
+- `0xFC 0x08 resume_throw eff_out, call_sig_id, cont, eff_in, tag_id, argc, payload..., retc, rets...`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits
@@ -1315,7 +1323,7 @@ These checks apply alongside the structural and contract rules described above.
 - **Throw**: `throw` must reference an in-bounds `tag_id`. Diagnostics name the tag
   (`ThrowArityMismatch`, `ThrowPayloadMismatch`).
 - **Stack switching**: call signatures and tags must be in bounds; `resume` arguments and
-  results match its signature, `suspend` payloads match their tag, `suspend`
+  results match its signature, `suspend` and `resume_throw` payloads match their tag, `suspend`
   results match the tag's results, and continuation operands are `Cont` registers. Effect operands are `r0`.
 - **Regions**: parents precede their children; clause tags are in bounds and targets are block
   headers whose parameters receive the payload (`InvalidRegion` names the region and clause);

@@ -39,11 +39,14 @@ enum Raises {
 
 fn raises(instr: &Instr) -> Option<Raises> {
     match instr {
+        // A `suspend` raises what `resume_throw` delivers to its suspended continuation.
         Instr::Call { .. }
         | Instr::CallIndirect { .. }
         | Instr::HostCall { .. }
         | Instr::ThrowRef { .. }
-        | Instr::Resume { .. } => Some(Raises::Any),
+        | Instr::Resume { .. }
+        | Instr::ResumeThrow { .. }
+        | Instr::Suspend { .. } => Some(Raises::Any),
         Instr::Throw { tag, .. } => Some(Raises::Tag(TagId(*tag))),
         _ => None,
     }
@@ -74,7 +77,7 @@ impl Protection {
                     return out;
                 };
                 // Only a resume reaches `on` clauses: they handle its continuation's suspensions.
-                let resumes = matches!(di.instr, Instr::Resume { .. });
+                let resumes = matches!(di.instr, Instr::Resume { .. } | Instr::ResumeThrow { .. });
                 let mut caught = false;
                 let mut region = innermost(runs, di.offset);
                 while let Some(id) = region {

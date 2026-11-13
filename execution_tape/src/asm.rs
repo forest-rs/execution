@@ -1443,6 +1443,37 @@ impl Asm {
         self
     }
 
+    /// Encodes `resume_throw eff_out, call_sig, cont, eff_in, tag, payload..., rets...`.
+    ///
+    /// Like [`Self::resume`], but the continuation continues by raising `tag` with `payload` at
+    /// its suspension point, where its own regions may catch it. An unstarted continuation is
+    /// discarded and the exception raised here. `rets` receive its results if it handles the
+    /// exception and returns.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one parameter per encoded operand, as for the other call-like instructions"
+    )]
+    pub fn resume_throw(
+        &mut self,
+        eff_out: u32,
+        call_sig: CallSigId,
+        cont: u32,
+        eff_in: u32,
+        tag: TagId,
+        payload: &[u32],
+        rets: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::ResumeThrow);
+        self.reg(eff_out);
+        self.uleb(call_sig.0);
+        self.reg(cont);
+        self.reg(eff_in);
+        self.uleb(tag.0);
+        self.reg_list(payload);
+        self.reg_list(rets);
+        self
+    }
+
     /// Encodes `suspend eff_out, tag, eff_in, payload..., rets...`.
     ///
     /// Suspends the continuations up to the nearest `resume` with an `on` clause for `tag`,

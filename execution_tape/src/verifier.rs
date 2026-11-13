@@ -2183,6 +2183,25 @@ fn verify_function_bytecode(
                     rets: push_vregs(rets)?,
                 }
             }
+            Instr::ResumeThrow {
+                eff_out,
+                call_sig,
+                cont,
+                eff_in,
+                tag,
+                args,
+                rets,
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::ResumeThrow {
+                    call_sig: CallSigId(*call_sig),
+                    cont: map_cont(*cont)?,
+                    tag: TagId(*tag),
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
+                }
+            }
             Instr::Suspend {
                 eff_out,
                 tag,
@@ -4009,7 +4028,10 @@ fn validate_instr_reads_writes(
                 return Err(VerifyError::CallArityMismatch { func: func_id, pc });
             }
         }
-        Instr::ContNew { .. } | Instr::Resume { .. } | Instr::Suspend { .. } => {
+        Instr::ContNew { .. }
+        | Instr::Resume { .. }
+        | Instr::ResumeThrow { .. }
+        | Instr::Suspend { .. } => {
             control::check_structure(program, func_id, pc, instr, |eff_in, eff_out| {
                 require_eff_in_r0(eff_in)?;
                 require_eff_out_r0(eff_out)
@@ -4099,7 +4121,10 @@ fn validate_instr_types(
         Instr::ThrowRef { exn, .. } => {
             check_expected(func_id, pc, *exn, t(*exn), ValueType::Exn)?;
         }
-        Instr::ContNew { .. } | Instr::Resume { .. } | Instr::Suspend { .. } => {
+        Instr::ContNew { .. }
+        | Instr::Resume { .. }
+        | Instr::ResumeThrow { .. }
+        | Instr::Suspend { .. } => {
             control::check_types(program, func_id, pc, instr, types)?;
         }
         Instr::Nop
