@@ -463,3 +463,47 @@ fn tag_imports_round_trip_through_the_wire_format() {
         "imports name declared tags"
     );
 }
+
+#[test]
+fn tag_results_round_trip_and_must_match_on_import() {
+    let mut b = ProgramBuilder::new();
+    let ask = b
+        .declare_tag_with_results("ask", &[ValueType::Bool.into()], &[ValueType::I64.into()])
+        .unwrap();
+    let plain = b.declare_tag("plain", &[]).unwrap();
+    let program = b.build_verified().unwrap();
+    let decoded = Program::decode(&program.program().encode()).unwrap();
+    assert_eq!(&decoded, program.program());
+    let kinds = |tag: TagId| {
+        let entry = decoded.tag(tag).unwrap();
+        decoded
+            .tag_results(entry)
+            .unwrap()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kinds(ask), [ValueType::I64]);
+    assert!(kinds(plain).is_empty());
+
+    let importer = |results: &[ValueType]| {
+        let mut b = ProgramBuilder::new();
+        let results: Vec<_> = results.iter().map(|&kind| kind.into()).collect();
+        b.import_tag_with_results("ask", &[], &results).unwrap();
+        Arc::new(b.build_verified().unwrap())
+    };
+    let mut vm = vm();
+    let tag = vm
+        .define_tag_with_results("ask", &[], &[ValueType::I64])
+        .unwrap();
+    assert_eq!(vm.units().tag_results(tag), Some(&[ValueType::I64][..]));
+    assert!(vm.install(importer(&[ValueType::I64])).is_ok());
+    assert!(matches!(
+        vm.install(importer(&[])),
+        Err(InstallError::TagPayloadMismatch { .. })
+    ));
+    assert_eq!(
+        vm.define_tag_with_results("leak", &[], &[ValueType::Exn]),
+        Err(TagError::ExceptionPayload)
+    );
+}

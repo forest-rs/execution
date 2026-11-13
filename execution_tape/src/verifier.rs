@@ -1175,7 +1175,9 @@ fn verify_exception_places(program: &Program) -> Result<(), VerifyError> {
     for (index, entry) in program.tags.iter().enumerate() {
         if program
             .tag_payload(entry)
-            .is_ok_and(|payload| payload.iter().any(|&kind| kind == ValueType::Exn))
+            .into_iter()
+            .chain(program.tag_results(entry))
+            .any(|kinds| kinds.iter().any(|&kind| kind == ValueType::Exn))
         {
             return reject(ExceptionPlace::TagPayload {
                 tag: u32::try_from(index).unwrap_or(u32::MAX),

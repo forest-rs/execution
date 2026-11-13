@@ -118,7 +118,7 @@ impl ProgramBuilder {
         name: &str,
         payload: &[ContractRef],
     ) -> Result<TagId, TagBuildError> {
-        self.add_tag(name, payload, false)
+        self.add_tag(name, payload, &[], false)
     }
 
     /// Declares a tag this program imports by `name` instead of defining.
@@ -132,18 +132,45 @@ impl ProgramBuilder {
         name: &str,
         payload: &[ContractRef],
     ) -> Result<TagId, TagBuildError> {
-        self.add_tag(name, payload, true)
+        self.add_tag(name, payload, &[], true)
+    }
+
+    /// Declares a tag that a suspension can be resumed from with `results`.
+    ///
+    /// `suspend` raises the tag with `payload`; the handler resumes the suspended continuation
+    /// with `results`, which become the `suspend` instruction's results. Such a tag can also be
+    /// thrown, which ignores its results. See [`Self::declare_tag`] for naming rules.
+    pub fn declare_tag_with_results(
+        &mut self,
+        name: &str,
+        payload: &[ContractRef],
+        results: &[ContractRef],
+    ) -> Result<TagId, TagBuildError> {
+        self.add_tag(name, payload, results, false)
+    }
+
+    /// Imports a tag with resumption results, as [`Self::import_tag`] imports an exception tag.
+    ///
+    /// The VM tag defined under `name` must declare exactly this payload and these results.
+    pub fn import_tag_with_results(
+        &mut self,
+        name: &str,
+        payload: &[ContractRef],
+        results: &[ContractRef],
+    ) -> Result<TagId, TagBuildError> {
+        self.add_tag(name, payload, results, true)
     }
 
     fn add_tag(
         &mut self,
         name: &str,
         payload: &[ContractRef],
+        results: &[ContractRef],
         import: bool,
     ) -> Result<TagId, TagBuildError> {
         let abi = FunctionAbi {
             args: payload.to_vec(),
-            rets: Vec::new(),
+            rets: results.to_vec(),
         };
         if let Some(index) = self
             .tags
@@ -155,7 +182,7 @@ impl ProgramBuilder {
                 existing: TagId(u32::try_from(index).unwrap_or(u32::MAX)),
             });
         }
-        let (payload, _) = self
+        let (payload, results) = self
             .resolve_signature(abi)
             .map_err(TagBuildError::Contract)?;
         let name = self.symbol(name);
@@ -163,6 +190,7 @@ impl ProgramBuilder {
         self.tags.push(TagDef {
             name,
             payload,
+            results,
             import,
         });
         Ok(id)

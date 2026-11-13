@@ -276,13 +276,17 @@ fn canonical_contracts(
     Ok(ids.into())
 }
 
-/// One exception tag of a VM.
+/// One tag of a VM, raised by `throw` and `suspend`.
 pub(crate) struct Tag {
     name: Box<str>,
     /// Payload storage kinds.
     kinds: Box<[ValueType]>,
     /// Canonical payload contracts, compared when a unit imports the tag.
     payload: Box<[ContractId]>,
+    /// Canonical contracts of the values resuming a suspension, compared on import.
+    results: Box<[ContractId]>,
+    /// Storage kinds of [`Self::results`].
+    result_kinds: Box<[ValueType]>,
     /// The unit and local tag that define it, whose contracts check host payloads.
     pub(crate) definer: Option<(UnitId, TagId)>,
 }
@@ -293,6 +297,9 @@ impl Tag {
     }
     pub(crate) fn kinds(&self) -> &[ValueType] {
         &self.kinds
+    }
+    pub(crate) fn result_kinds(&self) -> &[ValueType] {
+        &self.result_kinds
     }
 }
 
@@ -374,25 +381,29 @@ impl UnitTable {
         let declared = |tag: TagId| {
             let entry = program.tag(tag).expect("verified tag");
             let name = program.tag_name(tag).expect("verified tag name");
-            let payload: Box<[ContractId]> = program
-                .tag_payload_contracts(entry)
-                .expect("verified tag payload")
-                .iter()
-                .map(|&contract| unit.canonical(contract))
-                .collect();
-            let kinds: Box<[ValueType]> = program
-                .tag_payload(entry)
-                .expect("verified tag payload")
-                .iter()
-                .copied()
-                .collect();
-            (name, payload, kinds)
+            let canonical = |contracts: &[ContractId]| -> Box<[ContractId]> {
+                contracts
+                    .iter()
+                    .map(|&contract| unit.canonical(contract))
+                    .collect()
+            };
+            let payload = canonical(program.tag_payload_contracts(entry).expect("verified tag"));
+            let results = canonical(program.tag_result_contracts(entry).expect("verified tag"));
+            let kinds = |kinds: crate::contract::ContractKinds<'_>| -> Box<[ValueType]> {
+                kinds.iter().copied().collect()
+            };
+            let payload_kinds = kinds(program.tag_payload(entry).expect("verified tag payload"));
+            let result_kinds = kinds(program.tag_results(entry).expect("verified tag results"));
+            (name, payload, results, payload_kinds, result_kinds)
         };
         let mut bound: Vec<Option<TagRef>> = vec![None; program.tags.len()];
         for &import in &program.tag_imports {
-            let (name, payload, _) = declared(import);
+            let (name, payload, results, _, _) = declared(import);
             match self.defined.get(name) {
-                Some(&tag) if self.tags[tag.0 as usize].payload == payload => {
+                Some(&tag)
+                    if self.tags[tag.0 as usize].payload == payload
+                        && self.tags[tag.0 as usize].results == results =>
+                {
                     bound[import.0 as usize] = Some(tag);
                 }
                 Some(_) => return Err(InstallError::TagPayloadMismatch { name: name.into() }),
@@ -409,12 +420,14 @@ impl UnitTable {
                 continue;
             }
             let local = TagId(u32::try_from(index).expect("verified tag count"));
-            let (name, payload, kinds) = declared(local);
+            let (name, payload, results, kinds, result_kinds) = declared(local);
             let tag = TagRef(u32::try_from(self.tags.len()).expect("checked tag capacity"));
             self.tags.push(Tag {
                 name: name.into(),
                 kinds,
                 payload,
+                results,
+                result_kinds,
                 definer: Some((id, local)),
             });
             *slot = Some(tag);
@@ -430,29 +443,40 @@ impl UnitTable {
         &mut self,
         name: &str,
         kinds: &[ValueType],
+        result_kinds: &[ValueType],
     ) -> Result<TagRef, TagError> {
         if self.defined.contains_key(name) {
             return Err(TagError::DuplicateName { name: name.into() });
         }
-        if kinds.contains(&ValueType::Exn) {
+        if kinds
+            .iter()
+            .chain(result_kinds)
+            .any(|&kind| kind == ValueType::Exn)
+        {
             return Err(TagError::ExceptionPayload);
         }
         let tag = u32::try_from(self.tags.len())
             .map(TagRef)
             .map_err(|_| TagError::CapacityExceeded)?;
-        let payload = kinds
-            .iter()
-            .map(|&kind| {
-                self.canon
-                    .contracts
-                    .intern(Contract::Kind(kind))
-                    .map_err(|_| TagError::CapacityExceeded)
-            })
-            .collect::<Result<_, _>>()?;
+        let mut intern = |kinds: &[ValueType]| -> Result<Box<[ContractId]>, TagError> {
+            kinds
+                .iter()
+                .map(|&kind| {
+                    self.canon
+                        .contracts
+                        .intern(Contract::Kind(kind))
+                        .map_err(|_| TagError::CapacityExceeded)
+                })
+                .collect()
+        };
+        let payload = intern(kinds)?;
+        let results = intern(result_kinds)?;
         self.tags.push(Tag {
             name: name.into(),
             kinds: kinds.into(),
             payload,
+            results,
+            result_kinds: result_kinds.into(),
             definer: None,
         });
         self.defined.insert(name.into(), tag);
@@ -470,7 +494,7 @@ pub enum TagError {
         /// The requested name.
         name: Box<str>,
     },
-    /// An exception reference cannot be part of a payload.
+    /// An exception reference cannot be part of a payload or its results.
     ExceptionPayload,
     /// The VM cannot represent another tag.
     CapacityExceeded,
@@ -481,7 +505,7 @@ impl fmt::Display for TagError {
         match self {
             Self::DuplicateName { name } => write!(f, "tag \"{name}\" is already defined"),
             Self::ExceptionPayload => {
-                f.write_str("a tag payload cannot hold an exception reference")
+                f.write_str("a tag payload or result cannot hold an exception reference")
             }
             Self::CapacityExceeded => f.write_str("VM tag capacity exhausted"),
         }
@@ -501,7 +525,7 @@ pub enum InstallError {
         /// The imported tag name.
         name: Box<str>,
     },
-    /// The program imports a defined tag but declares a different payload for it.
+    /// The program imports a defined tag but declares a different payload or results for it.
     TagPayloadMismatch {
         /// The imported tag name.
         name: Box<str>,
@@ -581,6 +605,14 @@ impl<'a> Units<'a> {
         self.table.tag(tag).map(Tag::kinds)
     }
 
+    /// The storage kinds of the values that resume a suspension to a VM tag.
+    ///
+    /// Empty for a tag defined without results, as every exception tag is.
+    #[must_use]
+    pub fn tag_results(&self, tag: TagRef) -> Option<&'a [ValueType]> {
+        self.table.tag(tag).map(Tag::result_kinds)
+    }
+
     /// Every tag of `unit`'s program, in [`TagId`] order, bound to its VM tag.
     #[must_use]
     pub fn tags(&self, unit: UnitId) -> Option<&'a [TagRef]> {
@@ -634,7 +666,22 @@ impl<H: Host> Vm<H> {
     /// tag must declare exactly that payload. Names are unique among defined tags, and tags are
     /// never removed. Hosts throw the returned tag with [`crate::host::HostError::throw`].
     pub fn define_tag(&mut self, name: &str, payload: &[ValueType]) -> Result<TagRef, TagError> {
-        self.units.define_tag(name, payload)
+        self.units.define_tag(name, payload, &[])
+    }
+
+    /// Defines a tag that suspensions resume with `results`, for programs to import by `name`.
+    ///
+    /// Units that import the tag suspend to each other's handlers with `suspend` and resume
+    /// with `results`, which, like the payload, are storage kinds without further contracts. An
+    /// importing program must declare exactly this payload and these results. Otherwise this
+    /// behaves as [`Self::define_tag`]; such a tag can also be thrown.
+    pub fn define_tag_with_results(
+        &mut self,
+        name: &str,
+        payload: &[ValueType],
+        results: &[ValueType],
+    ) -> Result<TagRef, TagError> {
+        self.units.define_tag(name, payload, results)
     }
 
     /// Inspects the units installed in this VM.

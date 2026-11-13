@@ -1283,7 +1283,15 @@ fn fmt_tag_payload_annotation(
     let Ok(payload) = program.tag_payload(entry) else {
         return write!(w, "<malformed>");
     };
-    fmt_value_type_list(w, payload)
+    fmt_value_type_list(w, payload)?;
+    match program.tag_results(entry) {
+        Ok(results) if results.is_empty() => Ok(()),
+        Ok(results) => {
+            write!(w, " results=")?;
+            fmt_value_type_list(w, results)
+        }
+        Err(_) => write!(w, " results=<malformed>"),
+    }
 }
 
 fn fmt_call_sig_annotation(

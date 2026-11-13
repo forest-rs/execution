@@ -31,11 +31,15 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         let name = program
             .symbol_str(entry.name)
             .map_err(|error| malformed(index, error))?;
-        let contracts = program
+        let payload = program
             .tag_payload_contracts(entry)
             .map_err(|error| malformed(index, error))?;
-        if contracts
+        let results = program
+            .tag_result_contracts(entry)
+            .map_err(|error| malformed(index, error))?;
+        if payload
             .iter()
+            .chain(results)
             .any(|&contract| program.contracts.get(contract).is_none())
         {
             return Err(malformed(index, DecodeError::OutOfBounds));

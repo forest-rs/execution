@@ -369,9 +369,10 @@ Callbacks and recording are opt-in; source lookup is separate optional metadata.
 - `13 = tags` (optional)
 - `14 = regions` (optional)
 - `15 = tag_imports` (optional)
+- `16 = tag_results` (optional)
 
 Sections `1..=8` and `12` are required; `9 = names`, `10 = call_sigs`, `13 = tags`,
-`14 = regions` and `15 = tag_imports` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
+`14 = regions`, `15 = tag_imports` and `16 = tag_results` are optional (each omitted entirely when empty). Unknown section tags are skipped within the accepted wire version.
 
 ## Symbols
 The symbol table stores UTF-8 strings used by the program, including host-call targets and optional debug metadata:
@@ -578,6 +579,19 @@ A tag listed in `tag_imports` instead binds to the VM tag defined under its name
 (`Vm::define_tag`), whose payload contracts must equal the declared ones after canonicalisation;
 otherwise the install fails with `UnresolvedTag` or `TagPayloadMismatch` and creates no unit
 or tag.
+
+## Tag results (optional)
+Declares the values that resume a suspension to a tag. A tag without an entry resumes with no
+values; `throw` ignores results. The section is omitted when no tag has results:
+- `count: ULEB128`
+- repeated `count` times:
+  - `tag_id: ULEB128` (strictly increasing; each names an entry of `tags`)
+  - `result_count: ULEB128`
+  - `result_contract_ids[result_count]: ULEB128...`
+
+Result contracts are packed into `Program::contract_ids` right after their tag's payload. An
+imported tag's results must equal the defined VM tag's results, like its payload. Neither payloads
+nor results may contain `Exn`.
 
 ## Tag imports (optional)
 Marks tags of the `tags` section as imported rather than defined. The section is omitted when
