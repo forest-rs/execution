@@ -887,5 +887,37 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *b);
             Ok(())
         },
+        Instr::U64Clz { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x00]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::U64Ctz { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x01]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::U64Popcnt { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x02]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::U64Rotl { a, b, dst } => {
+            out.extend_from_slice(&[0xFC, 0x03]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::U64Rotr { a, b, dst } => {
+            out.extend_from_slice(&[0xFC, 0x04]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
     }
 }

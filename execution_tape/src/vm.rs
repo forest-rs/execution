@@ -2054,6 +2054,31 @@ impl<H: Host> Vm<H> {
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a) >> sh);
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::U64Clz { dst, a } => {
+                    let n = ctx.read_u64(base, *a).leading_zeros();
+                    ctx.write_u64(base, *dst, u64::from(n));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64Ctz { dst, a } => {
+                    let n = ctx.read_u64(base, *a).trailing_zeros();
+                    ctx.write_u64(base, *dst, u64::from(n));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64Popcnt { dst, a } => {
+                    let n = ctx.read_u64(base, *a).count_ones();
+                    ctx.write_u64(base, *dst, u64::from(n));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64Rotl { dst, a, b } => {
+                    let sh = (ctx.read_u64(base, *b) & 63) as u32;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a).rotate_left(sh));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64Rotr { dst, a, b } => {
+                    let sh = (ctx.read_u64(base, *b) & 63) as u32;
+                    ctx.write_u64(base, *dst, ctx.read_u64(base, *a).rotate_right(sh));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
 
                 ExecInstr::I64Eq { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) == ctx.read_i64(base, *b));

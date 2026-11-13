@@ -3806,6 +3806,145 @@
           "access": "read"
         }
       ]
+    },
+    {
+      "name": "U64Clz",
+      "mnemonic": "u64.clz",
+      "prefix": "0xFC",
+      "byte": "0x00",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a.leading_zeros()` (`u64`; 64 when `a == 0`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64Ctz",
+      "mnemonic": "u64.ctz",
+      "prefix": "0xFC",
+      "byte": "0x01",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a.trailing_zeros()` (`u64`; 64 when `a == 0`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64Popcnt",
+      "mnemonic": "u64.popcnt",
+      "prefix": "0xFC",
+      "byte": "0x02",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a.count_ones()` (`u64`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64Rotl",
+      "mnemonic": "u64.rotl",
+      "prefix": "0xFC",
+      "byte": "0x03",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a.rotate_left(b & 63)` (`u64`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64Rotr",
+      "mnemonic": "u64.rotr",
+      "prefix": "0xFC",
+      "byte": "0x04",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = a.rotate_right(b & 63)` (`u64`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
     }
   ]
 }

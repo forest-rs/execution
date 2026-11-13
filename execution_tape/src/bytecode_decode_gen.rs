@@ -1249,5 +1249,49 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 b,
             }
         },
+        Opcode::U64Clz => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64Clz {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64Ctz => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64Ctz {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64Popcnt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64Popcnt {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64Rotl => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U64Rotl {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U64Rotr => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U64Rotr {
+                dst,
+                a,
+                b,
+            }
+        },
     })
 }

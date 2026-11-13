@@ -1918,6 +1918,48 @@ impl Asm {
         self
     }
 
+    /// Encodes `u64_clz dst, a` (64 when `a == 0`).
+    pub fn u64_clz(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64Clz);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64_ctz dst, a` (64 when `a == 0`).
+    pub fn u64_ctz(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64Ctz);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64_popcnt dst, a`.
+    pub fn u64_popcnt(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64Popcnt);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64_rotl dst, a, b` (rotation amount masked with `& 63`).
+    pub fn u64_rotl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U64Rotl);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u64_rotr dst, a, b` (rotation amount masked with `& 63`).
+    pub fn u64_rotr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U64Rotr);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
     /// Encodes `u64_shr dst, a, b` (shift amount masked with `& 63`).
     pub fn u64_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::U64Shr);

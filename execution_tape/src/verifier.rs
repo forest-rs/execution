@@ -2428,6 +2428,28 @@ fn verify_function_bytecode(
                 a: map_u64(*a)?,
                 b: map_u64(*b)?,
             },
+            Instr::U64Clz { dst, a } => ExecInstr::U64Clz {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::U64Ctz { dst, a } => ExecInstr::U64Ctz {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::U64Popcnt { dst, a } => ExecInstr::U64Popcnt {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::U64Rotl { dst, a, b } => ExecInstr::U64Rotl {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
+            Instr::U64Rotr { dst, a, b } => ExecInstr::U64Rotr {
+                dst: map_u64(*dst)?,
+                a: map_u64(*a)?,
+                b: map_u64(*b)?,
+            },
 
             Instr::I64Eq { dst, a, b } => ExecInstr::I64Eq {
                 dst: map_bool(*dst)?,
@@ -3531,9 +3553,14 @@ fn validate_instr_types(
         | Instr::U64Or { a, b, .. }
         | Instr::U64Xor { a, b, .. }
         | Instr::U64Shl { a, b, .. }
-        | Instr::U64Shr { a, b, .. } => {
+        | Instr::U64Shr { a, b, .. }
+        | Instr::U64Rotl { a, b, .. }
+        | Instr::U64Rotr { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::U64)?;
+        }
+        Instr::U64Clz { a, .. } | Instr::U64Ctz { a, .. } | Instr::U64Popcnt { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
         }
         Instr::I64Eq { a, b, .. } | Instr::I64Lt { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;

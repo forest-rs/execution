@@ -652,6 +652,9 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `i64_mul r_dst, r_a, r_b`
 - `i64_add_ovf`/`i64_sub_ovf`/`i64_mul_ovf r_dst, r_overflow, r_a, r_b` -> `I64`, `Bool`
 - `u64_add_ovf`/`u64_sub_ovf`/`u64_mul_ovf r_dst, r_overflow, r_a, r_b` -> `U64`, `Bool`
+- `u64_clz`/`u64_ctz`/`u64_popcnt r_dst, r_a` -> `U64` (leading zeros, trailing zeros and set
+  bits; `clz` and `ctz` of zero are 64)
+- `u64_rotl`/`u64_rotr r_dst, r_a, r_b` (rotation amount masked with `& 63`)
 - `f64_add r_dst, r_a, r_b`
 - `f64_sub r_dst, r_a, r_b`
 - `f64_mul r_dst, r_a, r_b`
@@ -926,6 +929,13 @@ All register indices and small integers are ULEB128 unless noted.
 - `0xA4 u64_add_ovf dst, overflow, a, b` (`dst` wrapped `u64`, `overflow` `bool`: carry)
 - `0xA5 u64_sub_ovf dst, overflow, a, b` (`overflow`: borrow)
 - `0xA6 u64_mul_ovf dst, overflow, a, b`
+
+Under the `0xFC` prefix (each opcode is the two bytes shown):
+- `0xFC 0x00 u64.clz dst, a`
+- `0xFC 0x01 u64.ctz dst, a`
+- `0xFC 0x02 u64.popcnt dst, a`
+- `0xFC 0x03 u64.rotl dst, a, b` (rotation amount masked with `& 63`)
+- `0xFC 0x04 u64.rotr dst, a, b` (rotation amount masked with `& 63`)
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`

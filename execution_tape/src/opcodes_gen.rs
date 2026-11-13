@@ -490,6 +490,18 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -698,6 +710,11 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
 
 /// Metadata for opcodes under [`OpcodePrefix::Extended`], indexed by the byte after the prefix.
 const EXTENDED_OPCODE_INFO: &[OpcodeInfo] = &[
+    OpcodeInfo { mnemonic: "u64.clz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 360, len: 2 } }, // 0xFC 0x00 U64Clz
+    OpcodeInfo { mnemonic: "u64.ctz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 362, len: 2 } }, // 0xFC 0x01 U64Ctz
+    OpcodeInfo { mnemonic: "u64.popcnt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 364, len: 2 } }, // 0xFC 0x02 U64Popcnt
+    OpcodeInfo { mnemonic: "u64.rotl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 366, len: 3 } }, // 0xFC 0x03 U64Rotl
+    OpcodeInfo { mnemonic: "u64.rotr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 369, len: 3 } }, // 0xFC 0x04 U64Rotr
 ];
 
 /// Lead bytes that introduce a prefixed opcode.
@@ -989,6 +1006,16 @@ pub enum Opcode {
     U64SubOvf = 0xA5,
     /// `(dst, overflow) = a * b` (`u64` wrapped product; `bool` true if the product overflowed).
     U64MulOvf = 0xA6,
+    /// `dst = a.leading_zeros()` (`u64`; 64 when `a == 0`).
+    U64Clz = 0xFC00,
+    /// `dst = a.trailing_zeros()` (`u64`; 64 when `a == 0`).
+    U64Ctz = 0xFC01,
+    /// `dst = a.count_ones()` (`u64`).
+    U64Popcnt = 0xFC02,
+    /// `dst = a.rotate_left(b & 63)` (`u64`).
+    U64Rotl = 0xFC03,
+    /// `dst = a.rotate_right(b & 63)` (`u64`).
+    U64Rotr = 0xFC04,
 }
 
 impl Opcode {
@@ -1136,8 +1163,14 @@ impl Opcode {
     /// Decodes the opcode byte that follows `prefix`.
     #[must_use]
     pub fn from_prefixed(prefix: OpcodePrefix, b: u8) -> Option<Self> {
-        let _ = (prefix, b);
-        None
+        Some(match (prefix, b) {
+            (OpcodePrefix::Extended, 0x00) => Self::U64Clz,
+            (OpcodePrefix::Extended, 0x01) => Self::U64Ctz,
+            (OpcodePrefix::Extended, 0x02) => Self::U64Popcnt,
+            (OpcodePrefix::Extended, 0x03) => Self::U64Rotl,
+            (OpcodePrefix::Extended, 0x04) => Self::U64Rotr,
+            _ => return None,
+        })
     }
 
     /// Decodes an opcode code (see [`Opcode::code`]).
@@ -1274,6 +1307,11 @@ impl Opcode {
             0xA4 => Self::U64AddOvf,
             0xA5 => Self::U64SubOvf,
             0xA6 => Self::U64MulOvf,
+            0xFC00 => Self::U64Clz,
+            0xFC01 => Self::U64Ctz,
+            0xFC02 => Self::U64Popcnt,
+            0xFC03 => Self::U64Rotl,
+            0xFC04 => Self::U64Rotr,
             _ => return None,
         })
     }

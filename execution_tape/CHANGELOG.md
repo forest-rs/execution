@@ -26,6 +26,13 @@ This release has an [MSRV][] of 1.88.
   Migration: handle `VerifyError::UnknownOpcode` in exhaustive matches; write opcodes with
   `Opcode::encode` rather than `as u8`.
 
+- Count and rotate `u64` bits: `u64.clz` (`0xFC 0x00`), `u64.ctz` (`0xFC 0x01`), `u64.popcnt`
+  (`0xFC 0x02`), `u64.rotl` (`0xFC 0x03`) and `u64.rotr` (`0xFC 0x04`), emitted with
+  `Asm::{u64_clz, u64_ctz, u64_popcnt, u64_rotl, u64_rotr}`. They are the first opcodes in the
+  extended space and cover WebAssembly's 64-bit bit-counting and rotation operations. `clz` and
+  `ctz` of zero are 64, and rotation amounts are masked with `& 63`. Migration: handle the new
+  `Opcode` variants in exhaustive matches.
+
 - List every entered guest activation with `Recording::activations` and `Recording::activation`,
   without instruction history. Each `Activation` has its entry ordinal (the live
   `ActivationId::ordinal`), function and unit, caller, parent, depth and entry sequence, and an
