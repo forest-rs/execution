@@ -222,6 +222,14 @@ pub(crate) enum ExecInstr {
         call_sig: CallSigId,
         func: ClosureReg,
     },
+    /// Bind the leading inputs of a continuation.
+    ContBind {
+        dst: ContReg,
+        from_sig: CallSigId,
+        to_sig: CallSigId,
+        cont: ContReg,
+        args: VRegSlice,
+    },
     /// Run a continuation on top of this activation.
     Resume {
         call_sig: CallSigId,

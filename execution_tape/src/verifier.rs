@@ -592,6 +592,20 @@ pub enum VerifyError {
         /// Where the `Cont` kind appeared.
         place: ExceptionPlace,
     },
+    /// `cont.bind` names signatures that do not differ by exactly the bound leading inputs.
+    ///
+    /// `to_sig`'s arguments must be the trailing arguments of `from_sig` after the bound
+    /// values, with identical contracts, and both must declare identical results.
+    ContBindSignature {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the instruction.
+        pc: u32,
+        /// Signature of the continuation being bound.
+        from_sig: u32,
+        /// Signature of the bound continuation.
+        to_sig: u32,
+    },
     /// A protected region or one of its catch clauses is invalid.
     InvalidRegion {
         /// Function index within the program.
@@ -997,6 +1011,16 @@ impl fmt::Display for VerifyError {
             Self::ContinuationReference { place } => {
                 write!(f, "continuation references cannot appear in {place}")
             }
+            Self::ContBindSignature {
+                func,
+                pc,
+                from_sig,
+                to_sig,
+            } => write!(
+                f,
+                "function {func} pc={pc}: cont.bind from call_sig {from_sig} to call_sig {to_sig} \
+                 must drop exactly the bound leading arguments and keep the results"
+            ),
             Self::InvalidRegion {
                 func,
                 region,
@@ -2166,6 +2190,19 @@ fn verify_function_bytecode(
                     _ => return Err(mismatch(*callee, ValueType::Func)),
                 }
             }
+            Instr::ContBind {
+                dst,
+                from_sig,
+                to_sig,
+                cont,
+                args,
+            } => ExecInstr::ContBind {
+                dst: map_cont(*dst)?,
+                from_sig: CallSigId(*from_sig),
+                to_sig: CallSigId(*to_sig),
+                cont: map_cont(*cont)?,
+                args: push_vregs(args)?,
+            },
             Instr::Resume {
                 eff_out,
                 call_sig,
@@ -4029,6 +4066,7 @@ fn validate_instr_reads_writes(
             }
         }
         Instr::ContNew { .. }
+        | Instr::ContBind { .. }
         | Instr::Resume { .. }
         | Instr::ResumeThrow { .. }
         | Instr::Suspend { .. } => {
@@ -4122,6 +4160,7 @@ fn validate_instr_types(
             check_expected(func_id, pc, *exn, t(*exn), ValueType::Exn)?;
         }
         Instr::ContNew { .. }
+        | Instr::ContBind { .. }
         | Instr::Resume { .. }
         | Instr::ResumeThrow { .. }
         | Instr::Suspend { .. } => {

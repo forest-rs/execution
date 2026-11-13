@@ -385,7 +385,7 @@
 //! resuming activation. `suspend` raises a tag to the nearest `on` clause protecting a `resume`
 //! that runs it; the handler receives the payload and the suspended activations as a new
 //! continuation, which a later `resume` continues with the tag's results. `resume_throw` raises
-//! an exception at the suspension point instead.
+//! an exception at the suspension point instead, and `cont.bind` binds leading inputs.
 //! Continuations are typed by call signatures, checked across units, consumed by use, and live
 //! until resumed or the invocation ends; their frames count against the call-depth limit.
 //! Generators, coroutines and resumable conditions are guest code on these primitives.

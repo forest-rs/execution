@@ -639,6 +639,7 @@ struct Exceptional {
     escape: FuncId,
     unstarted: FuncId,
     uncaught: FuncId,
+    bound: FuncId,
 }
 
 /// `guarded(n)` yields `n` inside a region catching `stop(code)`, returning `code` when the
@@ -677,6 +678,7 @@ fn exceptional() -> Exceptional {
     enum Start {
         Resume,
         Throw,
+        Bind,
     }
     let driver = |b: &mut ProgramBuilder, target: FuncId, start: Start, catch: bool| {
         let driver = b.declare_function(&one_to_one).unwrap();
@@ -707,12 +709,20 @@ fn exceptional() -> Exceptional {
             Start::Throw => {
                 asm.resume_throw(0, i64_to_i64, cont, 0, stop, &[x], &[out]);
             }
+            Start::Bind => {
+                asm.cont_bind(cont, i64_to_i64, unit_to_i64, cont, &[x]);
+                asm.resume(0, unit_to_i64, cont, 0, &[], &[out]);
+            }
         }
         asm.end_region();
         asm.ret(0, &[out]);
         asm.place(yielded).unwrap();
         asm.begin_region(&clauses);
-        asm.resume_throw(0, unit_to_i64, rest, 0, stop, &[value], &[out]);
+        match start {
+            // A bound continuation's suspension resumes normally; others raise `stop` into it.
+            Start::Bind => asm.resume(0, unit_to_i64, rest, 0, &[], &[out]),
+            _ => asm.resume_throw(0, unit_to_i64, rest, 0, stop, &[value], &[out]),
+        };
         asm.end_region();
         asm.ret(0, &[out]);
         asm.place(stopped).unwrap();
@@ -726,6 +736,7 @@ fn exceptional() -> Exceptional {
     let escape = driver(&mut b, thrower, Start::Resume, true);
     let unstarted = driver(&mut b, guarded, Start::Throw, true);
     let uncaught = driver(&mut b, thrower, Start::Resume, false);
+    let bound = driver(&mut b, guarded, Start::Bind, true);
     Exceptional {
         program: Arc::new(b.build_verified().unwrap()),
         thrower,
@@ -733,6 +744,7 @@ fn exceptional() -> Exceptional {
         escape,
         unstarted,
         uncaught,
+        bound,
     }
 }
 
@@ -784,6 +796,11 @@ fn an_uncaught_exception_from_a_continuation_names_its_origin() {
         panic!("expected an uncaught exception, got {result:?}");
     };
     assert_eq!(exception.origin().func, fixture.thrower);
+}
+
+#[test]
+fn cont_bind_supplies_leading_inputs() {
+    assert_eq!(exceptional_run(|f| f.bound).unwrap(), vec![Value::I64(7)]);
 }
 
 #[test]
@@ -974,11 +991,38 @@ fn verifier_keeps_continuations_inside_guest_registers_and_checks_their_instruct
         ),
         "{error:?}"
     );
+
+    // `cont.bind` must drop exactly the bound leading arguments.
+    let error = rejected(|b| {
+        let from = b
+            .call_sig(sig(&[ValueType::I64], &[ValueType::I64]))
+            .unwrap();
+        let to = b.call_sig(sig(&[], &[])).unwrap();
+        let f = b.declare_function(sig(&[], &[])).unwrap();
+        let mut asm = b.function_asm(f).unwrap();
+        let cont = asm.alloc_register(ValueType::Cont);
+        let value = asm.alloc_register(ValueType::I64);
+        let func = asm.alloc_register(ValueType::Func);
+        asm.const_func(func, f);
+        asm.const_i64(value, 1);
+        asm.cont_new(cont, from, func);
+        asm.cont_bind(cont, from, to, cont, &[value]);
+        asm.ret(0, &[]);
+        b.define_function(f, asm).unwrap();
+    });
+    assert!(
+        matches!(error, VerifyError::ContBindSignature { .. }),
+        "{error:?}"
+    );
 }
 
 #[test]
 fn programs_with_continuations_round_trip_through_the_wire_format() {
-    for program in [generators().program, effects().program] {
+    for program in [
+        generators().program,
+        effects().program,
+        exceptional().program,
+    ] {
         let program = program.program();
         let decoded = execution_tape::program::Program::decode(&program.encode()).unwrap();
         assert_eq!(&decoded, program);
@@ -1297,6 +1341,7 @@ fn exceptional_switching_records_replays_and_pauses_anywhere() {
         fixture.escape,
         fixture.unstarted,
         fixture.uncaught,
+        fixture.bound,
     ] {
         let expected = run(&fixture.program, entry, &[Value::I64(7)], Limits::default());
         let check = |recorder: Recorder| {
@@ -1376,6 +1421,128 @@ fn resume_throw_consumes_its_continuation() {
     b.define_function(f, asm).unwrap();
     let program = Arc::new(b.build_verified().unwrap());
     let result = run(&program, f, &[], Limits::default());
+    assert!(
+        matches!(result, Err(Trap::ContinuationConsumed)),
+        "{result:?}"
+    );
+}
+
+/// `leaf()` suspends `ask`, whose result contract is the tuple `(i64,)`, and projects it. The
+/// driver binds a value to the suspended continuation instead of resuming it with one.
+fn bind_to_suspension(bound: impl FnOnce(&mut Asm, u32, u32)) -> Result<Vec<Value>, String> {
+    use execution_tape::asm::{ContractRef, FunctionAbi};
+    use execution_tape::contract::Contract;
+    let mut b = ProgramBuilder::new();
+    let int = b.contract(Contract::Kind(ValueType::I64)).unwrap();
+    let single = b.contract(Contract::Tuple(&[Some(int)])).unwrap();
+    let ask = b
+        .declare_tag_with_results("ask", &[], &[ContractRef::Id(single)])
+        .unwrap();
+    let unit_to_i64 = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
+    let tuple_to_i64 = b
+        .call_sig(FunctionAbi {
+            args: vec![ContractRef::Id(single)],
+            rets: vec![ValueType::I64.into()],
+        })
+        .unwrap();
+    let leaf = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let mut asm = b.function_asm(leaf).unwrap();
+    let (tuple, first) = (
+        asm.alloc_register(ValueType::Agg),
+        asm.alloc_register(ValueType::I64),
+    );
+    asm.suspend(0, ask, 0, &[], &[tuple]);
+    asm.tuple_get(first, tuple, 0);
+    asm.ret(0, &[first]);
+    b.define_function(leaf, asm).unwrap();
+
+    let driver = b
+        .declare_function(sig(&[ValueType::Bool], &[ValueType::I64]))
+        .unwrap();
+    let mut asm = b.function_asm(driver).unwrap();
+    let pick = b.argument(driver, 0).unwrap();
+    let f = asm.alloc_register(ValueType::Func);
+    let cont = asm.alloc_register(ValueType::Cont);
+    let out = asm.alloc_register(ValueType::I64);
+    let rest = asm.alloc_register(ValueType::Cont);
+    let value = asm.alloc_register(ValueType::Agg);
+    let asked = asm.block(&[rest]);
+    asm.const_func(f, leaf);
+    asm.cont_new(cont, unit_to_i64, f);
+    protected_resume(
+        &mut asm,
+        &[Catch::On(ask, asked)],
+        unit_to_i64,
+        cont,
+        &[],
+        &[out],
+    );
+    asm.ret(0, &[out]);
+    asm.place(asked).unwrap();
+    bound(&mut asm, value, pick);
+    asm.cont_bind(rest, tuple_to_i64, unit_to_i64, rest, &[value]);
+    asm.resume(0, unit_to_i64, rest, 0, &[], &[out]);
+    asm.ret(0, &[out]);
+    b.define_function(driver, asm).unwrap();
+    let program = Arc::new(b.build_verified().map_err(|error| format!("{error:?}"))?);
+    run(&program, driver, &[Value::Bool(true)], Limits::default())
+        .map_err(|trap| format!("{trap:?}"))
+}
+
+#[test]
+fn values_bound_to_a_suspension_satisfy_the_tags_result_contracts() {
+    // A statically known contradiction is rejected by the verifier.
+    let error = bind_to_suspension(|asm, value, _| {
+        let flag = asm.alloc_register(ValueType::Bool);
+        asm.const_bool(flag, true);
+        asm.tuple_new(value, &[flag]);
+    })
+    .unwrap_err();
+    assert!(error.contains("ContractMismatch"), "{error}");
+
+    // An unproven value is checked when it is bound.
+    let unproven = |asm: &mut Asm, value: u32, pick: u32| {
+        let flag = asm.alloc_register(ValueType::Bool);
+        let number = asm.alloc_register(ValueType::I64);
+        let (flagged, numbered) = (
+            asm.alloc_register(ValueType::Agg),
+            asm.alloc_register(ValueType::Agg),
+        );
+        asm.const_bool(flag, true);
+        asm.const_i64(number, 9);
+        asm.tuple_new(flagged, &[flag]);
+        asm.tuple_new(numbered, &[number]);
+        asm.select(value, pick, flagged, numbered);
+    };
+    let error = bind_to_suspension(unproven).unwrap_err();
+    assert!(error.starts_with("ContractMismatch"), "{error}");
+}
+
+#[test]
+fn cont_bind_consumes_its_continuation() {
+    let mut b = ProgramBuilder::new();
+    let i64_to_i64 = b
+        .call_sig(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let unit_to_i64 = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
+    let f = b
+        .declare_function(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let mut asm = b.function_asm(f).unwrap();
+    let x = b.argument(f, 0).unwrap();
+    let func = asm.alloc_register(ValueType::Func);
+    let (cont, bound) = (
+        asm.alloc_register(ValueType::Cont),
+        asm.alloc_register(ValueType::Cont),
+    );
+    asm.const_func(func, f);
+    asm.cont_new(cont, i64_to_i64, func);
+    asm.cont_bind(bound, i64_to_i64, unit_to_i64, cont, &[x]);
+    asm.resume(0, i64_to_i64, cont, 0, &[x], &[x]);
+    asm.ret(0, &[x]);
+    b.define_function(f, asm).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+    let result = run(&program, f, &[Value::I64(1)], Limits::default());
     assert!(
         matches!(result, Err(Trap::ContinuationConsumed)),
         "{result:?}"

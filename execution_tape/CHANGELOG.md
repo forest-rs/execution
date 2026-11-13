@@ -84,6 +84,12 @@ This release has an [MSRV][] of 1.88.
   raised at the `resume_throw`. Exceptions escaping any continuation reach the catch clauses of
   the `resume` that ran it. Migration: handle the new `Opcode` variant in exhaustive matches.
 
+- Bind the leading inputs of a continuation with `cont.bind` (`0xFC 0x09`), retyping it from one
+  call signature to another with exactly those arguments removed (`VerifyError::ContBindSignature`).
+  Values bound to a suspended continuation satisfy the tag's result contracts, statically where
+  known and otherwise when bound.
+  Migration: handle the new `Opcode` and `VerifyError` variants in exhaustive matches.
+
 - Recordings and checked replay cover stack switching without new evidence: suspension and
   resumption are deterministic guest control, re-executed on replay, including in invocations
   paused at any instruction boundary inside a continuation. Migration: no caller changes are
