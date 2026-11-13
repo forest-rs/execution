@@ -197,6 +197,9 @@ pub(super) fn type_name(kind: ValueType) -> String {
         ValueType::I64 => "i64".into(),
         ValueType::U64 => "u64".into(),
         ValueType::F64 => "f64".into(),
+        ValueType::I32 => "i32".into(),
+        ValueType::U32 => "u32".into(),
+        ValueType::F32 => "f32".into(),
         ValueType::Decimal => "decimal".into(),
         ValueType::Str => "text".into(),
         ValueType::Bytes => "bytes".into(),
@@ -367,6 +370,15 @@ fn atom(record: &Recording, value: &RecordedValue, limit: usize) -> String {
                 format!("{:?}", f64::from_bits(*bits))
             }
         }
+        RecordedValue::I32(value) => value.to_string(),
+        RecordedValue::U32(value) => value.to_string(),
+        RecordedValue::F32(bits) => {
+            if f32::from_bits(*bits).is_nan() {
+                format!("NaN [bits {bits:08x}]")
+            } else {
+                format!("{:?}", f32::from_bits(*bits))
+            }
+        }
         RecordedValue::Decimal(value) => format!("{}e-{}", value.mantissa(), value.scale()),
         RecordedValue::Str(value) => format!("\"{}\"", preview(value, limit)),
         RecordedValue::Bytes(value) => format!(
@@ -442,6 +454,9 @@ pub(super) fn value(record: &Recording, value: &RecordedValue) -> String {
         RecordedValue::I64(_) => "i64",
         RecordedValue::U64(_) => "u64",
         RecordedValue::F64(_) => "f64",
+        RecordedValue::I32(_) => "i32",
+        RecordedValue::U32(_) => "u32",
+        RecordedValue::F32(_) => "f32",
         RecordedValue::Decimal(_) => "decimal",
         RecordedValue::Str(_) => "text",
         RecordedValue::Bytes(_) => "bytes",

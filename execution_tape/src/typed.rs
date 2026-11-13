@@ -22,6 +22,9 @@ pub(crate) enum RegClass {
     I64,
     U64,
     F64,
+    I32,
+    U32,
+    F32,
     Decimal,
     Bytes,
     Str,
@@ -40,6 +43,9 @@ impl RegClass {
             ValueType::I64 => Self::I64,
             ValueType::U64 => Self::U64,
             ValueType::F64 => Self::F64,
+            ValueType::I32 => Self::I32,
+            ValueType::U32 => Self::U32,
+            ValueType::F32 => Self::F32,
             ValueType::Decimal => Self::Decimal,
             ValueType::Bytes => Self::Bytes,
             ValueType::Str => Self::Str,
@@ -60,6 +66,12 @@ pub(crate) struct I64Reg(pub u32);
 pub(crate) struct U64Reg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct F64Reg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct I32Reg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct U32Reg(pub u32);
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct F32Reg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DecimalReg(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -86,6 +98,9 @@ pub(crate) enum VReg {
     I64(I64Reg),
     U64(U64Reg),
     F64(F64Reg),
+    I32(I32Reg),
+    U32(U32Reg),
+    F32(F32Reg),
     Decimal(DecimalReg),
     Bytes(BytesReg),
     Str(StrReg),
@@ -113,6 +128,9 @@ impl VReg {
             Self::Func(reg) => (10, reg.0),
             Self::Closure(reg) => (11, reg.0),
             Self::Exn(reg) => (12, reg.0),
+            Self::I32(reg) => (13, reg.0),
+            Self::U32(reg) => (14, reg.0),
+            Self::F32(reg) => (15, reg.0),
         }
     }
 }
@@ -142,6 +160,8 @@ pub(crate) struct RegCounts {
     pub(crate) i64s: usize,
     pub(crate) u64s: usize,
     pub(crate) f64s: usize,
+    /// One bank of 32-bit slots shared by `i32`, `u32` and `f32` registers (stored as bits).
+    pub(crate) w32s: usize,
     pub(crate) decimals: usize,
     pub(crate) bytes: usize,
     pub(crate) strs: usize,
@@ -199,6 +219,18 @@ pub(crate) enum ExecInstr {
     MovF64 {
         dst: F64Reg,
         src: F64Reg,
+    },
+    MovI32 {
+        dst: I32Reg,
+        src: I32Reg,
+    },
+    MovU32 {
+        dst: U32Reg,
+        src: U32Reg,
+    },
+    MovF32 {
+        dst: F32Reg,
+        src: F32Reg,
     },
     MovDecimal {
         dst: DecimalReg,
@@ -683,6 +715,24 @@ pub(crate) enum ExecInstr {
         cond: BoolReg,
         a: F64Reg,
         b: F64Reg,
+    },
+    SelectI32 {
+        dst: I32Reg,
+        cond: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    SelectU32 {
+        dst: U32Reg,
+        cond: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    SelectF32 {
+        dst: F32Reg,
+        cond: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
     },
     SelectDecimal {
         dst: DecimalReg,

@@ -37,6 +37,12 @@ pub enum RecordedValue {
     U64(u64),
     /// Exact IEEE 754 bit pattern.
     F64(u64),
+    /// Signed 32-bit integer.
+    I32(i32),
+    /// Unsigned 32-bit integer.
+    U32(u32),
+    /// Exact IEEE 754 single-precision bit pattern.
+    F32(u32),
     /// Decimal with its original scale.
     Decimal(Decimal),
     /// Shared byte contents.
@@ -225,6 +231,9 @@ impl Builder {
             ValueRef::I64(value) => RecordedValue::I64(value),
             ValueRef::U64(value) => RecordedValue::U64(value),
             ValueRef::F64(value) => RecordedValue::F64(value.to_bits()),
+            ValueRef::I32(value) => RecordedValue::I32(value),
+            ValueRef::U32(value) => RecordedValue::U32(value),
+            ValueRef::F32(value) => RecordedValue::F32(value.to_bits()),
             ValueRef::Decimal(value) => RecordedValue::Decimal(*value),
             ValueRef::Obj(value) => RecordedValue::Obj(value),
             ValueRef::Func(value) => RecordedValue::Func(value),

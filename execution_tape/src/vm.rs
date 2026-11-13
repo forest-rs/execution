@@ -27,8 +27,8 @@ use crate::trace::{
     HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, ExnReg, F64Reg,
-    FuncReg, I64Reg, ObjReg, StrReg, U64Reg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, ExnReg, F32Reg, F64Reg,
+    FuncReg, I32Reg, I64Reg, ObjReg, StrReg, U32Reg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{AggHandle, Closure, Decimal, FuncId, FuncRef, Obj, ObjHandle, UnitId, Value};
 use crate::verifier::VerifiedProgram;
@@ -459,6 +459,8 @@ struct RegBase {
     u64s: usize,
     /// Base offset for the `f64` register bank.
     f64s: usize,
+    /// Base offset for the 32-bit (`i32`, `u32`, `f32`) register bank.
+    w32s: usize,
     /// Base offset for the `Decimal` register bank.
     decimals: usize,
     /// Base offset for the bytes-handle register bank.
@@ -532,6 +534,8 @@ struct Registers {
     u64s: Vec<u64>,
     /// `f64` registers.
     f64s: Vec<f64>,
+    /// 32-bit registers: `i32`, `u32` and `f32` values, stored as bits.
+    w32s: Vec<u32>,
     /// Decimal registers.
     decimals: Vec<Decimal>,
     /// Bytes registers (handles into `arena`).
@@ -585,6 +589,7 @@ impl Registers {
         self.i64s.clear();
         self.u64s.clear();
         self.f64s.clear();
+        self.w32s.clear();
         self.decimals.clear();
         self.bytes.clear();
         self.strs.clear();
@@ -1582,6 +1587,24 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                     ctx.frames[frame_index].instr_ix = next_instr_ix;
                 }
+                ExecInstr::MovI32 { dst, src } => {
+                    let v = ctx.read_i32(base, *src);
+                    ctx.write_i32(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
+                ExecInstr::MovU32 { dst, src } => {
+                    let v = ctx.read_u32(base, *src);
+                    ctx.write_u32(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
+                ExecInstr::MovF32 { dst, src } => {
+                    let v = ctx.read_f32(base, *src);
+                    ctx.write_f32(base, *dst, v);
+                    ctx.frames[frame_index].pc = next_pc;
+                    ctx.frames[frame_index].instr_ix = next_instr_ix;
+                }
                 ExecInstr::MovDecimal { dst, src } => {
                     let v = ctx.read_decimal(base, *src);
                     ctx.write_decimal(base, *dst, v);
@@ -2227,6 +2250,33 @@ impl<H: Host> Vm<H> {
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::SelectI32 { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_i32(base, *a)
+                    } else {
+                        ctx.read_i32(base, *b)
+                    };
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::SelectU32 { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_u32(base, *a)
+                    } else {
+                        ctx.read_u32(base, *b)
+                    };
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::SelectF32 { dst, cond, a, b } => {
+                    let out = if ctx.read_bool(base, *cond) {
+                        ctx.read_f32(base, *a)
+                    } else {
+                        ctx.read_f32(base, *b)
+                    };
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
                 ExecInstr::SelectDecimal { dst, cond, a, b } => {
                     let out = if ctx.read_bool(base, *cond) {
                         ctx.read_decimal(base, *a)
@@ -2566,6 +2616,7 @@ impl<H: Host> Vm<H> {
                             &ctx.i64s,
                             &ctx.u64s,
                             &ctx.f64s,
+                            &ctx.w32s,
                             &ctx.decimals,
                             &ctx.bytes,
                             &ctx.strs,
@@ -2656,6 +2707,7 @@ impl<H: Host> Vm<H> {
                                     &ctx.i64s,
                                     &ctx.u64s,
                                     &ctx.f64s,
+                                    &ctx.w32s,
                                     &ctx.decimals,
                                     &ctx.bytes,
                                     &ctx.strs,
@@ -3800,6 +3852,7 @@ impl Registers {
             i64s: self.i64s.len(),
             u64s: self.u64s.len(),
             f64s: self.f64s.len(),
+            w32s: self.w32s.len(),
             decimals: self.decimals.len(),
             bytes: self.bytes.len(),
             strs: self.strs.len(),
@@ -3814,6 +3867,7 @@ impl Registers {
         self.i64s.resize(base.i64s + counts.i64s, 0);
         self.u64s.resize(base.u64s + counts.u64s, 0);
         self.f64s.resize(base.f64s + counts.f64s, 0.0);
+        self.w32s.resize(base.w32s + counts.w32s, 0);
         self.decimals
             .resize(base.decimals + counts.decimals, Decimal::new(0, 0));
         self.bytes.resize(base.bytes + counts.bytes, BytesHandle(0));
@@ -3845,6 +3899,7 @@ impl Registers {
         self.i64s.truncate(base.i64s);
         self.u64s.truncate(base.u64s);
         self.f64s.truncate(base.f64s);
+        self.w32s.truncate(base.w32s);
         self.decimals.truncate(base.decimals);
         self.bytes.truncate(base.bytes);
         self.strs.truncate(base.strs);
@@ -3929,6 +3984,18 @@ impl Registers {
                 self.write_f64(base, r, *f);
                 Ok(())
             }
+            (VReg::I32(r), Value::I32(i)) => {
+                self.write_i32(base, r, *i);
+                Ok(())
+            }
+            (VReg::U32(r), Value::U32(u)) => {
+                self.write_u32(base, r, *u);
+                Ok(())
+            }
+            (VReg::F32(r), Value::F32(f)) => {
+                self.write_f32(base, r, *f);
+                Ok(())
+            }
             (VReg::Decimal(r), Value::Decimal(d)) => {
                 self.write_decimal(base, r, *d);
                 Ok(())
@@ -3967,6 +4034,9 @@ impl Registers {
             VReg::I64(r) => Value::I64(self.read_i64(base, r)),
             VReg::U64(r) => Value::U64(self.read_u64(base, r)),
             VReg::F64(r) => Value::F64(self.read_f64(base, r)),
+            VReg::I32(r) => Value::I32(self.read_i32(base, r)),
+            VReg::U32(r) => Value::U32(self.read_u32(base, r)),
+            VReg::F32(r) => Value::F32(self.read_f32(base, r)),
             VReg::Decimal(r) => Value::Decimal(self.read_decimal(base, r)),
             VReg::Bytes(r) => {
                 let handle = self.read_bytes_handle(base, r);
@@ -4030,6 +4100,21 @@ impl Registers {
             (VReg::F64(s), VReg::F64(d)) => {
                 let v = self.read_f64(src_base, s);
                 self.write_f64(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::I32(s), VReg::I32(d)) => {
+                let v = self.read_i32(src_base, s);
+                self.write_i32(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::U32(s), VReg::U32(d)) => {
+                let v = self.read_u32(src_base, s);
+                self.write_u32(dst_base, d, v);
+                Ok(())
+            }
+            (VReg::F32(s), VReg::F32(d)) => {
+                let v = self.read_f32(src_base, s);
+                self.write_f32(dst_base, d, v);
                 Ok(())
             }
             (VReg::Decimal(s), VReg::Decimal(d)) => {
@@ -4125,6 +4210,36 @@ impl Registers {
     #[inline(always)]
     fn write_f64(&mut self, base: RegBase, r: F64Reg, v: f64) {
         self.f64s[base.f64s + r.0 as usize] = v;
+    }
+
+    #[inline(always)]
+    #[must_use]
+    fn read_i32(&self, base: RegBase, r: I32Reg) -> i32 {
+        self.w32s[base.w32s + r.0 as usize].cast_signed()
+    }
+    #[inline(always)]
+    fn write_i32(&mut self, base: RegBase, r: I32Reg, v: i32) {
+        self.w32s[base.w32s + r.0 as usize] = v.cast_unsigned();
+    }
+
+    #[inline(always)]
+    #[must_use]
+    fn read_u32(&self, base: RegBase, r: U32Reg) -> u32 {
+        self.w32s[base.w32s + r.0 as usize]
+    }
+    #[inline(always)]
+    fn write_u32(&mut self, base: RegBase, r: U32Reg, v: u32) {
+        self.w32s[base.w32s + r.0 as usize] = v;
+    }
+
+    #[inline(always)]
+    #[must_use]
+    fn read_f32(&self, base: RegBase, r: F32Reg) -> f32 {
+        f32::from_bits(self.w32s[base.w32s + r.0 as usize])
+    }
+    #[inline(always)]
+    fn write_f32(&mut self, base: RegBase, r: F32Reg, v: f32) {
+        self.w32s[base.w32s + r.0 as usize] = v.to_bits();
     }
 
     #[inline(always)]
@@ -4279,6 +4394,9 @@ impl Value {
             Self::I64(_) => ValueType::I64,
             Self::U64(_) => ValueType::U64,
             Self::F64(_) => ValueType::F64,
+            Self::I32(_) => ValueType::I32,
+            Self::U32(_) => ValueType::U32,
+            Self::F32(_) => ValueType::F32,
             Self::Decimal(_) => ValueType::Decimal,
             Self::Bytes(_) => ValueType::Bytes,
             Self::Str(_) => ValueType::Str,
@@ -4420,6 +4538,7 @@ fn read_value_ref_at<'a>(
     i64s: &'a [i64],
     u64s: &'a [u64],
     f64s: &'a [f64],
+    w32s: &'a [u32],
     decimals: &'a [Decimal],
     bytes: &'a [BytesHandle],
     strs: &'a [StrHandle],
@@ -4436,6 +4555,9 @@ fn read_value_ref_at<'a>(
         VReg::I64(r) => ValueRef::I64(i64s[base.i64s + r.0 as usize]),
         VReg::U64(r) => ValueRef::U64(u64s[base.u64s + r.0 as usize]),
         VReg::F64(r) => ValueRef::F64(f64s[base.f64s + r.0 as usize]),
+        VReg::I32(r) => ValueRef::I32(w32s[base.w32s + r.0 as usize].cast_signed()),
+        VReg::U32(r) => ValueRef::U32(w32s[base.w32s + r.0 as usize]),
+        VReg::F32(r) => ValueRef::F32(f32::from_bits(w32s[base.w32s + r.0 as usize])),
         VReg::Decimal(r) => ValueRef::Decimal(&decimals[base.decimals + r.0 as usize]),
         VReg::Bytes(r) => {
             let h = bytes[base.bytes + r.0 as usize];

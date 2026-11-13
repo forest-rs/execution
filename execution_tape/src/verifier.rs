@@ -46,8 +46,8 @@ use crate::program::{
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
-    ExecInstr, ExecProtection, ExnReg, F64Reg, FuncReg, I64Reg, ObjReg, RegClass, RegCounts,
-    RegLayout, StrReg, U64Reg, VReg, VRegSlice,
+    ExecInstr, ExecProtection, ExnReg, F32Reg, F64Reg, FuncReg, I32Reg, I64Reg, ObjReg, RegClass,
+    RegCounts, RegLayout, StrReg, U32Reg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{DecimalRounding, FuncId};
 use crate::{analysis::bitset::BitSet, analysis::cfg};
@@ -1852,6 +1852,21 @@ fn verify_function_bytecode(
                 counts.f64s += 1;
                 VReg::F64(r)
             }
+            RegClass::I32 => {
+                let r = I32Reg(idx_u32(counts.w32s));
+                counts.w32s += 1;
+                VReg::I32(r)
+            }
+            RegClass::U32 => {
+                let r = U32Reg(idx_u32(counts.w32s));
+                counts.w32s += 1;
+                VReg::U32(r)
+            }
+            RegClass::F32 => {
+                let r = F32Reg(idx_u32(counts.w32s));
+                counts.w32s += 1;
+                VReg::F32(r)
+            }
             RegClass::Decimal => {
                 let r = DecimalReg(idx_u32(counts.decimals));
                 counts.decimals += 1;
@@ -2080,6 +2095,9 @@ fn verify_function_bytecode(
                 (VReg::I64(d), VReg::I64(s)) => ExecInstr::MovI64 { dst: d, src: s },
                 (VReg::U64(d), VReg::U64(s)) => ExecInstr::MovU64 { dst: d, src: s },
                 (VReg::F64(d), VReg::F64(s)) => ExecInstr::MovF64 { dst: d, src: s },
+                (VReg::I32(d), VReg::I32(s)) => ExecInstr::MovI32 { dst: d, src: s },
+                (VReg::U32(d), VReg::U32(s)) => ExecInstr::MovU32 { dst: d, src: s },
+                (VReg::F32(d), VReg::F32(s)) => ExecInstr::MovF32 { dst: d, src: s },
                 (VReg::Decimal(d), VReg::Decimal(s)) => ExecInstr::MovDecimal { dst: d, src: s },
                 (VReg::Bytes(d), VReg::Bytes(s)) => ExecInstr::MovBytes { dst: d, src: s },
                 (VReg::Str(d), VReg::Str(s)) => ExecInstr::MovStr { dst: d, src: s },
@@ -2613,6 +2631,24 @@ fn verify_function_bytecode(
                     b: bb,
                 },
                 (VReg::F64(d), VReg::F64(aa), VReg::F64(bb)) => ExecInstr::SelectF64 {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::I32(d), VReg::I32(aa), VReg::I32(bb)) => ExecInstr::SelectI32 {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::U32(d), VReg::U32(aa), VReg::U32(bb)) => ExecInstr::SelectU32 {
+                    dst: d,
+                    cond: map_bool(*cond)?,
+                    a: aa,
+                    b: bb,
+                },
+                (VReg::F32(d), VReg::F32(aa), VReg::F32(bb)) => ExecInstr::SelectF32 {
                     dst: d,
                     cond: map_bool(*cond)?,
                     a: aa,
