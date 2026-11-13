@@ -80,7 +80,7 @@ struct Slot {
     live: bool,
     segment: Segment,
     inputs: Inputs,
-    /// Leading inputs already written by `cont.new`: a closure environment.
+    /// Leading inputs already written by `cont.new` (a closure environment) or `cont.bind`.
     bound: usize,
     /// The values that resume this continuation and those it finally returns.
     ty: (ListId, ListId),
@@ -376,6 +376,48 @@ impl<H: Host> Vm<H> {
         ctx.capture(depth, slot);
         let ty = self.units.unit(unit).call_sig_lists(call_sig);
         Ok(ctx.publish(slot, Inputs::Entry, usize::from(env.is_some()), ty))
+    }
+
+    /// Binds the leading inputs of `cont` to `args` of the current frame.
+    ///
+    /// Values bound to a suspended continuation are checked now against `from_sig`, whose
+    /// leading arguments are the tag's results; an unstarted continuation checks all its
+    /// arguments, bound or not, when it is first resumed.
+    pub(super) fn cont_bind(
+        &self,
+        ctx: &mut Registers,
+        budget: &mut Budget,
+        location: TraceLocation,
+        (from_sig, to_sig): (CallSigId, CallSigId),
+        cont: ContRef,
+        base: RegBase,
+        args: &[VReg],
+    ) -> Result<ContRef, Trap> {
+        let current = self.units.unit(location.unit);
+        let (slot, inputs, bound) =
+            ctx.consume(cont, current.call_sig_lists(from_sig), from_sig)?;
+        if let Inputs::Results(_) = inputs {
+            self.check_signature_args(ctx, budget, location, from_sig, base, args)?;
+        }
+        // Bind in place: reinstate the segment, write the values, then capture it again.
+        let activations =
+            core::mem::take(&mut ctx.continuations.slots[slot as usize].segment.activations);
+        let root = ctx.reinstate(slot);
+        let top = ctx.frames.len() - 1;
+        let targets = ctx.inputs(&self.units, top, inputs);
+        let top_base = ctx.frames[top].base;
+        for (&src, &dst) in args.iter().zip(&targets[bound..]) {
+            ctx.copy_vreg(base, src, top_base, dst)?;
+        }
+        let slot = ctx.continuations.vacant();
+        ctx.capture(root, slot);
+        ctx.continuations.slots[slot as usize].segment.activations = activations;
+        Ok(ctx.publish(
+            slot,
+            inputs,
+            bound + args.len(),
+            current.call_sig_lists(to_sig),
+        ))
     }
 
     /// Consumes `cont` and reinstates it on top of the resuming frame.

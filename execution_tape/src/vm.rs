@@ -300,7 +300,7 @@ pub enum Trap {
     ContinuationBoundary,
     /// A continuation was resumed or bound after it was already consumed.
     ///
-    /// Continuations are one-shot: `resume` and `resume_throw` consume theirs, and
+    /// Continuations are one-shot: `resume`, `resume_throw` and `cont.bind` consume theirs, and
     /// a suspension creates a new one. Every copy of a consumed reference is stale.
     ContinuationConsumed,
     /// A continuation's type differs from the call signature of the instruction consuming it.
@@ -1654,6 +1654,31 @@ impl<H: Host> Vm<H> {
                         )
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_cont(base, *dst, cont);
+                }
+                ExecInstr::ContBind {
+                    dst,
+                    from_sig,
+                    to_sig,
+                    cont,
+                    args,
+                } => {
+                    let cont = ctx.read_cont(base, *cont);
+                    let bound = self
+                        .cont_bind(
+                            ctx,
+                            budget,
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
+                            (*from_sig, *to_sig),
+                            cont,
+                            base,
+                            vf.vregs(*args),
+                        )
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_cont(base, *dst, bound);
                 }
                 ExecInstr::Resume {
                     call_sig,

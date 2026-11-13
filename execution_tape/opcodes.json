@@ -4144,6 +4144,50 @@
       ]
     },
     {
+      "name": "ContBind",
+      "mnemonic": "cont.bind",
+      "prefix": "0xFC",
+      "byte": "0x09",
+      "terminator": false,
+      "flags": [],
+      "doc": "Bind leading inputs of a continuation, producing a continuation of a shorter signature.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "from_sig"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index",
+          "encoding": "u32_uleb",
+          "field": "to_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "cont",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "ConstI32",
       "mnemonic": "const.i32",
       "prefix": "0xFD",

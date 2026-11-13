@@ -1043,7 +1043,12 @@ fn validate(
                 });
             }
         }
-        Instr::Resume { call_sig, args, .. } => {
+        Instr::Resume { call_sig, args, .. }
+        | Instr::ContBind {
+            from_sig: call_sig,
+            args,
+            ..
+        } => {
             let signature = &arena.program.call_sigs[*call_sig as usize];
             let arg_contracts = arena.program.call_sig_arg_contracts(signature).unwrap();
             for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {

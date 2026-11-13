@@ -1418,6 +1418,28 @@ impl Asm {
         self
     }
 
+    /// Encodes `cont.bind dst, from_sig, to_sig, cont, args...`.
+    ///
+    /// Consumes the continuation in `cont`, typed `from_sig`, and binds `args` to its leading
+    /// inputs. `dst` receives the bound continuation, typed `to_sig`: the remaining inputs and
+    /// the same results.
+    pub fn cont_bind(
+        &mut self,
+        dst: u32,
+        from_sig: CallSigId,
+        to_sig: CallSigId,
+        cont: u32,
+        args: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::ContBind);
+        self.reg(dst);
+        self.uleb(from_sig.0);
+        self.uleb(to_sig.0);
+        self.reg(cont);
+        self.reg_list(args);
+        self
+    }
+
     /// Encodes `resume eff_out, call_sig, cont, eff_in, args..., rets...`.
     ///
     /// Consumes the continuation in `cont`, whose type must be `call_sig`, and runs it on top of

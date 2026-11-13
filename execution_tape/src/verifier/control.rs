@@ -1,8 +1,8 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Static checks for continuation instructions: `cont.new`, `resume`, `resume_throw` and
-//! `suspend`.
+//! Static checks for continuation instructions: `cont.new`, `cont.bind`, `resume`,
+//! `resume_throw` and `suspend`.
 //!
 //! A continuation register has the storage kind `Cont` only. Each instruction names the call
 //! signature that types the continuation it consumes or produces: its arguments are the values
@@ -47,6 +47,12 @@ pub(super) fn check_ids(
             call_sig_in_bounds(program, func, pc, *call_sig)?;
             tag_in_bounds(program, func, pc, *tag)
         }
+        Instr::ContBind {
+            from_sig, to_sig, ..
+        } => {
+            call_sig_in_bounds(program, func, pc, *from_sig)?;
+            call_sig_in_bounds(program, func, pc, *to_sig)
+        }
         Instr::Suspend { tag, .. } => tag_in_bounds(program, func, pc, *tag),
         _ => Ok(()),
     }
@@ -60,7 +66,7 @@ fn sig_arity(program: &Program, call_sig: u32) -> (usize, usize) {
     (entry.args.len as usize, entry.rets.len as usize)
 }
 
-/// Checks effect threading and operand counts.
+/// Checks effect threading, operand counts and `cont.bind`'s signature relation.
 ///
 /// `require_r0` rejects an effect operand other than `r0`, as for calls.
 pub(super) fn check_structure(
@@ -111,6 +117,39 @@ pub(super) fn check_structure(
             let entry = program.tag(TagId(*tag)).expect("checked tag");
             if rets.len() != entry.results.len as usize {
                 return Err(VerifyError::CallArityMismatch { func, pc });
+            }
+        }
+        Instr::ContBind {
+            from_sig,
+            to_sig,
+            args,
+            ..
+        } => {
+            let mismatch = || VerifyError::ContBindSignature {
+                func,
+                pc,
+                from_sig: *from_sig,
+                to_sig: *to_sig,
+            };
+            let contracts = |id: u32| {
+                let entry = program.call_sig(CallSigId(id)).expect("checked call sig");
+                let args = program
+                    .call_sig_arg_contracts(entry)
+                    .map_err(|_| mismatch())?;
+                let rets = program
+                    .call_sig_ret_contracts(entry)
+                    .map_err(|_| mismatch())?;
+                Ok::<_, VerifyError>((args, rets))
+            };
+            let (from_args, from_rets) = contracts(*from_sig)?;
+            let (to_args, to_rets) = contracts(*to_sig)?;
+            // Binding supplies a prefix of the inputs; the rest and the results are unchanged.
+            let bound = from_args
+                .len()
+                .checked_sub(to_args.len())
+                .ok_or_else(mismatch)?;
+            if bound != args.len() || from_args[bound..] != *to_args || from_rets != to_rets {
+                return Err(mismatch());
             }
         }
         _ => {}
@@ -189,6 +228,18 @@ pub(super) fn check_types(
         } => {
             tags::check_throw_payload(program, func, pc, TagId(*tag), args, types)?;
             expect_all(rets, tag_results(*tag)?)?;
+        }
+        Instr::ContBind {
+            dst,
+            from_sig,
+            cont,
+            args,
+            ..
+        } => {
+            expect(*dst, ValueType::Cont)?;
+            expect(*cont, ValueType::Cont)?;
+            let (arg_kinds, _) = sig_kinds(*from_sig)?;
+            expect_all(args, arg_kinds)?;
         }
         _ => {}
     }

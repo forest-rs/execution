@@ -1269,6 +1269,7 @@ fn is_continuation(instr: &Instr) -> bool {
     matches!(
         instr,
         Instr::ContNew { .. }
+            | Instr::ContBind { .. }
             | Instr::Resume { .. }
             | Instr::ResumeThrow { .. }
             | Instr::Suspend { .. }
@@ -1296,6 +1297,21 @@ fn fmt_continuation(w: &mut fmt::Formatter<'_>, program: &Program, instr: &Instr
             write!(w, ", call_sig#{call_sig}, func=")?;
             fmt_reg(w, *func)?;
             fmt_call_sig_annotation(w, program, CallSigId(*call_sig))
+        }
+        Instr::ContBind {
+            dst,
+            from_sig,
+            to_sig,
+            cont,
+            args,
+        } => {
+            write!(w, " ")?;
+            fmt_reg(w, *dst)?;
+            write!(w, ", call_sig#{from_sig} -> call_sig#{to_sig}, cont=")?;
+            fmt_reg(w, *cont)?;
+            write!(w, ", args=")?;
+            fmt_reg_list(w, args)?;
+            fmt_call_sig_annotation(w, program, CallSigId(*to_sig))
         }
         Instr::Resume {
             eff_out,

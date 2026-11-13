@@ -53,6 +53,7 @@ impl VerifyError {
             | Self::StructFieldIndexOutOfBounds { func, .. }
             | Self::HostSigOutOfBounds { func, .. }
             | Self::CallSigOutOfBounds { func, .. }
+            | Self::ContBindSignature { func, .. }
             | Self::InvalidRegion { func, .. }
             | Self::InvalidRegionRun { func, .. }
             | Self::TagOutOfBounds { func, .. }
@@ -120,6 +121,7 @@ impl VerifyError {
             | Self::StructFieldIndexOutOfBounds { pc, .. }
             | Self::HostSigOutOfBounds { pc, .. }
             | Self::CallSigOutOfBounds { pc, .. }
+            | Self::ContBindSignature { pc, .. }
             | Self::TagOutOfBounds { pc, .. }
             | Self::ThrowArityMismatch { pc, .. }
             | Self::ThrowPayloadMismatch { pc, .. }

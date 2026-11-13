@@ -147,6 +147,14 @@ pub(crate) enum Instr {
         args: Vec<u32>,
         rets: Vec<u32>,
     },
+    /// Bind the leading inputs of `cont` to `args`, retyping it from `from_sig` to `to_sig`.
+    ContBind {
+        dst: u32,
+        from_sig: u32,
+        to_sig: u32,
+        cont: u32,
+        args: Vec<u32>,
+    },
 
     /// `dst = ()`.
     ConstUnit { dst: u32 },
