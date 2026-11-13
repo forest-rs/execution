@@ -268,6 +268,16 @@ pub(crate) enum Instr {
     U64Shl { dst: u32, a: u32, b: u32 },
     /// `dst = a >> (b & 63)` (`u64`).
     U64Shr { dst: u32, a: u32, b: u32 },
+    /// `dst = a.leading_zeros()` (`u64`; 64 when `a == 0`).
+    U64Clz { dst: u32, a: u32 },
+    /// `dst = a.trailing_zeros()` (`u64`; 64 when `a == 0`).
+    U64Ctz { dst: u32, a: u32 },
+    /// `dst = a.count_ones()` (`u64`).
+    U64Popcnt { dst: u32, a: u32 },
+    /// `dst = a.rotate_left(b & 63)` (`u64`).
+    U64Rotl { dst: u32, a: u32, b: u32 },
+    /// `dst = a.rotate_right(b & 63)` (`u64`).
+    U64Rotr { dst: u32, a: u32, b: u32 },
 
     /// `dst = (a == b)` (`i64` -> `bool`).
     I64Eq { dst: u32, a: u32, b: u32 },

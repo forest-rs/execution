@@ -767,6 +767,8 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::U64Xor { dst, a, b }
         | Instr::U64Shl { dst, a, b }
         | Instr::U64Shr { dst, a, b }
+        | Instr::U64Rotl { dst, a, b }
+        | Instr::U64Rotr { dst, a, b }
         | Instr::I64And { dst, a, b }
         | Instr::I64Or { dst, a, b }
         | Instr::I64Xor { dst, a, b }
@@ -806,6 +808,9 @@ fn instr_view<'a>(program: &'a Program, func: FuncId, di: DecodedInstr) -> Instr
         | Instr::F64Trunc { dst, a }
         | Instr::F64Nearest { dst, a }
         | Instr::F64Sqrt { dst, a }
+        | Instr::U64Clz { dst, a }
+        | Instr::U64Ctz { dst, a }
+        | Instr::U64Popcnt { dst, a }
         | Instr::BoolNot { dst, a } => {
             view.dst = Some(dst);
             view.srcs = vec![a];

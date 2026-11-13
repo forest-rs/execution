@@ -138,6 +138,11 @@ impl Instr {
             Self::U64AddOvf { .. } => Opcode::U64AddOvf,
             Self::U64SubOvf { .. } => Opcode::U64SubOvf,
             Self::U64MulOvf { .. } => Opcode::U64MulOvf,
+            Self::U64Clz { .. } => Opcode::U64Clz,
+            Self::U64Ctz { .. } => Opcode::U64Ctz,
+            Self::U64Popcnt { .. } => Opcode::U64Popcnt,
+            Self::U64Rotl { .. } => Opcode::U64Rotl,
+            Self::U64Rotr { .. } => Opcode::U64Rotr,
         }
     }
 

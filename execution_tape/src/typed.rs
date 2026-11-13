@@ -525,6 +525,28 @@ pub(crate) enum ExecInstr {
         a: U64Reg,
         b: U64Reg,
     },
+    U64Clz {
+        dst: U64Reg,
+        a: U64Reg,
+    },
+    U64Ctz {
+        dst: U64Reg,
+        a: U64Reg,
+    },
+    U64Popcnt {
+        dst: U64Reg,
+        a: U64Reg,
+    },
+    U64Rotl {
+        dst: U64Reg,
+        a: U64Reg,
+        b: U64Reg,
+    },
+    U64Rotr {
+        dst: U64Reg,
+        a: U64Reg,
+        b: U64Reg,
+    },
 
     I64Eq {
         dst: BoolReg,

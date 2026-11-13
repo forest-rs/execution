@@ -144,6 +144,11 @@ impl Instr {
             Self::U64AddOvf { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
             Self::U64SubOvf { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
             Self::U64MulOvf { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
+            Self::U64Clz { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::U64Ctz { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::U64Popcnt { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::U64Rotl { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
+            Self::U64Rotr { a, b, .. } => ReadsIter::from_parts([*a, *b, 0], 2, [&[]]),
         }
     }
     /// Iterates virtual registers write by this instruction without allocation.
@@ -280,6 +285,11 @@ impl Instr {
             Self::U64AddOvf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
             Self::U64SubOvf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
             Self::U64MulOvf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::U64Clz { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
+            Self::U64Ctz { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
+            Self::U64Popcnt { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
+            Self::U64Rotl { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
+            Self::U64Rotr { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
         }
     }
 }
