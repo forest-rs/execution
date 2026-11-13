@@ -73,8 +73,11 @@ impl VerifyError {
             | Self::UnknownOpcode { func, .. } => Some(FuncId(*func)),
             Self::ExceptionReference {
                 place: ExceptionPlace::Aggregate { func, .. },
+            }
+            | Self::ContinuationReference {
+                place: ExceptionPlace::Aggregate { func, .. },
             } => Some(FuncId(*func)),
-            Self::ExceptionReference { .. } => None,
+            Self::ExceptionReference { .. } | Self::ContinuationReference { .. } => None,
             Self::InvalidContract { .. }
             | Self::InvalidMetadata { .. }
             | Self::Decode(..)
@@ -132,8 +135,11 @@ impl VerifyError {
             Self::RegisterTypeMismatch { pc, .. } => *pc,
             Self::ExceptionReference {
                 place: ExceptionPlace::Aggregate { pc, .. },
+            }
+            | Self::ContinuationReference {
+                place: ExceptionPlace::Aggregate { pc, .. },
             } => Some(*pc),
-            Self::ExceptionReference { .. } => None,
+            Self::ExceptionReference { .. } | Self::ContinuationReference { .. } => None,
             Self::InvalidContract { .. }
             | Self::InvalidMetadata { .. }
             | Self::Decode(..)

@@ -416,6 +416,7 @@ Tags:
 - `13 I32`
 - `14 U32`
 - `15 F32`
+- `16 Cont`
 
 ### Struct types
 Field names are interned once per Types payload; each struct field references that table by id.
@@ -581,8 +582,9 @@ otherwise the install fails with `UnresolvedTag` or `TagPayloadMismatch` and cre
 or tag.
 
 ## Tag results (optional)
-Declares the values that resume a suspension to a tag. A tag without an entry resumes with no
-values; `throw` ignores results. The section is omitted when no tag has results:
+Declares the values that resume a suspension to a tag, for `suspend` and the continuation it
+creates. A tag without an entry resumes with no values; `throw` ignores results. The section is
+omitted when no tag has results:
 - `count: ULEB128`
 - repeated `count` times:
   - `tag_id: ULEB128` (strictly increasing; each names an entry of `tags`)
@@ -591,7 +593,7 @@ values; `throw` ignores results. The section is omitted when no tag has results:
 
 Result contracts are packed into `Program::contract_ids` right after their tag's payload. An
 imported tag's results must equal the defined VM tag's results, like its payload. Neither payloads
-nor results may contain `Exn`.
+nor results may contain `Exn` or `Cont`.
 
 ## Tag imports (optional)
 Marks tags of the `tags` section as imported rather than defined. The section is omitted when
@@ -615,8 +617,9 @@ protection are omitted:
     - `parent_plus_one: ULEB128` (`0` for a root region; otherwise an earlier region + 1)
     - `clause_count: ULEB128`
     - repeated `clause_count` times:
-      - `kind: u8` (`0 = catch tag`, `1 = catch_all`, `2 = catch_ref tag`, `3 = catch_all_ref`)
-      - `tag_id: ULEB128` (only for `catch tag` and `catch_ref tag`)
+      - `kind: u8` (`0 = catch tag`, `1 = catch_all`, `2 = catch_ref tag`, `3 = catch_all_ref`,
+        `4 = on tag`)
+      - `tag_id: ULEB128` (only for `catch tag`, `catch_ref tag` and `on tag`)
       - `target_pc: ULEB128` (handler block header)
   - `run_count: ULEB128`
   - repeated `run_count` times:
@@ -625,7 +628,9 @@ protection are omitted:
 Runs are sorted, disjoint, non-empty and start and end at instruction boundaries (or the
 bytecode end). A `catch tag` target declares one block parameter per payload value, with matching
 kinds; a `catch_all` target declares none. The `_ref` clauses append one final `Exn` parameter
-that receives the exception itself.
+that receives the exception itself. An `on tag` clause handles suspensions instead of exceptions
+(see [Stack switching](#stack-switching)); its target declares the payload parameters followed by
+one `Cont` parameter receiving the suspended continuation.
 
 ## Names (optional)
 This section provides optional debug metadata for tools (disassembly, profiling, diagnostics). It is not required for execution.
@@ -880,6 +885,47 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
     registers rewritten anywhere in that block are widened to their kind; handler parameters
     receive the tag's payload contracts.
 
+### Stack switching
+Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend`), adapted to registers, VM tags and protected regions.
+
+- A continuation is suspended or unstarted guest control: one or more activations whose bottom
+  activation, once resumed, returns to its resumer. `Cont` registers hold references to them.
+  Like `Exn`, `Cont` stays in guest registers and guest-to-guest signatures: it cannot appear in
+  host signatures, entry signatures, tag payloads or results, or aggregates
+  (`ContinuationReference`), and entering a `Cont` signature from outside traps with
+  `ContinuationBoundary`.
+- A continuation is typed by a call signature: its arguments are the values that resume it and
+  its results the values it finally returns. Instructions name the signature they expect; the
+  VM compares canonical contracts, so continuations cross units like indirect calls do. A
+  different type traps with `ContinuationSignatureMismatch`.
+- Continuations are one-shot. `resume` consumes its continuation; every
+  copy of a consumed reference traps with `ContinuationConsumed`. A continuation lives until it
+  is consumed or its invocation ends. Its activations count against `max_call_depth` meanwhile,
+  including the entry activation `cont.new` allocates.
+- `cont.new r_dst, call_sig_id, r_func`: creates an unstarted continuation of the `Func` or
+  `Closure` in `r_func`, checked against `call_sigs[call_sig_id]` as `call_indirect` checks its
+  callee; a closure's environment is bound as the first argument.
+- `resume r_eff_out, call_sig_id, r_cont, r_eff_in, args... -> rets...`: consumes a continuation
+  of type `call_sig` and runs it on top of the resuming activation with `args`. When its bottom
+  activation returns, `rets` receive the results. An exception escaping it propagates from the
+  `resume` like one escaping a call.
+- `suspend r_eff_out, tag_id, r_eff_in, payload... -> rets...`: searches the `resume`s that run
+  the current activation, innermost first. At each, the `on` clauses of the regions protecting
+  it are tried in order, then their parents'; catch clauses are skipped. The first `on` clause
+  for the tag (comparing VM tags, as catch clauses do) receives the payload and a new
+  continuation of the activations above that `resume`, typed by the tag's results and the
+  `resume`'s results. Resuming it continues after the `suspend`, whose `rets` receive the resume
+  values. No matching clause traps with `UnhandledSuspension`; a search that reaches a guest
+  callback's root traps with `SuspensionAcrossHost`, since a pending host request cannot be
+  suspended. Payload contracts are checked at the `suspend`, resume values against the resume
+  signature's contracts.
+- Each instruction costs one fuel. Switching is deterministic guest control: recordings need no
+  new evidence and replay re-executes it. Activations whose continuation suspends close their
+  call-frame scopes with `TraceOutcome::Suspended`; resuming enters new scopes for them at their
+  new depths. The interpreter moves a suspended continuation's frames and registers off its one
+  contiguous stack and back on resume; a native tier may instead give each continuation its own
+  machine stack.
+
 ### Host calls
 - `host_call r_eff_out, host_sig_id, r_eff_in, args... -> rets...`
   - Increments host-call count; traps if limit exceeded.
@@ -993,6 +1039,9 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x02 u64.popcnt dst, a`
 - `0xFC 0x03 u64.rotl dst, a, b` (rotation amount masked with `& 63`)
 - `0xFC 0x04 u64.rotr dst, a, b` (rotation amount masked with `& 63`)
+- `0xFC 0x05 cont.new dst, call_sig_id, func`
+- `0xFC 0x06 resume eff_out, call_sig_id, cont, eff_in, argc, args..., retc, rets...`
+- `0xFC 0x07 suspend eff_out, tag_id, eff_in, argc, payload..., retc, rets...`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits
@@ -1265,6 +1314,9 @@ These checks apply alongside the structural and contract rules described above.
   unique, including tags that no instruction throws.
 - **Throw**: `throw` must reference an in-bounds `tag_id`. Diagnostics name the tag
   (`ThrowArityMismatch`, `ThrowPayloadMismatch`).
+- **Stack switching**: call signatures and tags must be in bounds; `resume` arguments and
+  results match its signature, `suspend` payloads match their tag, `suspend`
+  results match the tag's results, and continuation operands are `Cont` registers. Effect operands are `r0`.
 - **Regions**: parents precede their children; clause tags are in bounds and targets are block
   headers whose parameters receive the payload (`InvalidRegion` names the region and clause);
   runs are sorted, disjoint and on instruction boundaries (`InvalidRegionRun`). Initialization

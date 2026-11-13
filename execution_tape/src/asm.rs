@@ -1404,6 +1404,74 @@ impl Asm {
         self
     }
 
+    /// Encodes `cont.new dst, call_sig, func`, creating an unstarted continuation.
+    ///
+    /// `func` holds a `Func` or `Closure`, checked against `call_sig` as [`Self::call_indirect`]
+    /// checks its callee; a closure's environment is bound as its first argument. The
+    /// continuation's type is `call_sig`: [`Self::resume`] supplies its arguments and receives
+    /// its results.
+    pub fn cont_new(&mut self, dst: u32, call_sig: CallSigId, func: u32) -> &mut Self {
+        self.opcode(Opcode::ContNew);
+        self.reg(dst);
+        self.uleb(call_sig.0);
+        self.reg(func);
+        self
+    }
+
+    /// Encodes `resume eff_out, call_sig, cont, eff_in, args..., rets...`.
+    ///
+    /// Consumes the continuation in `cont`, whose type must be `call_sig`, and runs it on top of
+    /// this activation with `args`. When it returns, `rets` receive its results. When it
+    /// suspends to a tag, the `on` clauses of the regions protecting this instruction handle
+    /// it ([`Catch::On`]); exceptions escaping it reach their catch clauses.
+    pub fn resume(
+        &mut self,
+        eff_out: u32,
+        call_sig: CallSigId,
+        cont: u32,
+        eff_in: u32,
+        args: &[u32],
+        rets: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::Resume);
+        self.reg(eff_out);
+        self.uleb(call_sig.0);
+        self.reg(cont);
+        self.reg(eff_in);
+        self.reg_list(args);
+        self.reg_list(rets);
+        self
+    }
+
+    /// Encodes `suspend eff_out, tag, eff_in, payload..., rets...`.
+    ///
+    /// Suspends the continuations up to the nearest `resume` with an `on` clause for `tag`,
+    /// whose handler receives `payload` and the suspended continuation. Resuming that
+    /// continuation continues here, with `rets` receiving the tag's results.
+    pub fn suspend(
+        &mut self,
+        eff_out: u32,
+        tag: TagId,
+        eff_in: u32,
+        payload: &[u32],
+        rets: &[u32],
+    ) -> &mut Self {
+        self.opcode(Opcode::Suspend);
+        self.reg(eff_out);
+        self.uleb(tag.0);
+        self.reg(eff_in);
+        self.reg_list(payload);
+        self.reg_list(rets);
+        self
+    }
+
+    fn reg_list(&mut self, regs: &[u32]) {
+        self.uleb(u32::try_from(regs.len()).unwrap_or(u32::MAX));
+        for &reg in regs {
+            self.reg(reg);
+        }
+    }
+
     /// Encodes `const_unit dst`.
     pub fn const_unit(&mut self, dst: u32) -> &mut Self {
         self.opcode(Opcode::ConstUnit);

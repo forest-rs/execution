@@ -502,7 +502,7 @@ impl<H: Host> Running<'_, '_, H> {
         let outcome = match result {
             Ok(()) => TraceOutcome::Ok,
             Err(error) => {
-                self.budget.frames -= self.continuation.ctx.frames.len();
+                self.budget.frames -= self.continuation.ctx.held_frames();
                 self.budget.contract_scratch.clear_proofs();
                 self.vm.memory.rollback(self.checkpoint);
                 self.continuation.outputs.clear();
@@ -570,7 +570,7 @@ impl<H: Host> Running<'_, '_, H> {
             location.pc,
         );
         self.vm.memory.rollback(self.checkpoint);
-        self.budget.frames -= self.continuation.ctx.frames.len();
+        self.budget.frames -= self.continuation.ctx.held_frames();
         self.continuation.ctx.clear();
         self.continuation
             .trace

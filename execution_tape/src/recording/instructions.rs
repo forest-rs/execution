@@ -321,7 +321,8 @@ impl History {
             crate::trace::TraceOutcome::Ok => InstructionOutcome::Completed,
             crate::trace::TraceOutcome::Trap(_) => InstructionOutcome::Trapped,
             crate::trace::TraceOutcome::Caught { depth } => InstructionOutcome::Caught { depth },
-            crate::trace::TraceOutcome::Cancelled => {
+            // Only activation scopes suspend; an instruction attempt never ends that way.
+            crate::trace::TraceOutcome::Cancelled | crate::trace::TraceOutcome::Suspended => {
                 self.status = InstructionStatus::Incomplete;
                 InstructionOutcome::Pending
             }

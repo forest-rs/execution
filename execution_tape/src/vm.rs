@@ -28,8 +28,8 @@ use crate::trace::{
     HostCallOutcome, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use crate::typed::{
-    AggReg, BoolReg, BytesReg, ClosureReg, DecimalReg, ExecFunc, ExecInstr, ExnReg, F32Reg, F64Reg,
-    FuncReg, I32Reg, I64Reg, ObjReg, StrReg, U32Reg, U64Reg, VReg, VRegSlice,
+    AggReg, BoolReg, BytesReg, ClosureReg, ContReg, DecimalReg, ExecFunc, ExecInstr, ExnReg,
+    F32Reg, F64Reg, FuncReg, I32Reg, I64Reg, ObjReg, StrReg, U32Reg, U64Reg, VReg, VRegSlice,
 };
 use crate::value::{AggHandle, Closure, Decimal, FuncId, FuncRef, Obj, ObjHandle, UnitId, Value};
 use crate::verifier::VerifiedProgram;
@@ -38,7 +38,9 @@ use crate::verifier::VerifiedProgram;
 mod aggregate_tests;
 mod budget;
 mod continuation;
+mod continuations;
 use budget::Budget;
+pub(crate) use continuations::ContRef;
 mod exceptions;
 pub(crate) use exceptions::Exception;
 pub use exceptions::UncaughtException;
@@ -291,6 +293,36 @@ pub enum Trap {
     /// an exception reference. A callee whose signature contains `Exn` cannot be entered from
     /// outside the guest.
     ExceptionBoundary,
+    /// A continuation reference would cross the invocation boundary.
+    ///
+    /// Like exception references, continuations have no [`Value`] representation; a callee
+    /// whose signature contains `Cont` cannot be entered from outside the guest.
+    ContinuationBoundary,
+    /// A continuation was resumed or bound after it was already consumed.
+    ///
+    /// Continuations are one-shot: `resume` consumes theirs, and
+    /// a suspension creates a new one. Every copy of a consumed reference is stale.
+    ContinuationConsumed,
+    /// A continuation's type differs from the call signature of the instruction consuming it.
+    ///
+    /// A continuation is typed by the values that resume it and the values it finally returns,
+    /// compared with the signature's arguments and results after canonicalization.
+    ContinuationSignatureMismatch {
+        /// Expected signature, local to the consuming unit's program.
+        signature: crate::program::CallSigId,
+    },
+    /// `suspend` found no `on` clause for its tag on any `resume` that encloses it.
+    UnhandledSuspension {
+        /// The suspended VM tag.
+        tag: crate::value::TagRef,
+    },
+    /// A suspension would capture a pending host request and the guest callback it entered.
+    ///
+    /// Continuations hold guest activations only; a host request cannot be suspended inside one.
+    SuspensionAcrossHost {
+        /// The suspended VM tag.
+        tag: crate::value::TagRef,
+    },
     /// A guest exception escaped every activation of the invocation.
     ///
     /// This is a guest-raised outcome rather than a VM failure. Its payload survives the
@@ -396,6 +428,23 @@ impl fmt::Display for Trap {
             Self::ExceptionBoundary => f.write_str(
                 "exception references cannot cross the invocation boundary",
             ),
+            Self::ContinuationBoundary => f.write_str(
+                "continuation references cannot cross the invocation boundary",
+            ),
+            Self::ContinuationConsumed => f.write_str("continuation was already consumed"),
+            Self::ContinuationSignatureMismatch { signature } => write!(
+                f,
+                "continuation type does not match call_sig {}",
+                signature.0
+            ),
+            Self::UnhandledSuspension { tag } => {
+                write!(f, "no handler for suspension to tag#{}", tag.0)
+            }
+            Self::SuspensionAcrossHost { tag } => write!(
+                f,
+                "suspension to tag#{} would capture a pending host request",
+                tag.0
+            ),
             Self::Uncaught(exception) => exception.fmt(f),
         }
     }
@@ -478,6 +527,8 @@ struct RegBase {
     closures: usize,
     /// Base offset for the exception reference register bank.
     exns: usize,
+    /// Base offset for the continuation register bank.
+    conts: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -506,8 +557,13 @@ struct Frame {
 
 #[derive(Copy, Clone, Debug)]
 struct ReturnTo {
-    /// Destination return-register slice declared by the caller's `call`.
+    /// Destination return-register slice declared by the caller's `call` or `resume`.
     dst_rets: VRegSlice,
+    /// Whether this frame is the root of a resumed continuation.
+    ///
+    /// Its caller waits at `resume`, whose `on` clauses handle suspensions
+    /// from this frame and above. A return is an ordinary return to that caller.
+    resumed: bool,
 }
 
 /// Per-run execution context for [`Vm`].
@@ -557,6 +613,10 @@ struct Registers {
     exns: Vec<Option<Arc<Exception>>>,
     /// Exceptions raised so far in this invocation; also the next raise's ordinal.
     raised: usize,
+    /// Continuation registers, naming entries of [`Self::continuations`].
+    conts: Vec<ContRef>,
+    /// Suspended and unstarted continuations of this invocation.
+    continuations: continuations::Continuations,
 
     /// Call stack.
     frames: Vec<Frame>,
@@ -599,6 +659,8 @@ impl Registers {
         self.funcs.clear();
         self.closures.clear();
         self.exns.clear();
+        self.conts.clear();
+        self.continuations.clear();
         self.raised = 0;
         self.arena.clear();
     }
@@ -1262,7 +1324,7 @@ impl<H: Host> Vm<H> {
             Err(e) => TraceOutcome::Trap(e),
         };
         if result.is_err() {
-            budget.frames -= ctx.frames.len();
+            budget.frames -= ctx.held_frames();
             budget.contract_scratch.clear_proofs();
             self.memory.rollback(checkpoint);
             outputs.truncate(original_len);
@@ -1561,6 +1623,86 @@ impl<H: Host> Vm<H> {
                         },
                         span_id,
                     )?;
+                    continue;
+                }
+                ExecInstr::ContNewFunc {
+                    dst,
+                    call_sig,
+                    func,
+                } => {
+                    let target = ctx.read_func(base, *func);
+                    let cont = self
+                        .cont_new(ctx, budget, unit_id, *call_sig, target, None)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_cont(base, *dst, cont);
+                }
+                ExecInstr::ContNewClosure {
+                    dst,
+                    call_sig,
+                    func,
+                } => {
+                    let closure = ctx.read_closure(base, *func);
+                    let cont = self
+                        .cont_new(
+                            ctx,
+                            budget,
+                            unit_id,
+                            *call_sig,
+                            closure.func,
+                            Some(closure.env),
+                        )
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    ctx.write_cont(base, *dst, cont);
+                }
+                ExecInstr::Resume {
+                    call_sig,
+                    cont,
+                    args,
+                    rets,
+                } => {
+                    let location = TraceLocation {
+                        unit: unit_id,
+                        func: func_id,
+                        pc,
+                    };
+                    let cont = ctx.read_cont(base, *cont);
+                    self.resume::<P, YIELD>(
+                        ctx,
+                        budget,
+                        trace,
+                        control,
+                        location,
+                        *call_sig,
+                        cont,
+                        vf.vregs(*args),
+                        *rets,
+                    )
+                    .map_err(|trap| TrapInfo {
+                        unit: unit_id,
+                        func: func_id,
+                        pc,
+                        span_id,
+                        trap,
+                    })?;
+                }
+                ExecInstr::Suspend { tag, args, rets } => {
+                    self.suspend::<P>(
+                        ctx,
+                        budget,
+                        trace,
+                        control,
+                        TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc,
+                        },
+                        span_id,
+                        *tag,
+                        vf.vregs(*args),
+                        *rets,
+                    )
+                    .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    // The handler's instruction attempt starts on the next iteration.
                     continue;
                 }
 
@@ -3122,6 +3264,7 @@ impl<H: Host> Vm<H> {
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,
+                            resumed: false,
                         }),
                     });
 
@@ -3544,6 +3687,7 @@ impl<H: Host> Vm<H> {
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,
+                            resumed: false,
                         }),
                     });
 
@@ -3667,6 +3811,7 @@ impl<H: Host> Vm<H> {
                         base: callee_base,
                         return_to: Some(ReturnTo {
                             dst_rets: *dst_rets,
+                            resumed: false,
                         }),
                     });
 
@@ -4560,6 +4705,7 @@ impl Registers {
             funcs: self.funcs.len(),
             closures: self.closures.len(),
             exns: self.exns.len(),
+            conts: self.conts.len(),
         };
 
         self.bools.resize(base.bools + counts.bools, false);
@@ -4589,6 +4735,7 @@ impl Registers {
             },
         );
         self.exns.resize(base.exns + counts.exns, None);
+        self.conts.resize(base.conts + counts.conts, ContRef::NONE);
 
         base
     }
@@ -4607,6 +4754,7 @@ impl Registers {
         self.funcs.truncate(base.funcs);
         self.closures.truncate(base.closures);
         self.exns.truncate(base.exns);
+        self.conts.truncate(base.conts);
     }
 
     fn init_args(&mut self, base: RegBase, vf: &ExecFunc, args: &[Value]) -> Result<(), Trap> {
@@ -4769,6 +4917,7 @@ impl Registers {
             VReg::Func(r) => Value::Func(self.read_func(base, r)),
             VReg::Closure(r) => Value::Closure(self.read_closure(base, r)),
             VReg::Exn(_) => return Err(Trap::ExceptionBoundary),
+            VReg::Cont(_) => return Err(Trap::ContinuationBoundary),
         })
     }
 
@@ -4856,6 +5005,11 @@ impl Registers {
                 self.exns[dst_base.exns + d.0 as usize] = v;
                 Ok(())
             }
+            (VReg::Cont(s), VReg::Cont(d)) => {
+                let v = self.read_cont(src_base, s);
+                self.write_cont(dst_base, d, v);
+                Ok(())
+            }
             _ => Err(Trap::InvalidPc),
         }
     }
@@ -4869,6 +5023,14 @@ impl Registers {
 
     fn write_exn(&mut self, base: RegBase, r: ExnReg, exception: Arc<Exception>) {
         self.exns[base.exns + r.0 as usize] = Some(exception);
+    }
+
+    fn read_cont(&self, base: RegBase, r: ContReg) -> ContRef {
+        self.conts[base.conts + r.0 as usize]
+    }
+
+    fn write_cont(&mut self, base: RegBase, r: ContReg, v: ContRef) {
+        self.conts[base.conts + r.0 as usize] = v;
     }
 
     #[inline(always)]
@@ -5120,12 +5282,12 @@ impl Value {
 fn validate_entry_args(program: &Program, entry_fn: &Function, args: &[Value]) -> Result<(), Trap> {
     let arg_types = entry_fn.arg_types(program).map_err(|_| Trap::InvalidPc)?;
     let ret_types = entry_fn.ret_types(program).map_err(|_| Trap::InvalidPc)?;
-    if arg_types
-        .iter()
-        .chain(ret_types.iter())
-        .any(|&kind| kind == ValueType::Exn)
-    {
-        return Err(Trap::ExceptionBoundary);
+    for &kind in arg_types.iter().chain(ret_types.iter()) {
+        match kind {
+            ValueType::Exn => return Err(Trap::ExceptionBoundary),
+            ValueType::Cont => return Err(Trap::ContinuationBoundary),
+            _ => {}
+        }
     }
     if arg_types.len() != args.len() {
         return Err(Trap::ArityMismatch);
@@ -5272,6 +5434,7 @@ fn read_value_ref_at<'a>(
         VReg::Closure(r) => ValueRef::Closure(closures[base.closures + r.0 as usize]),
         // Exception references have no embedding-visible value; observers see them as absent.
         VReg::Exn(_) => return Err(Trap::ExceptionBoundary),
+        VReg::Cont(_) => return Err(Trap::ContinuationBoundary),
     })
 }
 

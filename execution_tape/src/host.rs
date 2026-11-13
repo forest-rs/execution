@@ -797,6 +797,7 @@ fn encode_value_type_tag(t: ValueType) -> u8 {
         ValueType::I32 => 13,
         ValueType::U32 => 14,
         ValueType::F32 => 15,
+        ValueType::Cont => 16,
     }
 }
 

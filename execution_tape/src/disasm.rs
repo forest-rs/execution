@@ -1228,6 +1228,7 @@ fn fmt_value_type(w: &mut fmt::Formatter<'_>, ty: ValueType) -> fmt::Result {
         ValueType::Func => write!(w, "Func"),
         ValueType::Closure => write!(w, "Closure"),
         ValueType::Exn => write!(w, "Exn"),
+        ValueType::Cont => write!(w, "Cont"),
     }
 }
 
@@ -1262,6 +1263,78 @@ fn fmt_throw(
     write!(w, ", payload=")?;
     fmt_reg_list(w, payload)?;
     fmt_tag_payload_annotation(w, program, tag)
+}
+
+fn is_continuation(instr: &Instr) -> bool {
+    matches!(
+        instr,
+        Instr::ContNew { .. } | Instr::Resume { .. } | Instr::Suspend { .. }
+    )
+}
+
+fn fmt_tag(w: &mut fmt::Formatter<'_>, program: &Program, tag: u32) -> fmt::Result {
+    write!(w, "tag#{tag}")?;
+    if let Some(name) = program.tag_name(TagId(tag)) {
+        write!(w, "(\"{name}\")")?;
+    }
+    Ok(())
+}
+
+/// Formats the operands of a continuation instruction, naming its signature and tag roles.
+fn fmt_continuation(w: &mut fmt::Formatter<'_>, program: &Program, instr: &Instr) -> fmt::Result {
+    match instr {
+        Instr::ContNew {
+            dst,
+            call_sig,
+            func,
+        } => {
+            write!(w, " ")?;
+            fmt_reg(w, *dst)?;
+            write!(w, ", call_sig#{call_sig}, func=")?;
+            fmt_reg(w, *func)?;
+            fmt_call_sig_annotation(w, program, CallSigId(*call_sig))
+        }
+        Instr::Resume {
+            eff_out,
+            call_sig,
+            cont,
+            eff_in,
+            args,
+            rets,
+        } => {
+            write!(w, " eff_out=")?;
+            fmt_reg(w, *eff_out)?;
+            write!(w, ", call_sig#{call_sig}, cont=")?;
+            fmt_reg(w, *cont)?;
+            write!(w, ", eff_in=")?;
+            fmt_reg(w, *eff_in)?;
+            write!(w, ", args=")?;
+            fmt_reg_list(w, args)?;
+            write!(w, ", rets=")?;
+            fmt_reg_list(w, rets)?;
+            fmt_call_sig_annotation(w, program, CallSigId(*call_sig))
+        }
+        Instr::Suspend {
+            eff_out,
+            tag,
+            eff_in,
+            args,
+            rets,
+        } => {
+            write!(w, " eff_out=")?;
+            fmt_reg(w, *eff_out)?;
+            write!(w, ", ")?;
+            fmt_tag(w, program, *tag)?;
+            write!(w, ", eff_in=")?;
+            fmt_reg(w, *eff_in)?;
+            write!(w, ", payload=")?;
+            fmt_reg_list(w, args)?;
+            write!(w, ", rets=")?;
+            fmt_reg_list(w, rets)?;
+            fmt_tag_payload_annotation(w, program, TagId(*tag))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn fmt_throw_ref(w: &mut fmt::Formatter<'_>, eff: u32, exn: u32) -> fmt::Result {
@@ -1408,9 +1481,14 @@ fn fmt_regions(
         for (clause, catch) in clauses.iter().enumerate() {
             write!(f, "{} ", if clause == 0 { ":" } else { "," })?;
             let suffix = if catch.binds_exception() { "_ref" } else { "" };
+            let kind = if catch.handles_suspension() {
+                "on"
+            } else {
+                "catch"
+            };
             match catch.tag() {
                 Some(tag) => {
-                    write!(f, "catch{suffix} tag#{}", tag.0)?;
+                    write!(f, "{kind}{suffix} tag#{}", tag.0)?;
                     if let Some(name) = program.tag_name(tag) {
                         write!(f, "(\"{name}\")")?;
                     }
@@ -1503,6 +1581,9 @@ fn fmt_instr_with_labels(
             true_arg_count,
             args,
         } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, label_pcs)?,
+        Operands::Simple if is_continuation(&iv.decoded.instr) => {
+            fmt_continuation(f, iv.program, &iv.decoded.instr)?;
+        }
         Operands::Simple => {
             // Most instructions write one register; overflow-checked arithmetic writes two.
             let mut writes = iv.writes();
@@ -1677,6 +1758,9 @@ impl fmt::Display for InstrView<'_> {
                 true_arg_count,
                 args,
             } => fmt_branch_args(f, cond, pc_true, pc_false, true_arg_count, args, &[])?,
+            Operands::Simple if is_continuation(&self.decoded.instr) => {
+                fmt_continuation(f, self.program, &self.decoded.instr)?;
+            }
             Operands::Simple => {
                 // Most instructions write one register; overflow-checked arithmetic writes two.
                 let mut writes = self.writes();

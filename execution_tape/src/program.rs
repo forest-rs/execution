@@ -145,6 +145,10 @@ pub struct RegionId(pub u32);
 /// declares one parameter per payload value; a catch-all target declares none. The `*Ref`
 /// clauses additionally bind the exception itself to one final `Exn` parameter, so the handler
 /// can rethrow it with `throw_ref`.
+///
+/// [`Self::On`] clauses handle suspensions rather than exceptions: they apply only to a
+/// `resume` the region protects, and receive the tag's payload followed by
+/// the suspended continuation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CatchClause {
     /// Catches exactly one tag, binding its payload to the target's block parameters.
@@ -171,6 +175,16 @@ pub enum CatchClause {
         /// Handler block header.
         target: u32,
     },
+    /// Handles a suspension to `tag` from a continuation run by the protected `resume`.
+    ///
+    /// The target declares one parameter per payload value and one final `Cont` parameter
+    /// receiving the suspended continuation. Exceptions never select this clause.
+    On {
+        /// Handled tag.
+        tag: TagId,
+        /// Handler block header.
+        target: u32,
+    },
 }
 
 impl CatchClause {
@@ -181,17 +195,24 @@ impl CatchClause {
             Self::Tag { target, .. }
             | Self::All { target }
             | Self::TagRef { target, .. }
-            | Self::AllRef { target } => target,
+            | Self::AllRef { target }
+            | Self::On { target, .. } => target,
         }
     }
 
-    /// Caught tag, or `None` for a catch-all clause.
+    /// Caught or handled tag, or `None` for a catch-all clause.
     #[must_use]
     pub fn tag(self) -> Option<TagId> {
         match self {
-            Self::Tag { tag, .. } | Self::TagRef { tag, .. } => Some(tag),
+            Self::Tag { tag, .. } | Self::TagRef { tag, .. } | Self::On { tag, .. } => Some(tag),
             Self::All { .. } | Self::AllRef { .. } => None,
         }
+    }
+
+    /// Whether this clause handles suspensions rather than exceptions.
+    #[must_use]
+    pub fn handles_suspension(self) -> bool {
+        matches!(self, Self::On { .. })
     }
 
     /// Whether the handler's last parameter receives the exception reference.
@@ -203,7 +224,7 @@ impl CatchClause {
     /// Whether this clause catches an exception raised with `tag`.
     #[must_use]
     pub fn catches(self, tag: TagId) -> bool {
-        self.tag().is_none_or(|caught| caught == tag)
+        !self.handles_suspension() && self.tag().is_none_or(|caught| caught == tag)
     }
 }
 
@@ -666,6 +687,11 @@ pub enum ValueType {
     U32,
     /// IEEE 754 32-bit float.
     F32,
+    /// A one-shot continuation: suspended or unstarted guest control.
+    ///
+    /// Like [`Self::Exn`], continuations live only in guest registers and guest-to-guest
+    /// signatures, and have no [`crate::value::Value`] representation.
+    Cont,
 }
 
 /// A host-call signature table entry.
@@ -1655,6 +1681,7 @@ impl Program {
                             CatchClause::All { .. } => 1,
                             CatchClause::TagRef { .. } => 2,
                             CatchClause::AllRef { .. } => 3,
+                            CatchClause::On { .. } => 4,
                         };
                         payload.write_u8(kind);
                         if let Some(tag) = clause.tag() {
@@ -2533,6 +2560,7 @@ enum ValueTypeTag {
     I32 = 13,
     U32 = 14,
     F32 = 15,
+    Cont = 16,
 }
 
 impl ValueTypeTag {
@@ -2554,6 +2582,7 @@ impl ValueTypeTag {
             13 => Ok(Self::I32),
             14 => Ok(Self::U32),
             15 => Ok(Self::F32),
+            16 => Ok(Self::Cont),
             _ => Err(DecodeError::OutOfBounds),
         }
     }
@@ -2561,13 +2590,13 @@ impl ValueTypeTag {
 
 // Temporary construction index. Frozen programs retain only IDs and the type pool.
 struct TypeInterner {
-    scalar: [Option<u32>; 16],
+    scalar: [Option<u32>; 17],
     objects: BTreeMap<u64, u32>,
 }
 impl TypeInterner {
     fn new(types: &[ValueType]) -> Self {
         let mut index = Self {
-            scalar: [None; 16],
+            scalar: [None; 17],
             objects: BTreeMap::new(),
         };
         for (id, &ty) in types.iter().enumerate() {
@@ -2601,6 +2630,7 @@ impl TypeInterner {
             ValueType::I32 => 13,
             ValueType::U32 => 14,
             ValueType::F32 => 15,
+            ValueType::Cont => 16,
         }
     }
     fn intern(&mut self, types: &mut Vec<ValueType>, ty: ValueType) -> Result<u32, DecodeError> {
@@ -2645,6 +2675,7 @@ pub(crate) fn write_value_type(out: &mut Vec<u8>, t: ValueType) {
         ValueType::I32 => ValueTypeTag::I32,
         ValueType::U32 => ValueTypeTag::U32,
         ValueType::F32 => ValueTypeTag::F32,
+        ValueType::Cont => ValueTypeTag::Cont,
     };
     out.push(tag as u8);
     if let ValueType::Obj(host_type) = t {
@@ -2671,6 +2702,7 @@ pub(crate) fn decode_value_type(r: &mut Reader<'_>) -> Result<ValueType, DecodeE
         ValueTypeTag::I32 => ValueType::I32,
         ValueTypeTag::U32 => ValueType::U32,
         ValueTypeTag::F32 => ValueType::F32,
+        ValueTypeTag::Cont => ValueType::Cont,
     })
 }
 
@@ -2924,6 +2956,10 @@ fn decode_regions(payload: &[u8]) -> Result<Vec<DecodedProtection>, DecodeError>
                         target: r.read_uleb128_u32()?,
                     },
                     3 => CatchClause::AllRef {
+                        target: r.read_uleb128_u32()?,
+                    },
+                    4 => CatchClause::On {
+                        tag: TagId(r.read_uleb128_u32()?),
                         target: r.read_uleb128_u32()?,
                     },
                     _ => return Err(DecodeError::OutOfBounds),

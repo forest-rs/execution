@@ -207,6 +207,7 @@ pub(super) fn type_name(kind: ValueType) -> String {
         ValueType::Func => "function".into(),
         ValueType::Closure => "closure".into(),
         ValueType::Exn => "exception".into(),
+        ValueType::Cont => "continuation".into(),
         ValueType::Obj(id) => format!("object #{}", id.0),
     }
 }

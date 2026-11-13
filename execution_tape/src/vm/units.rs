@@ -29,10 +29,24 @@ pub(crate) struct SigId(u32);
 /// Canonical argument and result contracts of one signature.
 type SignatureKey = (Box<[ContractId]>, Box<[ContractId]>);
 
+/// A list of canonical contracts interned once per VM.
+///
+/// Continuations are typed by the values that resume them and the values they finally return.
+/// Both change as control suspends to different tags, so they are compared as two lists rather
+/// than one interned signature.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ListId(u32);
+
+impl ListId {
+    /// No list; types a continuation table slot that holds no continuation.
+    pub(crate) const NONE: Self = Self(u32::MAX);
+}
+
 /// Store-wide canonical forms shared by every unit of one VM.
 #[derive(Default)]
 pub(crate) struct Canon {
     signatures: BTreeMap<SignatureKey, SigId>,
+    lists: BTreeMap<Box<[ContractId]>, ListId>,
     /// Contracts with every nominal type replaced by its heap shape and children canonicalized.
     contracts: ContractTableBuilder,
 }
@@ -53,6 +67,17 @@ impl Canon {
         self.signatures.insert(key, id);
         Ok(id)
     }
+
+    fn list(&mut self, contracts: &[ContractId]) -> Result<ListId, InstallError> {
+        if let Some(&id) = self.lists.get(contracts) {
+            return Ok(id);
+        }
+        let id = u32::try_from(self.lists.len())
+            .map(ListId)
+            .map_err(|_| InstallError::CapacityExceeded)?;
+        self.lists.insert(contracts.into(), id);
+        Ok(id)
+    }
 }
 
 /// Code and store-local metadata for one installed program.
@@ -70,6 +95,8 @@ pub(crate) struct Unit {
     closure: Box<[Option<SigId>]>,
     /// Kind signature of each indirect call site signature.
     call_sigs: Box<[SigId]>,
+    /// Argument and result lists of each call signature, which also type continuations.
+    call_sig_lists: Box<[(ListId, ListId)]>,
     /// VM tag of each program [`crate::program::TagId`].
     tags: Box<[TagRef]>,
 }
@@ -107,6 +134,12 @@ impl Unit {
         self.contracts[contract.0 as usize]
     }
 
+    /// The canonical argument and result lists of a call signature of this unit's program.
+    #[inline]
+    pub(crate) fn call_sig_lists(&self, call_sig: CallSigId) -> (ListId, ListId) {
+        self.call_sig_lists[call_sig.0 as usize]
+    }
+
     /// Whether `callee` of this unit can be the target of `call_sig` in `caller`.
     #[inline]
     pub(crate) fn accepts_call(
@@ -132,6 +165,7 @@ impl Unit {
             + size_of_val(&*self.direct)
             + size_of_val(&*self.closure)
             + size_of_val(&*self.call_sigs)
+            + size_of_val(&*self.call_sig_lists)
             + size_of_val(&*self.tags)
     }
 
@@ -196,19 +230,22 @@ impl Unit {
                 None
             });
         }
-        let call_sigs = source
-            .call_sigs
-            .iter()
-            .map(|entry| {
-                let args = source
+        let mut call_sigs = Vec::with_capacity(source.call_sigs.len());
+        let mut call_sig_lists = Vec::with_capacity(source.call_sigs.len());
+        for entry in &source.call_sigs {
+            let args = canonical(
+                source
                     .call_sig_arg_contracts(entry)
-                    .expect("verified call signature");
-                let rets = source
+                    .expect("verified call signature"),
+            );
+            let rets = canonical(
+                source
                     .call_sig_ret_contracts(entry)
-                    .expect("verified call signature");
-                canon.signature(&canonical(args), &canonical(rets))
-            })
-            .collect::<Result<_, _>>()?;
+                    .expect("verified call signature"),
+            );
+            call_sigs.push(canon.signature(&args, &rets)?);
+            call_sig_lists.push((canon.list(&args)?, canon.list(&rets)?));
+        }
         Ok(Self {
             program,
             structs,
@@ -216,7 +253,8 @@ impl Unit {
             contracts,
             direct: direct.into(),
             closure: closure.into(),
-            call_sigs,
+            call_sigs: call_sigs.into(),
+            call_sig_lists: call_sig_lists.into(),
             tags: Box::default(),
         })
     }
@@ -287,6 +325,8 @@ pub(crate) struct Tag {
     results: Box<[ContractId]>,
     /// Storage kinds of [`Self::results`].
     result_kinds: Box<[ValueType]>,
+    /// Interned [`Self::results`], the input type of a continuation suspended to this tag.
+    pub(crate) results_list: ListId,
     /// The unit and local tag that define it, whose contracts check host payloads.
     pub(crate) definer: Option<(UnitId, TagId)>,
 }
@@ -422,12 +462,14 @@ impl UnitTable {
             let local = TagId(u32::try_from(index).expect("verified tag count"));
             let (name, payload, results, kinds, result_kinds) = declared(local);
             let tag = TagRef(u32::try_from(self.tags.len()).expect("checked tag capacity"));
+            let results_list = self.canon.list(&results)?;
             self.tags.push(Tag {
                 name: name.into(),
                 kinds,
                 payload,
                 results,
                 result_kinds,
+                results_list,
                 definer: Some((id, local)),
             });
             *slot = Some(tag);
@@ -448,12 +490,12 @@ impl UnitTable {
         if self.defined.contains_key(name) {
             return Err(TagError::DuplicateName { name: name.into() });
         }
-        if kinds
-            .iter()
-            .chain(result_kinds)
-            .any(|&kind| kind == ValueType::Exn)
-        {
-            return Err(TagError::ExceptionPayload);
+        for &kind in kinds.iter().chain(result_kinds) {
+            match kind {
+                ValueType::Exn => return Err(TagError::ExceptionPayload),
+                ValueType::Cont => return Err(TagError::ContinuationPayload),
+                _ => {}
+            }
         }
         let tag = u32::try_from(self.tags.len())
             .map(TagRef)
@@ -471,12 +513,17 @@ impl UnitTable {
         };
         let payload = intern(kinds)?;
         let results = intern(result_kinds)?;
+        let results_list = self
+            .canon
+            .list(&results)
+            .map_err(|_| TagError::CapacityExceeded)?;
         self.tags.push(Tag {
             name: name.into(),
             kinds: kinds.into(),
             payload,
             results,
             result_kinds: result_kinds.into(),
+            results_list,
             definer: None,
         });
         self.defined.insert(name.into(), tag);
@@ -496,6 +543,8 @@ pub enum TagError {
     },
     /// An exception reference cannot be part of a payload or its results.
     ExceptionPayload,
+    /// A continuation reference cannot be part of a payload or its results.
+    ContinuationPayload,
     /// The VM cannot represent another tag.
     CapacityExceeded,
 }
@@ -506,6 +555,9 @@ impl fmt::Display for TagError {
             Self::DuplicateName { name } => write!(f, "tag \"{name}\" is already defined"),
             Self::ExceptionPayload => {
                 f.write_str("a tag payload or result cannot hold an exception reference")
+            }
+            Self::ContinuationPayload => {
+                f.write_str("a tag payload or result cannot hold a continuation reference")
             }
             Self::CapacityExceeded => f.write_str("VM tag capacity exhausted"),
         }

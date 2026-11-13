@@ -896,7 +896,7 @@ impl TraceSink for Check<'_> {
             TraceOutcome::Caught { depth } => {
                 crate::recording::InstructionOutcome::Caught { depth }
             }
-            TraceOutcome::Cancelled => {
+            TraceOutcome::Cancelled | TraceOutcome::Suspended => {
                 state.boundary = ReplayBoundary::Instruction { index };
                 state.error = Some(state.mismatch(Divergence::Instruction));
                 return;
@@ -1512,7 +1512,15 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         ) => ae == be && aa == right_actual,
         (Trap::TrapCode(a), Trap::TrapCode(b)) => a == b,
         (Trap::UnknownTag { tag: a }, Trap::UnknownTag { tag: b }) => a == b,
-        (Trap::ExceptionBoundary, Trap::ExceptionBoundary) => true,
+        (Trap::ExceptionBoundary, Trap::ExceptionBoundary)
+        | (Trap::ContinuationBoundary, Trap::ContinuationBoundary)
+        | (Trap::ContinuationConsumed, Trap::ContinuationConsumed) => true,
+        (
+            Trap::ContinuationSignatureMismatch { signature: a },
+            Trap::ContinuationSignatureMismatch { signature: b },
+        ) => a == b,
+        (Trap::UnhandledSuspension { tag: a }, Trap::UnhandledSuspension { tag: b })
+        | (Trap::SuspensionAcrossHost { tag: a }, Trap::SuspensionAcrossHost { tag: b }) => a == b,
         // Payload values and sharing were checked against the recorded `Thrown` event.
         (Trap::Uncaught(a), Trap::Uncaught(b)) => {
             a.local_tag() == b.local_tag() && a.name() == b.name()

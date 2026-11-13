@@ -833,7 +833,7 @@ impl TraceSink for Recorder {
             self.fail(CaptureFault::InvalidSequence);
         }
         match outcome {
-            TraceOutcome::Caught { .. } => {
+            TraceOutcome::Caught { .. } | TraceOutcome::Suspended => {
                 self.fail(CaptureFault::InvalidSequence);
             }
             TraceOutcome::Cancelled => self.fail(CaptureFault::MissingCompletion),

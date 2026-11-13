@@ -755,13 +755,22 @@ fn transfer(
                 replacements.push((*dst, fact));
             }
         }
-        Instr::CallIndirect { call_sig, rets, .. } => {
+        Instr::CallIndirect { call_sig, rets, .. } | Instr::Resume { call_sig, rets, .. } => {
             for (&reg, &id) in rets.iter().zip(
                 arena
                     .program
                     .call_sig_ret_contracts(&arena.program.call_sigs[*call_sig as usize])
                     .unwrap(),
             ) {
+                replacements.push((reg, arena.import(id)));
+            }
+        }
+        Instr::Suspend { tag, rets, .. } => {
+            let entry = arena.program.tag(TagId(*tag)).expect("verified tag");
+            for (&reg, &id) in rets
+                .iter()
+                .zip(arena.program.tag_result_contracts(entry).unwrap())
+            {
                 replacements.push((reg, arena.import(id)));
             }
         }
@@ -1016,7 +1025,40 @@ fn validate(
                     })?;
             }
         }
-        Instr::Throw { tag, args, .. } => {
+        Instr::ContNew {
+            call_sig,
+            func: callee,
+            ..
+        } => {
+            let expected =
+                arena.indirect_signature(CallSigId(*call_sig), types.get(*callee).unwrap());
+            let actual = arena.fact(state, types, *callee);
+            if matches!(actual, Fact::Refined(_)) && actual != expected {
+                return Err(VerifyError::CallIndirectContractMismatch {
+                    func: func_id,
+                    pc,
+                    call_sig: *call_sig,
+                });
+            }
+        }
+        Instr::Resume { call_sig, args, .. } => {
+            let signature = &arena.program.call_sigs[*call_sig as usize];
+            let arg_contracts = arena.program.call_sig_arg_contracts(signature).unwrap();
+            for (index, (&reg, &contract)) in args.iter().zip(arg_contracts).enumerate() {
+                arena
+                    .check(contract, arena.fact(state, types, reg))
+                    .map_err(|error| VerifyError::ContractMismatch {
+                        func: func_id,
+                        pc,
+                        position: ContractPosition::IndirectArgument {
+                            signature: CallSigId(*call_sig),
+                            index: u32::try_from(index).expect("signature arity"),
+                        },
+                        error,
+                    })?;
+            }
+        }
+        Instr::Throw { tag, args, .. } | Instr::Suspend { tag, args, .. } => {
             let tag = TagId(*tag);
             let entry = arena.program.tag(tag).expect("verified tag");
             let contracts = arena

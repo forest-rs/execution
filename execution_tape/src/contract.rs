@@ -598,6 +598,7 @@ impl fmt::Display for KindName {
             ValueType::Func => "function",
             ValueType::Closure => "closure",
             ValueType::Exn => "exception",
+            ValueType::Cont => "continuation",
             ValueType::Obj(id) => return write!(f, "object type #{}", id.0),
         })
     }

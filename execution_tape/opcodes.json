@@ -3952,6 +3952,138 @@
       ]
     },
     {
+      "name": "ContNew",
+      "mnemonic": "cont.new",
+      "prefix": "0xFC",
+      "byte": "0x05",
+      "terminator": false,
+      "flags": [],
+      "doc": "Create an unstarted continuation of a function or closure, typed by a call signature.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "func",
+          "encoding": "reg_u32_uleb",
+          "field": "func",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "Resume",
+      "mnemonic": "resume",
+      "prefix": "0xFC",
+      "byte": "0x06",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Run a continuation on top of this activation until it returns or suspends to a handler.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "cont",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        }
+      ]
+    },
+    {
+      "name": "Suspend",
+      "mnemonic": "suspend",
+      "prefix": "0xFC",
+      "byte": "0x07",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Suspend the current continuation to the nearest handler of a tag.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "tag"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        }
+      ]
+    },
+    {
       "name": "ConstI32",
       "mnemonic": "const.i32",
       "prefix": "0xFD",

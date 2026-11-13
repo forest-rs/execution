@@ -118,6 +118,25 @@ pub(crate) enum Instr {
     },
     /// Rethrow the exception referenced by `exn`.
     ThrowRef { eff_in: u32, exn: u32 },
+    /// Create an unstarted continuation of the function or closure in `func`.
+    ContNew { dst: u32, call_sig: u32, func: u32 },
+    /// Run continuation `cont` with `args` until it returns `rets` or suspends to a handler.
+    Resume {
+        eff_out: u32,
+        call_sig: u32,
+        cont: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
+    /// Suspend to the nearest handler of `tag` with payload `args`; resumption supplies `rets`.
+    Suspend {
+        eff_out: u32,
+        tag: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
 
     /// `dst = ()`.
     ConstUnit { dst: u32 },

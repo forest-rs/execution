@@ -15,6 +15,9 @@ use crate::program::CatchClause;
 /// The target should be a block reserved with [`Asm::block`]. A tag clause's block declares one
 /// parameter per payload value, in payload order; a catch-all block declares none. The `*Ref`
 /// clauses append one `Exn` parameter receiving the exception, for [`Asm::throw_ref`].
+///
+/// [`Self::On`] handles suspensions of a continuation that a protected [`Asm::resume`] runs; its
+/// block declares the tag's payload parameters and then one `Cont` parameter.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Catch {
     /// Catches exactly `tag`, binding its payload to the target block's parameters.
@@ -25,6 +28,8 @@ pub enum Catch {
     TagRef(TagId, Label),
     /// Catches every exception, binding only the exception reference.
     AllRef(Label),
+    /// Handles a suspension to `tag`, binding its payload and then the suspended continuation.
+    On(TagId, Label),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +82,10 @@ impl Regions {
                     Catch::AllRef(label) => CatchClause::AllRef {
                         target: resolve(label).ok_or(UnresolvedLabel)?,
                     },
+                    Catch::On(tag, label) => CatchClause::On {
+                        tag,
+                        target: resolve(label).ok_or(UnresolvedLabel)?,
+                    },
                 });
             }
             regions.push(RegionDef { parent, clauses });
@@ -113,8 +122,10 @@ impl Asm {
     ///
     /// Instructions emitted until the matching [`Self::end_region`] belong to the new region.
     /// An exception raised there tries `clauses` in order, then the parent region's clauses,
-    /// then the calling activation. Only `call`, `call.indirect`, `host_call` and `throw` can
-    /// raise; traps are never caught.
+    /// then the calling activation. Only `call`, `call.indirect`, `host_call`, `throw`,
+    /// `throw_ref` and `resume` can raise; traps are never caught.
+    /// A suspension from a continuation run by a `resume` in the region tries the `on` clauses
+    /// the same way, then the `resume` that runs this activation's own continuation.
     pub fn begin_region(&mut self, clauses: &[Catch]) -> RegionId {
         let id = RegionId(u32::try_from(self.regions.declared.len()).unwrap_or(u32::MAX));
         let parent = self.regions.open.last().copied();
