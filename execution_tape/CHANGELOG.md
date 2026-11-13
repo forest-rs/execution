@@ -16,6 +16,23 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add 32-bit numerics under the `0xFD` prefix (`OpcodePrefix::Numeric32`), in aligned blocks:
+  `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` and conversions from `0xC0`. Each
+  family mirrors its 64-bit counterpart (constants, wrapping and `_ovf` arithmetic, trapping
+  `div`/`rem`, bitwise operations, shifts masked with `& 31`, comparisons; `u32` bit counting
+  and rotation; the full `f32` set of `f64` operations). Conversions cover sign and zero
+  extension, trapping and wrapping narrowing, `f32`/`f64` promotion and demotion, trapping and
+  saturating float-to-integer, integer-to-float rounding once, `f32` bit casts, and bit
+  reinterpretation between signed and unsigned of equal width, including the previously missing
+  `i64.to_u64_wrap`/`u64.to_i64_wrap`. `f32` rounding and square root reuse the exact `no_std`
+  `f64` routines and stay correctly rounded. Each opcode has an `Asm` method named after its
+  mnemonic (`i32_add`, `f64_to_f32`, ...), plus `const_i32`, `const_u32`, `const_f32` and
+  `const_f32_bits`. Operand metadata gains `OperandKind::ImmI32`, `OperandEncoding::I32Sleb`
+  and `OperandEncoding::U32Le`, the codec gains `Operand::ImmI32` and `DecodedOperand::ImmI32`,
+  and disassembly gains `ConstValue::{I32, U32, F32Bits}`. Migration: handle the new `Opcode`,
+  `OperandKind`, `OperandEncoding`, `Operand`, `DecodedOperand` and `ConstValue` variants in
+  exhaustive matches.
+
 - Add 32-bit value types: `ValueType::{I32, U32, F32}`, `Value::{I32, U32, F32}`,
   `ValueRef::{I32, U32, F32}` and `RecordedValue::{I32, U32, F32}` (`F32` records its bits). They
   have wire type tags 13, 14 and 15 and host signature tags of the same numbers, so existing

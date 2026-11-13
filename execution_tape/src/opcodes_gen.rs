@@ -18,6 +18,8 @@ pub enum OperandKind {
     ImmU8,
     /// An immediate `u32`.
     ImmU32,
+    /// An immediate `i32`.
+    ImmI32,
     /// An immediate `i64`.
     ImmI64,
     /// A complete decimal literal.
@@ -86,10 +88,12 @@ pub enum OperandEncoding {
     BoolU8,
     U8Raw,
     U32Uleb,
+    I32Sleb,
     I64Sleb,
     DecimalSleb,
     U64Uleb,
     U64Le,
+    U32Le,
 }
 
 /// Operand access for register operands.
@@ -502,6 +506,262 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::ImmI32, OperandRole::Imm, OperandEncoding::I32Sleb, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::ImmU32, OperandRole::Imm, OperandEncoding::U32Uleb, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::ImmU32, OperandRole::Bits, OperandEncoding::U32Le, None),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::B, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -717,6 +977,233 @@ const EXTENDED_OPCODE_INFO: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "u64.rotr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 369, len: 3 } }, // 0xFC 0x04 U64Rotr
 ];
 
+/// Metadata for opcodes under [`OpcodePrefix::Numeric32`], indexed by the byte after the prefix.
+const NUMERIC32_OPCODE_INFO: &[OpcodeInfo] = &[
+    OpcodeInfo { mnemonic: "const.i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 372, len: 2 } }, // 0xFD 0x00 ConstI32
+    OpcodeInfo { mnemonic: "i32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 374, len: 3 } }, // 0xFD 0x01 I32Add
+    OpcodeInfo { mnemonic: "i32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 377, len: 3 } }, // 0xFD 0x02 I32Sub
+    OpcodeInfo { mnemonic: "i32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 380, len: 3 } }, // 0xFD 0x03 I32Mul
+    OpcodeInfo { mnemonic: "i32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 383, len: 3 } }, // 0xFD 0x04 I32Div
+    OpcodeInfo { mnemonic: "i32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 386, len: 3 } }, // 0xFD 0x05 I32Rem
+    OpcodeInfo { mnemonic: "i32.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 389, len: 4 } }, // 0xFD 0x06 I32AddOvf
+    OpcodeInfo { mnemonic: "i32.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 393, len: 4 } }, // 0xFD 0x07 I32SubOvf
+    OpcodeInfo { mnemonic: "i32.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 397, len: 4 } }, // 0xFD 0x08 I32MulOvf
+    OpcodeInfo { mnemonic: "i32.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 401, len: 3 } }, // 0xFD 0x09 I32And
+    OpcodeInfo { mnemonic: "i32.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 404, len: 3 } }, // 0xFD 0x0A I32Or
+    OpcodeInfo { mnemonic: "i32.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 407, len: 3 } }, // 0xFD 0x0B I32Xor
+    OpcodeInfo { mnemonic: "i32.shl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 410, len: 3 } }, // 0xFD 0x0C I32Shl
+    OpcodeInfo { mnemonic: "i32.shr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 413, len: 3 } }, // 0xFD 0x0D I32Shr
+    OpcodeInfo { mnemonic: "i32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 416, len: 3 } }, // 0xFD 0x0E I32Eq
+    OpcodeInfo { mnemonic: "i32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 419, len: 3 } }, // 0xFD 0x0F I32Lt
+    OpcodeInfo { mnemonic: "i32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 422, len: 3 } }, // 0xFD 0x10 I32Gt
+    OpcodeInfo { mnemonic: "i32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 425, len: 3 } }, // 0xFD 0x11 I32Le
+    OpcodeInfo { mnemonic: "i32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 428, len: 3 } }, // 0xFD 0x12 I32Ge
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x13
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x14
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x15
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x16
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x17
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x18
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x19
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x1A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x1B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x1C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x1D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x1E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x1F
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x20
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x21
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x22
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x23
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x24
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x25
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x26
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x27
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x28
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x29
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x2A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x2B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x2C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x2D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x2E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x2F
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x30
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x31
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x32
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x33
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x34
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x35
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x36
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x37
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x38
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x39
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3F
+    OpcodeInfo { mnemonic: "const.u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 431, len: 2 } }, // 0xFD 0x40 ConstU32
+    OpcodeInfo { mnemonic: "u32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 433, len: 3 } }, // 0xFD 0x41 U32Add
+    OpcodeInfo { mnemonic: "u32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 436, len: 3 } }, // 0xFD 0x42 U32Sub
+    OpcodeInfo { mnemonic: "u32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 439, len: 3 } }, // 0xFD 0x43 U32Mul
+    OpcodeInfo { mnemonic: "u32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 442, len: 3 } }, // 0xFD 0x44 U32Div
+    OpcodeInfo { mnemonic: "u32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 445, len: 3 } }, // 0xFD 0x45 U32Rem
+    OpcodeInfo { mnemonic: "u32.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 448, len: 4 } }, // 0xFD 0x46 U32AddOvf
+    OpcodeInfo { mnemonic: "u32.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 452, len: 4 } }, // 0xFD 0x47 U32SubOvf
+    OpcodeInfo { mnemonic: "u32.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 456, len: 4 } }, // 0xFD 0x48 U32MulOvf
+    OpcodeInfo { mnemonic: "u32.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 460, len: 3 } }, // 0xFD 0x49 U32And
+    OpcodeInfo { mnemonic: "u32.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 463, len: 3 } }, // 0xFD 0x4A U32Or
+    OpcodeInfo { mnemonic: "u32.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 466, len: 3 } }, // 0xFD 0x4B U32Xor
+    OpcodeInfo { mnemonic: "u32.shl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 469, len: 3 } }, // 0xFD 0x4C U32Shl
+    OpcodeInfo { mnemonic: "u32.shr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 472, len: 3 } }, // 0xFD 0x4D U32Shr
+    OpcodeInfo { mnemonic: "u32.clz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 475, len: 2 } }, // 0xFD 0x4E U32Clz
+    OpcodeInfo { mnemonic: "u32.ctz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 477, len: 2 } }, // 0xFD 0x4F U32Ctz
+    OpcodeInfo { mnemonic: "u32.popcnt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 479, len: 2 } }, // 0xFD 0x50 U32Popcnt
+    OpcodeInfo { mnemonic: "u32.rotl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 481, len: 3 } }, // 0xFD 0x51 U32Rotl
+    OpcodeInfo { mnemonic: "u32.rotr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 484, len: 3 } }, // 0xFD 0x52 U32Rotr
+    OpcodeInfo { mnemonic: "u32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 487, len: 3 } }, // 0xFD 0x53 U32Eq
+    OpcodeInfo { mnemonic: "u32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 490, len: 3 } }, // 0xFD 0x54 U32Lt
+    OpcodeInfo { mnemonic: "u32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 493, len: 3 } }, // 0xFD 0x55 U32Gt
+    OpcodeInfo { mnemonic: "u32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 496, len: 3 } }, // 0xFD 0x56 U32Le
+    OpcodeInfo { mnemonic: "u32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 499, len: 3 } }, // 0xFD 0x57 U32Ge
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x58
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x59
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5F
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x60
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x61
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x62
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x63
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x64
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x65
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x66
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x67
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x68
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x69
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x6A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x6B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x6C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x6D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x6E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x6F
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x70
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x71
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x72
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x73
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x74
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x75
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x76
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x77
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x78
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x79
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7F
+    OpcodeInfo { mnemonic: "const.f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 502, len: 2 } }, // 0xFD 0x80 ConstF32
+    OpcodeInfo { mnemonic: "f32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 504, len: 3 } }, // 0xFD 0x81 F32Add
+    OpcodeInfo { mnemonic: "f32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 507, len: 3 } }, // 0xFD 0x82 F32Sub
+    OpcodeInfo { mnemonic: "f32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 510, len: 3 } }, // 0xFD 0x83 F32Mul
+    OpcodeInfo { mnemonic: "f32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 513, len: 3 } }, // 0xFD 0x84 F32Div
+    OpcodeInfo { mnemonic: "f32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 516, len: 3 } }, // 0xFD 0x85 F32Rem
+    OpcodeInfo { mnemonic: "f32.neg", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 519, len: 2 } }, // 0xFD 0x86 F32Neg
+    OpcodeInfo { mnemonic: "f32.abs", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 521, len: 2 } }, // 0xFD 0x87 F32Abs
+    OpcodeInfo { mnemonic: "f32.min", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 523, len: 3 } }, // 0xFD 0x88 F32Min
+    OpcodeInfo { mnemonic: "f32.max", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 526, len: 3 } }, // 0xFD 0x89 F32Max
+    OpcodeInfo { mnemonic: "f32.min_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 529, len: 3 } }, // 0xFD 0x8A F32MinNum
+    OpcodeInfo { mnemonic: "f32.max_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 532, len: 3 } }, // 0xFD 0x8B F32MaxNum
+    OpcodeInfo { mnemonic: "f32.copysign", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 535, len: 3 } }, // 0xFD 0x8C F32CopySign
+    OpcodeInfo { mnemonic: "f32.floor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 538, len: 2 } }, // 0xFD 0x8D F32Floor
+    OpcodeInfo { mnemonic: "f32.ceil", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 540, len: 2 } }, // 0xFD 0x8E F32Ceil
+    OpcodeInfo { mnemonic: "f32.trunc", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 542, len: 2 } }, // 0xFD 0x8F F32Trunc
+    OpcodeInfo { mnemonic: "f32.nearest", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 544, len: 2 } }, // 0xFD 0x90 F32Nearest
+    OpcodeInfo { mnemonic: "f32.sqrt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 546, len: 2 } }, // 0xFD 0x91 F32Sqrt
+    OpcodeInfo { mnemonic: "f32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 548, len: 3 } }, // 0xFD 0x92 F32Eq
+    OpcodeInfo { mnemonic: "f32.ne", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 551, len: 3 } }, // 0xFD 0x93 F32Ne
+    OpcodeInfo { mnemonic: "f32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 554, len: 3 } }, // 0xFD 0x94 F32Lt
+    OpcodeInfo { mnemonic: "f32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 557, len: 3 } }, // 0xFD 0x95 F32Gt
+    OpcodeInfo { mnemonic: "f32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 560, len: 3 } }, // 0xFD 0x96 F32Le
+    OpcodeInfo { mnemonic: "f32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 563, len: 3 } }, // 0xFD 0x97 F32Ge
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x98
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x99
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9A
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9B
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9C
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9D
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9E
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9F
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA0
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA1
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA2
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA3
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA4
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA5
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA6
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA7
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA8
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xA9
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xAA
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xAB
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xAC
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xAD
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xAE
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xAF
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB0
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB1
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB2
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB3
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB4
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB5
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB6
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB7
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB8
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xB9
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBA
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBB
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBC
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBD
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBE
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBF
+    OpcodeInfo { mnemonic: "i32.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 566, len: 2 } }, // 0xFD 0xC0 I32ToI64
+    OpcodeInfo { mnemonic: "i64.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 568, len: 2 } }, // 0xFD 0xC1 I64ToI32
+    OpcodeInfo { mnemonic: "i64.to_i32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 570, len: 2 } }, // 0xFD 0xC2 I64ToI32Wrap
+    OpcodeInfo { mnemonic: "u32.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 572, len: 2 } }, // 0xFD 0xC3 U32ToU64
+    OpcodeInfo { mnemonic: "u64.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 574, len: 2 } }, // 0xFD 0xC4 U64ToU32
+    OpcodeInfo { mnemonic: "u64.to_u32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 576, len: 2 } }, // 0xFD 0xC5 U64ToU32Wrap
+    OpcodeInfo { mnemonic: "u32.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 578, len: 2 } }, // 0xFD 0xC6 U32ToI64
+    OpcodeInfo { mnemonic: "i32.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 580, len: 2 } }, // 0xFD 0xC7 I32ToU32
+    OpcodeInfo { mnemonic: "u32.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 582, len: 2 } }, // 0xFD 0xC8 U32ToI32
+    OpcodeInfo { mnemonic: "i32.to_u32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 584, len: 2 } }, // 0xFD 0xC9 I32ToU32Wrap
+    OpcodeInfo { mnemonic: "u32.to_i32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 586, len: 2 } }, // 0xFD 0xCA U32ToI32Wrap
+    OpcodeInfo { mnemonic: "i64.to_u64_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 588, len: 2 } }, // 0xFD 0xCB I64ToU64Wrap
+    OpcodeInfo { mnemonic: "u64.to_i64_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 590, len: 2 } }, // 0xFD 0xCC U64ToI64Wrap
+    OpcodeInfo { mnemonic: "f32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 592, len: 2 } }, // 0xFD 0xCD F32ToF64
+    OpcodeInfo { mnemonic: "f64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 594, len: 2 } }, // 0xFD 0xCE F64ToF32
+    OpcodeInfo { mnemonic: "f32.to_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 596, len: 2 } }, // 0xFD 0xCF F32ToBits
+    OpcodeInfo { mnemonic: "f32.from_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 598, len: 2 } }, // 0xFD 0xD0 F32FromBits
+    OpcodeInfo { mnemonic: "f32.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 600, len: 2 } }, // 0xFD 0xD1 F32ToI32
+    OpcodeInfo { mnemonic: "f32.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 602, len: 2 } }, // 0xFD 0xD2 F32ToU32
+    OpcodeInfo { mnemonic: "f32.to_i32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 604, len: 2 } }, // 0xFD 0xD3 F32ToI32Sat
+    OpcodeInfo { mnemonic: "f32.to_u32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 606, len: 2 } }, // 0xFD 0xD4 F32ToU32Sat
+    OpcodeInfo { mnemonic: "f64.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 608, len: 2 } }, // 0xFD 0xD5 F64ToI32
+    OpcodeInfo { mnemonic: "f64.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 610, len: 2 } }, // 0xFD 0xD6 F64ToU32
+    OpcodeInfo { mnemonic: "f64.to_i32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 612, len: 2 } }, // 0xFD 0xD7 F64ToI32Sat
+    OpcodeInfo { mnemonic: "f64.to_u32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 614, len: 2 } }, // 0xFD 0xD8 F64ToU32Sat
+    OpcodeInfo { mnemonic: "i32.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 616, len: 2 } }, // 0xFD 0xD9 I32ToF32
+    OpcodeInfo { mnemonic: "u32.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 618, len: 2 } }, // 0xFD 0xDA U32ToF32
+    OpcodeInfo { mnemonic: "i64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 620, len: 2 } }, // 0xFD 0xDB I64ToF32
+    OpcodeInfo { mnemonic: "u64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 622, len: 2 } }, // 0xFD 0xDC U64ToF32
+    OpcodeInfo { mnemonic: "i32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 624, len: 2 } }, // 0xFD 0xDD I32ToF64
+    OpcodeInfo { mnemonic: "u32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 626, len: 2 } }, // 0xFD 0xDE U32ToF64
+];
+
 /// Lead bytes that introduce a prefixed opcode.
 ///
 /// A prefixed opcode is encoded as its prefix byte followed by one opcode byte, so
@@ -727,6 +1214,9 @@ const EXTENDED_OPCODE_INFO: &[OpcodeInfo] = &[
 pub enum OpcodePrefix {
     /// General extension space. New instruction families allocate the next free byte here.
     Extended = 0xFC,
+    /// 32-bit numerics in aligned blocks: `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`,
+    /// conversions from `0xC0`.
+    Numeric32 = 0xFD,
 }
 
 impl OpcodePrefix {
@@ -735,6 +1225,7 @@ impl OpcodePrefix {
     pub const fn from_u8(b: u8) -> Option<Self> {
         Some(match b {
             0xFC => Self::Extended,
+            0xFD => Self::Numeric32,
             _ => return None,
         })
     }
@@ -1016,6 +1507,202 @@ pub enum Opcode {
     U64Rotl = 0xFC03,
     /// `dst = a.rotate_right(b & 63)` (`u64`).
     U64Rotr = 0xFC04,
+    /// `dst = i32`.
+    ConstI32 = 0xFD00,
+    /// `dst = a + b` (`i32`, wrapping).
+    I32Add = 0xFD01,
+    /// `dst = a - b` (`i32`, wrapping).
+    I32Sub = 0xFD02,
+    /// `dst = a * b` (`i32`, wrapping).
+    I32Mul = 0xFD03,
+    /// `dst = a / b` (`i32`, truncating; traps on zero divisor or `MIN / -1`).
+    I32Div = 0xFD04,
+    /// `dst = a % b` (`i32`, sign of `a`; traps on zero divisor or `MIN % -1`).
+    I32Rem = 0xFD05,
+    /// `(dst, overflow) = a + b` (`i32` wrapped sum; `bool` true if the signed sum overflowed).
+    I32AddOvf = 0xFD06,
+    /// `(dst, overflow) = a - b` (`i32` wrapped difference; `bool` true on signed overflow).
+    I32SubOvf = 0xFD07,
+    /// `(dst, overflow) = a * b` (`i32` wrapped product; `bool` true on signed overflow).
+    I32MulOvf = 0xFD08,
+    /// `dst = a & b` (`i32`).
+    I32And = 0xFD09,
+    /// `dst = a | b` (`i32`).
+    I32Or = 0xFD0A,
+    /// `dst = a ^ b` (`i32`).
+    I32Xor = 0xFD0B,
+    /// `dst = a << (b & 31)` (`i32`).
+    I32Shl = 0xFD0C,
+    /// `dst = a >> (b & 31)` (`i32`, arithmetic).
+    I32Shr = 0xFD0D,
+    /// `dst = (a == b)` (`i32` -> `bool`).
+    I32Eq = 0xFD0E,
+    /// `dst = (a < b)` (`i32` -> `bool`).
+    I32Lt = 0xFD0F,
+    /// `dst = (a > b)` (`i32` -> `bool`).
+    I32Gt = 0xFD10,
+    /// `dst = (a <= b)` (`i32` -> `bool`).
+    I32Le = 0xFD11,
+    /// `dst = (a >= b)` (`i32` -> `bool`).
+    I32Ge = 0xFD12,
+    /// `dst = u32`.
+    ConstU32 = 0xFD40,
+    /// `dst = a + b` (`u32`, wrapping).
+    U32Add = 0xFD41,
+    /// `dst = a - b` (`u32`, wrapping).
+    U32Sub = 0xFD42,
+    /// `dst = a * b` (`u32`, wrapping).
+    U32Mul = 0xFD43,
+    /// `dst = a / b` (`u32`; traps on zero divisor).
+    U32Div = 0xFD44,
+    /// `dst = a % b` (`u32`; traps on zero divisor).
+    U32Rem = 0xFD45,
+    /// `(dst, overflow) = a + b` (`u32` wrapped sum; `bool` carry).
+    U32AddOvf = 0xFD46,
+    /// `(dst, overflow) = a - b` (`u32` wrapped difference; `bool` borrow).
+    U32SubOvf = 0xFD47,
+    /// `(dst, overflow) = a * b` (`u32` wrapped product; `bool` true on overflow).
+    U32MulOvf = 0xFD48,
+    /// `dst = a & b` (`u32`).
+    U32And = 0xFD49,
+    /// `dst = a | b` (`u32`).
+    U32Or = 0xFD4A,
+    /// `dst = a ^ b` (`u32`).
+    U32Xor = 0xFD4B,
+    /// `dst = a << (b & 31)` (`u32`).
+    U32Shl = 0xFD4C,
+    /// `dst = a >> (b & 31)` (`u32`, logical).
+    U32Shr = 0xFD4D,
+    /// `dst = a.leading_zeros()` (`u32`; 32 when `a == 0`).
+    U32Clz = 0xFD4E,
+    /// `dst = a.trailing_zeros()` (`u32`; 32 when `a == 0`).
+    U32Ctz = 0xFD4F,
+    /// `dst = a.count_ones()` (`u32`).
+    U32Popcnt = 0xFD50,
+    /// `dst = a.rotate_left(b & 31)` (`u32`).
+    U32Rotl = 0xFD51,
+    /// `dst = a.rotate_right(b & 31)` (`u32`).
+    U32Rotr = 0xFD52,
+    /// `dst = (a == b)` (`u32` -> `bool`).
+    U32Eq = 0xFD53,
+    /// `dst = (a < b)` (`u32` -> `bool`).
+    U32Lt = 0xFD54,
+    /// `dst = (a > b)` (`u32` -> `bool`).
+    U32Gt = 0xFD55,
+    /// `dst = (a <= b)` (`u32` -> `bool`).
+    U32Le = 0xFD56,
+    /// `dst = (a >= b)` (`u32` -> `bool`).
+    U32Ge = 0xFD57,
+    /// `dst = f32` encoded as raw IEEE bits.
+    ConstF32 = 0xFD80,
+    /// `dst = a + b` (`f32`).
+    F32Add = 0xFD81,
+    /// `dst = a - b` (`f32`).
+    F32Sub = 0xFD82,
+    /// `dst = a * b` (`f32`).
+    F32Mul = 0xFD83,
+    /// `dst = a / b` (`f32`).
+    F32Div = 0xFD84,
+    /// `dst = a % b` (`f32`, sign of `a`).
+    F32Rem = 0xFD85,
+    /// `dst = -a` (`f32`, flips the sign bit).
+    F32Neg = 0xFD86,
+    /// `dst = abs(a)` (`f32`, clears the sign bit).
+    F32Abs = 0xFD87,
+    /// `dst = min(a, b)` (`f32`, NaN-propagating).
+    F32Min = 0xFD88,
+    /// `dst = max(a, b)` (`f32`, NaN-propagating).
+    F32Max = 0xFD89,
+    /// `dst = min_num(a, b)` (`f32`, number-favoring).
+    F32MinNum = 0xFD8A,
+    /// `dst = max_num(a, b)` (`f32`, number-favoring).
+    F32MaxNum = 0xFD8B,
+    /// `dst = copysign(a, b)` (`f32`: magnitude of `a`, sign of `b`).
+    F32CopySign = 0xFD8C,
+    /// `dst = floor(a)` (`f32`, rounds toward negative infinity).
+    F32Floor = 0xFD8D,
+    /// `dst = ceil(a)` (`f32`, rounds toward positive infinity).
+    F32Ceil = 0xFD8E,
+    /// `dst = trunc(a)` (`f32`, rounds toward zero).
+    F32Trunc = 0xFD8F,
+    /// `dst = nearest(a)` (`f32`, rounds to nearest integer, ties to even).
+    F32Nearest = 0xFD90,
+    /// `dst = sqrt(a)` (`f32`, correctly rounded).
+    F32Sqrt = 0xFD91,
+    /// `dst = (a == b)` (`f32` -> `bool`; false if NaN).
+    F32Eq = 0xFD92,
+    /// `dst = (a != b)` (`f32` -> `bool`; true if NaN).
+    F32Ne = 0xFD93,
+    /// `dst = (a < b)` (`f32` -> `bool`; false if NaN).
+    F32Lt = 0xFD94,
+    /// `dst = (a > b)` (`f32` -> `bool`; false if NaN).
+    F32Gt = 0xFD95,
+    /// `dst = (a <= b)` (`f32` -> `bool`; false if NaN).
+    F32Le = 0xFD96,
+    /// `dst = (a >= b)` (`f32` -> `bool`; false if NaN).
+    F32Ge = 0xFD97,
+    /// `dst = i32_to_i64(a)` (`i32` -> `i64`; sign-extends).
+    I32ToI64 = 0xFDC0,
+    /// `dst = i64_to_i32(a)` (`i64` -> `i32`; traps when out of range).
+    I64ToI32 = 0xFDC1,
+    /// `dst = i64_to_i32_wrap(a)` (`i64` -> `i32`; keeps the low 32 bits).
+    I64ToI32Wrap = 0xFDC2,
+    /// `dst = u32_to_u64(a)` (`u32` -> `u64`; zero-extends).
+    U32ToU64 = 0xFDC3,
+    /// `dst = u64_to_u32(a)` (`u64` -> `u32`; traps when out of range).
+    U64ToU32 = 0xFDC4,
+    /// `dst = u64_to_u32_wrap(a)` (`u64` -> `u32`; keeps the low 32 bits).
+    U64ToU32Wrap = 0xFDC5,
+    /// `dst = u32_to_i64(a)` (`u32` -> `i64`; zero-extends).
+    U32ToI64 = 0xFDC6,
+    /// `dst = i32_to_u32(a)` (`i32` -> `u32`; traps on negative).
+    I32ToU32 = 0xFDC7,
+    /// `dst = u32_to_i32(a)` (`u32` -> `i32`; traps above `i32::MAX`).
+    U32ToI32 = 0xFDC8,
+    /// `dst = i32_to_u32_wrap(a)` (`i32` -> `u32`; reinterprets the bits).
+    I32ToU32Wrap = 0xFDC9,
+    /// `dst = u32_to_i32_wrap(a)` (`u32` -> `i32`; reinterprets the bits).
+    U32ToI32Wrap = 0xFDCA,
+    /// `dst = i64_to_u64_wrap(a)` (`i64` -> `u64`; reinterprets the bits).
+    I64ToU64Wrap = 0xFDCB,
+    /// `dst = u64_to_i64_wrap(a)` (`u64` -> `i64`; reinterprets the bits).
+    U64ToI64Wrap = 0xFDCC,
+    /// `dst = f32_to_f64(a)` (`f32` -> `f64`; exact).
+    F32ToF64 = 0xFDCD,
+    /// `dst = f64_to_f32(a)` (`f64` -> `f32`; rounds to nearest, ties to even; overflows to infinity).
+    F64ToF32 = 0xFDCE,
+    /// `dst = f32_to_bits(a)` (`f32` -> `u32`; raw IEEE bits).
+    F32ToBits = 0xFDCF,
+    /// `dst = f32_from_bits(a)` (`u32` -> `f32`; raw IEEE bits).
+    F32FromBits = 0xFDD0,
+    /// `dst = f32_to_i32(a)` (`f32` -> `i32`; truncates; traps on NaN, infinities and out of range).
+    F32ToI32 = 0xFDD1,
+    /// `dst = f32_to_u32(a)` (`f32` -> `u32`; truncates; traps on NaN, infinities and out of range).
+    F32ToU32 = 0xFDD2,
+    /// `dst = f32_to_i32_sat(a)` (`f32` -> `i32`; truncates and saturates; NaN -> 0).
+    F32ToI32Sat = 0xFDD3,
+    /// `dst = f32_to_u32_sat(a)` (`f32` -> `u32`; truncates and saturates; NaN -> 0).
+    F32ToU32Sat = 0xFDD4,
+    /// `dst = f64_to_i32(a)` (`f64` -> `i32`; truncates; traps on NaN, infinities and out of range).
+    F64ToI32 = 0xFDD5,
+    /// `dst = f64_to_u32(a)` (`f64` -> `u32`; truncates; traps on NaN, infinities and out of range).
+    F64ToU32 = 0xFDD6,
+    /// `dst = f64_to_i32_sat(a)` (`f64` -> `i32`; truncates and saturates; NaN -> 0).
+    F64ToI32Sat = 0xFDD7,
+    /// `dst = f64_to_u32_sat(a)` (`f64` -> `u32`; truncates and saturates; NaN -> 0).
+    F64ToU32Sat = 0xFDD8,
+    /// `dst = i32_to_f32(a)` (`i32` -> `f32`; rounds to nearest, ties to even).
+    I32ToF32 = 0xFDD9,
+    /// `dst = u32_to_f32(a)` (`u32` -> `f32`; rounds to nearest, ties to even).
+    U32ToF32 = 0xFDDA,
+    /// `dst = i64_to_f32(a)` (`i64` -> `f32`; rounds once to nearest, ties to even).
+    I64ToF32 = 0xFDDB,
+    /// `dst = u64_to_f32(a)` (`u64` -> `f32`; rounds once to nearest, ties to even).
+    U64ToF32 = 0xFDDC,
+    /// `dst = i32_to_f64(a)` (`i32` -> `f64`; exact).
+    I32ToF64 = 0xFDDD,
+    /// `dst = u32_to_f64(a)` (`u32` -> `f64`; exact).
+    U32ToF64 = 0xFDDE,
 }
 
 impl Opcode {
@@ -1169,6 +1856,104 @@ impl Opcode {
             (OpcodePrefix::Extended, 0x02) => Self::U64Popcnt,
             (OpcodePrefix::Extended, 0x03) => Self::U64Rotl,
             (OpcodePrefix::Extended, 0x04) => Self::U64Rotr,
+            (OpcodePrefix::Numeric32, 0x00) => Self::ConstI32,
+            (OpcodePrefix::Numeric32, 0x01) => Self::I32Add,
+            (OpcodePrefix::Numeric32, 0x02) => Self::I32Sub,
+            (OpcodePrefix::Numeric32, 0x03) => Self::I32Mul,
+            (OpcodePrefix::Numeric32, 0x04) => Self::I32Div,
+            (OpcodePrefix::Numeric32, 0x05) => Self::I32Rem,
+            (OpcodePrefix::Numeric32, 0x06) => Self::I32AddOvf,
+            (OpcodePrefix::Numeric32, 0x07) => Self::I32SubOvf,
+            (OpcodePrefix::Numeric32, 0x08) => Self::I32MulOvf,
+            (OpcodePrefix::Numeric32, 0x09) => Self::I32And,
+            (OpcodePrefix::Numeric32, 0x0A) => Self::I32Or,
+            (OpcodePrefix::Numeric32, 0x0B) => Self::I32Xor,
+            (OpcodePrefix::Numeric32, 0x0C) => Self::I32Shl,
+            (OpcodePrefix::Numeric32, 0x0D) => Self::I32Shr,
+            (OpcodePrefix::Numeric32, 0x0E) => Self::I32Eq,
+            (OpcodePrefix::Numeric32, 0x0F) => Self::I32Lt,
+            (OpcodePrefix::Numeric32, 0x10) => Self::I32Gt,
+            (OpcodePrefix::Numeric32, 0x11) => Self::I32Le,
+            (OpcodePrefix::Numeric32, 0x12) => Self::I32Ge,
+            (OpcodePrefix::Numeric32, 0x40) => Self::ConstU32,
+            (OpcodePrefix::Numeric32, 0x41) => Self::U32Add,
+            (OpcodePrefix::Numeric32, 0x42) => Self::U32Sub,
+            (OpcodePrefix::Numeric32, 0x43) => Self::U32Mul,
+            (OpcodePrefix::Numeric32, 0x44) => Self::U32Div,
+            (OpcodePrefix::Numeric32, 0x45) => Self::U32Rem,
+            (OpcodePrefix::Numeric32, 0x46) => Self::U32AddOvf,
+            (OpcodePrefix::Numeric32, 0x47) => Self::U32SubOvf,
+            (OpcodePrefix::Numeric32, 0x48) => Self::U32MulOvf,
+            (OpcodePrefix::Numeric32, 0x49) => Self::U32And,
+            (OpcodePrefix::Numeric32, 0x4A) => Self::U32Or,
+            (OpcodePrefix::Numeric32, 0x4B) => Self::U32Xor,
+            (OpcodePrefix::Numeric32, 0x4C) => Self::U32Shl,
+            (OpcodePrefix::Numeric32, 0x4D) => Self::U32Shr,
+            (OpcodePrefix::Numeric32, 0x4E) => Self::U32Clz,
+            (OpcodePrefix::Numeric32, 0x4F) => Self::U32Ctz,
+            (OpcodePrefix::Numeric32, 0x50) => Self::U32Popcnt,
+            (OpcodePrefix::Numeric32, 0x51) => Self::U32Rotl,
+            (OpcodePrefix::Numeric32, 0x52) => Self::U32Rotr,
+            (OpcodePrefix::Numeric32, 0x53) => Self::U32Eq,
+            (OpcodePrefix::Numeric32, 0x54) => Self::U32Lt,
+            (OpcodePrefix::Numeric32, 0x55) => Self::U32Gt,
+            (OpcodePrefix::Numeric32, 0x56) => Self::U32Le,
+            (OpcodePrefix::Numeric32, 0x57) => Self::U32Ge,
+            (OpcodePrefix::Numeric32, 0x80) => Self::ConstF32,
+            (OpcodePrefix::Numeric32, 0x81) => Self::F32Add,
+            (OpcodePrefix::Numeric32, 0x82) => Self::F32Sub,
+            (OpcodePrefix::Numeric32, 0x83) => Self::F32Mul,
+            (OpcodePrefix::Numeric32, 0x84) => Self::F32Div,
+            (OpcodePrefix::Numeric32, 0x85) => Self::F32Rem,
+            (OpcodePrefix::Numeric32, 0x86) => Self::F32Neg,
+            (OpcodePrefix::Numeric32, 0x87) => Self::F32Abs,
+            (OpcodePrefix::Numeric32, 0x88) => Self::F32Min,
+            (OpcodePrefix::Numeric32, 0x89) => Self::F32Max,
+            (OpcodePrefix::Numeric32, 0x8A) => Self::F32MinNum,
+            (OpcodePrefix::Numeric32, 0x8B) => Self::F32MaxNum,
+            (OpcodePrefix::Numeric32, 0x8C) => Self::F32CopySign,
+            (OpcodePrefix::Numeric32, 0x8D) => Self::F32Floor,
+            (OpcodePrefix::Numeric32, 0x8E) => Self::F32Ceil,
+            (OpcodePrefix::Numeric32, 0x8F) => Self::F32Trunc,
+            (OpcodePrefix::Numeric32, 0x90) => Self::F32Nearest,
+            (OpcodePrefix::Numeric32, 0x91) => Self::F32Sqrt,
+            (OpcodePrefix::Numeric32, 0x92) => Self::F32Eq,
+            (OpcodePrefix::Numeric32, 0x93) => Self::F32Ne,
+            (OpcodePrefix::Numeric32, 0x94) => Self::F32Lt,
+            (OpcodePrefix::Numeric32, 0x95) => Self::F32Gt,
+            (OpcodePrefix::Numeric32, 0x96) => Self::F32Le,
+            (OpcodePrefix::Numeric32, 0x97) => Self::F32Ge,
+            (OpcodePrefix::Numeric32, 0xC0) => Self::I32ToI64,
+            (OpcodePrefix::Numeric32, 0xC1) => Self::I64ToI32,
+            (OpcodePrefix::Numeric32, 0xC2) => Self::I64ToI32Wrap,
+            (OpcodePrefix::Numeric32, 0xC3) => Self::U32ToU64,
+            (OpcodePrefix::Numeric32, 0xC4) => Self::U64ToU32,
+            (OpcodePrefix::Numeric32, 0xC5) => Self::U64ToU32Wrap,
+            (OpcodePrefix::Numeric32, 0xC6) => Self::U32ToI64,
+            (OpcodePrefix::Numeric32, 0xC7) => Self::I32ToU32,
+            (OpcodePrefix::Numeric32, 0xC8) => Self::U32ToI32,
+            (OpcodePrefix::Numeric32, 0xC9) => Self::I32ToU32Wrap,
+            (OpcodePrefix::Numeric32, 0xCA) => Self::U32ToI32Wrap,
+            (OpcodePrefix::Numeric32, 0xCB) => Self::I64ToU64Wrap,
+            (OpcodePrefix::Numeric32, 0xCC) => Self::U64ToI64Wrap,
+            (OpcodePrefix::Numeric32, 0xCD) => Self::F32ToF64,
+            (OpcodePrefix::Numeric32, 0xCE) => Self::F64ToF32,
+            (OpcodePrefix::Numeric32, 0xCF) => Self::F32ToBits,
+            (OpcodePrefix::Numeric32, 0xD0) => Self::F32FromBits,
+            (OpcodePrefix::Numeric32, 0xD1) => Self::F32ToI32,
+            (OpcodePrefix::Numeric32, 0xD2) => Self::F32ToU32,
+            (OpcodePrefix::Numeric32, 0xD3) => Self::F32ToI32Sat,
+            (OpcodePrefix::Numeric32, 0xD4) => Self::F32ToU32Sat,
+            (OpcodePrefix::Numeric32, 0xD5) => Self::F64ToI32,
+            (OpcodePrefix::Numeric32, 0xD6) => Self::F64ToU32,
+            (OpcodePrefix::Numeric32, 0xD7) => Self::F64ToI32Sat,
+            (OpcodePrefix::Numeric32, 0xD8) => Self::F64ToU32Sat,
+            (OpcodePrefix::Numeric32, 0xD9) => Self::I32ToF32,
+            (OpcodePrefix::Numeric32, 0xDA) => Self::U32ToF32,
+            (OpcodePrefix::Numeric32, 0xDB) => Self::I64ToF32,
+            (OpcodePrefix::Numeric32, 0xDC) => Self::U64ToF32,
+            (OpcodePrefix::Numeric32, 0xDD) => Self::I32ToF64,
+            (OpcodePrefix::Numeric32, 0xDE) => Self::U32ToF64,
             _ => return None,
         })
     }
@@ -1312,6 +2097,104 @@ impl Opcode {
             0xFC02 => Self::U64Popcnt,
             0xFC03 => Self::U64Rotl,
             0xFC04 => Self::U64Rotr,
+            0xFD00 => Self::ConstI32,
+            0xFD01 => Self::I32Add,
+            0xFD02 => Self::I32Sub,
+            0xFD03 => Self::I32Mul,
+            0xFD04 => Self::I32Div,
+            0xFD05 => Self::I32Rem,
+            0xFD06 => Self::I32AddOvf,
+            0xFD07 => Self::I32SubOvf,
+            0xFD08 => Self::I32MulOvf,
+            0xFD09 => Self::I32And,
+            0xFD0A => Self::I32Or,
+            0xFD0B => Self::I32Xor,
+            0xFD0C => Self::I32Shl,
+            0xFD0D => Self::I32Shr,
+            0xFD0E => Self::I32Eq,
+            0xFD0F => Self::I32Lt,
+            0xFD10 => Self::I32Gt,
+            0xFD11 => Self::I32Le,
+            0xFD12 => Self::I32Ge,
+            0xFD40 => Self::ConstU32,
+            0xFD41 => Self::U32Add,
+            0xFD42 => Self::U32Sub,
+            0xFD43 => Self::U32Mul,
+            0xFD44 => Self::U32Div,
+            0xFD45 => Self::U32Rem,
+            0xFD46 => Self::U32AddOvf,
+            0xFD47 => Self::U32SubOvf,
+            0xFD48 => Self::U32MulOvf,
+            0xFD49 => Self::U32And,
+            0xFD4A => Self::U32Or,
+            0xFD4B => Self::U32Xor,
+            0xFD4C => Self::U32Shl,
+            0xFD4D => Self::U32Shr,
+            0xFD4E => Self::U32Clz,
+            0xFD4F => Self::U32Ctz,
+            0xFD50 => Self::U32Popcnt,
+            0xFD51 => Self::U32Rotl,
+            0xFD52 => Self::U32Rotr,
+            0xFD53 => Self::U32Eq,
+            0xFD54 => Self::U32Lt,
+            0xFD55 => Self::U32Gt,
+            0xFD56 => Self::U32Le,
+            0xFD57 => Self::U32Ge,
+            0xFD80 => Self::ConstF32,
+            0xFD81 => Self::F32Add,
+            0xFD82 => Self::F32Sub,
+            0xFD83 => Self::F32Mul,
+            0xFD84 => Self::F32Div,
+            0xFD85 => Self::F32Rem,
+            0xFD86 => Self::F32Neg,
+            0xFD87 => Self::F32Abs,
+            0xFD88 => Self::F32Min,
+            0xFD89 => Self::F32Max,
+            0xFD8A => Self::F32MinNum,
+            0xFD8B => Self::F32MaxNum,
+            0xFD8C => Self::F32CopySign,
+            0xFD8D => Self::F32Floor,
+            0xFD8E => Self::F32Ceil,
+            0xFD8F => Self::F32Trunc,
+            0xFD90 => Self::F32Nearest,
+            0xFD91 => Self::F32Sqrt,
+            0xFD92 => Self::F32Eq,
+            0xFD93 => Self::F32Ne,
+            0xFD94 => Self::F32Lt,
+            0xFD95 => Self::F32Gt,
+            0xFD96 => Self::F32Le,
+            0xFD97 => Self::F32Ge,
+            0xFDC0 => Self::I32ToI64,
+            0xFDC1 => Self::I64ToI32,
+            0xFDC2 => Self::I64ToI32Wrap,
+            0xFDC3 => Self::U32ToU64,
+            0xFDC4 => Self::U64ToU32,
+            0xFDC5 => Self::U64ToU32Wrap,
+            0xFDC6 => Self::U32ToI64,
+            0xFDC7 => Self::I32ToU32,
+            0xFDC8 => Self::U32ToI32,
+            0xFDC9 => Self::I32ToU32Wrap,
+            0xFDCA => Self::U32ToI32Wrap,
+            0xFDCB => Self::I64ToU64Wrap,
+            0xFDCC => Self::U64ToI64Wrap,
+            0xFDCD => Self::F32ToF64,
+            0xFDCE => Self::F64ToF32,
+            0xFDCF => Self::F32ToBits,
+            0xFDD0 => Self::F32FromBits,
+            0xFDD1 => Self::F32ToI32,
+            0xFDD2 => Self::F32ToU32,
+            0xFDD3 => Self::F32ToI32Sat,
+            0xFDD4 => Self::F32ToU32Sat,
+            0xFDD5 => Self::F64ToI32,
+            0xFDD6 => Self::F64ToU32,
+            0xFDD7 => Self::F64ToI32Sat,
+            0xFDD8 => Self::F64ToU32Sat,
+            0xFDD9 => Self::I32ToF32,
+            0xFDDA => Self::U32ToF32,
+            0xFDDB => Self::I64ToF32,
+            0xFDDC => Self::U64ToF32,
+            0xFDDD => Self::I32ToF64,
+            0xFDDE => Self::U32ToF64,
             _ => return None,
         })
     }
@@ -1337,6 +2220,7 @@ impl Opcode {
         let table = match OpcodePrefix::from_u8(prefix) {
             None => OPCODE_INFO_BY_BYTE,
             Some(OpcodePrefix::Extended) => EXTENDED_OPCODE_INFO,
+            Some(OpcodePrefix::Numeric32) => NUMERIC32_OPCODE_INFO,
         };
         &table[usize::from(byte)]
     }

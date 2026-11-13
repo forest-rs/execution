@@ -165,7 +165,7 @@ mod tests {
         }
         assert_eq!(code_at(&[0xFC]), None);
         assert_eq!(code_at(&[0xFC, 0x7F]), Some(0xFC7F));
-        assert_eq!(code_at(&[0xFD, 0x7F]), Some(0x00FD));
+        assert_eq!(code_at(&[0xFE, 0x7F]), Some(0x00FE));
         assert_eq!(code_at(&[]), None);
     }
 

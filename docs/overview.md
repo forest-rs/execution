@@ -158,6 +158,8 @@ reported buffer bytes are layout measurements, not allocator traffic or RSS.
 ## Values and types
 ### Builtins
 - `Bool`, `I64`, `U64`, `F64`, `Unit`
+- `I32`, `U32`, `F32` (distinct kinds sharing one 32-bit register bank; arithmetic and explicit
+  conversions live under the `0xFD` opcode prefix)
 - `Decimal::new(mantissa: i128, scale: u8)` (per-value scale; `dec.rescale`/`dec.div` round by an explicit `DecimalRounding` mode)
 - `Bytes` and `Str` (owned public values; runtime registers use handles to owned or borrowed payloads)
 

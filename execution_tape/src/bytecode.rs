@@ -278,6 +278,232 @@ pub(crate) enum Instr {
     U64Rotl { dst: u32, a: u32, b: u32 },
     /// `dst = a.rotate_right(b & 63)` (`u64`).
     U64Rotr { dst: u32, a: u32, b: u32 },
+    /// `dst = i32`.
+    ConstI32 { dst: u32, imm: i32 },
+    /// `dst = u32`.
+    ConstU32 { dst: u32, imm: u32 },
+    /// `dst = f32` encoded as raw IEEE bits.
+    ConstF32 { dst: u32, bits: u32 },
+    /// `dst = a + b` (`i32`, wrapping).
+    I32Add { dst: u32, a: u32, b: u32 },
+    /// `dst = a - b` (`i32`, wrapping).
+    I32Sub { dst: u32, a: u32, b: u32 },
+    /// `dst = a * b` (`i32`, wrapping).
+    I32Mul { dst: u32, a: u32, b: u32 },
+    /// `dst = a / b` (`i32`, truncating; traps on zero divisor or `MIN / -1`).
+    I32Div { dst: u32, a: u32, b: u32 },
+    /// `dst = a % b` (`i32`, sign of `a`; traps on zero divisor or `MIN % -1`).
+    I32Rem { dst: u32, a: u32, b: u32 },
+    /// `(dst, overflow) = a + b` (`i32` wrapped sum; `bool` true if the signed sum overflowed).
+    I32AddOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a - b` (`i32` wrapped difference; `bool` true on signed overflow).
+    I32SubOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a * b` (`i32` wrapped product; `bool` true on signed overflow).
+    I32MulOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `dst = a & b` (`i32`).
+    I32And { dst: u32, a: u32, b: u32 },
+    /// `dst = a | b` (`i32`).
+    I32Or { dst: u32, a: u32, b: u32 },
+    /// `dst = a ^ b` (`i32`).
+    I32Xor { dst: u32, a: u32, b: u32 },
+    /// `dst = a << (b & 31)` (`i32`).
+    I32Shl { dst: u32, a: u32, b: u32 },
+    /// `dst = a >> (b & 31)` (`i32`, arithmetic).
+    I32Shr { dst: u32, a: u32, b: u32 },
+    /// `dst = (a == b)` (`i32` -> `bool`).
+    I32Eq { dst: u32, a: u32, b: u32 },
+    /// `dst = (a < b)` (`i32` -> `bool`).
+    I32Lt { dst: u32, a: u32, b: u32 },
+    /// `dst = (a > b)` (`i32` -> `bool`).
+    I32Gt { dst: u32, a: u32, b: u32 },
+    /// `dst = (a <= b)` (`i32` -> `bool`).
+    I32Le { dst: u32, a: u32, b: u32 },
+    /// `dst = (a >= b)` (`i32` -> `bool`).
+    I32Ge { dst: u32, a: u32, b: u32 },
+    /// `dst = a + b` (`u32`, wrapping).
+    U32Add { dst: u32, a: u32, b: u32 },
+    /// `dst = a - b` (`u32`, wrapping).
+    U32Sub { dst: u32, a: u32, b: u32 },
+    /// `dst = a * b` (`u32`, wrapping).
+    U32Mul { dst: u32, a: u32, b: u32 },
+    /// `dst = a / b` (`u32`; traps on zero divisor).
+    U32Div { dst: u32, a: u32, b: u32 },
+    /// `dst = a % b` (`u32`; traps on zero divisor).
+    U32Rem { dst: u32, a: u32, b: u32 },
+    /// `(dst, overflow) = a + b` (`u32` wrapped sum; `bool` carry).
+    U32AddOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a - b` (`u32` wrapped difference; `bool` borrow).
+    U32SubOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `(dst, overflow) = a * b` (`u32` wrapped product; `bool` true on overflow).
+    U32MulOvf {
+        dst: u32,
+        overflow: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `dst = a & b` (`u32`).
+    U32And { dst: u32, a: u32, b: u32 },
+    /// `dst = a | b` (`u32`).
+    U32Or { dst: u32, a: u32, b: u32 },
+    /// `dst = a ^ b` (`u32`).
+    U32Xor { dst: u32, a: u32, b: u32 },
+    /// `dst = a << (b & 31)` (`u32`).
+    U32Shl { dst: u32, a: u32, b: u32 },
+    /// `dst = a >> (b & 31)` (`u32`, logical).
+    U32Shr { dst: u32, a: u32, b: u32 },
+    /// `dst = a.leading_zeros()` (`u32`; 32 when `a == 0`).
+    U32Clz { dst: u32, a: u32 },
+    /// `dst = a.trailing_zeros()` (`u32`; 32 when `a == 0`).
+    U32Ctz { dst: u32, a: u32 },
+    /// `dst = a.count_ones()` (`u32`).
+    U32Popcnt { dst: u32, a: u32 },
+    /// `dst = a.rotate_left(b & 31)` (`u32`).
+    U32Rotl { dst: u32, a: u32, b: u32 },
+    /// `dst = a.rotate_right(b & 31)` (`u32`).
+    U32Rotr { dst: u32, a: u32, b: u32 },
+    /// `dst = (a == b)` (`u32` -> `bool`).
+    U32Eq { dst: u32, a: u32, b: u32 },
+    /// `dst = (a < b)` (`u32` -> `bool`).
+    U32Lt { dst: u32, a: u32, b: u32 },
+    /// `dst = (a > b)` (`u32` -> `bool`).
+    U32Gt { dst: u32, a: u32, b: u32 },
+    /// `dst = (a <= b)` (`u32` -> `bool`).
+    U32Le { dst: u32, a: u32, b: u32 },
+    /// `dst = (a >= b)` (`u32` -> `bool`).
+    U32Ge { dst: u32, a: u32, b: u32 },
+    /// `dst = a + b` (`f32`).
+    F32Add { dst: u32, a: u32, b: u32 },
+    /// `dst = a - b` (`f32`).
+    F32Sub { dst: u32, a: u32, b: u32 },
+    /// `dst = a * b` (`f32`).
+    F32Mul { dst: u32, a: u32, b: u32 },
+    /// `dst = a / b` (`f32`).
+    F32Div { dst: u32, a: u32, b: u32 },
+    /// `dst = a % b` (`f32`, sign of `a`).
+    F32Rem { dst: u32, a: u32, b: u32 },
+    /// `dst = -a` (`f32`, flips the sign bit).
+    F32Neg { dst: u32, a: u32 },
+    /// `dst = abs(a)` (`f32`, clears the sign bit).
+    F32Abs { dst: u32, a: u32 },
+    /// `dst = min(a, b)` (`f32`, NaN-propagating).
+    F32Min { dst: u32, a: u32, b: u32 },
+    /// `dst = max(a, b)` (`f32`, NaN-propagating).
+    F32Max { dst: u32, a: u32, b: u32 },
+    /// `dst = min_num(a, b)` (`f32`, number-favoring).
+    F32MinNum { dst: u32, a: u32, b: u32 },
+    /// `dst = max_num(a, b)` (`f32`, number-favoring).
+    F32MaxNum { dst: u32, a: u32, b: u32 },
+    /// `dst = copysign(a, b)` (`f32`: magnitude of `a`, sign of `b`).
+    F32CopySign { dst: u32, a: u32, b: u32 },
+    /// `dst = floor(a)` (`f32`, rounds toward negative infinity).
+    F32Floor { dst: u32, a: u32 },
+    /// `dst = ceil(a)` (`f32`, rounds toward positive infinity).
+    F32Ceil { dst: u32, a: u32 },
+    /// `dst = trunc(a)` (`f32`, rounds toward zero).
+    F32Trunc { dst: u32, a: u32 },
+    /// `dst = nearest(a)` (`f32`, rounds to nearest integer, ties to even).
+    F32Nearest { dst: u32, a: u32 },
+    /// `dst = sqrt(a)` (`f32`, correctly rounded).
+    F32Sqrt { dst: u32, a: u32 },
+    /// `dst = (a == b)` (`f32` -> `bool`; false if NaN).
+    F32Eq { dst: u32, a: u32, b: u32 },
+    /// `dst = (a != b)` (`f32` -> `bool`; true if NaN).
+    F32Ne { dst: u32, a: u32, b: u32 },
+    /// `dst = (a < b)` (`f32` -> `bool`; false if NaN).
+    F32Lt { dst: u32, a: u32, b: u32 },
+    /// `dst = (a > b)` (`f32` -> `bool`; false if NaN).
+    F32Gt { dst: u32, a: u32, b: u32 },
+    /// `dst = (a <= b)` (`f32` -> `bool`; false if NaN).
+    F32Le { dst: u32, a: u32, b: u32 },
+    /// `dst = (a >= b)` (`f32` -> `bool`; false if NaN).
+    F32Ge { dst: u32, a: u32, b: u32 },
+    /// `dst = i32_to_i64(a)` (`i32` -> `i64`; sign-extends).
+    I32ToI64 { dst: u32, a: u32 },
+    /// `dst = i64_to_i32(a)` (`i64` -> `i32`; traps when out of range).
+    I64ToI32 { dst: u32, a: u32 },
+    /// `dst = i64_to_i32_wrap(a)` (`i64` -> `i32`; keeps the low 32 bits).
+    I64ToI32Wrap { dst: u32, a: u32 },
+    /// `dst = u32_to_u64(a)` (`u32` -> `u64`; zero-extends).
+    U32ToU64 { dst: u32, a: u32 },
+    /// `dst = u64_to_u32(a)` (`u64` -> `u32`; traps when out of range).
+    U64ToU32 { dst: u32, a: u32 },
+    /// `dst = u64_to_u32_wrap(a)` (`u64` -> `u32`; keeps the low 32 bits).
+    U64ToU32Wrap { dst: u32, a: u32 },
+    /// `dst = u32_to_i64(a)` (`u32` -> `i64`; zero-extends).
+    U32ToI64 { dst: u32, a: u32 },
+    /// `dst = i32_to_u32(a)` (`i32` -> `u32`; traps on negative).
+    I32ToU32 { dst: u32, a: u32 },
+    /// `dst = u32_to_i32(a)` (`u32` -> `i32`; traps above `i32::MAX`).
+    U32ToI32 { dst: u32, a: u32 },
+    /// `dst = i32_to_u32_wrap(a)` (`i32` -> `u32`; reinterprets the bits).
+    I32ToU32Wrap { dst: u32, a: u32 },
+    /// `dst = u32_to_i32_wrap(a)` (`u32` -> `i32`; reinterprets the bits).
+    U32ToI32Wrap { dst: u32, a: u32 },
+    /// `dst = i64_to_u64_wrap(a)` (`i64` -> `u64`; reinterprets the bits).
+    I64ToU64Wrap { dst: u32, a: u32 },
+    /// `dst = u64_to_i64_wrap(a)` (`u64` -> `i64`; reinterprets the bits).
+    U64ToI64Wrap { dst: u32, a: u32 },
+    /// `dst = f32_to_f64(a)` (`f32` -> `f64`; exact).
+    F32ToF64 { dst: u32, a: u32 },
+    /// `dst = f64_to_f32(a)` (`f64` -> `f32`; rounds to nearest, ties to even; overflows to infinity).
+    F64ToF32 { dst: u32, a: u32 },
+    /// `dst = f32_to_bits(a)` (`f32` -> `u32`; raw IEEE bits).
+    F32ToBits { dst: u32, a: u32 },
+    /// `dst = f32_from_bits(a)` (`u32` -> `f32`; raw IEEE bits).
+    F32FromBits { dst: u32, a: u32 },
+    /// `dst = f32_to_i32(a)` (`f32` -> `i32`; truncates; traps on NaN, infinities and out of range).
+    F32ToI32 { dst: u32, a: u32 },
+    /// `dst = f32_to_u32(a)` (`f32` -> `u32`; truncates; traps on NaN, infinities and out of range).
+    F32ToU32 { dst: u32, a: u32 },
+    /// `dst = f32_to_i32_sat(a)` (`f32` -> `i32`; truncates and saturates; NaN -> 0).
+    F32ToI32Sat { dst: u32, a: u32 },
+    /// `dst = f32_to_u32_sat(a)` (`f32` -> `u32`; truncates and saturates; NaN -> 0).
+    F32ToU32Sat { dst: u32, a: u32 },
+    /// `dst = f64_to_i32(a)` (`f64` -> `i32`; truncates; traps on NaN, infinities and out of range).
+    F64ToI32 { dst: u32, a: u32 },
+    /// `dst = f64_to_u32(a)` (`f64` -> `u32`; truncates; traps on NaN, infinities and out of range).
+    F64ToU32 { dst: u32, a: u32 },
+    /// `dst = f64_to_i32_sat(a)` (`f64` -> `i32`; truncates and saturates; NaN -> 0).
+    F64ToI32Sat { dst: u32, a: u32 },
+    /// `dst = f64_to_u32_sat(a)` (`f64` -> `u32`; truncates and saturates; NaN -> 0).
+    F64ToU32Sat { dst: u32, a: u32 },
+    /// `dst = i32_to_f32(a)` (`i32` -> `f32`; rounds to nearest, ties to even).
+    I32ToF32 { dst: u32, a: u32 },
+    /// `dst = u32_to_f32(a)` (`u32` -> `f32`; rounds to nearest, ties to even).
+    U32ToF32 { dst: u32, a: u32 },
+    /// `dst = i64_to_f32(a)` (`i64` -> `f32`; rounds once to nearest, ties to even).
+    I64ToF32 { dst: u32, a: u32 },
+    /// `dst = u64_to_f32(a)` (`u64` -> `f32`; rounds once to nearest, ties to even).
+    U64ToF32 { dst: u32, a: u32 },
+    /// `dst = i32_to_f64(a)` (`i32` -> `f64`; exact).
+    I32ToF64 { dst: u32, a: u32 },
+    /// `dst = u32_to_f64(a)` (`u32` -> `f64`; exact).
+    U32ToF64 { dst: u32, a: u32 },
 
     /// `dst = (a == b)` (`i64` -> `bool`).
     I64Eq { dst: u32, a: u32, b: u32 },

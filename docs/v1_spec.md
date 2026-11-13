@@ -277,6 +277,8 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
 `codec::canonicalize` never rewrites them. Currently assigned:
 
 - `0xFC` (`OpcodePrefix::Extended`): general extension space.
+- `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
+  (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`, conversions from `0xC0`).
 
 Every opcode has a 16-bit *code*: its byte for single-byte opcodes, and `prefix << 8 | byte` for
 prefixed ones (`0xFC 0x05` is code `0xFC05`). Traces, recordings and diagnostics report opcodes by
@@ -694,6 +696,35 @@ This is the minimal set to support loops + recursion + host calls + aggregates.
 - `dec_rescale r_dst, r_a, r_scale, rounding_u8`
 - `dec_scale r_dst, r_a` -> `U64`
 
+### 32-bit numerics
+`i32`, `u32` and `f32` mirror the 64-bit families: wrapping `add`/`sub`/`mul`, `_ovf` forms
+returning the wrapped value and a `bool` flag, `div`/`rem` that trap with `DivByZero` (and
+`IntDivOverflow` for `i32::MIN / -1` and `i32::MIN % -1`, as for `i64`), bitwise `and`/`or`/`xor`,
+shifts masked with `& 31` (`i32.shr` arithmetic, `u32.shr` logical), comparisons to `bool`, and
+`u32.clz`/`ctz`/`popcnt`/`rotl`/`rotr` (`clz`/`ctz` of zero are 32). `f32` has the same
+operations as `f64` with the same NaN, signed-zero and rounding rules: `add`/`sub`/`mul`/`div`
+are IEEE single precision; `rem`, `floor`, `ceil`, `trunc`, `nearest` and `sqrt` are computed
+exactly or correctly rounded through the `f64` routines (exact rounding of an `f32` is
+representable as `f32`, and `f64` carries more than `2 * 24 + 2` significand bits, so rounding the
+correctly rounded `f64` square root once to `f32` is correctly rounded). No instruction mixes
+widths or signedness; conversions are explicit:
+
+- `i32.to_i64`, `u32.to_u64`, `u32.to_i64`, `i32.to_f64`, `u32.to_f64`, `f32.to_f64`: exact.
+- `i64.to_i32`, `u64.to_u32`, `i32.to_u32`, `u32.to_i32`: trap with `IntCastOverflow` when the
+  value does not fit.
+- `i64.to_i32_wrap`, `u64.to_u32_wrap`: keep the low 32 bits. `i32.to_u32_wrap`,
+  `u32.to_i32_wrap`, `i64.to_u64_wrap`, `u64.to_i64_wrap`: reinterpret the bits.
+- `f64.to_f32`, `i32.to_f32`, `u32.to_f32`, `i64.to_f32`, `u64.to_f32`: round once to nearest,
+  ties to even (`f64.to_f32` overflows to infinity).
+- `f32.to_i32`, `f32.to_u32`, `f64.to_i32`, `f64.to_u32`: truncate; trap with
+  `FloatToIntInvalid` on NaN or infinity and `IntCastOverflow` out of range. The `_sat` forms
+  saturate instead, and NaN converts to 0.
+- `f32.to_bits`/`f32.from_bits`: raw IEEE bits to and from `u32`.
+
+Width conversions of a NaN keep its sign and the top of its payload and set the quiet bit;
+`f32.to_bits`, `f32.from_bits`, `neg`, `abs`, `copysign` and `const.f32` never alter NaN bits.
+Decimal has no 32-bit conversions; go through `i64`/`u64`.
+
 #### Integer overflow semantics
 - `i64_add`/`i64_sub`/`i64_mul` (and the `u64` forms) wrap modulo 2^64 without reporting overflow.
 - The `_ovf` forms write the same wrapped result to `r_dst` and, to `r_overflow`, whether the exact
@@ -856,7 +887,8 @@ operands (`reg` and `reg_list`), the JSON spec also includes an `access` field (
 
 ### Allocating opcodes
 New instruction families are allocated under a prefix, not in the remaining single-byte gaps:
-give the opcode entry `"prefix": "0xFC"` and the next free `"byte"` in that space, then run
+give the opcode entry `"prefix": "0xFC"` and the next free `"byte"` in that space (32-bit
+numerics go in their family's block under `0xFD`), then run
 `cargo run -p execution_tape_codegen`. Free single bytes are kept for instructions frequent
 enough that the saved byte matters. Existing opcodes are never renumbered. When `0xFC` fills, the
 next prefix is declared in the schema's `prefixes` list from the reserved range.
@@ -947,6 +979,116 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x02 u64.popcnt dst, a`
 - `0xFC 0x03 u64.rotl dst, a, b` (rotation amount masked with `& 63`)
 - `0xFC 0x04 u64.rotr dst, a, b` (rotation amount masked with `& 63`)
+
+Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
+order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits
+as `u32le`):
+
+`i32` (`0x00..=0x3F`):
+- `0xFD 0x00 const.i32 dst, imm`
+- `0xFD 0x01 i32.add dst, a, b`
+- `0xFD 0x02 i32.sub dst, a, b`
+- `0xFD 0x03 i32.mul dst, a, b`
+- `0xFD 0x04 i32.div dst, a, b`
+- `0xFD 0x05 i32.rem dst, a, b`
+- `0xFD 0x06 i32.add_ovf dst, overflow, a, b`
+- `0xFD 0x07 i32.sub_ovf dst, overflow, a, b`
+- `0xFD 0x08 i32.mul_ovf dst, overflow, a, b`
+- `0xFD 0x09 i32.and dst, a, b`
+- `0xFD 0x0A i32.or dst, a, b`
+- `0xFD 0x0B i32.xor dst, a, b`
+- `0xFD 0x0C i32.shl dst, a, b`
+- `0xFD 0x0D i32.shr dst, a, b`
+- `0xFD 0x0E i32.eq dst, a, b`
+- `0xFD 0x0F i32.lt dst, a, b`
+- `0xFD 0x10 i32.gt dst, a, b`
+- `0xFD 0x11 i32.le dst, a, b`
+- `0xFD 0x12 i32.ge dst, a, b`
+
+`u32` (`0x40..=0x7F`):
+- `0xFD 0x40 const.u32 dst, imm`
+- `0xFD 0x41 u32.add dst, a, b`
+- `0xFD 0x42 u32.sub dst, a, b`
+- `0xFD 0x43 u32.mul dst, a, b`
+- `0xFD 0x44 u32.div dst, a, b`
+- `0xFD 0x45 u32.rem dst, a, b`
+- `0xFD 0x46 u32.add_ovf dst, overflow, a, b`
+- `0xFD 0x47 u32.sub_ovf dst, overflow, a, b`
+- `0xFD 0x48 u32.mul_ovf dst, overflow, a, b`
+- `0xFD 0x49 u32.and dst, a, b`
+- `0xFD 0x4A u32.or dst, a, b`
+- `0xFD 0x4B u32.xor dst, a, b`
+- `0xFD 0x4C u32.shl dst, a, b`
+- `0xFD 0x4D u32.shr dst, a, b`
+- `0xFD 0x4E u32.clz dst, a`
+- `0xFD 0x4F u32.ctz dst, a`
+- `0xFD 0x50 u32.popcnt dst, a`
+- `0xFD 0x51 u32.rotl dst, a, b`
+- `0xFD 0x52 u32.rotr dst, a, b`
+- `0xFD 0x53 u32.eq dst, a, b`
+- `0xFD 0x54 u32.lt dst, a, b`
+- `0xFD 0x55 u32.gt dst, a, b`
+- `0xFD 0x56 u32.le dst, a, b`
+- `0xFD 0x57 u32.ge dst, a, b`
+
+`f32` (`0x80..=0xBF`):
+- `0xFD 0x80 const.f32 dst, bits`
+- `0xFD 0x81 f32.add dst, a, b`
+- `0xFD 0x82 f32.sub dst, a, b`
+- `0xFD 0x83 f32.mul dst, a, b`
+- `0xFD 0x84 f32.div dst, a, b`
+- `0xFD 0x85 f32.rem dst, a, b`
+- `0xFD 0x86 f32.neg dst, a`
+- `0xFD 0x87 f32.abs dst, a`
+- `0xFD 0x88 f32.min dst, a, b`
+- `0xFD 0x89 f32.max dst, a, b`
+- `0xFD 0x8A f32.min_num dst, a, b`
+- `0xFD 0x8B f32.max_num dst, a, b`
+- `0xFD 0x8C f32.copysign dst, a, b`
+- `0xFD 0x8D f32.floor dst, a`
+- `0xFD 0x8E f32.ceil dst, a`
+- `0xFD 0x8F f32.trunc dst, a`
+- `0xFD 0x90 f32.nearest dst, a`
+- `0xFD 0x91 f32.sqrt dst, a`
+- `0xFD 0x92 f32.eq dst, a, b`
+- `0xFD 0x93 f32.ne dst, a, b`
+- `0xFD 0x94 f32.lt dst, a, b`
+- `0xFD 0x95 f32.gt dst, a, b`
+- `0xFD 0x96 f32.le dst, a, b`
+- `0xFD 0x97 f32.ge dst, a, b`
+
+Conversions (`0xC0..=0xFF`):
+- `0xFD 0xC0 i32.to_i64 dst, a`
+- `0xFD 0xC1 i64.to_i32 dst, a`
+- `0xFD 0xC2 i64.to_i32_wrap dst, a`
+- `0xFD 0xC3 u32.to_u64 dst, a`
+- `0xFD 0xC4 u64.to_u32 dst, a`
+- `0xFD 0xC5 u64.to_u32_wrap dst, a`
+- `0xFD 0xC6 u32.to_i64 dst, a`
+- `0xFD 0xC7 i32.to_u32 dst, a`
+- `0xFD 0xC8 u32.to_i32 dst, a`
+- `0xFD 0xC9 i32.to_u32_wrap dst, a`
+- `0xFD 0xCA u32.to_i32_wrap dst, a`
+- `0xFD 0xCB i64.to_u64_wrap dst, a`
+- `0xFD 0xCC u64.to_i64_wrap dst, a`
+- `0xFD 0xCD f32.to_f64 dst, a`
+- `0xFD 0xCE f64.to_f32 dst, a`
+- `0xFD 0xCF f32.to_bits dst, a`
+- `0xFD 0xD0 f32.from_bits dst, a`
+- `0xFD 0xD1 f32.to_i32 dst, a`
+- `0xFD 0xD2 f32.to_u32 dst, a`
+- `0xFD 0xD3 f32.to_i32_sat dst, a`
+- `0xFD 0xD4 f32.to_u32_sat dst, a`
+- `0xFD 0xD5 f64.to_i32 dst, a`
+- `0xFD 0xD6 f64.to_u32 dst, a`
+- `0xFD 0xD7 f64.to_i32_sat dst, a`
+- `0xFD 0xD8 f64.to_u32_sat dst, a`
+- `0xFD 0xD9 i32.to_f32 dst, a`
+- `0xFD 0xDA u32.to_f32 dst, a`
+- `0xFD 0xDB i64.to_f32 dst, a`
+- `0xFD 0xDC u64.to_f32 dst, a`
+- `0xFD 0xDD i32.to_f64 dst, a`
+- `0xFD 0xDE u32.to_f64 dst, a`
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`

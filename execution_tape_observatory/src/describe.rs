@@ -581,6 +581,11 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
                     ConstValue::F64Bits(bits) => {
                         format!("{:?}f64 [bits {bits:016x}]", f64::from_bits(bits))
                     }
+                    ConstValue::I32(value) => format!("{value}i32"),
+                    ConstValue::U32(value) => format!("{value}u32"),
+                    ConstValue::F32Bits(bits) => {
+                        format!("{:?}f32 [bits {bits:08x}]", f32::from_bits(bits))
+                    }
                     ConstValue::Decimal(value) => {
                         format!("{}e-{}", value.mantissa(), value.scale())
                     }
