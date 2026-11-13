@@ -175,7 +175,7 @@ impl TraceSink for FootfallSink {
         location: TraceLocation,
         _next_pc: u32,
         span_id: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         let mut args = Args::none()
             .with("func", code(location.unit, location.func))

@@ -34,12 +34,12 @@ use crate::analysis::cfg::BasicBlock;
 use crate::analysis::dataflow;
 use crate::analysis::liveness;
 use crate::analysis::protection::Protection;
-use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
+use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
 use crate::contract::{Contract, ContractKinds, ContractPosition, ContractViolation};
 use crate::format::DecodeError;
 use crate::host::sig_hash_slices;
 use crate::instr_operands;
-use crate::opcode::Opcode;
+use crate::opcode::CodeBytes;
 use crate::program::{
     CallSigId, ConstEntry, ElemTypeId, Function, Program, RegisterTypes, SpanEntry, SpanId,
     SymbolId, TagId, TypeId, ValueType,
@@ -232,8 +232,8 @@ pub enum VerifyError {
         func: u32,
         /// Byte offset of the instruction.
         pc: u32,
-        /// Opcode byte.
-        opcode: u8,
+        /// Opcode code (see [`Opcode::code`](crate::opcode::Opcode::code)).
+        opcode: u16,
     },
     /// A decoded opcode is recognized but not yet supported by verifier lowering.
     UnsupportedInstruction {
@@ -241,8 +241,8 @@ pub enum VerifyError {
         func: u32,
         /// Byte offset of the instruction.
         pc: u32,
-        /// Opcode byte.
-        opcode: u8,
+        /// Opcode code (see [`Opcode::code`](crate::opcode::Opcode::code)).
+        opcode: u16,
     },
     /// A function references an out-of-bounds byte range.
     FunctionBytecodeOutOfBounds {
@@ -713,6 +713,16 @@ pub enum VerifyError {
         /// Function index within the program.
         func: u32,
     },
+    /// An instruction starts with an unassigned opcode: an unknown byte, or an assigned prefix
+    /// followed by an unknown byte.
+    UnknownOpcode {
+        /// Function index within the program.
+        func: u32,
+        /// Byte offset of the opcode.
+        pc: u32,
+        /// The unassigned code: the lone byte, or `prefix << 8 | byte` (see [`Opcode::code`](crate::opcode::Opcode::code)).
+        opcode: u16,
+    },
 }
 
 /// Why a jump target is invalid.
@@ -765,11 +775,13 @@ impl fmt::Display for VerifyError {
             Self::Decode(e) => write!(f, "decode failed: {e}"),
             Self::InternalOpcodeSchemaMismatch { func, pc, opcode } => write!(
                 f,
-                "internal opcode schema mismatch: function {func} pc={pc} opcode=0x{opcode:02X}"
+                "internal opcode schema mismatch: function {func} pc={pc} opcode={}",
+                CodeBytes(*opcode)
             ),
             Self::UnsupportedInstruction { func, pc, opcode } => write!(
                 f,
-                "unsupported instruction at this verifier/runtime stage: function {func} pc={pc} opcode=0x{opcode:02X}"
+                "unsupported instruction at this verifier/runtime stage: function {func} pc={pc} opcode={}",
+                CodeBytes(*opcode)
             ),
             Self::FunctionBytecodeOutOfBounds { func } => {
                 write!(f, "function {func} bytecode out of bounds")
@@ -1047,6 +1059,11 @@ impl fmt::Display for VerifyError {
                 "function {func} pc={pc} internal verifier error: inconsistent basic blocks (instrs {instr_start}..{instr_end})"
             ),
             Self::BytecodeDecode { func } => write!(f, "function {func} bytecode decode failed"),
+            Self::UnknownOpcode { func, pc, opcode } => write!(
+                f,
+                "function {func} pc={pc}: unknown opcode {}",
+                CodeBytes(*opcode)
+            ),
             Self::AggKindMismatch {
                 func,
                 pc,
@@ -1495,10 +1512,16 @@ fn verify_function_container(
     verify_span_table(bytecode.len() as u64, spans)
         .map_err(|_| VerifyError::BadSpanDeltas { func: func_id })?;
 
-    let decoded =
-        decode_instructions(bytecode).map_err(|_| VerifyError::BytecodeDecode { func: func_id })?;
+    let decoded = decode_instructions(bytecode).map_err(|e| match e {
+        BytecodeError::UnknownOpcode { offset, opcode } => VerifyError::UnknownOpcode {
+            func: func_id,
+            pc: offset,
+            opcode,
+        },
+        BytecodeError::Decode(_) => VerifyError::BytecodeDecode { func: func_id },
+    })?;
     for di in &decoded {
-        let op = Opcode::from_u8(di.opcode).expect("decoder only emits known opcodes");
+        let op = di.opcode;
         let schema = di.instr.operand_schema();
         let op_schema = op.operands();
         let mut ok = schema.len() == op_schema.len();
@@ -1517,7 +1540,7 @@ fn verify_function_container(
             return Err(VerifyError::InternalOpcodeSchemaMismatch {
                 func: func_id,
                 pc: di.offset,
-                opcode: di.opcode,
+                opcode: di.opcode.code(),
             });
         }
     }
@@ -1753,7 +1776,7 @@ fn verify_function_bytecode(
                 instr_end: block.instr_end,
             });
         };
-        let is_terminator = Opcode::from_u8(last.opcode).is_some_and(Opcode::is_terminator);
+        let is_terminator = last.opcode.is_terminator();
         if !is_terminator {
             return Err(VerifyError::MissingTerminator {
                 func: func_id,
@@ -3124,7 +3147,7 @@ fn lint_function_bytecode(
             }
 
             // Writes.
-            let opcode = Opcode::from_u8(di.opcode).expect("decoder only emits known opcodes");
+            let opcode = di.opcode;
             let is_call_like = opcode.is_call_like();
             let mut call_rets: Option<&[u32]> = None;
             if let Instr::Call { rets, .. } = &di.instr {

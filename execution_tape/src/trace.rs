@@ -595,14 +595,14 @@ pub trait TraceSink {
     /// - `location`: unit, function and pc (byte offset) of the instruction
     /// - `next_pc`: lexical end of this instruction, not its control-flow successor
     /// - `span_id`: best-effort span id for tracing/source mapping
-    /// - `opcode`: opcode byte
+    /// - `opcode`: opcode code (see [`Opcode::code`](crate::opcode::Opcode::code))
     fn instr(
         &mut self,
         _program: &Program,
         _location: TraceLocation,
         _next_pc: u32,
         _span_id: Option<u64>,
-        _opcode: u8,
+        _opcode: u16,
     ) {
     }
 
@@ -712,7 +712,7 @@ impl<S: TraceSink + ?Sized> TraceSink for alloc::rc::Rc<core::cell::RefCell<S>> 
         location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         self.as_ref()
             .borrow_mut()

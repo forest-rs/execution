@@ -635,7 +635,7 @@ impl TraceSink for Recorder {
         location: TraceLocation,
         _: u32,
         _: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         if !self.check_at(program, location.unit) {
             return;

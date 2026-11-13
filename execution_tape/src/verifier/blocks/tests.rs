@@ -4,6 +4,7 @@
 use super::*;
 use crate::asm::{Asm, FunctionSig, ProgramBuilder};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
+use crate::opcode::Opcode;
 use crate::trace::{TraceLocation, TraceMask, TraceOutcome, TraceSink};
 use crate::value::{Decimal, FuncRef, UnitId, Value};
 use crate::vm::{ExecutionContext, Limits, Trap, Vm};
@@ -572,7 +573,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
 fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
     #[derive(Default)]
     struct Events {
-        attempts: Vec<(u32, u32, Option<u64>, u8)>,
+        attempts: Vec<(u32, u32, Option<u64>, u16)>,
         ends: Vec<(u32, Option<u32>)>,
     }
     impl TraceSink for Events {
@@ -582,7 +583,7 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
             location: TraceLocation,
             end: u32,
             span: Option<u64>,
-            opcode: u8,
+            opcode: u16,
         ) {
             let (_, pc) = (location.func, location.pc);
             self.attempts.push((pc, end, span, opcode));
@@ -669,7 +670,7 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
         if fuel > 0 {
             assert_eq!(
                 events.attempts[0],
-                (branch, header, Some(11), Opcode::JmpArgs as u8)
+                (branch, header, Some(11), Opcode::JmpArgs.code())
             );
             assert_eq!(events.ends[0], (branch, Some(body)));
         }

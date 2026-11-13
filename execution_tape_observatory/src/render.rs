@@ -142,7 +142,7 @@ fn step_description(
             format!("abandoned by an exception caught at stack depth {depth}")
         }
         InstructionOutcome::Trapped => "trapped; no successful writes".into(),
-        InstructionOutcome::Completed => match Opcode::from_byte(step.opcode) {
+        InstructionOutcome::Completed => match Opcode::from_code(step.opcode) {
             Some(Opcode::Call | Opcode::CallIndirect) => {
                 "dispatched into callee; results come later".into()
             }
@@ -193,7 +193,7 @@ fn title(view: &View<'_>, index: usize) -> String {
                     "#{index} {}:{:06} {}",
                     describe::function(view.code(step.location.unit), step.location.func),
                     step.location.pc,
-                    execution_tape::opcode::Opcode::from_byte(step.opcode)
+                    execution_tape::opcode::Opcode::from_code(step.opcode)
                         .map_or_else(|| "unknown".into(), |op| format!("{op:?}"))
                 )
             },

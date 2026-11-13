@@ -1223,7 +1223,7 @@ impl TraceSink for CountingInstr {
         _location: execution_tape::trace::TraceLocation,
         _next_pc: u32,
         _span_id: Option<u64>,
-        _opcode: u8,
+        _opcode: u16,
     ) {
         self._count = self._count.wrapping_add(1);
     }

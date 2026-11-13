@@ -69,7 +69,8 @@ impl VerifyError {
             | Self::CallCalleeRetTypesOutOfBounds { func, .. }
             | Self::MissingTerminator { func, .. }
             | Self::InternalBlockInconsistent { func, .. }
-            | Self::BytecodeDecode { func, .. } => Some(FuncId(*func)),
+            | Self::BytecodeDecode { func, .. }
+            | Self::UnknownOpcode { func, .. } => Some(FuncId(*func)),
             Self::ExceptionReference {
                 place: ExceptionPlace::Aggregate { func, .. },
             } => Some(FuncId(*func)),
@@ -95,6 +96,7 @@ impl VerifyError {
             | Self::BlockEdge { pc, .. }
             | Self::InternalOpcodeSchemaMismatch { pc, .. }
             | Self::UnsupportedInstruction { pc, .. }
+            | Self::UnknownOpcode { pc, .. }
             | Self::InvalidJumpTarget { pc, .. }
             | Self::EffectInNotR0 { pc, .. }
             | Self::EffectOutNotR0 { pc, .. }

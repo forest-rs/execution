@@ -49,7 +49,7 @@ impl Host for UnitHost {
 
 #[derive(Default)]
 struct Observe {
-    instructions: Vec<(u32, u8)>,
+    instructions: Vec<(u32, u16)>,
     writes: Vec<(u32, Value)>,
 }
 impl TraceSink for Observe {
@@ -59,7 +59,7 @@ impl TraceSink for Observe {
         location: execution_tape::trace::TraceLocation,
         _: u32,
         _: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         let (_, pc) = (location.func, location.pc);
         self.instructions.push((pc, opcode));
@@ -102,7 +102,6 @@ fn operations() -> VerifiedProgram {
 #[test]
 fn unit_operations_preserve_source_instructions_registers_and_fuel() {
     let program = operations();
-    let source = program.program();
     let instructions: Vec<_> = program
         .function(FuncId(0))
         .unwrap()
@@ -147,10 +146,7 @@ fn unit_operations_preserve_source_instructions_registers_and_fuel() {
             observe.instructions,
             instructions
                 .iter()
-                .map(|i| (
-                    i.pc,
-                    source.functions[0].bytecode(source).unwrap()[i.pc as usize]
-                ))
+                .map(|i| (i.pc, i.opcode.code()))
                 .collect::<Vec<_>>()
         );
         assert_eq!(

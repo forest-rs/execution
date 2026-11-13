@@ -2618,7 +2618,7 @@ impl Asm {
 
     fn opcode(&mut self, opcode: Opcode) {
         self.sources.instruction(self.pc());
-        self.bytes.push(opcode as u8);
+        opcode.encode(&mut self.bytes);
     }
 
     fn reg(&mut self, r: u32) {

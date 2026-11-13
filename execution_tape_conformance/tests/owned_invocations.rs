@@ -510,7 +510,7 @@ fn shared_owned_trace_observers_forward_subscription_filtering_and_every_event_f
         fn values(&mut self, _: &Program, _: ValueEvent<'_>) {
             self.values += 1;
         }
-        fn instr(&mut self, _: &Program, _location: TraceLocation, _: u32, _: Option<u64>, _: u8) {
+        fn instr(&mut self, _: &Program, _location: TraceLocation, _: u32, _: Option<u64>, _: u16) {
             self.instructions += 1;
         }
         fn instr_end(

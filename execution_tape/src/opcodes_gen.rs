@@ -523,7 +523,9 @@ impl OpcodeFlags {
     }
 }
 
-/// Metadata indexed by opcode byte.
+/// Metadata for single-byte opcodes, indexed by opcode byte.
+///
+/// Prefixed opcodes are not listed here; use [`Opcode::info`].
 pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "nop", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0x00 Nop
     OpcodeInfo { mnemonic: "mov", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 2 } }, // 0x01 Mov
@@ -694,9 +696,38 @@ pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "u64.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 356, len: 4 } }, // 0xA6 U64MulOvf
 ];
 
-/// Bytecode opcode byte for the v1 instruction set.
+/// Metadata for opcodes under [`OpcodePrefix::Extended`], indexed by the byte after the prefix.
+const EXTENDED_OPCODE_INFO: &[OpcodeInfo] = &[
+];
+
+/// Lead bytes that introduce a prefixed opcode.
+///
+/// A prefixed opcode is encoded as its prefix byte followed by one opcode byte, so
+/// each prefix opens a further 256 opcodes. Bytes `0xF0..=0xFF` are reserved for
+/// prefixes; the ones not listed here are unassigned.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
+pub enum OpcodePrefix {
+    /// General extension space. New instruction families allocate the next free byte here.
+    Extended = 0xFC,
+}
+
+impl OpcodePrefix {
+    /// Decodes a prefix byte, or returns `None` if `b` is not an assigned prefix.
+    #[must_use]
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        Some(match b {
+            0xFC => Self::Extended,
+            _ => return None,
+        })
+    }
+}
+
+/// Bytecode opcode for the v1 instruction set.
+///
+/// Each discriminant is the opcode's code (see [`Opcode::code`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u16)]
 pub enum Opcode {
     /// No-op.
     Nop = 0x00,
@@ -961,10 +992,158 @@ pub enum Opcode {
 }
 
 impl Opcode {
-    /// Decodes an opcode byte.
+    /// Decodes a single-byte opcode.
+    ///
+    /// Returns `None` for prefix bytes and unassigned bytes; prefixed opcodes are
+    /// decoded with [`Opcode::from_prefixed`].
     #[must_use]
     pub fn from_u8(b: u8) -> Option<Self> {
         Some(match b {
+            0x00 => Self::Nop,
+            0x01 => Self::Mov,
+            0x02 => Self::Trap,
+            0x03 => Self::Block,
+            0x04 => Self::Throw,
+            0x05 => Self::ThrowRef,
+            0x10 => Self::ConstUnit,
+            0x11 => Self::ConstBool,
+            0x12 => Self::ConstI64,
+            0x13 => Self::ConstU64,
+            0x14 => Self::ConstF64,
+            0x15 => Self::ConstDecimal,
+            0x16 => Self::ConstPool,
+            0x17 => Self::DecAdd,
+            0x18 => Self::DecSub,
+            0x19 => Self::DecMul,
+            0x1A => Self::F64Add,
+            0x1B => Self::F64Sub,
+            0x1C => Self::F64Mul,
+            0x20 => Self::I64Add,
+            0x21 => Self::I64Sub,
+            0x22 => Self::I64Mul,
+            0x23 => Self::U64Add,
+            0x24 => Self::U64Sub,
+            0x25 => Self::U64Mul,
+            0x26 => Self::U64And,
+            0x27 => Self::U64Or,
+            0x28 => Self::I64Eq,
+            0x29 => Self::I64Lt,
+            0x2A => Self::U64Eq,
+            0x2B => Self::U64Lt,
+            0x2C => Self::U64Xor,
+            0x2D => Self::U64Shl,
+            0x2E => Self::U64Shr,
+            0x2F => Self::U64Gt,
+            0x30 => Self::BoolNot,
+            0x31 => Self::U64Le,
+            0x32 => Self::U64Ge,
+            0x33 => Self::I64And,
+            0x34 => Self::U64ToI64,
+            0x35 => Self::I64ToU64,
+            0x36 => Self::I64Or,
+            0x37 => Self::I64Xor,
+            0x38 => Self::Select,
+            0x39 => Self::I64Gt,
+            0x3A => Self::I64Le,
+            0x3B => Self::I64Ge,
+            0x3C => Self::I64Shl,
+            0x3D => Self::I64Shr,
+            0x40 => Self::Br,
+            0x41 => Self::Jmp,
+            0x42 => Self::JmpArgs,
+            0x43 => Self::BrArgs,
+            0x50 => Self::Call,
+            0x51 => Self::Ret,
+            0x52 => Self::HostCall,
+            0x53 => Self::ConstFunc,
+            0x54 => Self::CallIndirect,
+            0x55 => Self::ClosureNew,
+            0x60 => Self::TupleNew,
+            0x61 => Self::TupleGet,
+            0x62 => Self::StructNew,
+            0x63 => Self::StructGet,
+            0x64 => Self::ArrayNew,
+            0x65 => Self::ArrayLen,
+            0x66 => Self::ArrayGet,
+            0x67 => Self::TupleLen,
+            0x68 => Self::StructFieldCount,
+            0x69 => Self::ArrayGetImm,
+            0x6A => Self::BytesLen,
+            0x6B => Self::StrLen,
+            0x6C => Self::I64Div,
+            0x6D => Self::I64Rem,
+            0x6E => Self::U64Div,
+            0x6F => Self::U64Rem,
+            0x70 => Self::I64ToF64,
+            0x71 => Self::U64ToF64,
+            0x72 => Self::F64ToI64,
+            0x73 => Self::F64ToU64,
+            0x74 => Self::DecToI64,
+            0x75 => Self::DecToU64,
+            0x76 => Self::I64ToDec,
+            0x77 => Self::U64ToDec,
+            0x78 => Self::BytesEq,
+            0x79 => Self::StrEq,
+            0x7A => Self::BytesConcat,
+            0x7B => Self::StrConcat,
+            0x7C => Self::BytesGet,
+            0x7D => Self::BytesGetImm,
+            0x7E => Self::BytesSlice,
+            0x7F => Self::StrSlice,
+            0x80 => Self::StrToBytes,
+            0x81 => Self::BytesToStr,
+            0x82 => Self::F64Div,
+            0x83 => Self::F64Eq,
+            0x84 => Self::F64Lt,
+            0x85 => Self::F64Gt,
+            0x86 => Self::F64Le,
+            0x87 => Self::F64Ge,
+            0x88 => Self::BoolAnd,
+            0x89 => Self::BoolOr,
+            0x8A => Self::BoolXor,
+            0x8B => Self::F64Neg,
+            0x8C => Self::F64Abs,
+            0x8D => Self::F64Min,
+            0x8E => Self::F64Max,
+            0x8F => Self::F64MinNum,
+            0x90 => Self::F64MaxNum,
+            0x91 => Self::F64Rem,
+            0x92 => Self::F64ToBits,
+            0x93 => Self::F64FromBits,
+            0x94 => Self::F64Floor,
+            0x95 => Self::F64Ceil,
+            0x96 => Self::F64Trunc,
+            0x97 => Self::F64Nearest,
+            0x98 => Self::F64Sqrt,
+            0x99 => Self::F64CopySign,
+            0x9A => Self::F64ToI64Sat,
+            0x9B => Self::F64ToU64Sat,
+            0x9C => Self::F64Ne,
+            0x9D => Self::DecCmp,
+            0x9E => Self::DecScale,
+            0x9F => Self::DecRescale,
+            0xA0 => Self::DecDiv,
+            0xA1 => Self::I64AddOvf,
+            0xA2 => Self::I64SubOvf,
+            0xA3 => Self::I64MulOvf,
+            0xA4 => Self::U64AddOvf,
+            0xA5 => Self::U64SubOvf,
+            0xA6 => Self::U64MulOvf,
+            _ => return None,
+        })
+    }
+
+    /// Decodes the opcode byte that follows `prefix`.
+    #[must_use]
+    pub fn from_prefixed(prefix: OpcodePrefix, b: u8) -> Option<Self> {
+        let _ = (prefix, b);
+        None
+    }
+
+    /// Decodes an opcode code (see [`Opcode::code`]).
+    #[must_use]
+    pub fn from_code(code: u16) -> Option<Self> {
+        Some(match code {
             0x00 => Self::Nop,
             0x01 => Self::Mov,
             0x02 => Self::Trap,
@@ -1116,7 +1295,12 @@ impl Opcode {
     /// Returns opcode metadata for this opcode.
     #[must_use]
     pub fn info(self) -> &'static OpcodeInfo {
-        &OPCODE_INFO_BY_BYTE[usize::from(self as u8)]
+        let [prefix, byte] = self.code().to_be_bytes();
+        let table = match OpcodePrefix::from_u8(prefix) {
+            None => OPCODE_INFO_BY_BYTE,
+            Some(OpcodePrefix::Extended) => EXTENDED_OPCODE_INFO,
+        };
+        &table[usize::from(byte)]
     }
 
     /// Returns `true` if this opcode is call-like.

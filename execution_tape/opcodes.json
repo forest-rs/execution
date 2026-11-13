@@ -1,5 +1,12 @@
 {
   "version": 1,
+  "prefixes": [
+    {
+      "name": "Extended",
+      "byte": "0xFC",
+      "doc": "General extension space. New instruction families allocate the next free byte here."
+    }
+  ],
   "opcodes": [
     {
       "name": "Nop",

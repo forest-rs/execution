@@ -11,7 +11,6 @@ use alloc::vec::Vec;
 use crate::analysis::protection::{Handler, Protection};
 use crate::bytecode::DecodedInstr;
 use crate::instr_operands;
-use crate::opcode::Opcode;
 
 /// Ordinary branches stay inline; control clauses can have any number of successors.
 /// Order is significant even when multiple arms target the same block.
@@ -120,7 +119,7 @@ pub(crate) fn build_basic_blocks(
             byte_len as usize
         };
 
-        let op = Opcode::from_u8(di.opcode).expect("decoded instruction opcode must be known");
+        let op = di.opcode;
         if matches!(di.instr, crate::bytecode::Instr::Block { .. }) {
             leader[di.offset as usize] = true;
         }
@@ -221,7 +220,7 @@ pub(crate) fn build_basic_blocks(
         let Some(di) = decoded.get(last) else {
             continue;
         };
-        let op = Opcode::from_u8(di.opcode).expect("decoded instruction opcode must be known");
+        let op = di.opcode;
         let fallthrough = if blocks[i].end_pc < byte_len {
             Some(pc_to_block[blocks[i].end_pc as usize])
         } else {

@@ -402,7 +402,7 @@ impl<'a> InstructionFacts<'a> {
     /// Source opcode, including block declarations.
     #[must_use]
     pub fn opcode(&self) -> Opcode {
-        Opcode::from_u8(self.analysis.decoded[self.index].opcode).expect("verified opcode")
+        self.analysis.decoded[self.index].opcode
     }
     /// Whether control flow from the function entry reaches this instruction.
     #[must_use]

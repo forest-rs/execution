@@ -714,7 +714,7 @@ impl<'a> TraceCtx<'a> {
         location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         if self.enabled(TraceMask::INSTR)
             && let Some(t) = self.sink.as_mut()
@@ -932,7 +932,7 @@ trait TracePolicy {
         location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     );
 
     fn call_scope_enter(
@@ -988,7 +988,7 @@ impl TracePolicy for NoTracePolicy {
         _location: TraceLocation,
         _next_pc: u32,
         _span_id: Option<u64>,
-        _opcode: u8,
+        _opcode: u16,
     ) {
     }
 
@@ -1091,7 +1091,7 @@ impl TracePolicy for WithTracePolicy {
         location: TraceLocation,
         next_pc: u32,
         span_id: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         trace.instr_if_enabled(program, location, next_pc, span_id, opcode);
     }
@@ -1474,9 +1474,9 @@ impl<H: Host> Vm<H> {
                 .and_then(|f| {
                     program_ref
                         .bytecode_data
-                        .get(f.bytecode.offset as usize + pc as usize)
+                        .get(f.bytecode.offset as usize + pc as usize..)
                 })
-                .copied()
+                .and_then(crate::opcode::code_at)
                 .unwrap_or_default();
             P::instr(
                 trace,
@@ -4663,7 +4663,7 @@ mod tests {
                 location: TraceLocation,
                 _: u32,
                 _: Option<u64>,
-                _: u8,
+                _: u16,
             ) {
                 let (func, pc) = (location.func, location.pc);
                 assert!(
@@ -5743,7 +5743,7 @@ mod tests {
         struct CollectingTrace {
             starts: u32,
             ends: u32,
-            instrs: Vec<u8>,
+            instrs: Vec<u16>,
         }
 
         impl TraceSink for CollectingTrace {
@@ -5761,7 +5761,7 @@ mod tests {
                 _location: TraceLocation,
                 _next_pc: u32,
                 _span_id: Option<u64>,
-                opcode: u8,
+                opcode: u16,
             ) {
                 self.instrs.push(opcode);
             }

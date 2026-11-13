@@ -4,6 +4,7 @@
 #![doc = "Code generator for `execution_tape` opcode tables.\n\n\
           This is a std-only build tool crate. It is not shipped as part of the core VM.\n"]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,13 +14,26 @@ use serde::Deserialize;
 #[derive(Deserialize, Clone)]
 struct Spec {
     version: u32,
+    /// Prefix bytes that open a second opcode byte. Prefixed opcodes name one of these.
+    #[serde(default)]
+    prefixes: Vec<PrefixSpec>,
     opcodes: Vec<OpcodeSpec>,
+}
+
+#[derive(Deserialize, Clone)]
+struct PrefixSpec {
+    name: String,
+    byte: String,
+    doc: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
 struct OpcodeSpec {
     name: String,
     mnemonic: String,
+    /// The prefix byte for opcodes in a prefixed space; absent for single-byte opcodes.
+    #[serde(default)]
+    prefix: Option<String>,
     byte: String,
     terminator: bool,
     flags: Vec<String>,
@@ -39,6 +53,9 @@ struct OperandSpec {
     count_field: Option<String>,
 }
 
+/// Lead bytes from here up are reserved for prefixes and never name a single-byte opcode.
+const PREFIX_SPACE_START: u8 = 0xF0;
+
 fn parse_u8_hex(s: &str) -> Result<u8> {
     let s = s.trim();
     let raw = s
@@ -52,32 +69,159 @@ fn fmt_hex_u8(b: u8) -> String {
     format!("0x{b:02X}")
 }
 
-fn max_opcode_byte(ops: &[(u8, OpcodeSpec)]) -> u8 {
-    ops.iter().map(|(b, _)| *b).max().unwrap_or_default()
+/// Splits an opcode code into its prefix byte (if any) and its final byte.
+fn split_code(code: u16) -> (Option<u8>, u8) {
+    let [prefix, byte] = code.to_be_bytes();
+    ((prefix != 0).then_some(prefix), byte)
 }
 
-fn sort_and_validate_ops(ops: &mut [(u8, OpcodeSpec)]) -> Result<()> {
-    ops.sort_by(|(b0, o0), (b1, o1)| b0.cmp(b1).then_with(|| o0.name.cmp(&o1.name)));
+/// Formats an opcode code as a Rust discriminant literal.
+fn fmt_code(code: u16) -> String {
+    match split_code(code) {
+        (None, byte) => fmt_hex_u8(byte),
+        (Some(_), _) => format!("0x{code:04X}"),
+    }
+}
 
-    for w in ops.windows(2) {
-        let (b0, o0) = &w[0];
-        let (b1, o1) = &w[1];
-        if b0 == b1 {
+/// Formats an opcode code as its wire bytes.
+fn fmt_code_bytes(code: u16) -> String {
+    match split_code(code) {
+        (None, byte) => fmt_hex_u8(byte),
+        (Some(prefix), byte) => format!("{} {}", fmt_hex_u8(prefix), fmt_hex_u8(byte)),
+    }
+}
+
+/// Validated opcode table: declared prefixes, and opcodes keyed by code in code order.
+///
+/// A code is the opcode byte for single-byte opcodes and `prefix << 8 | byte` for prefixed ones.
+struct Opcodes {
+    prefixes: Vec<(u8, PrefixSpec)>,
+    ops: Vec<(u16, OpcodeSpec)>,
+}
+
+impl Opcodes {
+    fn single_byte(&self) -> impl Iterator<Item = (u8, &OpcodeSpec)> {
+        self.ops
+            .iter()
+            .filter_map(|(code, op)| match split_code(*code) {
+                (None, byte) => Some((byte, op)),
+                (Some(_), _) => None,
+            })
+    }
+
+    fn under_prefix(&self, prefix: u8) -> impl Iterator<Item = (u8, &OpcodeSpec)> {
+        self.ops
+            .iter()
+            .filter_map(move |(code, op)| match split_code(*code) {
+                (Some(p), byte) if p == prefix => Some((byte, op)),
+                _ => None,
+            })
+    }
+}
+
+fn load(spec: Spec) -> Result<Opcodes> {
+    if spec.version != 1 {
+        bail!("unsupported opcodes.json version {}", spec.version);
+    }
+
+    let mut prefixes: Vec<(u8, PrefixSpec)> = Vec::with_capacity(spec.prefixes.len());
+    for prefix in spec.prefixes {
+        let b = parse_u8_hex(&prefix.byte)?;
+        if b < PREFIX_SPACE_START {
             bail!(
-                "duplicate opcode byte {}: {} and {}",
-                fmt_hex_u8(*b0),
+                "prefix {} byte {} is below the reserved prefix space {}..=0xFF",
+                prefix.name,
+                fmt_hex_u8(b),
+                fmt_hex_u8(PREFIX_SPACE_START)
+            );
+        }
+        if prefix.doc.is_none() {
+            bail!("missing doc for prefix {}", prefix.name);
+        }
+        if let Some((_, other)) = prefixes
+            .iter()
+            .find(|(pb, p)| *pb == b || p.name == prefix.name)
+        {
+            bail!(
+                "duplicate prefix {} ({}): conflicts with {}",
+                prefix.name,
+                fmt_hex_u8(b),
+                other.name
+            );
+        }
+        prefixes.push((b, prefix));
+    }
+    prefixes.sort_by_key(|(b, _)| *b);
+
+    let mut ops: Vec<(u16, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
+    for op in spec.opcodes {
+        let b = parse_u8_hex(&op.byte)?;
+        let code = match op.prefix.as_deref() {
+            None => {
+                if b >= PREFIX_SPACE_START {
+                    bail!(
+                        "opcode {} byte {} is in the reserved prefix space; add a \"prefix\"",
+                        op.name,
+                        fmt_hex_u8(b)
+                    );
+                }
+                u16::from(b)
+            }
+            Some(prefix) => {
+                let p = parse_u8_hex(prefix)?;
+                if !prefixes.iter().any(|(pb, _)| *pb == p) {
+                    bail!(
+                        "opcode {} names undeclared prefix {}",
+                        op.name,
+                        fmt_hex_u8(p)
+                    );
+                }
+                u16::from_be_bytes([p, b])
+            }
+        };
+        ops.push((code, op));
+    }
+
+    ops.sort_by(|(c0, o0), (c1, o1)| c0.cmp(c1).then_with(|| o0.name.cmp(&o1.name)));
+    for w in ops.windows(2) {
+        let (c0, o0) = &w[0];
+        let (c1, o1) = &w[1];
+        if c0 == c1 {
+            bail!(
+                "duplicate opcode {}: {} and {}",
+                fmt_code_bytes(*c0),
                 o0.name,
                 o1.name
             );
         }
-        if o0.name == o1.name {
-            bail!("duplicate opcode name '{}'", o0.name);
+    }
+    let mut names = BTreeSet::new();
+    let mut mnemonics = BTreeSet::new();
+    for (_, op) in &ops {
+        if !names.insert(op.name.as_str()) {
+            bail!("duplicate opcode name '{}'", op.name);
+        }
+        if !mnemonics.insert(op.mnemonic.as_str()) {
+            bail!("duplicate opcode mnemonic '{}'", op.mnemonic);
         }
     }
-    Ok(())
+    validate_operand_access(&ops)?;
+    Ok(Opcodes { prefixes, ops })
 }
 
-fn validate_operand_access(ops: &[(u8, OpcodeSpec)]) -> Result<()> {
+/// Converts a `CamelCase` prefix name into an `UPPER_SNAKE` constant prefix.
+fn upper_snake(name: &str) -> String {
+    let mut s = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_ascii_uppercase() && i != 0 {
+            s.push('_');
+        }
+        s.extend(ch.to_uppercase());
+    }
+    s
+}
+
+fn validate_operand_access(ops: &[(u16, OpcodeSpec)]) -> Result<()> {
     for (_b, op) in ops {
         for operand in &op.operands {
             match operand.kind.as_str() {
@@ -186,18 +330,8 @@ struct Layout {
 }
 
 fn generate(spec: Spec, src: &Path) -> Result<String> {
-    if spec.version != 1 {
-        bail!("unsupported opcodes.json version {}", spec.version);
-    }
-
-    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
-    for op in spec.opcodes {
-        let b = parse_u8_hex(&op.byte)?;
-        ops.push((b, op));
-    }
-
-    sort_and_validate_ops(&mut ops)?;
-    validate_operand_access(&ops)?;
+    let opcodes = load(spec)?;
+    let ops = &opcodes.ops;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -332,8 +466,8 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("}\n\n");
 
     let mut operands: Vec<String> = Vec::new();
-    let mut operand_layout_by_name: Vec<(&str, u16, u8)> = Vec::with_capacity(ops.len());
-    for (_, op) in &ops {
+    let mut layout_by_code: BTreeMap<u16, Layout> = BTreeMap::new();
+    for (code, op) in ops {
         let start: u16 = operands
             .len()
             .try_into()
@@ -361,17 +495,7 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
             .len()
             .try_into()
             .with_context(|| format!("too many operands for opcode {}", op.name))?;
-        operand_layout_by_name.push((op.name.as_str(), start, len));
-    }
-
-    let max_byte = max_opcode_byte(&ops);
-    let mut layout_by_byte: Vec<Option<Layout>> = vec![None; usize::from(max_byte) + 1];
-    for ((b, op), (name, start, len)) in ops.iter().zip(operand_layout_by_name.iter()) {
-        let _ = (op, name);
-        layout_by_byte[usize::from(*b)] = Some(Layout {
-            start: *start,
-            len: *len,
-        });
+        layout_by_code.insert(*code, Layout { start, len });
     }
 
     out.push_str("/// Flat operand schema table indexed by `OperandLayout`.\n");
@@ -411,39 +535,110 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
-    let mut by_byte: Vec<Option<&OpcodeSpec>> = vec![None; usize::from(max_byte) + 1];
-    for (b, op) in &ops {
-        by_byte[usize::from(*b)] = Some(op);
-    }
-
-    out.push_str("/// Metadata indexed by opcode byte.\n");
-    out.push_str("pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[\n");
-    for (i, op) in by_byte.iter().enumerate() {
-        if let Some(op) = op {
-            let layout = layout_by_byte[i].expect("layout for valid opcode");
-            let flags = if op.flags.iter().any(|f| f == "call_like") {
-                "OpcodeFlags::CALL_LIKE"
-            } else {
-                "OpcodeFlags::NONE"
-            };
-            out.push_str(&format!(
-                "    OpcodeInfo {{ mnemonic: \"{}\", is_terminator: {}, flags: {}, operands: OperandLayout {{ start: {}, len: {} }} }}, // 0x{:<02X} {}\n",
-                op.mnemonic, op.terminator, flags, layout.start, layout.len, i, op.name
-            ));
-        } else {
-            out.push_str(&format!(
-                "    OpcodeInfo {{ mnemonic: \"<invalid>\", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout {{ start: 0, len: 0 }} }}, // 0x{:<02X}\n",
-                i
-            ));
+    // One metadata table per opcode space, indexed by the opcode's final byte.
+    let info_table = |out: &mut String, prefix: Option<u8>, entries: Vec<(u8, &OpcodeSpec)>| {
+        let len = entries
+            .iter()
+            .map(|(b, _)| usize::from(*b) + 1)
+            .max()
+            .unwrap_or(0);
+        let mut by_byte: Vec<Option<&OpcodeSpec>> = vec![None; len];
+        for (b, op) in entries {
+            by_byte[usize::from(b)] = Some(op);
         }
-    }
+        for (i, op) in by_byte.iter().enumerate() {
+            let i = u8::try_from(i).expect("opcode byte");
+            let code = match prefix {
+                None => u16::from(i),
+                Some(p) => u16::from_be_bytes([p, i]),
+            };
+            let at = fmt_code_bytes(code);
+            if let Some(op) = op {
+                let layout = layout_by_code[&code];
+                let flags = if op.flags.iter().any(|f| f == "call_like") {
+                    "OpcodeFlags::CALL_LIKE"
+                } else {
+                    "OpcodeFlags::NONE"
+                };
+                out.push_str(&format!(
+                    "    OpcodeInfo {{ mnemonic: \"{}\", is_terminator: {}, flags: {}, operands: OperandLayout {{ start: {}, len: {} }} }}, // {} {}\n",
+                    op.mnemonic, op.terminator, flags, layout.start, layout.len, at, op.name
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    OpcodeInfo {{ mnemonic: \"<invalid>\", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout {{ start: 0, len: 0 }} }}, // {at}\n"
+                ));
+            }
+        }
+    };
+
+    out.push_str("/// Metadata for single-byte opcodes, indexed by opcode byte.\n");
+    out.push_str("///\n");
+    out.push_str("/// Prefixed opcodes are not listed here; use [`Opcode::info`].\n");
+    out.push_str("pub const OPCODE_INFO_BY_BYTE: &[OpcodeInfo] = &[\n");
+    info_table(&mut out, None, opcodes.single_byte().collect());
     out.push_str("];\n\n");
 
-    out.push_str("/// Bytecode opcode byte for the v1 instruction set.\n");
+    for (pb, prefix) in &opcodes.prefixes {
+        out.push_str(&format!(
+            "/// Metadata for opcodes under [`OpcodePrefix::{}`], indexed by the byte after the prefix.\n",
+            prefix.name
+        ));
+        out.push_str(&format!(
+            "const {}_OPCODE_INFO: &[OpcodeInfo] = &[\n",
+            upper_snake(&prefix.name)
+        ));
+        info_table(&mut out, Some(*pb), opcodes.under_prefix(*pb).collect());
+        out.push_str("];\n\n");
+    }
+
+    out.push_str("/// Lead bytes that introduce a prefixed opcode.\n");
+    out.push_str("///\n");
+    out.push_str(
+        "/// A prefixed opcode is encoded as its prefix byte followed by one opcode byte, so\n",
+    );
+    out.push_str(
+        "/// each prefix opens a further 256 opcodes. Bytes `0xF0..=0xFF` are reserved for\n",
+    );
+    out.push_str("/// prefixes; the ones not listed here are unassigned.\n");
     out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
     out.push_str("#[repr(u8)]\n");
+    out.push_str("pub enum OpcodePrefix {\n");
+    for (pb, prefix) in &opcodes.prefixes {
+        let doc = prefix.doc.as_deref().expect("validated by load");
+        for line in doc.lines() {
+            out.push_str(&format!("    /// {line}\n"));
+        }
+        out.push_str(&format!("    {} = {},\n", prefix.name, fmt_hex_u8(*pb)));
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("impl OpcodePrefix {\n");
+    out.push_str(
+        "    /// Decodes a prefix byte, or returns `None` if `b` is not an assigned prefix.\n",
+    );
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub const fn from_u8(b: u8) -> Option<Self> {\n");
+    out.push_str("        Some(match b {\n");
+    for (pb, prefix) in &opcodes.prefixes {
+        out.push_str(&format!(
+            "            {} => Self::{},\n",
+            fmt_hex_u8(*pb),
+            prefix.name
+        ));
+    }
+    out.push_str("            _ => return None,\n");
+    out.push_str("        })\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+
+    out.push_str("/// Bytecode opcode for the v1 instruction set.\n");
+    out.push_str("///\n");
+    out.push_str("/// Each discriminant is the opcode's code (see [`Opcode::code`]).\n");
+    out.push_str("#[derive(Copy, Clone, Debug, PartialEq, Eq)]\n");
+    out.push_str("#[repr(u16)]\n");
     out.push_str("pub enum Opcode {\n");
-    for (b, op) in &ops {
+    for (code, op) in ops {
         let doc = op
             .doc
             .as_deref()
@@ -451,19 +646,66 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
         for line in doc.lines() {
             out.push_str(&format!("    /// {line}\n"));
         }
-        out.push_str(&format!("    {} = {},\n", op.name, fmt_hex_u8(*b)));
+        out.push_str(&format!("    {} = {},\n", op.name, fmt_code(*code)));
     }
     out.push_str("}\n\n");
 
     out.push_str("impl Opcode {\n");
-    out.push_str("    /// Decodes an opcode byte.\n");
+    out.push_str("    /// Decodes a single-byte opcode.\n");
+    out.push_str("    ///\n");
+    out.push_str(
+        "    /// Returns `None` for prefix bytes and unassigned bytes; prefixed opcodes are\n",
+    );
+    out.push_str("    /// decoded with [`Opcode::from_prefixed`].\n");
     out.push_str("    #[must_use]\n");
     out.push_str("    pub fn from_u8(b: u8) -> Option<Self> {\n");
     out.push_str("        Some(match b {\n");
-    for (b, op) in &ops {
+    for (b, op) in opcodes.single_byte() {
         out.push_str(&format!(
             "            {} => Self::{},\n",
-            fmt_hex_u8(*b),
+            fmt_hex_u8(b),
+            op.name
+        ));
+    }
+    out.push_str("            _ => return None,\n");
+    out.push_str("        })\n");
+    out.push_str("    }\n\n");
+
+    out.push_str("    /// Decodes the opcode byte that follows `prefix`.\n");
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub fn from_prefixed(prefix: OpcodePrefix, b: u8) -> Option<Self> {\n");
+    if opcodes
+        .ops
+        .iter()
+        .all(|(code, _)| split_code(*code).0.is_none())
+    {
+        out.push_str("        let _ = (prefix, b);\n");
+        out.push_str("        None\n");
+    } else {
+        out.push_str("        Some(match (prefix, b) {\n");
+        for (pb, prefix) in &opcodes.prefixes {
+            for (b, op) in opcodes.under_prefix(*pb) {
+                out.push_str(&format!(
+                    "            (OpcodePrefix::{}, {}) => Self::{},\n",
+                    prefix.name,
+                    fmt_hex_u8(b),
+                    op.name
+                ));
+            }
+        }
+        out.push_str("            _ => return None,\n");
+        out.push_str("        })\n");
+    }
+    out.push_str("    }\n\n");
+
+    out.push_str("    /// Decodes an opcode code (see [`Opcode::code`]).\n");
+    out.push_str("    #[must_use]\n");
+    out.push_str("    pub fn from_code(code: u16) -> Option<Self> {\n");
+    out.push_str("        Some(match code {\n");
+    for (code, op) in ops {
+        out.push_str(&format!(
+            "            {} => Self::{},\n",
+            fmt_code(*code),
             op.name
         ));
     }
@@ -488,7 +730,18 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("\n    /// Returns opcode metadata for this opcode.\n");
     out.push_str("    #[must_use]\n");
     out.push_str("    pub fn info(self) -> &'static OpcodeInfo {\n");
-    out.push_str("        &OPCODE_INFO_BY_BYTE[usize::from(self as u8)]\n");
+    out.push_str("        let [prefix, byte] = self.code().to_be_bytes();\n");
+    out.push_str("        let table = match OpcodePrefix::from_u8(prefix) {\n");
+    out.push_str("            None => OPCODE_INFO_BY_BYTE,\n");
+    for (_, prefix) in &opcodes.prefixes {
+        out.push_str(&format!(
+            "            Some(OpcodePrefix::{}) => {}_OPCODE_INFO,\n",
+            prefix.name,
+            upper_snake(&prefix.name)
+        ));
+    }
+    out.push_str("        };\n");
+    out.push_str("        &table[usize::from(byte)]\n");
     out.push_str("    }\n");
 
     out.push_str("\n    /// Returns `true` if this opcode is call-like.\n");
@@ -533,17 +786,8 @@ fn rust_field_name(field: &str) -> Result<&str> {
 }
 
 fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
-    if spec.version != 1 {
-        bail!("unsupported opcodes.json version {}", spec.version);
-    }
-
-    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
-    for op in spec.opcodes {
-        let b = parse_u8_hex(&op.byte)?;
-        ops.push((b, op));
-    }
-    sort_and_validate_ops(&mut ops)?;
-    validate_operand_access(&ops)?;
+    let opcodes = load(spec)?;
+    let ops = &opcodes.ops;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -556,7 +800,7 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, DecodeError> {\n");
     out.push_str("    Ok(match opcode {\n");
 
-    for (_b, op) in &ops {
+    for (_b, op) in ops {
         if op.operands.is_empty() {
             out.push_str(&format!(
                 "        Opcode::{} => Instr::{},\n",
@@ -783,17 +1027,8 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
 }
 
 fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
-    if spec.version != 1 {
-        bail!("unsupported opcodes.json version {}", spec.version);
-    }
-
-    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
-    for op in spec.opcodes {
-        let b = parse_u8_hex(&op.byte)?;
-        ops.push((b, op));
-    }
-    sort_and_validate_ops(&mut ops)?;
-    validate_operand_access(&ops)?;
+    let opcodes = load(spec)?;
+    let ops = &opcodes.ops;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -808,11 +1043,20 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
     );
     out.push_str("    match instr {\n");
 
-    for (_b, op) in &ops {
+    for (code, op) in ops {
+        // Single-byte opcodes keep the one-push form; prefixed ones write prefix then byte.
+        let emit_opcode = match split_code(*code) {
+            (None, _) => format!("out.push(Opcode::{} as u8);", op.name),
+            (Some(prefix), byte) => format!(
+                "out.extend_from_slice(&[{}, {}]);",
+                fmt_hex_u8(prefix),
+                fmt_hex_u8(byte)
+            ),
+        };
         if op.operands.is_empty() {
             out.push_str(&format!(
-                "        Instr::{} => {{ out.push(Opcode::{} as u8); Ok(()) }},\n",
-                op.name, op.name
+                "        Instr::{} => {{ {emit_opcode} Ok(()) }},\n",
+                op.name
             ));
             continue;
         }
@@ -839,10 +1083,7 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
             out.push_str(field);
         }
         out.push_str(" } => {\n");
-        out.push_str(&format!(
-            "            out.push(Opcode::{} as u8);\n",
-            op.name
-        ));
+        out.push_str(&format!("            {emit_opcode}\n"));
 
         for operand in &op.operands {
             let field = rust_field_name(&operand.field)
@@ -1047,17 +1288,8 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
 }
 
 fn generate_bytecode_instr_helpers(spec: Spec, src: &Path) -> Result<String> {
-    if spec.version != 1 {
-        bail!("unsupported opcodes.json version {}", spec.version);
-    }
-
-    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
-    for op in spec.opcodes {
-        let b = parse_u8_hex(&op.byte)?;
-        ops.push((b, op));
-    }
-    sort_and_validate_ops(&mut ops)?;
-    validate_operand_access(&ops)?;
+    let opcodes = load(spec)?;
+    let ops = &opcodes.ops;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -1071,7 +1303,7 @@ fn generate_bytecode_instr_helpers(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    #[must_use]\n");
     out.push_str("    pub(crate) fn opcode(&self) -> Opcode {\n");
     out.push_str("        match self {\n");
-    for (_b, op) in &ops {
+    for (_b, op) in ops {
         if op.operands.is_empty() {
             out.push_str(&format!(
                 "            Self::{} => Opcode::{},\n",
@@ -1100,17 +1332,8 @@ fn generate_bytecode_instr_helpers(spec: Spec, src: &Path) -> Result<String> {
 }
 
 fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
-    if spec.version != 1 {
-        bail!("unsupported opcodes.json version {}", spec.version);
-    }
-
-    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
-    for op in spec.opcodes {
-        let b = parse_u8_hex(&op.byte)?;
-        ops.push((b, op));
-    }
-    sort_and_validate_ops(&mut ops)?;
-    validate_operand_access(&ops)?;
+    let opcodes = load(spec)?;
+    let ops = &opcodes.ops;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -1126,7 +1349,7 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("#[rustfmt::skip]\n");
     out.push_str("pub(crate) fn visit_pcs(instr: &Instr, mut f: impl FnMut(u32)) {\n");
     let mut pc_arms: Vec<(&str, Vec<&str>)> = Vec::new();
-    for (_b, op) in &ops {
+    for (_b, op) in ops {
         let pc_fields: Vec<&str> = op
             .operands
             .iter()
@@ -1185,7 +1408,7 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
 
     fn gen_id_visitor(
         out: &mut String,
-        ops: &[(u8, OpcodeSpec)],
+        ops: &[(u16, OpcodeSpec)],
         fn_name: &str,
         kind: &str,
         ty: &str,
@@ -1257,19 +1480,19 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
         Ok(())
     }
 
-    gen_id_visitor(&mut out, &ops, "visit_const_ids", "const_id", "ConstId")?;
-    gen_id_visitor(&mut out, &ops, "visit_func_ids", "func_id", "FuncId")?;
+    gen_id_visitor(&mut out, ops, "visit_const_ids", "const_id", "ConstId")?;
+    gen_id_visitor(&mut out, ops, "visit_func_ids", "func_id", "FuncId")?;
     gen_id_visitor(
         &mut out,
-        &ops,
+        ops,
         "visit_host_sig_ids",
         "host_sig_id",
         "HostSigId",
     )?;
-    gen_id_visitor(&mut out, &ops, "visit_type_ids", "type_id", "TypeId")?;
+    gen_id_visitor(&mut out, ops, "visit_type_ids", "type_id", "TypeId")?;
     gen_id_visitor(
         &mut out,
-        &ops,
+        ops,
         "visit_elem_type_ids",
         "elem_type_id",
         "ElemTypeId",
@@ -1279,17 +1502,8 @@ fn generate_instr_operands(spec: Spec, src: &Path) -> Result<String> {
 }
 
 fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
-    if spec.version != 1 {
-        bail!("unsupported opcodes.json version {}", spec.version);
-    }
-
-    let mut ops: Vec<(u8, OpcodeSpec)> = Vec::with_capacity(spec.opcodes.len());
-    for op in spec.opcodes {
-        let b = parse_u8_hex(&op.byte)?;
-        ops.push((b, op));
-    }
-    sort_and_validate_ops(&mut ops)?;
-    validate_operand_access(&ops)?;
+    let opcodes = load(spec)?;
+    let ops = &opcodes.ops;
 
     let mut out = String::new();
     out.push_str("// Copyright 2026 the Execution Tape Authors\n");
@@ -1339,7 +1553,7 @@ fn generate_reads_writes(spec: Spec, src: &Path) -> Result<String> {
         let scalar_capacity = capacity("reg", access);
         let list_capacity = capacity("reg_list", access);
         out.push_str(&format!("    /// Iterates virtual registers {access} by this instruction without allocation.\n    #[must_use]\n    pub(crate) fn {method}(&self) -> {iter}<'_> {{\n        match self {{\n"));
-        for (_, op) in &ops {
+        for (_, op) in ops {
             let operands: Vec<_> = op
                 .operands
                 .iter()
@@ -1459,7 +1673,7 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         Spec, generate, generate_bytecode_decode, generate_bytecode_encode,
-        generate_bytecode_instr_helpers, generate_instr_operands, generate_reads_writes,
+        generate_bytecode_instr_helpers, generate_instr_operands, generate_reads_writes, load,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1580,6 +1794,82 @@ mod tests {
             "fixture failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn load_error(spec: serde_json::Value) -> String {
+        let spec: Spec = serde_json::from_value(spec).expect("parse fixture schema");
+        match load(spec) {
+            Ok(_) => panic!("fixture should be rejected"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn op(name: &str, prefix: Option<&str>, byte: &str) -> serde_json::Value {
+        let mut op = serde_json::json!({
+            "name": name, "mnemonic": name.to_lowercase(), "byte": byte, "terminator": false,
+            "flags": [], "doc": "Fixture.", "operands": []
+        });
+        if let Some(prefix) = prefix {
+            op["prefix"] = prefix.into();
+        }
+        op
+    }
+
+    #[test]
+    fn prefix_space_is_validated() {
+        let prefix = serde_json::json!({"name": "Extended", "byte": "0xFC", "doc": "Fixture."});
+        let reject = |prefixes: serde_json::Value, opcodes: Vec<serde_json::Value>| {
+            load_error(serde_json::json!({"version": 1, "prefixes": prefixes, "opcodes": opcodes}))
+        };
+        assert!(
+            reject(serde_json::json!([prefix]), vec![op("Lead", None, "0xF0")])
+                .contains("reserved prefix space")
+        );
+        assert!(
+            reject(
+                serde_json::json!([prefix]),
+                vec![op("Ext", Some("0xFD"), "0x00")]
+            )
+            .contains("undeclared prefix 0xFD")
+        );
+        assert!(
+            reject(
+                serde_json::json!([{"name": "Low", "byte": "0x80", "doc": "Fixture."}]),
+                vec![]
+            )
+            .contains("below the reserved prefix space")
+        );
+        assert!(
+            reject(
+                serde_json::json!([prefix, {"name": "Other", "byte": "0xFC", "doc": "Fixture."}]),
+                vec![]
+            )
+            .contains("duplicate prefix")
+        );
+        assert!(
+            reject(
+                serde_json::json!([prefix]),
+                vec![op("A", Some("0xFC"), "0x00"), op("B", Some("0xFC"), "0x00")]
+            )
+            .contains("duplicate opcode 0xFC 0x00")
+        );
+        assert!(
+            reject(
+                serde_json::json!([prefix]),
+                vec![op("A", None, "0x00"), op("A", Some("0xFC"), "0x00")]
+            )
+            .contains("duplicate opcode name")
+        );
+
+        // The same byte may be used once in each opcode space.
+        let spec: Spec = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "prefixes": [prefix],
+            "opcodes": [op("Single", None, "0x00"), op("Prefixed", Some("0xFC"), "0x00")]
+        }))
+        .expect("parse fixture schema");
+        let codes: Vec<u16> = load(spec).unwrap().ops.iter().map(|(c, _)| *c).collect();
+        assert_eq!(codes, [0x0000, 0xFC00]);
     }
 
     #[test]

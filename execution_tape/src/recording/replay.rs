@@ -830,7 +830,7 @@ impl TraceSink for Check<'_> {
             .and_then(|top| self.record.frames[top.index()].parent);
     }
 
-    fn instr(&mut self, _: &Program, location: TraceLocation, _: u32, _: Option<u64>, opcode: u8) {
+    fn instr(&mut self, _: &Program, location: TraceLocation, _: u32, _: Option<u64>, opcode: u16) {
         let mut state = self.state.borrow_mut();
         state.location = Some(location);
         let index = state.instructions;

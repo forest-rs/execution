@@ -154,7 +154,7 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         location: TraceLocation,
         next: u32,
         span: Option<u64>,
-        opcode: u8,
+        opcode: u16,
     ) {
         if let Some(observer) = self.observer(TraceMask::INSTR) {
             observer.instr(program, location, next, span, opcode);

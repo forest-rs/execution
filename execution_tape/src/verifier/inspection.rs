@@ -162,7 +162,8 @@ impl<'a> VerifiedFunction<'a> {
             .map(move |(index, instruction)| InstructionInfo {
                 pc: instruction.offset,
                 next_pc: instruction.end,
-                opcode: Opcode::from_byte(source[instruction.offset as usize])
+                opcode: crate::opcode::code_at(&source[instruction.offset as usize..])
+                    .and_then(Opcode::from_code)
                     .expect("verified opcode"),
                 span: self.executable.span_at_ix(index),
             })
