@@ -606,6 +606,71 @@ fn suspended_activations_close_their_scopes_and_reenter_when_resumed() {
 }
 
 #[test]
+fn recordings_replay_suspensions_and_resumptions() {
+    use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
+    use execution_tape::trace::TraceSink as _;
+    let fixture = effects();
+    for entry in [fixture.run, fixture.outer] {
+        let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
+        let result = {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
+            vm.run(
+                FuncRef::new(unit, entry),
+                &[Value::I64(10), Value::I64(1)],
+                recorder.mask(),
+                Some(&mut recorder),
+            )
+        }
+        .unwrap();
+        let recording = recorder.finish();
+        recording.status().unwrap();
+        match recording.replay() {
+            Ok(ReplayOutcome::Returned(values)) => assert_eq!(values.values(), result),
+            other => panic!("replay diverged: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn invocations_pause_and_resume_at_every_boundary_inside_continuations() {
+    use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
+    use execution_tape::trace::TraceSink as _;
+    use execution_tape::vm::{InvocationOptions, RunStatus};
+    let fixture = effects();
+    for quantum in [1, 2, 5, u64::MAX] {
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
+        let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
+        let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
+        let mut invocation = vm
+            .start(
+                FuncRef::new(unit, fixture.outer),
+                &[Value::I64(10), Value::I64(1)],
+                options,
+            )
+            .unwrap();
+        let mut deepest = 0;
+        while invocation.resume(quantum).unwrap() == RunStatus::Suspended {
+            // Paused frames are the active stack, including resumed continuations.
+            deepest = deepest.max(invocation.inspect().frames().len());
+        }
+        assert_eq!(invocation.take_outputs().unwrap(), vec![Value::I64(11)]);
+        drop(invocation);
+        if quantum == 1 {
+            // `outer`, `middle` and `logged` are all on the stack while `logged` runs.
+            assert_eq!(deepest, 3);
+        }
+        let recording = recorder.finish();
+        recording.status().unwrap();
+        assert!(matches!(
+            recording.replay(),
+            Ok(ReplayOutcome::Returned(values)) if values.values() == [Value::I64(11)]
+        ));
+    }
+}
+
+#[test]
 fn a_guest_callback_cannot_suspend_its_pending_host_request() {
     use execution_tape::host::HostSig;
     use execution_tape::vm::{InvocationOptions, RunStatus};

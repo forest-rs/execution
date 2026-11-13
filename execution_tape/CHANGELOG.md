@@ -78,6 +78,11 @@ This release has an [MSRV][] of 1.88.
   `CatchClause::On`, `Catch::On`, and the new `Trap`, `VerifyError`, `RegionError` and
   `TagError` variants in exhaustive matches.
 
+- Recordings and checked replay cover stack switching without new evidence: suspension and
+  resumption are deterministic guest control, re-executed on replay, including in invocations
+  paused at any instruction boundary inside a continuation. Migration: no caller changes are
+  required.
+
 - Declare the values that resume a suspension to a tag with
   `ProgramBuilder::declare_tag_with_results` and `import_tag_with_results`, or
   `Vm::define_tag_with_results` for embedding-defined tags, so the store tags that units share
