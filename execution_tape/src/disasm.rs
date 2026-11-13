@@ -1268,7 +1268,10 @@ fn fmt_throw(
 fn is_continuation(instr: &Instr) -> bool {
     matches!(
         instr,
-        Instr::ContNew { .. } | Instr::Resume { .. } | Instr::Suspend { .. }
+        Instr::ContNew { .. }
+            | Instr::Resume { .. }
+            | Instr::ResumeThrow { .. }
+            | Instr::Suspend { .. }
     )
 }
 
@@ -1309,6 +1312,29 @@ fn fmt_continuation(w: &mut fmt::Formatter<'_>, program: &Program, instr: &Instr
             write!(w, ", eff_in=")?;
             fmt_reg(w, *eff_in)?;
             write!(w, ", args=")?;
+            fmt_reg_list(w, args)?;
+            write!(w, ", rets=")?;
+            fmt_reg_list(w, rets)?;
+            fmt_call_sig_annotation(w, program, CallSigId(*call_sig))
+        }
+        Instr::ResumeThrow {
+            eff_out,
+            call_sig,
+            cont,
+            eff_in,
+            tag,
+            args,
+            rets,
+        } => {
+            write!(w, " eff_out=")?;
+            fmt_reg(w, *eff_out)?;
+            write!(w, ", call_sig#{call_sig}, cont=")?;
+            fmt_reg(w, *cont)?;
+            write!(w, ", eff_in=")?;
+            fmt_reg(w, *eff_in)?;
+            write!(w, ", ")?;
+            fmt_tag(w, program, *tag)?;
+            write!(w, ", payload=")?;
             fmt_reg_list(w, args)?;
             write!(w, ", rets=")?;
             fmt_reg_list(w, rets)?;

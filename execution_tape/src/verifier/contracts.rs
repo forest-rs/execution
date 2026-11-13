@@ -755,7 +755,9 @@ fn transfer(
                 replacements.push((*dst, fact));
             }
         }
-        Instr::CallIndirect { call_sig, rets, .. } | Instr::Resume { call_sig, rets, .. } => {
+        Instr::CallIndirect { call_sig, rets, .. }
+        | Instr::Resume { call_sig, rets, .. }
+        | Instr::ResumeThrow { call_sig, rets, .. } => {
             for (&reg, &id) in rets.iter().zip(
                 arena
                     .program
@@ -1058,7 +1060,9 @@ fn validate(
                     })?;
             }
         }
-        Instr::Throw { tag, args, .. } | Instr::Suspend { tag, args, .. } => {
+        Instr::Throw { tag, args, .. }
+        | Instr::Suspend { tag, args, .. }
+        | Instr::ResumeThrow { tag, args, .. } => {
             let tag = TagId(*tag);
             let entry = arena.program.tag(tag).expect("verified tag");
             let contracts = arena

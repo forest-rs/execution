@@ -78,6 +78,12 @@ This release has an [MSRV][] of 1.88.
   `CatchClause::On`, `Catch::On`, and the new `Trap`, `VerifyError`, `RegionError` and
   `TagError` variants in exhaustive matches.
 
+- Continue a continuation by raising an exception at its suspension point with `resume_throw`
+  (`0xFC 0x08`), for cleanup and cancellation of generators and coroutines. Its own protected
+  regions may catch the exception; an unstarted continuation is discarded and the exception
+  raised at the `resume_throw`. Exceptions escaping any continuation reach the catch clauses of
+  the `resume` that ran it. Migration: handle the new `Opcode` variant in exhaustive matches.
+
 - Recordings and checked replay cover stack switching without new evidence: suspension and
   resumption are deterministic guest control, re-executed on replay, including in invocations
   paused at any instruction boundary inside a continuation. Migration: no caller changes are

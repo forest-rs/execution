@@ -123,7 +123,7 @@ impl Asm {
     /// Instructions emitted until the matching [`Self::end_region`] belong to the new region.
     /// An exception raised there tries `clauses` in order, then the parent region's clauses,
     /// then the calling activation. Only `call`, `call.indirect`, `host_call`, `throw`,
-    /// `throw_ref` and `resume` can raise; traps are never caught.
+    /// `throw_ref`, `resume`, `resume_throw` and `suspend` can raise; traps are never caught.
     /// A suspension from a continuation run by a `resume` in the region tries the `on` clauses
     /// the same way, then the `resume` that runs this activation's own continuation.
     pub fn begin_region(&mut self, clauses: &[Catch]) -> RegionId {

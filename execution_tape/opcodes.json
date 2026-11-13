@@ -4084,6 +4084,66 @@
       ]
     },
     {
+      "name": "ResumeThrow",
+      "mnemonic": "resume_throw",
+      "prefix": "0xFC",
+      "byte": "0x08",
+      "terminator": false,
+      "flags": [
+        "call_like"
+      ],
+      "doc": "Resume a continuation by raising an exception at its suspension point.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "eff_out",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_out",
+          "access": "write"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "imm",
+          "encoding": "u32_uleb",
+          "field": "call_sig"
+        },
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "cont",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "eff_in",
+          "encoding": "reg_u32_uleb",
+          "field": "eff_in",
+          "access": "read"
+        },
+        {
+          "kind": "imm_u32",
+          "role": "index",
+          "encoding": "u32_uleb",
+          "field": "tag"
+        },
+        {
+          "kind": "reg_list",
+          "role": "args",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "args",
+          "access": "read"
+        },
+        {
+          "kind": "reg_list",
+          "role": "rets",
+          "encoding": "reg_list_u32_uleb_count_then_regs",
+          "field": "rets",
+          "access": "write"
+        }
+      ]
+    },
+    {
       "name": "ConstI32",
       "mnemonic": "const.i32",
       "prefix": "0xFD",

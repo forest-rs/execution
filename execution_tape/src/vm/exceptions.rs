@@ -94,10 +94,13 @@ pub(crate) struct Exception {
 }
 
 impl<H: Host> Vm<H> {
-    /// Raises `tag` at the throwing instruction, then propagates it.
+    /// Raises `tag` at `location`, then propagates it.
     ///
-    /// Payload materialization, observation and contract checks happen at the throw site, so a
-    /// rejected payload reports its own trap there rather than an exception.
+    /// Payload materialization, observation and contract checks happen at the raise, so a
+    /// rejected payload reports its own trap there rather than an exception. `tag` and its
+    /// payload contracts belong to `tag_unit`'s program, and `payload` to the frame at `base`.
+    /// They differ from `location` only for `resume_throw`, which raises at the suspension
+    /// point of the continuation it reinstated.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -107,6 +110,7 @@ impl<H: Host> Vm<H> {
         ctx: &mut Registers,
         budget: &mut Budget,
         prepared: &VerifiedProgram,
+        tag_unit: UnitId,
         tag: TagId,
         payload: &[VReg],
         base: RegBase,
@@ -124,17 +128,13 @@ impl<H: Host> Vm<H> {
                 Err(trap) => return Err(fail(ctx, trap)),
             }
         }
-        let bound = self
-            .units
-            .unit(location.unit)
-            .tag(tag)
-            .expect("verified tag");
+        let bound = self.units.unit(tag_unit).tag(tag).expect("verified tag");
         self.raise_values::<P>(
             ctx,
             budget,
             prepared,
             bound,
-            Some((location.unit, tag)),
+            Some((tag_unit, tag)),
             values,
             trace,
             control,

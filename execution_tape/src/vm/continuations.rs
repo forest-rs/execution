@@ -17,7 +17,7 @@
 //! continuations are released when the invocation ends. Their frames stay charged to the
 //! invocation's frame budget meanwhile, so abandoned continuations cannot grow without bound.
 //!
-//! The switch points are explicit instructions (`resume`, `suspend`), and the
+//! The switch points are explicit instructions (`resume`, `resume_throw`, `suspend`), and the
 //! handler search only reads frames and their prepared region tables. A native tier can keep
 //! the same table, references, typing and handler search while backing each segment with its
 //! own machine stack and switching stack pointers instead of moving frames.
@@ -129,6 +129,21 @@ impl Continuations {
         self.frames = 0;
     }
 
+    /// Drops the segment of a consumed slot, returning how many frames it released.
+    fn discard(&mut self, slot: u32) -> usize {
+        let segment = &mut self.slots[slot as usize].segment;
+        let released = segment.frames.len();
+        segment.frames.clear();
+        segment.activations.clear();
+        macro_rules! empty {
+            ($($bank:ident),*) => {$( segment.$bank.clear(); )*};
+        }
+        for_each_bank!(empty);
+        self.frames -= released;
+        self.release(slot);
+        released
+    }
+
     /// Returns a consumed slot for reuse, unless its generations are exhausted.
     ///
     /// A slot whose generation reached `u32::MAX` is retired for the rest of the invocation, so
@@ -189,6 +204,26 @@ impl Registers {
             ($($bank:ident),*) => { RegBase { $($bank: self.$bank.len()),* } };
         }
         for_each_bank!(lens)
+    }
+
+    /// Where the top frame raises: the instruction it is suspended at or executing.
+    ///
+    /// After `resume_throw` reinstates a continuation this is its `suspend`; when an unstarted
+    /// continuation was discarded instead, it is the `resume_throw` itself.
+    pub(super) fn raising_location(&self, units: &UnitTable) -> TraceLocation {
+        let frame = self.frames.last().expect("active frame");
+        let body = units
+            .unit(frame.unit)
+            .program
+            .verified(frame.func)
+            .expect("active verified function");
+        TraceLocation {
+            unit: frame.unit,
+            func: frame.func,
+            pc: body
+                .pc_at_ix(frame.instr_ix - 1)
+                .expect("a frame resumes after its raising instruction"),
+        }
     }
 
     /// Frames retained by this invocation: the active stack and every live continuation.
@@ -346,7 +381,9 @@ impl<H: Host> Vm<H> {
     /// Consumes `cont` and reinstates it on top of the resuming frame.
     ///
     /// `args` of the resuming frame are written to its inputs, and `rets` receive its results
-    /// when its root returns.
+    /// when its root returns. `None` prepares it for an exception instead: the caller raises one
+    /// at its suspension point, or at the resumer for an unstarted continuation, which is
+    /// discarded because nothing in it can catch yet.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -360,7 +397,7 @@ impl<H: Host> Vm<H> {
         location: TraceLocation,
         call_sig: CallSigId,
         cont: ContRef,
-        args: &[VReg],
+        args: Option<&[VReg]>,
         rets: VRegSlice,
     ) -> Result<(), Trap> {
         let current = self.units.unit(location.unit);
@@ -368,6 +405,11 @@ impl<H: Host> Vm<H> {
             ctx.consume(cont, current.call_sig_lists(call_sig), call_sig)?;
         let resumer = ctx.frames.len() - 1;
         let resumer_base = ctx.frames[resumer].base;
+        if args.is_none() && matches!(inputs, Inputs::Entry) {
+            // Nothing ran yet, so nothing can catch: the exception starts at the resumer.
+            budget.frames -= ctx.continuations.discard(slot);
+            return Ok(());
+        }
         let activations =
             core::mem::take(&mut ctx.continuations.slots[slot as usize].segment.activations);
         let root = ctx.reinstate(slot);
@@ -376,25 +418,27 @@ impl<H: Host> Vm<H> {
             dst_rets: rets,
             resumed: true,
         });
-        let targets = ctx.inputs(&self.units, top, inputs);
-        let top_base = ctx.frames[top].base;
-        for (&src, &dst) in args.iter().zip(&targets[bound..]) {
-            ctx.copy_vreg(resumer_base, src, top_base, dst)?;
-        }
-        match inputs {
-            Inputs::Entry => {
-                let frame = &ctx.frames[top];
-                let (unit, func) = (frame.unit, frame.func);
-                let body = self
-                    .units
-                    .unit(unit)
-                    .program
-                    .verified(func)
-                    .expect("active verified function");
-                self.check_arg_contracts(ctx, budget, unit, func, body, top_base)?;
+        if let Some(args) = args {
+            let targets = ctx.inputs(&self.units, top, inputs);
+            let top_base = ctx.frames[top].base;
+            for (&src, &dst) in args.iter().zip(&targets[bound..]) {
+                ctx.copy_vreg(resumer_base, src, top_base, dst)?;
             }
-            Inputs::Results(_) => {
-                self.check_signature_args(ctx, budget, location, call_sig, resumer_base, args)?;
+            match inputs {
+                Inputs::Entry => {
+                    let frame = &ctx.frames[top];
+                    let (unit, func) = (frame.unit, frame.func);
+                    let body = self
+                        .units
+                        .unit(unit)
+                        .program
+                        .verified(func)
+                        .expect("active verified function");
+                    self.check_arg_contracts(ctx, budget, unit, func, body, top_base)?;
+                }
+                Inputs::Results(_) => {
+                    self.check_signature_args(ctx, budget, location, call_sig, resumer_base, args)?;
+                }
             }
         }
         if YIELD {
@@ -538,7 +582,11 @@ impl<H: Host> Vm<H> {
                 .expect("active verified function");
             let raising = resumer.instr_ix - 1;
             let call_sig = match body.fetch_at_ix(raising) {
-                Some((ExecInstr::Resume { call_sig, .. }, _, _)) => *call_sig,
+                Some((
+                    ExecInstr::Resume { call_sig, .. } | ExecInstr::ResumeThrow { call_sig, .. },
+                    _,
+                    _,
+                )) => *call_sig,
                 _ => unreachable!("a resumed root's caller waits at resume"),
             };
             let clause = body.protection.as_deref().and_then(|protection| {

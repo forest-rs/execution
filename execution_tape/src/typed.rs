@@ -229,6 +229,14 @@ pub(crate) enum ExecInstr {
         args: VRegSlice,
         rets: VRegSlice,
     },
+    /// Resume a continuation by raising an exception at its suspension point.
+    ResumeThrow {
+        call_sig: CallSigId,
+        cont: ContReg,
+        tag: TagId,
+        args: VRegSlice,
+        rets: VRegSlice,
+    },
     /// Suspend to the nearest handler of a tag.
     Suspend {
         tag: TagId,

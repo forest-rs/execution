@@ -1,7 +1,8 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Static checks for continuation instructions: `cont.new`, `resume` and `suspend`.
+//! Static checks for continuation instructions: `cont.new`, `resume`, `resume_throw` and
+//! `suspend`.
 //!
 //! A continuation register has the storage kind `Cont` only. Each instruction names the call
 //! signature that types the continuation it consumes or produces: its arguments are the values
@@ -42,6 +43,10 @@ pub(super) fn check_ids(
         Instr::ContNew { call_sig, .. } | Instr::Resume { call_sig, .. } => {
             call_sig_in_bounds(program, func, pc, *call_sig)
         }
+        Instr::ResumeThrow { call_sig, tag, .. } => {
+            call_sig_in_bounds(program, func, pc, *call_sig)?;
+            tag_in_bounds(program, func, pc, *tag)
+        }
         Instr::Suspend { tag, .. } => tag_in_bounds(program, func, pc, *tag),
         _ => Ok(()),
     }
@@ -76,6 +81,21 @@ pub(super) fn check_structure(
         } => {
             require_r0(*eff_in, *eff_out)?;
             if (args.len(), rets.len()) != sig_arity(program, *call_sig) {
+                return Err(VerifyError::CallArityMismatch { func, pc });
+            }
+        }
+        Instr::ResumeThrow {
+            eff_out,
+            call_sig,
+            eff_in,
+            tag,
+            args,
+            rets,
+            ..
+        } => {
+            require_r0(*eff_in, *eff_out)?;
+            tags::check_throw_arity(program, func, pc, TagId(*tag), args.len())?;
+            if rets.len() != sig_arity(program, *call_sig).1 {
                 return Err(VerifyError::CallArityMismatch { func, pc });
             }
         }
@@ -149,6 +169,19 @@ pub(super) fn check_types(
             expect(*cont, ValueType::Cont)?;
             let (arg_kinds, ret_kinds) = sig_kinds(*call_sig)?;
             expect_all(args, arg_kinds)?;
+            expect_all(rets, ret_kinds)?;
+        }
+        Instr::ResumeThrow {
+            call_sig,
+            cont,
+            tag,
+            args,
+            rets,
+            ..
+        } => {
+            expect(*cont, ValueType::Cont)?;
+            tags::check_throw_payload(program, func, pc, TagId(*tag), args, types)?;
+            let (_, ret_kinds) = sig_kinds(*call_sig)?;
             expect_all(rets, ret_kinds)?;
         }
         Instr::Suspend {

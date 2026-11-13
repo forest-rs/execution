@@ -632,6 +632,160 @@ fn recordings_replay_suspensions_and_resumptions() {
     }
 }
 
+struct Exceptional {
+    program: Arc<VerifiedProgram>,
+    thrower: FuncId,
+    throw_into: FuncId,
+    escape: FuncId,
+    unstarted: FuncId,
+    uncaught: FuncId,
+}
+
+/// `guarded(n)` yields `n` inside a region catching `stop(code)`, returning `code` when the
+/// exception arrives at its suspension and `n` when resumed normally. `thrower(x)` throws
+/// `stop(x)`. Each driver adds 1000 to a `stop` it catches itself.
+fn exceptional() -> Exceptional {
+    let mut b = ProgramBuilder::new();
+    let stop = b.declare_tag("stop", &[ValueType::I64.into()]).unwrap();
+    let yield_tag = b.declare_tag("yield", &[ValueType::I64.into()]).unwrap();
+    let i64_to_i64 = b
+        .call_sig(sig(&[ValueType::I64], &[ValueType::I64]))
+        .unwrap();
+    let unit_to_i64 = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
+    let one_to_one = sig(&[ValueType::I64], &[ValueType::I64]);
+
+    let guarded = b.declare_function(&one_to_one).unwrap();
+    let mut asm = b.function_asm(guarded).unwrap();
+    let n = b.argument(guarded, 0).unwrap();
+    let code = asm.alloc_register(ValueType::I64);
+    let stopped = asm.block(&[code]);
+    asm.begin_region(&[Catch::Tag(stop, stopped)]);
+    asm.suspend(0, yield_tag, 0, &[n], &[]);
+    asm.end_region();
+    asm.ret(0, &[n]);
+    asm.place(stopped).unwrap();
+    asm.ret(0, &[code]);
+    b.define_function(guarded, asm).unwrap();
+
+    let thrower = b.declare_function(&one_to_one).unwrap();
+    let mut asm = b.function_asm(thrower).unwrap();
+    let x = b.argument(thrower, 0).unwrap();
+    b.emit_throw(&mut asm, stop, &[x]).unwrap();
+    b.define_function(thrower, asm).unwrap();
+
+    // Drivers share one shape: create a continuation of `target`, then `start` it.
+    enum Start {
+        Resume,
+        Throw,
+    }
+    let driver = |b: &mut ProgramBuilder, target: FuncId, start: Start, catch: bool| {
+        let driver = b.declare_function(&one_to_one).unwrap();
+        let mut asm = b.function_asm(driver).unwrap();
+        let x = b.argument(driver, 0).unwrap();
+        let f = asm.alloc_register(ValueType::Func);
+        let cont = asm.alloc_register(ValueType::Cont);
+        let out = asm.alloc_register(ValueType::I64);
+        let (value, rest) = (
+            asm.alloc_register(ValueType::I64),
+            asm.alloc_register(ValueType::Cont),
+        );
+        let code = asm.alloc_register(ValueType::I64);
+        let thousand = asm.alloc_register(ValueType::I64);
+        let yielded = asm.block(&[value, rest]);
+        let stopped = asm.block(&[code]);
+        let mut clauses = vec![Catch::On(yield_tag, yielded)];
+        if catch {
+            clauses.push(Catch::Tag(stop, stopped));
+        }
+        asm.const_func(f, target);
+        asm.cont_new(cont, i64_to_i64, f);
+        asm.begin_region(&clauses);
+        match start {
+            Start::Resume => {
+                asm.resume(0, i64_to_i64, cont, 0, &[x], &[out]);
+            }
+            Start::Throw => {
+                asm.resume_throw(0, i64_to_i64, cont, 0, stop, &[x], &[out]);
+            }
+        }
+        asm.end_region();
+        asm.ret(0, &[out]);
+        asm.place(yielded).unwrap();
+        asm.begin_region(&clauses);
+        asm.resume_throw(0, unit_to_i64, rest, 0, stop, &[value], &[out]);
+        asm.end_region();
+        asm.ret(0, &[out]);
+        asm.place(stopped).unwrap();
+        asm.const_i64(thousand, 1000);
+        asm.i64_add(code, code, thousand);
+        asm.ret(0, &[code]);
+        b.define_function(driver, asm).unwrap();
+        driver
+    };
+    let throw_into = driver(&mut b, guarded, Start::Resume, true);
+    let escape = driver(&mut b, thrower, Start::Resume, true);
+    let unstarted = driver(&mut b, guarded, Start::Throw, true);
+    let uncaught = driver(&mut b, thrower, Start::Resume, false);
+    Exceptional {
+        program: Arc::new(b.build_verified().unwrap()),
+        thrower,
+        throw_into,
+        escape,
+        unstarted,
+        uncaught,
+    }
+}
+
+fn exceptional_run(func: impl Fn(&Exceptional) -> FuncId) -> Result<Vec<Value>, Trap> {
+    let fixture = exceptional();
+    run(
+        &fixture.program,
+        func(&fixture),
+        &[Value::I64(7)],
+        Limits::default(),
+    )
+}
+
+#[test]
+fn resume_throw_raises_at_the_suspension_point() {
+    // `guarded` catches the `stop(7)` raised at its `suspend` and returns 7.
+    assert_eq!(
+        exceptional_run(|f| f.throw_into).unwrap(),
+        vec![Value::I64(7)]
+    );
+}
+
+#[test]
+fn an_exception_escaping_a_continuation_reaches_its_resume() {
+    assert_eq!(
+        exceptional_run(|f| f.escape).unwrap(),
+        vec![Value::I64(1007)]
+    );
+}
+
+#[test]
+fn resume_throw_raises_at_the_resumer_for_an_unstarted_continuation() {
+    assert_eq!(
+        exceptional_run(|f| f.unstarted).unwrap(),
+        vec![Value::I64(1007)]
+    );
+}
+
+#[test]
+fn an_uncaught_exception_from_a_continuation_names_its_origin() {
+    let fixture = exceptional();
+    let result = run(
+        &fixture.program,
+        fixture.uncaught,
+        &[Value::I64(7)],
+        Limits::default(),
+    );
+    let Err(Trap::Uncaught(exception)) = result else {
+        panic!("expected an uncaught exception, got {result:?}");
+    };
+    assert_eq!(exception.origin().func, fixture.thrower);
+}
+
 #[test]
 fn invocations_pause_and_resume_at_every_boundary_inside_continuations() {
     use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
@@ -1129,5 +1283,101 @@ fn verifier_checks_a_known_callable_against_its_continuation_signature() {
     assert!(
         matches!(error, VerifyError::CallIndirectContractMismatch { .. }),
         "{error:?}"
+    );
+}
+
+#[test]
+fn exceptional_switching_records_replays_and_pauses_anywhere() {
+    use execution_tape::recording::{RecordLimits, Recorder, ReplayOutcome};
+    use execution_tape::trace::TraceSink as _;
+    use execution_tape::vm::{InvocationOptions, RunStatus};
+    let fixture = exceptional();
+    for entry in [
+        fixture.throw_into,
+        fixture.escape,
+        fixture.unstarted,
+        fixture.uncaught,
+    ] {
+        let expected = run(&fixture.program, entry, &[Value::I64(7)], Limits::default());
+        let check = |recorder: Recorder| {
+            let recording = recorder.finish();
+            recording.status().unwrap();
+            match (recording.replay(), &expected) {
+                (Ok(ReplayOutcome::Returned(values)), Ok(expected)) => {
+                    assert_eq!(values.values(), expected.as_slice());
+                }
+                (Ok(ReplayOutcome::Trapped(info)), Err(Trap::Uncaught(_))) => {
+                    assert!(matches!(info.trap, Trap::Uncaught(_)));
+                }
+                (other, _) => panic!("replay diverged: {other:?}"),
+            }
+        };
+        let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
+        {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
+            let _ = vm.run(
+                FuncRef::new(unit, entry),
+                &[Value::I64(7)],
+                recorder.mask(),
+                Some(&mut recorder),
+            );
+        }
+        check(recorder);
+        for quantum in [1, 2, 3] {
+            let mut vm = Vm::new(NoHost, Limits::default());
+            let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
+            let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default());
+            let options = InvocationOptions::default().trace(recorder.mask(), &mut recorder);
+            let mut invocation = vm
+                .start(FuncRef::new(unit, entry), &[Value::I64(7)], options)
+                .unwrap();
+            loop {
+                match invocation.resume(quantum) {
+                    Ok(RunStatus::Suspended) => {}
+                    Ok(RunStatus::Complete) => {
+                        let outputs = invocation.take_outputs().unwrap();
+                        assert_eq!(Ok(&outputs), expected.as_ref().map_err(|_| ()));
+                        break;
+                    }
+                    Ok(other) => panic!("unexpected status {other:?}"),
+                    Err(error) => {
+                        assert!(matches!(error.trap, Trap::Uncaught(_)), "{error:?}");
+                        break;
+                    }
+                }
+            }
+            drop(invocation);
+            check(recorder);
+        }
+    }
+}
+
+#[test]
+fn resume_throw_consumes_its_continuation() {
+    let mut b = ProgramBuilder::new();
+    let stop = b.declare_tag("stop", &[]).unwrap();
+    let unit_to_unit = b.call_sig(sig(&[], &[])).unwrap();
+    let f = b.declare_function(sig(&[], &[])).unwrap();
+    let mut asm = b.function_asm(f).unwrap();
+    let func = asm.alloc_register(ValueType::Func);
+    let cont = asm.alloc_register(ValueType::Cont);
+    let stopped = asm.block(&[]);
+    asm.const_func(func, f);
+    asm.cont_new(cont, unit_to_unit, func);
+    asm.begin_region(&[Catch::Tag(stop, stopped)]);
+    asm.resume_throw(0, unit_to_unit, cont, 0, stop, &[], &[]);
+    asm.end_region();
+    asm.ret(0, &[]);
+    asm.place(stopped).unwrap();
+    // The unstarted continuation was discarded; using it again traps.
+    asm.resume(0, unit_to_unit, cont, 0, &[], &[]);
+    asm.ret(0, &[]);
+    b.define_function(f, asm).unwrap();
+    let program = Arc::new(b.build_verified().unwrap());
+    let result = run(&program, f, &[], Limits::default());
+    assert!(
+        matches!(result, Err(Trap::ContinuationConsumed)),
+        "{result:?}"
     );
 }
