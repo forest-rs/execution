@@ -1960,6 +1960,855 @@ impl Asm {
         self
     }
 
+    /// Encodes `const.i32 dst, imm_sleb`.
+    pub fn const_i32(&mut self, dst: u32, imm: i32) -> &mut Self {
+        self.opcode(Opcode::ConstI32);
+        self.reg(dst);
+        write_sleb128_i64(&mut self.bytes, i64::from(imm));
+        self
+    }
+
+    /// Encodes `const.u32 dst, imm_uleb`.
+    pub fn const_u32(&mut self, dst: u32, imm: u32) -> &mut Self {
+        self.opcode(Opcode::ConstU32);
+        self.reg(dst);
+        write_uleb128_u64(&mut self.bytes, u64::from(imm));
+        self
+    }
+
+    /// Encodes `const.f32 dst, bits_u32le` from raw IEEE bits.
+    pub fn const_f32_bits(&mut self, dst: u32, bits: u32) -> &mut Self {
+        self.opcode(Opcode::ConstF32);
+        self.reg(dst);
+        self.bytes.extend_from_slice(&bits.to_le_bytes());
+        self
+    }
+
+    /// Encodes `const.f32 dst, bits_u32le` from an `f32` value.
+    pub fn const_f32(&mut self, dst: u32, v: f32) -> &mut Self {
+        self.const_f32_bits(dst, v.to_bits())
+    }
+
+    /// Encodes `i32.add dst, a, b`: `dst = a + b` (`i32`, wrapping).
+    pub fn i32_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Add);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.sub dst, a, b`: `dst = a - b` (`i32`, wrapping).
+    pub fn i32_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Sub);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.mul dst, a, b`: `dst = a * b` (`i32`, wrapping).
+    pub fn i32_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Mul);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.div dst, a, b`: `dst = a / b` (`i32`, truncating; traps on zero divisor or `MIN / -1`).
+    pub fn i32_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Div);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.rem dst, a, b`: `dst = a % b` (`i32`, sign of `a`; traps on zero divisor or `MIN % -1`).
+    pub fn i32_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Rem);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.add_ovf dst, overflow, a, b`: `(dst, overflow) = a + b` (`i32` wrapped sum; `bool` true if the signed sum overflowed).
+    pub fn i32_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32AddOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.sub_ovf dst, overflow, a, b`: `(dst, overflow) = a - b` (`i32` wrapped difference; `bool` true on signed overflow).
+    pub fn i32_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32SubOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.mul_ovf dst, overflow, a, b`: `(dst, overflow) = a * b` (`i32` wrapped product; `bool` true on signed overflow).
+    pub fn i32_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32MulOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.and dst, a, b`: `dst = a & b` (`i32`).
+    pub fn i32_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32And);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.or dst, a, b`: `dst = a | b` (`i32`).
+    pub fn i32_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Or);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.xor dst, a, b`: `dst = a ^ b` (`i32`).
+    pub fn i32_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Xor);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.shl dst, a, b`: `dst = a << (b & 31)` (`i32`).
+    pub fn i32_shl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Shl);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.shr dst, a, b`: `dst = a >> (b & 31)` (`i32`, arithmetic).
+    pub fn i32_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Shr);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.eq dst, a, b`: `dst = (a == b)` (`i32` -> `bool`).
+    pub fn i32_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Eq);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.lt dst, a, b`: `dst = (a < b)` (`i32` -> `bool`).
+    pub fn i32_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Lt);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.gt dst, a, b`: `dst = (a > b)` (`i32` -> `bool`).
+    pub fn i32_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Gt);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.le dst, a, b`: `dst = (a <= b)` (`i32` -> `bool`).
+    pub fn i32_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Le);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.ge dst, a, b`: `dst = (a >= b)` (`i32` -> `bool`).
+    pub fn i32_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::I32Ge);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.add dst, a, b`: `dst = a + b` (`u32`, wrapping).
+    pub fn u32_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Add);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.sub dst, a, b`: `dst = a - b` (`u32`, wrapping).
+    pub fn u32_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Sub);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.mul dst, a, b`: `dst = a * b` (`u32`, wrapping).
+    pub fn u32_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Mul);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.div dst, a, b`: `dst = a / b` (`u32`; traps on zero divisor).
+    pub fn u32_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Div);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.rem dst, a, b`: `dst = a % b` (`u32`; traps on zero divisor).
+    pub fn u32_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Rem);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.add_ovf dst, overflow, a, b`: `(dst, overflow) = a + b` (`u32` wrapped sum; `bool` carry).
+    pub fn u32_add_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32AddOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.sub_ovf dst, overflow, a, b`: `(dst, overflow) = a - b` (`u32` wrapped difference; `bool` borrow).
+    pub fn u32_sub_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32SubOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.mul_ovf dst, overflow, a, b`: `(dst, overflow) = a * b` (`u32` wrapped product; `bool` true on overflow).
+    pub fn u32_mul_ovf(&mut self, dst: u32, overflow: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32MulOvf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.and dst, a, b`: `dst = a & b` (`u32`).
+    pub fn u32_and(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32And);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.or dst, a, b`: `dst = a | b` (`u32`).
+    pub fn u32_or(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Or);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.xor dst, a, b`: `dst = a ^ b` (`u32`).
+    pub fn u32_xor(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Xor);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.shl dst, a, b`: `dst = a << (b & 31)` (`u32`).
+    pub fn u32_shl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Shl);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.shr dst, a, b`: `dst = a >> (b & 31)` (`u32`, logical).
+    pub fn u32_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Shr);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.clz dst, a`: `dst = a.leading_zeros()` (`u32`; 32 when `a == 0`).
+    pub fn u32_clz(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32Clz);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.ctz dst, a`: `dst = a.trailing_zeros()` (`u32`; 32 when `a == 0`).
+    pub fn u32_ctz(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32Ctz);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.popcnt dst, a`: `dst = a.count_ones()` (`u32`).
+    pub fn u32_popcnt(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32Popcnt);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.rotl dst, a, b`: `dst = a.rotate_left(b & 31)` (`u32`).
+    pub fn u32_rotl(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Rotl);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.rotr dst, a, b`: `dst = a.rotate_right(b & 31)` (`u32`).
+    pub fn u32_rotr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Rotr);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.eq dst, a, b`: `dst = (a == b)` (`u32` -> `bool`).
+    pub fn u32_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Eq);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.lt dst, a, b`: `dst = (a < b)` (`u32` -> `bool`).
+    pub fn u32_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Lt);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.gt dst, a, b`: `dst = (a > b)` (`u32` -> `bool`).
+    pub fn u32_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Gt);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.le dst, a, b`: `dst = (a <= b)` (`u32` -> `bool`).
+    pub fn u32_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Le);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `u32.ge dst, a, b`: `dst = (a >= b)` (`u32` -> `bool`).
+    pub fn u32_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::U32Ge);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.add dst, a, b`: `dst = a + b` (`f32`).
+    pub fn f32_add(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Add);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.sub dst, a, b`: `dst = a - b` (`f32`).
+    pub fn f32_sub(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Sub);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.mul dst, a, b`: `dst = a * b` (`f32`).
+    pub fn f32_mul(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Mul);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.div dst, a, b`: `dst = a / b` (`f32`).
+    pub fn f32_div(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Div);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.rem dst, a, b`: `dst = a % b` (`f32`, sign of `a`).
+    pub fn f32_rem(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Rem);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.neg dst, a`: `dst = -a` (`f32`, flips the sign bit).
+    pub fn f32_neg(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Neg);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.abs dst, a`: `dst = abs(a)` (`f32`, clears the sign bit).
+    pub fn f32_abs(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Abs);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.min dst, a, b`: `dst = min(a, b)` (`f32`, NaN-propagating).
+    pub fn f32_min(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Min);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.max dst, a, b`: `dst = max(a, b)` (`f32`, NaN-propagating).
+    pub fn f32_max(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Max);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.min_num dst, a, b`: `dst = min_num(a, b)` (`f32`, number-favoring).
+    pub fn f32_min_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32MinNum);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.max_num dst, a, b`: `dst = max_num(a, b)` (`f32`, number-favoring).
+    pub fn f32_max_num(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32MaxNum);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.copysign dst, a, b`: `dst = copysign(a, b)` (`f32`: magnitude of `a`, sign of `b`).
+    pub fn f32_copysign(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32CopySign);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.floor dst, a`: `dst = floor(a)` (`f32`, rounds toward negative infinity).
+    pub fn f32_floor(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Floor);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.ceil dst, a`: `dst = ceil(a)` (`f32`, rounds toward positive infinity).
+    pub fn f32_ceil(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Ceil);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.trunc dst, a`: `dst = trunc(a)` (`f32`, rounds toward zero).
+    pub fn f32_trunc(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Trunc);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.nearest dst, a`: `dst = nearest(a)` (`f32`, rounds to nearest integer, ties to even).
+    pub fn f32_nearest(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Nearest);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.sqrt dst, a`: `dst = sqrt(a)` (`f32`, correctly rounded).
+    pub fn f32_sqrt(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Sqrt);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.eq dst, a, b`: `dst = (a == b)` (`f32` -> `bool`; false if NaN).
+    pub fn f32_eq(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Eq);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.ne dst, a, b`: `dst = (a != b)` (`f32` -> `bool`; true if NaN).
+    pub fn f32_ne(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Ne);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.lt dst, a, b`: `dst = (a < b)` (`f32` -> `bool`; false if NaN).
+    pub fn f32_lt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Lt);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.gt dst, a, b`: `dst = (a > b)` (`f32` -> `bool`; false if NaN).
+    pub fn f32_gt(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Gt);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.le dst, a, b`: `dst = (a <= b)` (`f32` -> `bool`; false if NaN).
+    pub fn f32_le(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Le);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.ge dst, a, b`: `dst = (a >= b)` (`f32` -> `bool`; false if NaN).
+    pub fn f32_ge(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Ge);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `i32.to_i64 dst, a`: `dst = i32_to_i64(a)` (`i32` -> `i64`; sign-extends).
+    pub fn i32_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I32ToI64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i64.to_i32 dst, a`: `dst = i64_to_i32(a)` (`i64` -> `i32`; traps when out of range).
+    pub fn i64_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I64ToI32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i64.to_i32_wrap dst, a`: `dst = i64_to_i32_wrap(a)` (`i64` -> `i32`; keeps the low 32 bits).
+    pub fn i64_to_i32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I64ToI32Wrap);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_u64 dst, a`: `dst = u32_to_u64(a)` (`u32` -> `u64`; zero-extends).
+    pub fn u32_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32ToU64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64.to_u32 dst, a`: `dst = u64_to_u32(a)` (`u64` -> `u32`; traps when out of range).
+    pub fn u64_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64ToU32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64.to_u32_wrap dst, a`: `dst = u64_to_u32_wrap(a)` (`u64` -> `u32`; keeps the low 32 bits).
+    pub fn u64_to_u32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64ToU32Wrap);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_i64 dst, a`: `dst = u32_to_i64(a)` (`u32` -> `i64`; zero-extends).
+    pub fn u32_to_i64(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32ToI64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i32.to_u32 dst, a`: `dst = i32_to_u32(a)` (`i32` -> `u32`; traps on negative).
+    pub fn i32_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I32ToU32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_i32 dst, a`: `dst = u32_to_i32(a)` (`u32` -> `i32`; traps above `i32::MAX`).
+    pub fn u32_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32ToI32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i32.to_u32_wrap dst, a`: `dst = i32_to_u32_wrap(a)` (`i32` -> `u32`; reinterprets the bits).
+    pub fn i32_to_u32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I32ToU32Wrap);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_i32_wrap dst, a`: `dst = u32_to_i32_wrap(a)` (`u32` -> `i32`; reinterprets the bits).
+    pub fn u32_to_i32_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32ToI32Wrap);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i64.to_u64_wrap dst, a`: `dst = i64_to_u64_wrap(a)` (`i64` -> `u64`; reinterprets the bits).
+    pub fn i64_to_u64_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I64ToU64Wrap);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64.to_i64_wrap dst, a`: `dst = u64_to_i64_wrap(a)` (`u64` -> `i64`; reinterprets the bits).
+    pub fn u64_to_i64_wrap(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64ToI64Wrap);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_f64 dst, a`: `dst = f32_to_f64(a)` (`f32` -> `f64`; exact).
+    pub fn f32_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32ToF64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_f32 dst, a`: `dst = f64_to_f32(a)` (`f64` -> `f32`; rounds to nearest, ties to even; overflows to infinity).
+    pub fn f64_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToF32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_bits dst, a`: `dst = f32_to_bits(a)` (`f32` -> `u32`; raw IEEE bits).
+    pub fn f32_to_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32ToBits);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.from_bits dst, a`: `dst = f32_from_bits(a)` (`u32` -> `f32`; raw IEEE bits).
+    pub fn f32_from_bits(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32FromBits);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_i32 dst, a`: `dst = f32_to_i32(a)` (`f32` -> `i32`; truncates; traps on NaN, infinities and out of range).
+    pub fn f32_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32ToI32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_u32 dst, a`: `dst = f32_to_u32(a)` (`f32` -> `u32`; truncates; traps on NaN, infinities and out of range).
+    pub fn f32_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32ToU32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_i32_sat dst, a`: `dst = f32_to_i32_sat(a)` (`f32` -> `i32`; truncates and saturates; NaN -> 0).
+    pub fn f32_to_i32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32ToI32Sat);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_u32_sat dst, a`: `dst = f32_to_u32_sat(a)` (`f32` -> `u32`; truncates and saturates; NaN -> 0).
+    pub fn f32_to_u32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32ToU32Sat);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_i32 dst, a`: `dst = f64_to_i32(a)` (`f64` -> `i32`; truncates; traps on NaN, infinities and out of range).
+    pub fn f64_to_i32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToI32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_u32 dst, a`: `dst = f64_to_u32(a)` (`f64` -> `u32`; truncates; traps on NaN, infinities and out of range).
+    pub fn f64_to_u32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToU32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_i32_sat dst, a`: `dst = f64_to_i32_sat(a)` (`f64` -> `i32`; truncates and saturates; NaN -> 0).
+    pub fn f64_to_i32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToI32Sat);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_u32_sat dst, a`: `dst = f64_to_u32_sat(a)` (`f64` -> `u32`; truncates and saturates; NaN -> 0).
+    pub fn f64_to_u32_sat(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64ToU32Sat);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i32.to_f32 dst, a`: `dst = i32_to_f32(a)` (`i32` -> `f32`; rounds to nearest, ties to even).
+    pub fn i32_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I32ToF32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_f32 dst, a`: `dst = u32_to_f32(a)` (`u32` -> `f32`; rounds to nearest, ties to even).
+    pub fn u32_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32ToF32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i64.to_f32 dst, a`: `dst = i64_to_f32(a)` (`i64` -> `f32`; rounds once to nearest, ties to even).
+    pub fn i64_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I64ToF32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64.to_f32 dst, a`: `dst = u64_to_f32(a)` (`u64` -> `f32`; rounds once to nearest, ties to even).
+    pub fn u64_to_f32(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U64ToF32);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i32.to_f64 dst, a`: `dst = i32_to_f64(a)` (`i32` -> `f64`; exact).
+    pub fn i32_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::I32ToF64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_f64 dst, a`: `dst = u32_to_f64(a)` (`u32` -> `f64`; exact).
+    pub fn u32_to_f64(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::U32ToF64);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
     /// Encodes `u64_shr dst, a, b` (shift amount masked with `& 63`).
     pub fn u64_shr(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::U64Shr);

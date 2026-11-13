@@ -39,6 +39,8 @@ pub enum Operand<'a> {
     ImmU8(u8),
     /// An immediate `u32`.
     ImmU32(u32),
+    /// An immediate `i32`.
+    ImmI32(i32),
     /// An immediate `i64`.
     ImmI64(i64),
     /// A decimal literal, preserving mantissa and scale.
@@ -69,6 +71,7 @@ impl Operand<'_> {
             Self::ImmBool(_) => OperandKind::ImmBool,
             Self::ImmU8(_) => OperandKind::ImmU8,
             Self::ImmU32(_) => OperandKind::ImmU32,
+            Self::ImmI32(_) => OperandKind::ImmI32,
             Self::ImmI64(_) => OperandKind::ImmI64,
             Self::Decimal(_) => OperandKind::Decimal,
             Self::ImmU64(_) => OperandKind::ImmU64,
@@ -97,6 +100,8 @@ pub enum DecodedOperand {
     ImmU8(u8),
     /// An immediate `u32`.
     ImmU32(u32),
+    /// An immediate `i32`.
+    ImmI32(i32),
     /// An immediate `i64`.
     ImmI64(i64),
     /// A decimal literal, preserving mantissa and scale.
@@ -127,6 +132,7 @@ impl DecodedOperand {
             Self::ImmBool(_) => OperandKind::ImmBool,
             Self::ImmU8(_) => OperandKind::ImmU8,
             Self::ImmU32(_) => OperandKind::ImmU32,
+            Self::ImmI32(_) => OperandKind::ImmI32,
             Self::ImmI64(_) => OperandKind::ImmI64,
             Self::Decimal(_) => OperandKind::Decimal,
             Self::ImmU64(_) => OperandKind::ImmU64,
@@ -324,6 +330,12 @@ pub fn encode_instruction(
                 out.push(u8::from(b));
             }
             (Operand::ImmU8(v), OperandKind::ImmU8, OperandEncoding::U8Raw) => out.push(v),
+            (Operand::ImmU32(v), OperandKind::ImmU32, OperandEncoding::U32Le) => {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            (Operand::ImmI32(v), OperandKind::ImmI32, OperandEncoding::I32Sleb) => {
+                write_sleb128_i64(out, i64::from(v));
+            }
             (Operand::ImmI64(v), OperandKind::ImmI64, OperandEncoding::I64Sleb) => {
                 write_sleb128_i64(out, v);
             }
@@ -397,6 +409,12 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
             (OperandKind::ImmU8, OperandEncoding::U8Raw) => DecodedOperand::ImmU8(r.read_u8()?),
             (OperandKind::ImmU32, OperandEncoding::U32Uleb) => {
                 DecodedOperand::ImmU32(read_u32_uleb(&mut r)?)
+            }
+            (OperandKind::ImmU32, OperandEncoding::U32Le) => {
+                DecodedOperand::ImmU32(r.read_u32_le()?)
+            }
+            (OperandKind::ImmI32, OperandEncoding::I32Sleb) => {
+                DecodedOperand::ImmI32(crate::codec_primitives::read_i32_sleb(&mut r)?)
             }
             (OperandKind::ImmI64, OperandEncoding::I64Sleb) => {
                 DecodedOperand::ImmI64(r.read_sleb128_i64()?)
@@ -481,6 +499,7 @@ pub fn canonicalize(bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
                 DecodedOperand::ImmBool(b) => Operand::ImmBool(*b),
                 DecodedOperand::ImmU8(v) => Operand::ImmU8(*v),
                 DecodedOperand::ImmU32(v) => Operand::ImmU32(*v),
+                DecodedOperand::ImmI32(v) => Operand::ImmI32(*v),
                 DecodedOperand::ImmI64(v) => Operand::ImmI64(*v),
                 DecodedOperand::Decimal(v) => Operand::Decimal(*v),
                 DecodedOperand::ImmU64(v) => Operand::ImmU64(*v),

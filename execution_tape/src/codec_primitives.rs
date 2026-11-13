@@ -50,6 +50,15 @@ pub(crate) fn read_i64_sleb(r: &mut Reader<'_>) -> Result<i64, DecodeError> {
     r.read_sleb128_i64()
 }
 
+/// Reads an `i32` encoded as SLEB128; a value outside `i32` is out of bounds.
+pub(crate) fn read_i32_sleb(r: &mut Reader<'_>) -> Result<i32, DecodeError> {
+    i32::try_from(r.read_sleb128_i64()?).map_err(|_| DecodeError::OutOfBounds)
+}
+
+pub(crate) fn read_u32_le(r: &mut Reader<'_>) -> Result<u32, DecodeError> {
+    r.read_u32_le()
+}
+
 pub(crate) fn read_u64_uleb(r: &mut Reader<'_>) -> Result<u64, DecodeError> {
     r.read_uleb128_u64()
 }
@@ -88,6 +97,14 @@ pub(crate) fn write_u8_raw(out: &mut Vec<u8>, v: u8) {
 
 pub(crate) fn write_i64_sleb(out: &mut Vec<u8>, v: i64) {
     write_sleb128_i64(out, v);
+}
+
+pub(crate) fn write_i32_sleb(out: &mut Vec<u8>, v: i32) {
+    write_sleb128_i64(out, i64::from(v));
+}
+
+pub(crate) fn write_u32_le(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
 }
 
 pub(crate) fn write_u64_uleb(out: &mut Vec<u8>, v: u64) {

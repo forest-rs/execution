@@ -500,6 +500,7 @@ pub mod host;
 pub mod host_binding;
 pub mod host_catalog;
 pub(crate) mod instr_operands;
+mod num32;
 pub mod opcode;
 pub mod program;
 pub mod program_memory;

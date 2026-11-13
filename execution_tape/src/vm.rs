@@ -20,6 +20,7 @@ use crate::contract::{Contract, ContractPosition, ContractViolation};
 use crate::decimal::{self, DecimalError};
 use crate::float;
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
+use crate::num32;
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
 use crate::program_memory::{Checkpoint, ProgramMemory};
@@ -2100,6 +2101,704 @@ impl<H: Host> Vm<H> {
                 ExecInstr::U64Rotr { dst, a, b } => {
                     let sh = (ctx.read_u64(base, *b) & 63) as u32;
                     ctx.write_u64(base, *dst, ctx.read_u64(base, *a).rotate_right(sh));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::ConstI32 { dst, imm } => {
+                    ctx.write_i32(base, *dst, *imm);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::ConstU32 { dst, imm } => {
+                    ctx.write_u32(base, *dst, *imm);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::ConstF32 { dst, bits } => {
+                    ctx.write_f32(base, *dst, f32::from_bits(*bits));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Add { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a.wrapping_add(b);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Sub { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a.wrapping_sub(b);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Mul { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a.wrapping_mul(b);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Div { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    if b == 0 {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
+                    }
+                    if a == i32::MIN && b == -1 {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntDivOverflow));
+                    }
+                    let out = a / b;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Rem { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    if b == 0 {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
+                    }
+                    if a == i32::MIN && b == -1 {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntDivOverflow));
+                    }
+                    let out = a % b;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32AddOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let (value, flag) = a.overflowing_add(b);
+                    ctx.write_i32(base, *dst, value);
+                    ctx.write_bool(base, *overflow, flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32SubOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let (value, flag) = a.overflowing_sub(b);
+                    ctx.write_i32(base, *dst, value);
+                    ctx.write_bool(base, *overflow, flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32MulOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let (value, flag) = a.overflowing_mul(b);
+                    ctx.write_i32(base, *dst, value);
+                    ctx.write_bool(base, *overflow, flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32And { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a & b;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Or { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a | b;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Xor { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a ^ b;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Shl { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a << (b.cast_unsigned() & 31);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Shr { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a >> (b.cast_unsigned() & 31);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Eq { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a == b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Lt { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a < b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Gt { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a > b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Le { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a <= b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32Ge { dst, a, b } => {
+                    let a = ctx.read_i32(base, *a);
+                    let b = ctx.read_i32(base, *b);
+                    let out = a >= b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Add { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a.wrapping_add(b);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Sub { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a.wrapping_sub(b);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Mul { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a.wrapping_mul(b);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Div { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    if b == 0 {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
+                    }
+                    let out = a / b;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Rem { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    if b == 0 {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::DivByZero));
+                    }
+                    let out = a % b;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32AddOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let (value, flag) = a.overflowing_add(b);
+                    ctx.write_u32(base, *dst, value);
+                    ctx.write_bool(base, *overflow, flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32SubOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let (value, flag) = a.overflowing_sub(b);
+                    ctx.write_u32(base, *dst, value);
+                    ctx.write_bool(base, *overflow, flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32MulOvf {
+                    dst,
+                    overflow,
+                    a,
+                    b,
+                } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let (value, flag) = a.overflowing_mul(b);
+                    ctx.write_u32(base, *dst, value);
+                    ctx.write_bool(base, *overflow, flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32And { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a & b;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Or { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a | b;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Xor { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a ^ b;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Shl { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a << (b & 31);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Shr { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a >> (b & 31);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Clz { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = a.leading_zeros();
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Ctz { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = a.trailing_zeros();
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Popcnt { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = a.count_ones();
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Rotl { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a.rotate_left(b & 31);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Rotr { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a.rotate_right(b & 31);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Eq { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a == b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Lt { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a < b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Gt { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a > b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Le { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a <= b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32Ge { dst, a, b } => {
+                    let a = ctx.read_u32(base, *a);
+                    let b = ctx.read_u32(base, *b);
+                    let out = a >= b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Add { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a + b;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Sub { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a - b;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Mul { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a * b;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Div { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a / b;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Rem { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = num32::rem(a, b);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Neg { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = -a;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Abs { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::abs(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Min { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = num32::demote(f64_min(num32::promote(a), num32::promote(b)));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Max { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = num32::demote(f64_max(num32::promote(a), num32::promote(b)));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32MinNum { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = num32::demote(f64_min_num(num32::promote(a), num32::promote(b)));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32MaxNum { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = num32::demote(f64_max_num(num32::promote(a), num32::promote(b)));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32CopySign { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = num32::copysign(a, b);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Floor { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::floor(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Ceil { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::ceil(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Trunc { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::trunc(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Nearest { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::nearest(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Sqrt { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::sqrt(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Eq { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a == b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Ne { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a != b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Lt { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a < b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Gt { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a > b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Le { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a <= b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Ge { dst, a, b } => {
+                    let a = ctx.read_f32(base, *a);
+                    let b = ctx.read_f32(base, *b);
+                    let out = a >= b;
+                    ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32ToI64 { dst, a } => {
+                    let a = ctx.read_i32(base, *a);
+                    let out = i64::from(a);
+                    ctx.write_i64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64ToI32 { dst, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let out = i32::try_from(a)
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64ToI32Wrap { dst, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let out = num32::wrap_i32(a);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToU64 { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = u64::from(a);
+                    ctx.write_u64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64ToU32 { dst, a } => {
+                    let a = ctx.read_u64(base, *a);
+                    let out = u32::try_from(a)
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64ToU32Wrap { dst, a } => {
+                    let a = ctx.read_u64(base, *a);
+                    let out = num32::wrap_u32(a);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToI64 { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = i64::from(a);
+                    ctx.write_i64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32ToU32 { dst, a } => {
+                    let a = ctx.read_i32(base, *a);
+                    let out = u32::try_from(a)
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToI32 { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = i32::try_from(a)
+                        .map_err(|_| ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow))?;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32ToU32Wrap { dst, a } => {
+                    let a = ctx.read_i32(base, *a);
+                    let out = a.cast_unsigned();
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToI32Wrap { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = a.cast_signed();
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64ToU64Wrap { dst, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let out = a.cast_unsigned();
+                    ctx.write_u64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64ToI64Wrap { dst, a } => {
+                    let a = ctx.read_u64(base, *a);
+                    let out = a.cast_signed();
+                    ctx.write_i64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToF64 { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::promote(a);
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToF32 { dst, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let out = num32::demote(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToBits { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = a.to_bits();
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32FromBits { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = f32::from_bits(a);
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToI32 { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::to_i32(num32::promote(a))
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, float_to_int_trap(e)))?;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToU32 { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::to_u32(num32::promote(a))
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, float_to_int_trap(e)))?;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToI32Sat { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::to_i32_sat(num32::promote(a));
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToU32Sat { dst, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let out = num32::to_u32_sat(num32::promote(a));
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToI32 { dst, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let out = num32::to_i32(a)
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, float_to_int_trap(e)))?;
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToU32 { dst, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let out = num32::to_u32(a)
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, float_to_int_trap(e)))?;
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToI32Sat { dst, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let out = num32::to_i32_sat(a);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToU32Sat { dst, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let out = num32::to_u32_sat(a);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32ToF32 { dst, a } => {
+                    let a = ctx.read_i32(base, *a);
+                    let out = a as f32;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToF32 { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = a as f32;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64ToF32 { dst, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let out = a as f32;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64ToF32 { dst, a } => {
+                    let a = ctx.read_u64(base, *a);
+                    let out = a as f32;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32ToF64 { dst, a } => {
+                    let a = ctx.read_i32(base, *a);
+                    let out = f64::from(a);
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToF64 { dst, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let out = f64::from(a);
+                    ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
 
@@ -4607,6 +5306,14 @@ fn f64_max_basic(a: f64, b: f64) -> f64 {
         }
     } else {
         a
+    }
+}
+
+/// Maps a failed trapping float-to-integer conversion to its trap.
+fn float_to_int_trap(e: num32::FloatToIntError) -> Trap {
+    match e {
+        num32::FloatToIntError::Invalid => Trap::FloatToIntInvalid,
+        num32::FloatToIntError::Overflow => Trap::IntCastOverflow,
     }
 }
 

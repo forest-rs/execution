@@ -537,6 +537,9 @@ impl<'a> InstrView<'a> {
             Instr::ConstI64 { imm, .. } => Some(ConstValue::I64(*imm)),
             Instr::ConstU64 { imm, .. } => Some(ConstValue::U64(*imm)),
             Instr::ConstF64 { bits, .. } => Some(ConstValue::F64Bits(*bits)),
+            Instr::ConstI32 { imm, .. } => Some(ConstValue::I32(*imm)),
+            Instr::ConstU32 { imm, .. } => Some(ConstValue::U32(*imm)),
+            Instr::ConstF32 { bits, .. } => Some(ConstValue::F32Bits(*bits)),
             Instr::ConstDecimal { value, .. } => Some(ConstValue::Decimal(*value)),
             Instr::ConstPool { idx, .. } => const_pool_value(self.program, *idx),
             _ => None,
@@ -679,6 +682,12 @@ pub enum ConstValue<'a> {
     U64(u64),
     /// IEEE 754 bits for an `f64` constant.
     F64Bits(u64),
+    /// Signed 32-bit integer literal.
+    I32(i32),
+    /// Unsigned 32-bit integer literal.
+    U32(u32),
+    /// IEEE 754 bits for an `f32` constant.
+    F32Bits(u32),
     /// Decimal literal.
     Decimal(Decimal),
     /// Bytes constant (borrowed from the program constant pool).
@@ -1606,6 +1615,12 @@ fn fmt_const_value(f: &mut fmt::Formatter<'_>, v: ConstValue<'_>) -> fmt::Result
         ConstValue::F64Bits(bits) => {
             let as_f = f64::from_bits(bits);
             write!(f, "{as_f} (bits=0x{bits:016X})")
+        }
+        ConstValue::I32(i) => write!(f, "{i}"),
+        ConstValue::U32(u) => write!(f, "{u}"),
+        ConstValue::F32Bits(bits) => {
+            let as_f = f32::from_bits(bits);
+            write!(f, "{as_f} (bits=0x{bits:08X})")
         }
         ConstValue::Decimal(value) => {
             let mantissa = value.mantissa();

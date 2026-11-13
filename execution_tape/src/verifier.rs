@@ -2022,6 +2022,24 @@ fn verify_function_bytecode(
                 _ => Err(mismatch(reg, ValueType::F64)),
             }
         };
+        let map_i32 = |reg: u32| -> Result<I32Reg, VerifyError> {
+            match map(reg)? {
+                VReg::I32(r) => Ok(r),
+                _ => Err(mismatch(reg, ValueType::I32)),
+            }
+        };
+        let map_u32 = |reg: u32| -> Result<U32Reg, VerifyError> {
+            match map(reg)? {
+                VReg::U32(r) => Ok(r),
+                _ => Err(mismatch(reg, ValueType::U32)),
+            }
+        };
+        let map_f32 = |reg: u32| -> Result<F32Reg, VerifyError> {
+            match map(reg)? {
+                VReg::F32(r) => Ok(r),
+                _ => Err(mismatch(reg, ValueType::F32)),
+            }
+        };
         let map_decimal = |reg: u32| -> Result<DecimalReg, VerifyError> {
             match map(reg)? {
                 VReg::Decimal(r) => Ok(r),
@@ -2467,6 +2485,488 @@ fn verify_function_bytecode(
                 dst: map_u64(*dst)?,
                 a: map_u64(*a)?,
                 b: map_u64(*b)?,
+            },
+            Instr::ConstI32 { dst, imm } => ExecInstr::ConstI32 {
+                dst: map_i32(*dst)?,
+                imm: *imm,
+            },
+            Instr::ConstU32 { dst, imm } => ExecInstr::ConstU32 {
+                dst: map_u32(*dst)?,
+                imm: *imm,
+            },
+            Instr::ConstF32 { dst, bits } => ExecInstr::ConstF32 {
+                dst: map_f32(*dst)?,
+                bits: *bits,
+            },
+            Instr::I32Add { dst, a, b } => ExecInstr::I32Add {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Sub { dst, a, b } => ExecInstr::I32Sub {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Mul { dst, a, b } => ExecInstr::I32Mul {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Div { dst, a, b } => ExecInstr::I32Div {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Rem { dst, a, b } => ExecInstr::I32Rem {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::I32AddOvf {
+                dst: map_i32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::I32SubOvf {
+                dst: map_i32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::I32MulOvf {
+                dst: map_i32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32And { dst, a, b } => ExecInstr::I32And {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Or { dst, a, b } => ExecInstr::I32Or {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Xor { dst, a, b } => ExecInstr::I32Xor {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Shl { dst, a, b } => ExecInstr::I32Shl {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Shr { dst, a, b } => ExecInstr::I32Shr {
+                dst: map_i32(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Eq { dst, a, b } => ExecInstr::I32Eq {
+                dst: map_bool(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Lt { dst, a, b } => ExecInstr::I32Lt {
+                dst: map_bool(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Gt { dst, a, b } => ExecInstr::I32Gt {
+                dst: map_bool(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Le { dst, a, b } => ExecInstr::I32Le {
+                dst: map_bool(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::I32Ge { dst, a, b } => ExecInstr::I32Ge {
+                dst: map_bool(*dst)?,
+                a: map_i32(*a)?,
+                b: map_i32(*b)?,
+            },
+            Instr::U32Add { dst, a, b } => ExecInstr::U32Add {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Sub { dst, a, b } => ExecInstr::U32Sub {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Mul { dst, a, b } => ExecInstr::U32Mul {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Div { dst, a, b } => ExecInstr::U32Div {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Rem { dst, a, b } => ExecInstr::U32Rem {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::U32AddOvf {
+                dst: map_u32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::U32SubOvf {
+                dst: map_u32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            } => ExecInstr::U32MulOvf {
+                dst: map_u32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32And { dst, a, b } => ExecInstr::U32And {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Or { dst, a, b } => ExecInstr::U32Or {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Xor { dst, a, b } => ExecInstr::U32Xor {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Shl { dst, a, b } => ExecInstr::U32Shl {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Shr { dst, a, b } => ExecInstr::U32Shr {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Clz { dst, a } => ExecInstr::U32Clz {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::U32Ctz { dst, a } => ExecInstr::U32Ctz {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::U32Popcnt { dst, a } => ExecInstr::U32Popcnt {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::U32Rotl { dst, a, b } => ExecInstr::U32Rotl {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Rotr { dst, a, b } => ExecInstr::U32Rotr {
+                dst: map_u32(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Eq { dst, a, b } => ExecInstr::U32Eq {
+                dst: map_bool(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Lt { dst, a, b } => ExecInstr::U32Lt {
+                dst: map_bool(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Gt { dst, a, b } => ExecInstr::U32Gt {
+                dst: map_bool(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Le { dst, a, b } => ExecInstr::U32Le {
+                dst: map_bool(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::U32Ge { dst, a, b } => ExecInstr::U32Ge {
+                dst: map_bool(*dst)?,
+                a: map_u32(*a)?,
+                b: map_u32(*b)?,
+            },
+            Instr::F32Add { dst, a, b } => ExecInstr::F32Add {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Sub { dst, a, b } => ExecInstr::F32Sub {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Mul { dst, a, b } => ExecInstr::F32Mul {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Div { dst, a, b } => ExecInstr::F32Div {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Rem { dst, a, b } => ExecInstr::F32Rem {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Neg { dst, a } => ExecInstr::F32Neg {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Abs { dst, a } => ExecInstr::F32Abs {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Min { dst, a, b } => ExecInstr::F32Min {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Max { dst, a, b } => ExecInstr::F32Max {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32MinNum { dst, a, b } => ExecInstr::F32MinNum {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32MaxNum { dst, a, b } => ExecInstr::F32MaxNum {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32CopySign { dst, a, b } => ExecInstr::F32CopySign {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Floor { dst, a } => ExecInstr::F32Floor {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Ceil { dst, a } => ExecInstr::F32Ceil {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Trunc { dst, a } => ExecInstr::F32Trunc {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Nearest { dst, a } => ExecInstr::F32Nearest {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Sqrt { dst, a } => ExecInstr::F32Sqrt {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Eq { dst, a, b } => ExecInstr::F32Eq {
+                dst: map_bool(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Ne { dst, a, b } => ExecInstr::F32Ne {
+                dst: map_bool(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Lt { dst, a, b } => ExecInstr::F32Lt {
+                dst: map_bool(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Gt { dst, a, b } => ExecInstr::F32Gt {
+                dst: map_bool(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Le { dst, a, b } => ExecInstr::F32Le {
+                dst: map_bool(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Ge { dst, a, b } => ExecInstr::F32Ge {
+                dst: map_bool(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::I32ToI64 { dst, a } => ExecInstr::I32ToI64 {
+                dst: map_i64(*dst)?,
+                a: map_i32(*a)?,
+            },
+            Instr::I64ToI32 { dst, a } => ExecInstr::I64ToI32 {
+                dst: map_i32(*dst)?,
+                a: map_i64(*a)?,
+            },
+            Instr::I64ToI32Wrap { dst, a } => ExecInstr::I64ToI32Wrap {
+                dst: map_i32(*dst)?,
+                a: map_i64(*a)?,
+            },
+            Instr::U32ToU64 { dst, a } => ExecInstr::U32ToU64 {
+                dst: map_u64(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::U64ToU32 { dst, a } => ExecInstr::U64ToU32 {
+                dst: map_u32(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::U64ToU32Wrap { dst, a } => ExecInstr::U64ToU32Wrap {
+                dst: map_u32(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::U32ToI64 { dst, a } => ExecInstr::U32ToI64 {
+                dst: map_i64(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::I32ToU32 { dst, a } => ExecInstr::I32ToU32 {
+                dst: map_u32(*dst)?,
+                a: map_i32(*a)?,
+            },
+            Instr::U32ToI32 { dst, a } => ExecInstr::U32ToI32 {
+                dst: map_i32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::I32ToU32Wrap { dst, a } => ExecInstr::I32ToU32Wrap {
+                dst: map_u32(*dst)?,
+                a: map_i32(*a)?,
+            },
+            Instr::U32ToI32Wrap { dst, a } => ExecInstr::U32ToI32Wrap {
+                dst: map_i32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::I64ToU64Wrap { dst, a } => ExecInstr::I64ToU64Wrap {
+                dst: map_u64(*dst)?,
+                a: map_i64(*a)?,
+            },
+            Instr::U64ToI64Wrap { dst, a } => ExecInstr::U64ToI64Wrap {
+                dst: map_i64(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::F32ToF64 { dst, a } => ExecInstr::F32ToF64 {
+                dst: map_f64(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F64ToF32 { dst, a } => ExecInstr::F64ToF32 {
+                dst: map_f32(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F32ToBits { dst, a } => ExecInstr::F32ToBits {
+                dst: map_u32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32FromBits { dst, a } => ExecInstr::F32FromBits {
+                dst: map_f32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::F32ToI32 { dst, a } => ExecInstr::F32ToI32 {
+                dst: map_i32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32ToU32 { dst, a } => ExecInstr::F32ToU32 {
+                dst: map_u32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32ToI32Sat { dst, a } => ExecInstr::F32ToI32Sat {
+                dst: map_i32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32ToU32Sat { dst, a } => ExecInstr::F32ToU32Sat {
+                dst: map_u32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F64ToI32 { dst, a } => ExecInstr::F64ToI32 {
+                dst: map_i32(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToU32 { dst, a } => ExecInstr::F64ToU32 {
+                dst: map_u32(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToI32Sat { dst, a } => ExecInstr::F64ToI32Sat {
+                dst: map_i32(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToU32Sat { dst, a } => ExecInstr::F64ToU32Sat {
+                dst: map_u32(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::I32ToF32 { dst, a } => ExecInstr::I32ToF32 {
+                dst: map_f32(*dst)?,
+                a: map_i32(*a)?,
+            },
+            Instr::U32ToF32 { dst, a } => ExecInstr::U32ToF32 {
+                dst: map_f32(*dst)?,
+                a: map_u32(*a)?,
+            },
+            Instr::I64ToF32 { dst, a } => ExecInstr::I64ToF32 {
+                dst: map_f32(*dst)?,
+                a: map_i64(*a)?,
+            },
+            Instr::U64ToF32 { dst, a } => ExecInstr::U64ToF32 {
+                dst: map_f32(*dst)?,
+                a: map_u64(*a)?,
+            },
+            Instr::I32ToF64 { dst, a } => ExecInstr::I32ToF64 {
+                dst: map_f64(*dst)?,
+                a: map_i32(*a)?,
+            },
+            Instr::U32ToF64 { dst, a } => ExecInstr::U32ToF64 {
+                dst: map_f64(*dst)?,
+                a: map_u32(*a)?,
             },
 
             Instr::I64Eq { dst, a, b } => ExecInstr::I64Eq {
@@ -3597,6 +4097,346 @@ fn validate_instr_types(
         }
         Instr::U64Clz { a, .. } | Instr::U64Ctz { a, .. } | Instr::U64Popcnt { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
+        }
+        Instr::ConstI32 { .. } | Instr::ConstU32 { .. } | Instr::ConstF32 { .. } => {}
+        Instr::I32Add { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Sub { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Mul { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Div { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Rem { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32AddOvf { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32SubOvf { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32MulOvf { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32And { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Or { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Xor { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Shl { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Shr { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Eq { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Lt { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Gt { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Le { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::I32Ge { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::I32)?;
+        }
+        Instr::U32Add { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Sub { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Mul { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Div { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Rem { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32AddOvf { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32SubOvf { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32MulOvf { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32And { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Or { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Xor { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Shl { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Shr { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Clz { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::U32Ctz { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::U32Popcnt { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::U32Rotl { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Rotr { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Eq { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Lt { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Gt { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Le { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::U32Ge { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::U32)?;
+        }
+        Instr::F32Add { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Sub { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Mul { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Div { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Rem { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Neg { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Abs { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Min { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Max { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32MinNum { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32MaxNum { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32CopySign { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Floor { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Ceil { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Trunc { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Nearest { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Sqrt { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Eq { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Ne { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Lt { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Gt { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Le { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32Ge { a, b, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::I32ToI64 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+        }
+        Instr::I64ToI32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
+        }
+        Instr::I64ToI32Wrap { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
+        }
+        Instr::U32ToU64 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::U64ToU32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
+        }
+        Instr::U64ToU32Wrap { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
+        }
+        Instr::U32ToI64 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::I32ToU32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+        }
+        Instr::U32ToI32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::I32ToU32Wrap { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+        }
+        Instr::U32ToI32Wrap { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::I64ToU64Wrap { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
+        }
+        Instr::U64ToI64Wrap { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
+        }
+        Instr::F32ToF64 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F64ToF32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::F32ToBits { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32FromBits { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::F32ToI32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32ToU32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32ToI32Sat { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32ToU32Sat { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F64ToI32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::F64ToU32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::F64ToI32Sat { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::F64ToU32Sat { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::I32ToF32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+        }
+        Instr::U32ToF32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::I64ToF32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
+        }
+        Instr::U64ToF32 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
+        }
+        Instr::I32ToF64 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+        }
+        Instr::U32ToF64 { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
         }
         Instr::I64Eq { a, b, .. } | Instr::I64Lt { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;

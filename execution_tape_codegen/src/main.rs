@@ -265,6 +265,7 @@ fn operand_kind_rust(operand: &str) -> Result<&'static str> {
         "imm_bool" => "OperandKind::ImmBool",
         "imm_u8" => "OperandKind::ImmU8",
         "imm_u32" => "OperandKind::ImmU32",
+        "imm_i32" => "OperandKind::ImmI32",
         "imm_i64" => "OperandKind::ImmI64",
         "decimal" => "OperandKind::Decimal",
         "imm_u64" => "OperandKind::ImmU64",
@@ -306,10 +307,12 @@ fn operand_encoding_rust(enc: &str) -> Result<&'static str> {
         "bool_u8" => "OperandEncoding::BoolU8",
         "u8_raw" => "OperandEncoding::U8Raw",
         "u32_uleb" => "OperandEncoding::U32Uleb",
+        "i32_sleb" => "OperandEncoding::I32Sleb",
         "i64_sleb" => "OperandEncoding::I64Sleb",
         "decimal_sleb" => "OperandEncoding::DecimalSleb",
         "u64_uleb" => "OperandEncoding::U64Uleb",
         "u64_le" => "OperandEncoding::U64Le",
+        "u32_le" => "OperandEncoding::U32Le",
 
         other => bail!("unknown operand encoding '{other}'"),
     })
@@ -355,6 +358,8 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    ImmU8,\n");
     out.push_str("    /// An immediate `u32`.\n");
     out.push_str("    ImmU32,\n");
+    out.push_str("    /// An immediate `i32`.\n");
+    out.push_str("    ImmI32,\n");
     out.push_str("    /// An immediate `i64`.\n");
     out.push_str("    ImmI64,\n");
     out.push_str("    /// A complete decimal literal.\n");
@@ -423,10 +428,12 @@ fn generate(spec: Spec, src: &Path) -> Result<String> {
     out.push_str("    BoolU8,\n");
     out.push_str("    U8Raw,\n");
     out.push_str("    U32Uleb,\n");
+    out.push_str("    I32Sleb,\n");
     out.push_str("    I64Sleb,\n");
     out.push_str("    DecimalSleb,\n");
     out.push_str("    U64Uleb,\n");
     out.push_str("    U64Le,\n");
+    out.push_str("    U32Le,\n");
     out.push_str("}\n\n");
 
     out.push_str("/// Operand access for register operands.\n");
@@ -831,15 +838,29 @@ fn generate_bytecode_decode(spec: Spec, src: &Path) -> Result<String> {
                     ));
                 }
                 "pc" | "imm_u32" => {
-                    if operand.encoding.as_str() != "u32_uleb" {
-                        bail!(
+                    let read = match (operand.kind.as_str(), operand.encoding.as_str()) {
+                        (_, "u32_uleb") => "read_u32_uleb",
+                        ("imm_u32", "u32_le") => "read_u32_le",
+                        _ => bail!(
                             "unsupported u32 encoding '{}' for opcode {}",
+                            operand.encoding,
+                            op.name
+                        ),
+                    };
+                    out.push_str(&format!(
+                        "            let {field} = crate::codec_primitives::{read}(r)?;\n"
+                    ));
+                }
+                "imm_i32" => {
+                    if operand.encoding.as_str() != "i32_sleb" {
+                        bail!(
+                            "unsupported imm_i32 encoding '{}' for opcode {}",
                             operand.encoding,
                             op.name
                         );
                     }
                     out.push_str(&format!(
-                        "            let {field} = crate::codec_primitives::read_u32_uleb(r)?;\n"
+                        "            let {field} = crate::codec_primitives::read_i32_sleb(r)?;\n"
                     ));
                 }
                 "imm_u8" => {
@@ -1103,15 +1124,29 @@ fn generate_bytecode_encode(spec: Spec, src: &Path) -> Result<String> {
                     ));
                 }
                 "pc" | "imm_u32" => {
-                    if operand.encoding.as_str() != "u32_uleb" {
-                        bail!(
+                    let write = match (operand.kind.as_str(), operand.encoding.as_str()) {
+                        (_, "u32_uleb") => "write_u32_uleb",
+                        ("imm_u32", "u32_le") => "write_u32_le",
+                        _ => bail!(
                             "unsupported u32 encoding '{}' for opcode {}",
+                            operand.encoding,
+                            op.name
+                        ),
+                    };
+                    out.push_str(&format!(
+                        "            crate::codec_primitives::{write}(out, *{field});\n"
+                    ));
+                }
+                "imm_i32" => {
+                    if operand.encoding.as_str() != "i32_sleb" {
+                        bail!(
+                            "unsupported imm_i32 encoding '{}' for opcode {}",
                             operand.encoding,
                             op.name
                         );
                     }
                     out.push_str(&format!(
-                        "            crate::codec_primitives::write_u32_uleb(out, *{field});\n"
+                        "            crate::codec_primitives::write_i32_sleb(out, *{field});\n"
                     ));
                 }
                 "imm_u8" => {

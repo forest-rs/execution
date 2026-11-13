@@ -1293,5 +1293,909 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 b,
             }
         },
+        Opcode::ConstI32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let imm = crate::codec_primitives::read_i32_sleb(r)?;
+            Instr::ConstI32 {
+                dst,
+                imm,
+            }
+        },
+        Opcode::I32Add => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Add {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Sub => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Sub {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Mul => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Mul {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Div => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Div {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Rem => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Rem {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32AddOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::I32SubOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::I32MulOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::I32And => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32And {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Or => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Or {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Xor => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Xor {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Shl => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Shl {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Shr => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Shr {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Eq => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Eq {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Lt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Lt {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Gt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Gt {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Le => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Le {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32Ge => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::I32Ge {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::ConstU32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let imm = crate::codec_primitives::read_u32_uleb(r)?;
+            Instr::ConstU32 {
+                dst,
+                imm,
+            }
+        },
+        Opcode::U32Add => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Add {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Sub => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Sub {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Mul => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Mul {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Div => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Div {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Rem => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Rem {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32AddOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32AddOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::U32SubOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32SubOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::U32MulOvf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32MulOvf {
+                dst,
+                overflow,
+                a,
+                b,
+            }
+        },
+        Opcode::U32And => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32And {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Or => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Or {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Xor => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Xor {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Shl => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Shl {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Shr => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Shr {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Clz => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Clz {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32Ctz => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Ctz {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32Popcnt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Popcnt {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32Rotl => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Rotl {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Rotr => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Rotr {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Eq => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Eq {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Lt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Lt {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Gt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Gt {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Le => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Le {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::U32Ge => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::U32Ge {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::ConstF32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let bits = crate::codec_primitives::read_u32_le(r)?;
+            Instr::ConstF32 {
+                dst,
+                bits,
+            }
+        },
+        Opcode::F32Add => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Add {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Sub => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Sub {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Mul => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Mul {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Div => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Div {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Rem => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Rem {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Neg => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Neg {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Abs => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Abs {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Min => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Min {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Max => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Max {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32MinNum => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32MinNum {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32MaxNum => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32MaxNum {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32CopySign => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32CopySign {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Floor => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Floor {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Ceil => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Ceil {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Trunc => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Trunc {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Nearest => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Nearest {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Sqrt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Sqrt {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Eq => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Eq {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Ne => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Ne {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Lt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Lt {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Gt => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Gt {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Le => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Le {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Ge => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Ge {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::I32ToI64 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I32ToI64 {
+                dst,
+                a,
+            }
+        },
+        Opcode::I64ToI32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToI32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::I64ToI32Wrap => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToI32Wrap {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32ToU64 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToU64 {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64ToU32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64ToU32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64ToU32Wrap => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64ToU32Wrap {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32ToI64 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToI64 {
+                dst,
+                a,
+            }
+        },
+        Opcode::I32ToU32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I32ToU32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32ToI32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToI32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::I32ToU32Wrap => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I32ToU32Wrap {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32ToI32Wrap => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToI32Wrap {
+                dst,
+                a,
+            }
+        },
+        Opcode::I64ToU64Wrap => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToU64Wrap {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64ToI64Wrap => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64ToI64Wrap {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32ToF64 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToF64 {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64ToF32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToF32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32ToBits => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToBits {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32FromBits => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32FromBits {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32ToI32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToI32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32ToU32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToU32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32ToI32Sat => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToI32Sat {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32ToU32Sat => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToU32Sat {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64ToI32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToI32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64ToU32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToU32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64ToI32Sat => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToI32Sat {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64ToU32Sat => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToU32Sat {
+                dst,
+                a,
+            }
+        },
+        Opcode::I32ToF32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I32ToF32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32ToF32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToF32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::I64ToF32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToF32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::U64ToF32 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64ToF32 {
+                dst,
+                a,
+            }
+        },
+        Opcode::I32ToF64 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I32ToF64 {
+                dst,
+                a,
+            }
+        },
+        Opcode::U32ToF64 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToF64 {
+                dst,
+                a,
+            }
+        },
     })
 }

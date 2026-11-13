@@ -579,6 +579,458 @@ pub(crate) enum ExecInstr {
         a: U64Reg,
         b: U64Reg,
     },
+    ConstI32 {
+        dst: I32Reg,
+        imm: i32,
+    },
+    ConstU32 {
+        dst: U32Reg,
+        imm: u32,
+    },
+    ConstF32 {
+        dst: F32Reg,
+        bits: u32,
+    },
+    I32Add {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Sub {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Mul {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Div {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Rem {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32AddOvf {
+        dst: I32Reg,
+        overflow: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32SubOvf {
+        dst: I32Reg,
+        overflow: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32MulOvf {
+        dst: I32Reg,
+        overflow: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32And {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Or {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Xor {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Shl {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Shr {
+        dst: I32Reg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Eq {
+        dst: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Lt {
+        dst: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Gt {
+        dst: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Le {
+        dst: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    I32Ge {
+        dst: BoolReg,
+        a: I32Reg,
+        b: I32Reg,
+    },
+    U32Add {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Sub {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Mul {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Div {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Rem {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32AddOvf {
+        dst: U32Reg,
+        overflow: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32SubOvf {
+        dst: U32Reg,
+        overflow: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32MulOvf {
+        dst: U32Reg,
+        overflow: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32And {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Or {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Xor {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Shl {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Shr {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Clz {
+        dst: U32Reg,
+        a: U32Reg,
+    },
+    U32Ctz {
+        dst: U32Reg,
+        a: U32Reg,
+    },
+    U32Popcnt {
+        dst: U32Reg,
+        a: U32Reg,
+    },
+    U32Rotl {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Rotr {
+        dst: U32Reg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Eq {
+        dst: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Lt {
+        dst: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Gt {
+        dst: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Le {
+        dst: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    U32Ge {
+        dst: BoolReg,
+        a: U32Reg,
+        b: U32Reg,
+    },
+    F32Add {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Sub {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Mul {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Div {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Rem {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Neg {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Abs {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Min {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Max {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32MinNum {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32MaxNum {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32CopySign {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Floor {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Ceil {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Trunc {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Nearest {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Sqrt {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Eq {
+        dst: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Ne {
+        dst: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Lt {
+        dst: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Gt {
+        dst: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Le {
+        dst: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Ge {
+        dst: BoolReg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    I32ToI64 {
+        dst: I64Reg,
+        a: I32Reg,
+    },
+    I64ToI32 {
+        dst: I32Reg,
+        a: I64Reg,
+    },
+    I64ToI32Wrap {
+        dst: I32Reg,
+        a: I64Reg,
+    },
+    U32ToU64 {
+        dst: U64Reg,
+        a: U32Reg,
+    },
+    U64ToU32 {
+        dst: U32Reg,
+        a: U64Reg,
+    },
+    U64ToU32Wrap {
+        dst: U32Reg,
+        a: U64Reg,
+    },
+    U32ToI64 {
+        dst: I64Reg,
+        a: U32Reg,
+    },
+    I32ToU32 {
+        dst: U32Reg,
+        a: I32Reg,
+    },
+    U32ToI32 {
+        dst: I32Reg,
+        a: U32Reg,
+    },
+    I32ToU32Wrap {
+        dst: U32Reg,
+        a: I32Reg,
+    },
+    U32ToI32Wrap {
+        dst: I32Reg,
+        a: U32Reg,
+    },
+    I64ToU64Wrap {
+        dst: U64Reg,
+        a: I64Reg,
+    },
+    U64ToI64Wrap {
+        dst: I64Reg,
+        a: U64Reg,
+    },
+    F32ToF64 {
+        dst: F64Reg,
+        a: F32Reg,
+    },
+    F64ToF32 {
+        dst: F32Reg,
+        a: F64Reg,
+    },
+    F32ToBits {
+        dst: U32Reg,
+        a: F32Reg,
+    },
+    F32FromBits {
+        dst: F32Reg,
+        a: U32Reg,
+    },
+    F32ToI32 {
+        dst: I32Reg,
+        a: F32Reg,
+    },
+    F32ToU32 {
+        dst: U32Reg,
+        a: F32Reg,
+    },
+    F32ToI32Sat {
+        dst: I32Reg,
+        a: F32Reg,
+    },
+    F32ToU32Sat {
+        dst: U32Reg,
+        a: F32Reg,
+    },
+    F64ToI32 {
+        dst: I32Reg,
+        a: F64Reg,
+    },
+    F64ToU32 {
+        dst: U32Reg,
+        a: F64Reg,
+    },
+    F64ToI32Sat {
+        dst: I32Reg,
+        a: F64Reg,
+    },
+    F64ToU32Sat {
+        dst: U32Reg,
+        a: F64Reg,
+    },
+    I32ToF32 {
+        dst: F32Reg,
+        a: I32Reg,
+    },
+    U32ToF32 {
+        dst: F32Reg,
+        a: U32Reg,
+    },
+    I64ToF32 {
+        dst: F32Reg,
+        a: I64Reg,
+    },
+    U64ToF32 {
+        dst: F32Reg,
+        a: U64Reg,
+    },
+    I32ToF64 {
+        dst: F64Reg,
+        a: I32Reg,
+    },
+    U32ToF64 {
+        dst: F64Reg,
+        a: U32Reg,
+    },
 
     I64Eq {
         dst: BoolReg,
