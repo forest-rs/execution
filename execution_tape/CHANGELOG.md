@@ -59,6 +59,14 @@ This release has an [MSRV][] of 1.88.
   `ctz` of zero are 64, and rotation amounts are masked with `& 63`. Migration: handle the new
   `Opcode` variants in exhaustive matches.
 
+- Declare the values that resume a suspension to a tag with
+  `ProgramBuilder::declare_tag_with_results` and `import_tag_with_results`, or
+  `Vm::define_tag_with_results` for embedding-defined tags, so the store tags that units share
+  for exceptions can also type suspensions. They are encoded in the optional `tag_results`
+  section (16), read with `Program::tag_results` and `Units::tag_results`, and must match on
+  import like payloads. `throw` ignores them. Migration: code constructing `TagEntry` directly
+  must initialize `results`, and `RecordedTag` gains `results`.
+
 - List every entered guest activation with `Recording::activations` and `Recording::activation`,
   without instruction history. Each `Activation` has its entry ordinal (the live
   `ActivationId::ordinal`), function and unit, caller, parent, depth and entry sequence, and an

@@ -270,6 +270,8 @@ pub struct RecordedTag<'a> {
     pub name: &'a str,
     /// Payload storage kinds.
     pub payload: &'a [ValueType],
+    /// Storage kinds of the values resuming a suspension; empty for an exception tag.
+    pub results: &'a [ValueType],
 }
 
 /// One install or tag definition of the recorded VM, in the order it happened.
@@ -293,6 +295,7 @@ struct TagRecord {
     tag: TagRef,
     name: Box<str>,
     payload: Box<[ValueType]>,
+    results: Box<[ValueType]>,
 }
 #[derive(Debug)]
 enum Store {
@@ -584,6 +587,7 @@ impl Recording {
                 tag: tag.tag,
                 name: &tag.name,
                 payload: &tag.payload,
+                results: &tag.results,
             }),
         })
     }

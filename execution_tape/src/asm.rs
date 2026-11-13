@@ -500,6 +500,7 @@ struct CallSigDef {
 struct TagDef {
     name: SymbolId,
     payload: Vec<ContractId>,
+    results: Vec<ContractId>,
     import: bool,
 }
 
@@ -946,12 +947,18 @@ impl ProgramBuilder {
                 p.tag_imports
                     .push(TagId(u32::try_from(index).unwrap_or(u32::MAX)));
             }
-            let offset = u32::try_from(p.contract_ids.len()).unwrap_or(u32::MAX);
-            p.contract_ids.extend_from_slice(&tag.payload);
-            let len = u32::try_from(tag.payload.len()).unwrap_or(u32::MAX);
+            let mut pack = |ids: &[ContractId]| {
+                let offset = u32::try_from(p.contract_ids.len()).unwrap_or(u32::MAX);
+                p.contract_ids.extend_from_slice(ids);
+                let len = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+                ByteRange { offset, len }
+            };
+            let payload = pack(&tag.payload);
+            let results = pack(&tag.results);
             p.tags.push(TagEntry {
                 name: tag.name,
-                payload: ByteRange { offset, len },
+                payload,
+                results,
             });
         }
         p.program_name = self.program_name;

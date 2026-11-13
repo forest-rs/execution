@@ -218,6 +218,7 @@ impl Recorder {
                     tag,
                     name: units.tag_name(tag).expect("logged tag").into(),
                     payload: units.tag_payload(tag).expect("logged tag").into(),
+                    results: units.tag_results(tag).expect("logged tag").into(),
                 })),
             }
         }

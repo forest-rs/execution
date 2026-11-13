@@ -690,13 +690,19 @@ pub struct CallSigEntry {
     pub rets: ByteRange,
 }
 
-/// A nominal exception tag and the contracts of the payload it carries.
+/// A nominal tag: the contracts of the payload it carries and of the values that resume it.
+///
+/// `throw` and `suspend` both raise tags. Only a suspension can be resumed, so an exception
+/// ignores [`Self::results`], which is empty for a tag declared without results.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TagEntry {
     /// Tag name; unique within the program and used by diagnostics and tooling.
     pub name: SymbolId,
     /// Payload contracts range into `Program::contract_ids`, in payload order.
     pub payload: ByteRange,
+    /// Contracts of the values a handler resumes a suspension with, into
+    /// `Program::contract_ids`.
+    pub results: ByteRange,
 }
 
 /// An input struct type definition used to construct a [`TypeTable`].
@@ -1259,6 +1265,16 @@ impl Program {
         Ok(self.contracts.kinds(self.tag_payload_contracts(entry)?))
     }
 
+    /// Borrows the contracts of the values that resume a suspension to a tag.
+    pub fn tag_result_contracts(&self, entry: &TagEntry) -> Result<&[ContractId], DecodeError> {
+        self.function_contracts(entry.results)
+    }
+
+    /// Projects a tag's resumption values to storage kinds without allocation.
+    pub fn tag_results(&self, entry: &TagEntry) -> Result<ContractKinds<'_>, DecodeError> {
+        Ok(self.contracts.kinds(self.tag_result_contracts(entry)?))
+    }
+
     /// Borrows a protected region's handler clauses, in match order.
     pub fn region_clauses(&self, region: &RegionEntry) -> Result<&[CatchClause], DecodeError> {
         slice_range(&self.catch_clauses, region.clauses)
@@ -1590,6 +1606,27 @@ impl Program {
             write_section(&mut w, SectionTag::Tags, payload.as_slice());
         }
 
+        // tag result section (optional; omitted when no tag resumes with values)
+        if self.tags.iter().any(|tag| tag.results.len != 0) {
+            let mut payload = Writer::new();
+            let resumable: Vec<_> = self
+                .tags
+                .iter()
+                .enumerate()
+                .filter(|(_, tag)| tag.results.len != 0)
+                .collect();
+            payload.write_uleb128_u64(resumable.len() as u64);
+            for (index, tag) in resumable {
+                payload.write_uleb128_u64(index as u64);
+                let contracts = self.tag_result_contracts(tag).expect("valid tag results");
+                payload.write_uleb128_u64(contracts.len() as u64);
+                for &t in contracts {
+                    payload.write_uleb128_u32(t.0);
+                }
+            }
+            write_section(&mut w, SectionTag::TagResults, payload.as_slice());
+        }
+
         // protected region section (optional; functions without protection are omitted)
         if self
             .functions
@@ -1728,6 +1765,7 @@ enum SectionTag {
     Tags = 13,
     Regions = 14,
     TagImports = 15,
+    TagResults = 16,
 }
 
 impl SectionTag {
@@ -1747,6 +1785,7 @@ impl SectionTag {
             13 => Some(Self::Tags),
             14 => Some(Self::Regions),
             15 => Some(Self::TagImports),
+            16 => Some(Self::TagResults),
             _ => None,
         }
     }
@@ -1860,6 +1899,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_tags = false;
     let mut saw_regions = false;
     let mut tag_imports: Option<Vec<TagId>> = None;
+    let mut tag_results: Option<Vec<DecodedTagResults>> = None;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -1949,6 +1989,12 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                     return Err(DecodeError::DuplicateSection);
                 }
                 tag_imports = Some(decode_tag_imports(payload)?);
+            }
+            Some(SectionTag::TagResults) => {
+                if tag_results.is_some() {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                tag_results = Some(decode_tag_results(payload)?);
             }
             Some(SectionTag::Regions) => {
                 if saw_regions {
@@ -2186,24 +2232,40 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     }
 
     // Tags are packed after call sigs, matching the builder.
+    // Each tag's result contracts follow its payload contracts.
+    let mut tag_results = tag_results.unwrap_or_default().into_iter().peekable();
     let mut tags: Vec<TagEntry> = Vec::with_capacity(tag_defs.len());
-    for (name, payload) in tag_defs {
+    for (index, (name, payload)) in tag_defs.into_iter().enumerate() {
         if symbols.get(name.index() as usize).is_none() {
             return Err(DecodeError::OutOfBounds);
         }
-        let offset = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
-        for id in &payload {
-            contract_ids.push(
-                *contract_remap
-                    .get(id.0 as usize)
-                    .ok_or(DecodeError::OutOfBounds)?,
-            );
-        }
-        let len = u32::try_from(payload.len()).map_err(|_| DecodeError::OutOfBounds)?;
+        let results = tag_results
+            .next_if(|(tag, _)| tag.0 as usize == index)
+            .map(|(_, results)| results)
+            .unwrap_or_default();
+        let mut pack = |ids: &[ContractId]| -> Result<ByteRange, DecodeError> {
+            let offset = u32::try_from(contract_ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+            for id in ids {
+                contract_ids.push(
+                    *contract_remap
+                        .get(id.0 as usize)
+                        .ok_or(DecodeError::OutOfBounds)?,
+                );
+            }
+            let len = u32::try_from(ids.len()).map_err(|_| DecodeError::OutOfBounds)?;
+            Ok(ByteRange { offset, len })
+        };
+        let payload = pack(&payload)?;
+        let results = pack(&results)?;
         tags.push(TagEntry {
             name,
-            payload: ByteRange { offset, len },
+            payload,
+            results,
         });
+    }
+    if tag_results.next().is_some() {
+        // A result entry names a tag the program does not declare.
+        return Err(DecodeError::OutOfBounds);
     }
 
     let mut regions = Vec::new();
@@ -2683,6 +2745,7 @@ type DecodedFunctionSig = (Vec<ContractId>, Vec<ContractId>, Vec<u32>, Vec<u32>)
 type DecodedHostSig = (SymbolId, SigHash, Vec<ValueType>, Vec<ValueType>);
 type DecodedCallSig = (Vec<ContractId>, Vec<ContractId>);
 type DecodedTag = (SymbolId, Vec<ContractId>);
+type DecodedTagResults = (TagId, Vec<ContractId>);
 type DecodedProtection = (u32, Vec<RegionDef>, Vec<RegionRun>);
 
 fn decode_function_sigs(payload: &[u8]) -> Result<Vec<DecodedFunctionSig>, DecodeError> {
@@ -2799,6 +2862,35 @@ fn decode_tag_imports(payload: &[u8]) -> Result<Vec<TagId>, DecodeError> {
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(TagId(r.read_uleb128_u32()?));
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok(out)
+}
+
+/// Decodes result contracts for strictly increasing tag IDs; tags absent here have none.
+///
+/// An entry with no results is rejected: the encoder omits such tags, so every program has one
+/// encoding.
+fn decode_tag_results(payload: &[u8]) -> Result<Vec<DecodedTagResults>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_count(&mut r)?;
+    let mut out: Vec<DecodedTagResults> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let tag = TagId(r.read_uleb128_u32()?);
+        if out.last().is_some_and(|(previous, _)| previous.0 >= tag.0) {
+            return Err(DecodeError::OutOfBounds);
+        }
+        let count = read_count(&mut r)?;
+        if count == 0 {
+            return Err(DecodeError::OutOfBounds);
+        }
+        let mut contracts = Vec::with_capacity(count);
+        for _ in 0..count {
+            contracts.push(ContractId(r.read_uleb128_u32()?));
+        }
+        out.push((tag, contracts));
     }
     if r.remaining() != 0 {
         return Err(DecodeError::OutOfBounds);
@@ -3491,6 +3583,18 @@ mod tests {
         encode_value_type(&mut p, ValueType::I64);
         p.write_uleb128_u64(0); // array elem_count
         assert_eq!(decode_types(p.as_slice()), Err(DecodeError::OutOfBounds));
+    }
+
+    #[test]
+    fn tag_result_entries_are_canonical() {
+        // count 1: tag 0 with no results, which the encoder never writes.
+        assert!(decode_tag_results(&[1, 0, 0]).is_err());
+        // Tags must be strictly increasing.
+        assert!(decode_tag_results(&[2, 1, 1, 0, 0, 1, 0]).is_err());
+        assert_eq!(
+            decode_tag_results(&[1, 0, 1, 7]).unwrap(),
+            vec![(TagId(0), vec![ContractId(7)])]
+        );
     }
 
     #[test]

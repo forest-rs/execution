@@ -1200,7 +1200,9 @@ impl Recording {
                     check_install(&state, unit, installed, vm.units())?;
                 }
                 Store::Tag(tag) => {
-                    let defined = vm.define_tag(&tag.name, &tag.payload).ok();
+                    let defined = vm
+                        .define_tag_with_results(&tag.name, &tag.payload, &tag.results)
+                        .ok();
                     if defined != Some(tag.tag) {
                         return Err(state.mismatch(Divergence::Tag {
                             expected: tag.tag,
