@@ -9,6 +9,16 @@ aggregate operations, and byte/string boundaries. The `recording` benchmark
 measures capture/replay work separately. Run them with `cargo bench -p
 execution_tape_wind_tunnel`; use `--bench vm -- --list` to inspect individual cases.
 
+## Borrowed hosts
+
+`borrowed_host` compares three ways to run installed code for a host that borrows per-call
+state: a VM that owns its host (the floor), a fresh VM and install per call, and one parked VM
+whose host is swapped with `Vm::replace_host` around each call.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench borrowed_host
+```
+
 ## Retained executable callable costs
 
 The `callables` suite includes `retained_callable` cases that separate capturing an environment,

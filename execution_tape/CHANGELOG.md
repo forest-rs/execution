@@ -16,6 +16,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add `Vm::replace_host`, which moves a VM's installed units, retained aggregates and limits to
+  a VM around another host and returns the previous one. A host that borrows per-call state can
+  now run against units installed once, by swapping it in for a call and a parked host back
+  out, instead of building a VM and reinstalling for every call. The crate documentation shows
+  the pattern, and the `borrowed_host` wind-tunnel bench compares it with a fresh VM per call.
+
 - Add `VerifyError::display_in(&program)`, which renders a verifier diagnostic with what the
   rejected program's debug metadata knows about its location: the function name, the nearest
   label and offset, the span, the instruction, and the input name of an argument register. Add

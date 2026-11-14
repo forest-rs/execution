@@ -4762,6 +4762,40 @@ impl<H: Host> Vm<H> {
         &mut self.host
     }
 
+    /// Moves this VM's installed units, retained aggregates and limits to a VM around `host`,
+    /// returning that VM and the previous host.
+    ///
+    /// This is how a host that borrows per-call state runs against units installed once: park
+    /// the VM around a host that owns nothing, and for each call swap in a host holding the
+    /// borrow, run, and swap the parked host back. The swap moves the VM's tables without
+    /// copying or reinstalling them. See the crate documentation for the pattern.
+    ///
+    /// The VM holds nothing of a host between runs, and an [`Invocation`] borrows the VM, so a
+    /// host can only be replaced while no invocation is in progress. Object handles are the
+    /// hosts' own: [`Value::Obj`] values that outlive a run, in retained aggregates or in values
+    /// the embedding kept, carry the same bits under the new host. When handles only mean
+    /// something for one call, do not keep them past it, or clear retained aggregates with
+    /// [`AggHeap::clear`] before the next host sees them. Recordings capture handles as opaque
+    /// tokens and replay without a host, so they are unaffected.
+    #[must_use]
+    pub fn replace_host<H2: Host>(self, host: H2) -> (Vm<H2>, H) {
+        let Self {
+            host: previous,
+            limits,
+            units,
+            memory,
+        } = self;
+        (
+            Vm {
+                host,
+                limits,
+                units,
+                memory,
+            },
+            previous,
+        )
+    }
+
     /// Returns a reference to the aggregate heap.
     pub fn aggregates(&self) -> &AggHeap {
         self.memory.aggs()
