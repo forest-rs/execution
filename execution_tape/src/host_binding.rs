@@ -228,7 +228,7 @@ impl<S> HostFunctions<S> {
     /// every rejected call, each call with its location and `check`'s message.
     ///
     /// ```
-    /// use execution_tape::asm::{FunctionSig, ProgramBuilder};
+    /// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
     /// use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
     /// use execution_tape::host_binding::HostFunctions;
     /// use execution_tape::program::ValueType;
@@ -245,7 +245,7 @@ impl<S> HostFunctions<S> {
     /// let import = pb.host_sig_for("settings.set", signature);
     /// let entry = pb.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
     /// let mut body = pb.function_asm(entry)?;
-    /// let value = pb.argument(entry, 0)?;
+    /// let value = Reg(pb.argument(entry, 0)?);
     /// let [] = pb.emit_call_with(&mut body, import, ("rustiness", value))?;
     /// body.ret(0, &[]);
     /// pb.define_function(entry, body)?;
@@ -875,7 +875,7 @@ mod tests {
         let [value] = pb
             .emit_call_with(&mut a, import, (crate::asm::CallArg::I64(41),))
             .unwrap();
-        a.ret(0, &[value]);
+        a.ret(0, &[value.0]);
         pb.define_function(f, a).unwrap();
         let p = alloc::sync::Arc::new(pb.build_verified().unwrap());
 

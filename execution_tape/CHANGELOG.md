@@ -67,11 +67,14 @@ This release has an [MSRV][] of 1.88.
   in a link check, and it converts into a `host_catalog::HostSpec`.
 
 - Pass constants directly as call arguments with `ProgramBuilder::emit_call_with`. Arguments are
-  a tuple, such as `(handle, "name", 0.5_f32)`, or a slice of the new `CallArg`; a `u32` is a
-  register and integer constants are spelled `CallArg::U32(1)`. Each constant is loaded into a
-  fresh register just before the call, strings and bytes are interned once in the constant pool,
-  and the bytecode is identical to the hand-written loads. `ProgramBuilder::emit_const_str` loads
-  one interned string into a fresh register. `CallBuildError` gains `ConstantKind`.
+  a tuple, such as `(handle, "name", 0.5_f32)`, or a slice of the new `CallArg`. A register in
+  the tuple is an `asm::Reg`, which `emit_call_with` also returns; a bare integer does not
+  compile, so `(handle, "name", 1)` cannot silently mean r1, and integer constants are spelled
+  `CallArg::U32(1)`. Each constant is loaded into a fresh register just before the call, strings
+  and bytes are interned once in the constant pool, and the bytecode is identical to the
+  hand-written loads. `ProgramBuilder::emit_const` loads one constant into a fresh register and
+  returns it, so calls on every branch can share one load placed at the function's entry; the
+  verifier rejects a use the load does not reach. `CallBuildError` gains `ConstantKind`.
 
 - Expose the arguments of host calls that are known before a program runs.
   `VerifiedProgram::host_call_sites` lists every reachable `host_call` with its import, symbol,

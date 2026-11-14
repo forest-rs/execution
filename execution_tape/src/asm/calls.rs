@@ -146,18 +146,40 @@ impl fmt::Display for CallBuildError {
 }
 impl core::error::Error for CallBuildError {}
 
+/// A function-local register, as [`ProgramBuilder::emit_call_with`] and
+/// [`ProgramBuilder::emit_const`] take and return it.
+///
+/// A call's arguments mix registers and constants, so a register there is a `Reg` and never a
+/// bare integer: `(handle, "x", 1)` does not compile, rather than silently passing r1. Write
+/// `CallArg::U32(1)` for the constant, or `Reg(1)` for the register. The rest of [`Asm`] takes
+/// registers as `u32`; wrap one with `Reg(r)` and unwrap one with `.0`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Reg(pub u32);
+
+impl From<Reg> for u32 {
+    fn from(register: Reg) -> Self {
+        register.0
+    }
+}
+
+impl fmt::Display for Reg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "r{}", self.0)
+    }
+}
+
 /// One argument of [`ProgramBuilder::emit_call_with`]: a register, or a constant that the call
 /// loads into a fresh register of its kind immediately before it.
 ///
-/// A `u32` converts to [`Self::Register`], as registers are `u32` throughout the assembler, so an
-/// integer constant is always spelled out: `CallArg::U32(1)`. Strings, `f32`, `f64`, `bool` and
-/// [`Decimal`] convert to constants. Strings and bytes are interned in the program's constant
-/// pool, so each distinct value is stored once.
+/// A [`Reg`] converts to [`Self::Register`]. Strings, `f32`, `f64`, `bool` and [`Decimal`]
+/// convert to constants; integer constants are spelled out, as `CallArg::U32(1)`, because no
+/// integer type converts. Strings and bytes are interned in the program's constant pool, so each
+/// distinct value is stored once.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum CallArg<'a> {
     /// A function-local register.
-    Register(u32),
+    Register(Reg),
     /// `()`.
     Unit,
     /// A boolean constant.
@@ -202,8 +224,8 @@ impl CallArg<'_> {
     }
 }
 
-impl From<u32> for CallArg<'_> {
-    fn from(register: u32) -> Self {
+impl From<Reg> for CallArg<'_> {
+    fn from(register: Reg) -> Self {
         Self::Register(register)
     }
 }
@@ -234,7 +256,21 @@ impl From<Decimal> for CallArg<'_> {
 }
 
 /// The arguments of [`ProgramBuilder::emit_call_with`]: a tuple of up to twelve values that
-/// convert into [`CallArg`], such as `(handle, "name", 0.5_f32)`, or a slice of [`CallArg`].
+/// convert into [`CallArg`], such as `(handle, "name", 0.5_f32)` where `handle` is a [`Reg`], or
+/// a slice of [`CallArg`].
+///
+/// A bare integer is neither a register nor a constant, so it does not compile:
+///
+/// ```compile_fail
+/// # use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
+/// # use execution_tape::host::HostSig;
+/// # use execution_tape::program::ValueType;
+/// # let mut program = ProgramBuilder::new();
+/// # let set = program.host_sig_for("set", HostSig { args: vec![ValueType::Str, ValueType::U32], rets: vec![] });
+/// # let entry = program.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![] }).unwrap();
+/// # let mut body = program.function_asm(entry).unwrap();
+/// let [] = program.emit_call_with(&mut body, set, ("x", 1)).unwrap();
+/// ```
 pub trait CallArgs<'a> {
     /// Appends these arguments to `out`, in order.
     fn push_into(self, out: &mut Vec<CallArg<'a>>);
@@ -355,7 +391,8 @@ impl ProgramBuilder {
         let results = self.check_call(
             body,
             target,
-            args.iter().map(|&register| CallArg::Register(register)),
+            args.iter()
+                .map(|&register| CallArg::Register(Reg(register))),
             N,
             0,
         )?;
@@ -376,14 +413,16 @@ impl ProgramBuilder {
 
     /// Emits a call as [`Self::emit_call`] does, accepting constants as arguments.
     ///
-    /// Each constant is loaded into a fresh register of its kind just before the call, in
-    /// argument order, and strings and bytes are interned in the constant pool. The bytecode is
-    /// exactly what [`Asm::alloc_register`], the matching `const_*` or [`Asm::const_pool`] load
-    /// and [`Self::emit_call`] produce by hand. Every check, including each constant's kind
-    /// against the signature, happens before anything is emitted.
+    /// Arguments are a tuple of [`Reg`]s and constants, or a slice of [`CallArg`]. Each constant
+    /// is loaded into a fresh register of its kind just before the call, in argument order, and
+    /// strings and bytes are interned in the constant pool. The bytecode is exactly what
+    /// [`Asm::alloc_register`], the matching `const_*` or [`Asm::const_pool`] load and
+    /// [`Self::emit_call`] produce by hand. Every check, including each constant's kind against
+    /// the signature, happens before anything is emitted. To load a constant once for several
+    /// calls, use [`Self::emit_const`] and pass its register.
     ///
     /// ```
-    /// use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder};
+    /// use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder, Reg};
     /// use execution_tape::host::HostSig;
     /// use execution_tape::program::ValueType;
     /// let mut program = ProgramBuilder::new();
@@ -393,8 +432,8 @@ impl ProgramBuilder {
     /// );
     /// let entry = program.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
     /// let mut body = program.function_asm(entry)?;
-    /// let value = program.argument(entry, 0)?;
-    /// // A `u32` is a register; an integer constant is spelled out.
+    /// let value = Reg(program.argument(entry, 0)?);
+    /// // A register is a `Reg`; an integer constant is spelled out.
     /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(1), value))?;
     /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(2), 0.5_f32))?;
     /// body.ret(0, &[]);
@@ -407,7 +446,7 @@ impl ProgramBuilder {
         body: &mut Asm,
         target: impl Into<CallTarget>,
         args: impl CallArgs<'a>,
-    ) -> Result<[u32; N], CallBuildError> {
+    ) -> Result<[Reg; N], CallBuildError> {
         let target = target.into();
         let mut operands = Vec::new();
         args.push_into(&mut operands);
@@ -418,29 +457,67 @@ impl ProgramBuilder {
         self.check_call(body, target, operands.iter().copied(), N, constants)?;
         let registers: Vec<u32> = operands
             .into_iter()
-            .map(|arg| self.load(body, arg))
+            .map(|arg| self.emit_const(body, arg).0)
             .collect();
-        self.emit_call(body, target, &registers)
+        Ok(self.emit_call(body, target, &registers)?.map(Reg))
     }
 
-    /// Interns `value` in the constant pool and loads it into a fresh `Str` register of `body`.
+    /// Loads a constant into a fresh register of `body` and returns the register, for any number
+    /// of calls to share.
     ///
-    /// One call in place of [`Self::const_str`], [`Asm::alloc_register`] and
-    /// [`Asm::const_pool`], with identical bytecode. Equal strings share one pool entry.
-    pub fn emit_const_str(&mut self, body: &mut Asm, value: &str) -> u32 {
-        self.load(body, CallArg::Str(value))
-    }
-
-    /// Loads a constant into a fresh register, or returns a register argument unchanged.
-    fn load(&mut self, body: &mut Asm, arg: CallArg<'_>) -> u32 {
-        let Some(kind) = arg.constant_kind() else {
-            let CallArg::Register(register) = arg else {
+    /// [`Self::emit_call_with`] loads a constant argument afresh at each call. A constant that
+    /// several calls pass can instead be loaded once here and passed as its register, which
+    /// saves the repeated loads and registers. The register holds the constant wherever the load
+    /// dominates: load it at the function's entry, before the first branch, to use it anywhere.
+    /// A use that some path reaches without the load is rejected by the verifier as an
+    /// uninitialized read, so a misplaced load is caught when the program is built. Nothing
+    /// writes the register again unless `body` is told to.
+    ///
+    /// Each call emits one load: the builder keeps no cache of loaded constants. Strings and
+    /// bytes are interned, so equal values share one pool entry. A [`CallArg::Register`] is
+    /// returned as is, without emitting anything.
+    ///
+    /// ```
+    /// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
+    /// use execution_tape::host::HostSig;
+    /// use execution_tape::program::ValueType;
+    /// let mut program = ProgramBuilder::new();
+    /// let set = program.host_sig_for(
+    ///     "settings.set",
+    ///     HostSig { args: vec![ValueType::Str, ValueType::F32], rets: vec![] },
+    /// );
+    /// let entry = program.declare_function(FunctionSig {
+    ///     arg_types: vec![ValueType::Bool, ValueType::F32],
+    ///     ret_types: vec![],
+    /// })?;
+    /// let (wet, value) = (program.argument(entry, 0)?, Reg(program.argument(entry, 1)?));
+    /// let mut body = program.function_asm(entry)?;
+    /// // Loaded once, at entry, so it reaches both branches.
+    /// let age = program.emit_const(&mut body, "age");
+    /// let (dry, soaked, done) = (body.label(), body.label(), body.label());
+    /// body.br(wet, soaked, dry);
+    /// body.place(soaked)?;
+    /// let [] = program.emit_call_with(&mut body, set, (age, 1.0_f32))?;
+    /// body.jmp(done);
+    /// body.place(dry)?;
+    /// let [] = program.emit_call_with(&mut body, set, (age, value))?;
+    /// body.jmp(done);
+    /// body.place(done)?;
+    /// body.ret(0, &[]);
+    /// program.define_function(entry, body)?;
+    /// program.build_verified()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn emit_const<'a>(&mut self, body: &mut Asm, value: impl Into<CallArg<'a>>) -> Reg {
+        let value = value.into();
+        let Some(kind) = value.constant_kind() else {
+            let CallArg::Register(register) = value else {
                 unreachable!("only registers have no constant kind")
             };
             return register;
         };
         let dst = body.alloc_register(kind);
-        match arg {
+        match value {
             CallArg::Register(_) => unreachable!("registers are returned above"),
             CallArg::Unit => body.const_unit(dst),
             CallArg::Bool(v) => body.const_bool(dst, v),
@@ -454,7 +531,7 @@ impl ProgramBuilder {
             CallArg::Bytes(v) => body.const_pool(dst, self.const_bytes(v)),
             CallArg::Str(v) => body.const_pool(dst, self.const_str(v)),
         };
-        dst
+        Reg(dst)
     }
 
     /// Checks a call before anything is emitted, returning the target's result kinds.
@@ -524,7 +601,7 @@ impl ProgramBuilder {
         for (index, arg) in args.enumerate() {
             let expected = parameters.get(index);
             match arg {
-                CallArg::Register(register) => {
+                CallArg::Register(Reg(register)) => {
                     let actual = *body
                         .register_types
                         .get(register as usize)
@@ -803,7 +880,7 @@ mod tests {
                     (
                         "name",
                         CallArg::U32(7),
-                        x,
+                        Reg(x),
                         true,
                         CallArg::I64(-3),
                         CallArg::Bytes(b"raw"),
@@ -812,7 +889,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let r = program.emit_const_str(&mut body, "name");
+        let r = program.emit_const(&mut body, "name");
         let [_] = program
             .emit_call_with(
                 &mut body,
@@ -872,6 +949,88 @@ mod tests {
         assert_eq!(sugared.const_pool.len(), 4);
     }
 
+    /// Declares `f(bool)` importing `set(str)`, with its argument and three labels.
+    fn branching_program() -> (ProgramBuilder, Asm, HostSigId, u32, [Label; 3]) {
+        let mut program = ProgramBuilder::new();
+        let set = program.host_sig_for(
+            "set",
+            HostSig {
+                args: vec![ValueType::Str],
+                rets: vec![],
+            },
+        );
+        let f = program
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::Bool],
+                ret_types: vec![],
+            })
+            .unwrap();
+        let flag = program.argument(f, 0).unwrap();
+        let mut body = program.function_asm(f).unwrap();
+        let labels = [body.label(), body.label(), body.label()];
+        (program, body, set, flag, labels)
+    }
+
+    #[test]
+    fn a_shared_constant_is_loaded_once_and_reaches_every_branch() {
+        let (mut program, mut body, set, flag, [yes, no, done]) = branching_program();
+        let name = program.emit_const(&mut body, "name");
+        assert_eq!(
+            program.emit_const(&mut body, name),
+            name,
+            "a register is returned as is"
+        );
+        body.br(flag, yes, no);
+        for label in [yes, no] {
+            body.place(label).unwrap();
+            let [] = program.emit_call_with(&mut body, set, (name,)).unwrap();
+            body.jmp(done);
+        }
+        body.place(done).unwrap();
+        let shared = finish(program, body);
+        let loads = |p: &Program| {
+            crate::disasm::disassemble_function(p, FuncId(0))
+                .unwrap()
+                .instrs()
+                .filter(|i| i.opcode() == Opcode::ConstPool)
+                .count()
+        };
+        assert_eq!(loads(&shared), 1);
+        assert_eq!(shared.const_pool.len(), 1);
+
+        let (mut program, mut body, set, flag, [yes, no, done]) = branching_program();
+        body.br(flag, yes, no);
+        for label in [yes, no] {
+            body.place(label).unwrap();
+            let [] = program.emit_call_with(&mut body, set, ("name",)).unwrap();
+            body.jmp(done);
+        }
+        body.place(done).unwrap();
+        let reloaded = finish(program, body);
+        assert_eq!(loads(&reloaded), 2);
+        assert!(shared.functions[0].reg_count < reloaded.functions[0].reg_count);
+    }
+
+    #[test]
+    fn a_shared_constant_used_where_its_load_does_not_reach_is_rejected() {
+        let (mut program, mut body, set, flag, [yes, no, done]) = branching_program();
+        body.br(flag, yes, no);
+        body.place(yes).unwrap();
+        // Loaded on one branch only, then used after the join.
+        let name = program.emit_const(&mut body, "name");
+        body.jmp(done);
+        body.place(no).unwrap();
+        body.jmp(done);
+        body.place(done).unwrap();
+        let [] = program.emit_call_with(&mut body, set, (name,)).unwrap();
+        body.ret(0, &[]);
+        program.define_function(FuncId(0), body).unwrap();
+        assert!(matches!(
+            program.build_verified(),
+            Err(BuildError::Verify(VerifyError::UninitializedRead { reg, .. })) if reg == name.0
+        ));
+    }
+
     #[test]
     fn rejected_constant_calls_emit_and_intern_nothing() {
         let (mut program, mut body, h, x) = constant_program();
@@ -879,7 +1038,7 @@ mod tests {
         let args = (
             "fresh",
             7.0_f64,
-            x,
+            Reg(x),
             true,
             CallArg::I64(0),
             CallArg::Bytes(b""),
@@ -895,7 +1054,7 @@ mod tests {
             })
         );
         assert_eq!(
-            program.emit_call_with::<1>(&mut body, h, ("fresh", x)),
+            program.emit_call_with::<1>(&mut body, h, ("fresh", Reg(x))),
             Err(CallBuildError::Arguments {
                 target: CallTarget::Host(h),
                 expected: 7,

@@ -152,7 +152,7 @@ struct Site {
 /// A schema check that rejects an unknown setting name before anything runs:
 ///
 /// ```
-/// use execution_tape::asm::{FunctionSig, ProgramBuilder};
+/// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
 /// use execution_tape::host::{HostSig, ValueRef};
 /// use execution_tape::program::ValueType;
 ///
@@ -163,7 +163,7 @@ struct Site {
 /// );
 /// let entry = pb.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
 /// let mut body = pb.function_asm(entry)?;
-/// let value = pb.argument(entry, 0)?;
+/// let value = Reg(pb.argument(entry, 0)?);
 /// let [] = pb.emit_call_with(&mut body, set, ("rustiness", value))?;
 /// body.ret(0, &[]);
 /// pb.define_function(entry, body)?;
