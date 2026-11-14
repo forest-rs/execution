@@ -310,6 +310,7 @@ fn misspelt() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
         arg_types: vec![F32],
         ret_types: vec![],
     })?;
+    pb.set_function_name(entry, "rusted_plate")?;
     let age = pb.argument(entry, 0)?;
     let mut a = pb.function_asm(entry)?;
     let [rust] = pb.emit_call_with(&mut a, bind_new, ())?;
@@ -364,6 +365,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let misspelt = misspelt()?;
     let error = functions.bind_checked(&misspelt, check).unwrap_err();
     println!("rejected at load: {error}");
-    assert_eq!(error.calls.len(), 1);
+    let [call] = &error.calls[..] else {
+        panic!("expected one rejected call: {error}");
+    };
+    assert_eq!(
+        call.to_string(),
+        "function #0, pc 10, host call kernel.bind.scalar: \
+         no child module has a parameter \"rustiness\""
+    );
+    // With the program at hand, the location names the function and shows the instruction.
+    let named = call.display_in(misspelt.program()).to_string();
+    println!("  {named}");
+    assert!(named.starts_with("function #0 \"rusted_plate\", pc 10 (host_call "));
+    assert!(
+        named.ends_with(
+            "host call kernel.bind.scalar: no child module has a parameter \"rustiness\""
+        )
+    );
     Ok(())
 }

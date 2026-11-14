@@ -246,7 +246,8 @@ and a link check recognizes its calls with `HostCallSite::calls`, so the three c
 constants on every path to it, borrowed as the host would receive them. `bind_checked` binds and
 hands each call site to an embedder check, so a constant argument such as a name is validated
 against the embedder's own schema at load. Rejected calls are reported with their function, pc,
-span and the check's message, beside any rejected imports.
+span and the check's message, beside any rejected imports, in the verifier's location format;
+`CallError::display_in` adds the names the program's debug metadata records.
 
 `HostBindings::with_state` creates per-VM host instances that borrow one immutable callback
 table. Each instance owns independent state, available through `vm.host().state()` and

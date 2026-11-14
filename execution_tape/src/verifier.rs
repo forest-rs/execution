@@ -12,6 +12,7 @@ mod contracts;
 mod control;
 use contracts::RefinementState;
 mod diagnostic;
+pub(crate) use diagnostic::write_location;
 mod host_calls;
 pub use host_calls::{HostCallSite, HostCallSites};
 mod inspection;
