@@ -4804,6 +4804,57 @@ impl<H: Host> Vm<H> {
         &mut self.host
     }
 
+    /// Returns the limits each run starts from.
+    #[must_use]
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+
+    /// Replaces the limits that later runs start from, keeping installed units, retained
+    /// aggregates and the host.
+    ///
+    /// Every limit is a per-run budget: [`Self::run`], [`Self::run_with_ctx`] and [`Self::start`]
+    /// copy it into a fresh budget when the run begins, and nothing a run leaves behind is
+    /// charged against the next one. So the new limits apply from the next run on, and lowering
+    /// them below what an earlier run used, or below what the VM already holds, is fine:
+    /// installed units and retained aggregates are not counted by any limit (see
+    /// [`Limits::max_aggregate_work`]) and stay valid. A run that needs more than the new limits
+    /// allow traps as it would on a VM created with them.
+    ///
+    /// An [`Invocation`] borrows or owns its VM and exposes no `&mut Vm`, so limits cannot change
+    /// while one is in progress; a suspended or awaiting invocation keeps the budget it started
+    /// with. The limits move with the VM through [`Self::replace_host`].
+    ///
+    /// ```compile_fail,E0499
+    /// # use execution_tape::asm::{FunctionSig, ProgramBuilder};
+    /// # use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
+    /// # use execution_tape::value::{FuncRef, Value};
+    /// # use execution_tape::vm::{InvocationOptions, Limits, Vm};
+    /// # struct NoHost;
+    /// # impl Host for NoHost {
+    /// #     fn call(&mut self, _: &str, _: SigHash, _: &[ValueRef<'_>], _: &mut [Value],
+    /// #         _: HostContext<'_, '_>) -> Result<u64, HostError> {
+    /// #         Err(HostError::UnknownSymbol)
+    /// #     }
+    /// # }
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut builder = ProgramBuilder::new();
+    /// # let entry = builder.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![] })?;
+    /// # let mut asm = builder.function_asm(entry)?;
+    /// # asm.ret(0, &[]);
+    /// # builder.define_function(entry, asm)?;
+    /// # let mut vm = Vm::new(NoHost, Limits::default());
+    /// # let entry = FuncRef::new(vm.install(builder.build_verified()?)?, entry);
+    /// let mut invocation = vm.start(entry, &[], InvocationOptions::default())?;
+    /// vm.set_limits(Limits::default()); // error: `vm` is borrowed by `invocation`
+    /// invocation.resume(u64::MAX)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
+    }
+
     /// Moves this VM's installed units, retained aggregates and limits to a VM around `host`,
     /// returning that VM and the previous host.
     ///

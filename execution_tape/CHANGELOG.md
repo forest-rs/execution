@@ -21,7 +21,9 @@ This release has an [MSRV][] of 1.88.
   (`0xA5`). Their results are defined as those of the `libm` crate at exactly version 0.2.16,
   which is now a dependency (pinned with `=`, default features off): bit-identical on every
   platform for non-NaN results, NaN-ness only for NaN results, and not correctly rounded.
-  Upgrading `libm` changes results and will be called out here. Also add `f32.clamp` (`0xFD
+  Upgrading `libm` changes results and will be called out here. Cargo unifies every `libm` 0.2.x
+  in a build into one copy, so the pin also holds other `libm` 0.2 dependents at 0.2.16; one
+  that requires a later 0.2 release fails to resolve. Also add `f32.clamp` (`0xFD
   0x99`), which traps with the new `Trap::ClampBoundsInvalid` unless `lo <= hi` and otherwise
   matches `f32::clamp` bit for bit, and `f32.round_half_away` (`0xFD 0x98`) and
   `f64.round_half_away` (`0xFC 0x0B`), exact rounding with ties away from zero (C's
@@ -38,6 +40,12 @@ This release has an [MSRV][] of 1.88.
   now run against units installed once, by swapping it in for a call and a parked host back
   out, instead of building a VM and reinstalling for every call. The crate documentation shows
   the pattern, and the `borrowed_host` wind-tunnel bench compares it with a fresh VM per call.
+
+- Add `Vm::set_limits` and `Vm::limits`, so a VM, including one parked for `Vm::replace_host`,
+  can change its limits without being rebuilt and its units reinstalled. Limits are per-run
+  budgets, so the new ones apply from the next run; installed units and retained aggregates are
+  not counted by any limit and stay valid when limits drop below what they used. An invocation
+  holds the VM's borrow, so limits cannot change while one is in progress.
 
 - Add `VerifyError::display_in(&program)`, which renders a verifier diagnostic with what the
   rejected program's debug metadata knows about its location: the function name, the nearest
