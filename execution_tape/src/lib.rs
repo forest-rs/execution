@@ -320,6 +320,17 @@
 //! - `math`: the floating-point operations the VM computes, as plain functions native code can
 //!   call to get the same bits, including the `f32` transcendentals pinned to `libm`.
 //!
+//! ## The pinned `libm`
+//!
+//! The math intrinsics are defined as the results of `libm` 0.2.16, so this crate depends on
+//! `libm = "=0.2.16"`. Cargo builds one copy of each semver-compatible `libm` (every 0.2.x) per
+//! dependency graph, so the pin applies to the whole build: a crate that asks for
+//! `libm = "0.2"` gets 0.2.16, and one that requires a later 0.2 release fails to resolve
+//! (Cargo reports the conflict with `=0.2.16`) instead of building a second copy. Moving to a
+//! newer `libm` waits for an `execution_tape` release that moves the pin, which changes intrinsic
+//! results and is called out in the changelog. The shared copy is also why native code calling
+//! `libm` directly gets the same bits as a tape program.
+//!
 //! ## Resumable execution
 //!
 //! `Vm::start` validates an invocation and returns a handle that borrows its VM, inputs and

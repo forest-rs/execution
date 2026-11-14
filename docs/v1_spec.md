@@ -912,7 +912,12 @@ are not correctly rounded; they are reproducible, and they match native Rust cod
 - **Versioning.** The `libm` dependency is pinned with `=0.2.16`. Moving to another `libm` release,
   or to another implementation such as correctly rounded functions, changes results; it is made
   only deliberately, with a changelog entry and an update to this section and the contract
-  naming the new definition.
+  naming the new definition. Cargo builds one copy of each semver-compatible `libm` (every
+  0.2.x) per dependency graph, so the pin holds the whole build at 0.2.16: a dependent asking
+  for `libm = "0.2"` resolves to 0.2.16, and one requiring a later 0.2 release (or another exact
+  one) fails to resolve rather than getting a second copy. An embedding therefore moves to a new
+  `libm` only with an `execution_tape` release that moves this definition, and native code in
+  the same build that calls `libm` computes the same bits as the intrinsics.
 
 `f32.clamp dst, a, lo, hi` traps with `ClampBoundsInvalid` unless `lo <= hi`, so it traps when
 `lo > hi` or either bound is NaN (where Rust's `f32::clamp` panics). Otherwise it returns `lo` if
