@@ -53,6 +53,22 @@ impl BitSet {
         s
     }
 
+    /// Copies a set of `len` bits from its packed words, as returned by [`Self::words`].
+    #[must_use]
+    pub(crate) fn from_words(words: &[u64], len: usize) -> Self {
+        debug_assert_eq!(words.len(), len.div_ceil(64), "one word per 64 bits");
+        Self {
+            bits: words.into(),
+            len,
+        }
+    }
+
+    /// The packed words, least significant bit first; unused bits of the last word are clear.
+    #[must_use]
+    pub(crate) fn words(&self) -> &[u64] {
+        &self.bits
+    }
+
     #[must_use]
     pub(crate) fn get(&self, idx: usize) -> bool {
         if idx >= self.len {

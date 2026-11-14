@@ -1,11 +1,14 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Optional live inspection. Normal prepared programs retain no debugger indexes.
+//! Optional live inspection.
+//!
+//! Which registers a paused frame may show comes from the initialization table the verifier
+//! retains for every function; inspection never repeats a function analysis.
 
 use super::*;
+use crate::analysis::bitset::BitSet;
 use crate::value::Obj;
-use crate::verifier::{FunctionAnalysis, ProgramAnalysis, ValueFact};
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::hash::{Hash, Hasher};
 
@@ -238,11 +241,6 @@ pub struct ObjectRoot {
     pub origin: ObjectRootOrigin,
 }
 
-struct FunctionInspection<'a> {
-    facts: FunctionAnalysis<'a>,
-    registers: Vec<VReg>,
-}
-
 /// One frame's register storage, wherever it lives, and what establishes its initialization.
 pub(super) struct FrameRegisters<'a> {
     /// Where the frame stopped: its next instruction, a pending call or `suspend`, or the entry
@@ -261,12 +259,45 @@ pub(super) struct FrameRegisters<'a> {
     pub(super) exns: &'a [Option<Arc<Exception>>],
 }
 
-/// Borrowed live state plus lazily computed debugger indexes.
+/// The live register banks and the value sources their handles resolve against.
+#[derive(Clone, Copy)]
+struct LiveRegisters<'a> {
+    ctx: &'a Registers,
+    sources: ValueSources<'a>,
+}
+impl<'a> LiveRegisters<'a> {
+    /// Reads a register of the frame with `base`.
+    fn read(self, base: RegBase, register: VReg) -> Option<ValueRef<'a>> {
+        let ctx = self.ctx;
+        read_value_ref_at(
+            &ctx.arena,
+            self.sources,
+            &ctx.bools,
+            &ctx.i64s,
+            &ctx.u64s,
+            &ctx.f64s,
+            &ctx.w32s,
+            &ctx.decimals,
+            &ctx.bytes,
+            &ctx.strs,
+            &ctx.objs,
+            &ctx.aggs,
+            &ctx.funcs,
+            &ctx.closures,
+            base,
+            register,
+        )
+        .ok()
+    }
+}
+
+/// Borrowed live state plus lazily built register indexes.
 ///
-/// Only queried functions allocate analysis/mapping data. Holding this view prevents resumption
-/// or mutation of the host. Reuse it for multiple queries at one suspension; discard it before
-/// resuming. Terminal invocations expose no live frames, but retained heaps and outputs can
-/// still contribute object roots. Source connections use each frame's exact `location`.
+/// Only queried functions and locations allocate mapping data; the initialization facts behind
+/// it are retained by verification. Holding this view prevents resumption or mutation of the
+/// host. Reuse it for multiple queries at one suspension; discard it before resuming. Terminal
+/// invocations expose no live frames, but retained heaps and outputs can still contribute object
+/// roots. Source connections use each frame's exact `location`.
 pub struct InvocationInspection<'a> {
     units: &'a UnitTable,
     ctx: &'a Registers,
@@ -275,20 +306,25 @@ pub struct InvocationInspection<'a> {
     aggregates: &'a AggHeap,
     control: &'a ExecutionControl,
     active: bool,
-    /// Keyed by unit and function: each frame is analyzed in its own unit's program.
-    functions: BTreeMap<(u32, u32), FunctionInspection<'a>>,
+    /// Source-to-bank register maps, keyed by unit and function: each frame is read with its
+    /// own unit's program.
+    functions: BTreeMap<(u32, u32), Vec<VReg>>,
+    /// Registers definitely initialized at a location, keyed by unit, function and PC; `None`
+    /// when the PC is not an instruction boundary.
+    locations: BTreeMap<(u32, u32, u32), Option<BitSet>>,
 }
 impl fmt::Debug for InvocationInspection<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InvocationInspection")
             .field("active", &self.active)
             .field("indexed_functions", &self.functions.len())
+            .field("indexed_locations", &self.locations.len())
             .finish_non_exhaustive()
     }
 }
 
 impl<H: Host> Invocation<'_, H> {
-    /// Borrows paused state. Expensive register facts are built only for queried functions.
+    /// Borrows paused state. Register indexes are built only for queried functions.
     #[must_use]
     pub fn inspect(&self) -> InvocationInspection<'_> {
         inspection(&self.continuation, &self.vm.units, self.vm.memory.aggs())
@@ -326,6 +362,7 @@ fn inspection<'a>(
         control: &continuation.control,
         active: continuation.outcome.is_none(),
         functions: BTreeMap::new(),
+        locations: BTreeMap::new(),
     }
 }
 
@@ -354,18 +391,40 @@ impl<'a> InvocationInspection<'a> {
                 .reg_count,
         }
     }
-    /// The facts and register mapping of `location`'s function, built on first use.
-    fn function(&mut self, location: TraceLocation) -> &mut FunctionInspection<'a> {
+    /// The register mapping of `location`'s function and, for a frame that has run, the
+    /// registers definitely initialized before `location`, both built on first use.
+    ///
+    /// The initialization is `None` for an unstarted frame and for a PC that is not an
+    /// instruction boundary.
+    fn facts(&mut self, location: TraceLocation, started: bool) -> (&[VReg], Option<&BitSet>) {
         let program: &'a VerifiedProgram = &self.units.unit(location.unit).program;
-        self.functions
-            .entry((location.unit.0, location.func.0))
-            .or_insert_with(|| FunctionInspection {
-                facts: ProgramAnalysis::from(program)
-                    .function(location.func)
-                    .expect("verified function"),
-                registers: observations::register_map(program.program(), location.func)
-                    .expect("verified ledger"),
-            })
+        let TraceLocation { unit, func, pc } = location;
+        let registers = self.functions.entry((unit.0, func.0)).or_insert_with(|| {
+            observations::register_map(program.program(), func).expect("verified ledger")
+        });
+        if !started {
+            return (registers, None);
+        }
+        let initialized = self
+            .locations
+            .entry((unit.0, func.0, pc))
+            .or_insert_with(|| {
+                let source = program.program();
+                let definition = &source.functions[func.0 as usize];
+                program.init_table(func).expect("verified function").before(
+                    definition.bytecode(source).expect("verified bytecode"),
+                    definition.reg_count as usize,
+                    pc,
+                )
+            });
+        (registers, initialized.as_ref())
+    }
+    /// The borrowed state register values are read from, apart from this view's indexes.
+    fn live(&self) -> LiveRegisters<'a> {
+        LiveRegisters {
+            ctx: self.ctx,
+            sources: ValueSources::new(self.units, self.args, self.aggregates),
+        }
     }
     fn activation_id(&self, activation: Activation) -> ActivationId {
         ActivationId {
@@ -408,55 +467,57 @@ impl<'a> InvocationInspection<'a> {
     /// call, never hypothetical returned values.
     pub fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
         let index = self.index(id)?;
-        let frame = self.frame_at(index);
-        let (ctx, sources) = (
-            self.ctx,
-            ValueSources::new(self.units, self.args, self.aggregates),
-        );
-        let function = self.function(frame.location);
-        let fact = function
-            .facts
-            .instruction(frame.location.pc)?
-            .register(register)?;
-        let value = if matches!(fact.before, ValueFact::Contract(_)) {
-            read_value_ref_at(
-                &ctx.arena,
-                sources,
-                &ctx.bools,
-                &ctx.i64s,
-                &ctx.u64s,
-                &ctx.f64s,
-                &ctx.w32s,
-                &ctx.decimals,
-                &ctx.bytes,
-                &ctx.strs,
-                &ctx.objs,
-                &ctx.aggs,
-                &ctx.funcs,
-                &ctx.closures,
-                ctx.frames[index].base,
-                *function.registers.get(register as usize)?,
-            )
-            .ok()
-        } else {
-            None
-        };
+        let location = self.control.paused_location(self.ctx, index);
+        let base = self.ctx.frames[index].base;
+        let storage_kind = self.register_types(location).get(register)?;
+        let (registers, initialized) = self.facts(location, true);
+        let initialized = initialized?.get(register as usize);
+        let vreg = *registers.get(register as usize)?;
         Some(RegisterValue {
             register,
-            storage_kind: fact.storage_kind,
-            value,
+            storage_kind,
+            value: if initialized {
+                self.live().read(base, vreg)
+            } else {
+                None
+            },
         })
     }
 
     /// Iterates declarations in source-register order, including explicit unavailable values.
-    /// Building/retaining only this selected function's facts is an on-demand inspection cost.
+    ///
+    /// The frame is resolved once; each register then costs a bit test and a read. The first
+    /// query of a function or location in this view builds its index.
     pub fn registers(
         &mut self,
         id: &ActivationId,
     ) -> Option<impl Iterator<Item = RegisterValue<'a>> + '_> {
-        let count = self.frame_at(self.index(id)?).register_count;
-        let id = id.clone();
-        Some((0..count).filter_map(move |register| self.register(&id, register)))
+        let index = self.index(id)?;
+        let location = self.control.paused_location(self.ctx, index);
+        let base = self.ctx.frames[index].base;
+        let kinds = self.register_types(location);
+        let live = self.live();
+        let (registers, initialized) = self.facts(location, true);
+        let values = initialized.map(|initialized| {
+            (0_u32..)
+                .zip(registers)
+                .map(move |(register, &vreg)| RegisterValue {
+                    register,
+                    storage_kind: kinds.get(register).expect("verified register"),
+                    value: if initialized.get(register as usize) {
+                        live.read(base, vreg)
+                    } else {
+                        None
+                    },
+                })
+        });
+        Some(values.into_iter().flatten())
+    }
+
+    /// Declared register kinds of `location`'s function.
+    fn register_types(&self, location: TraceLocation) -> crate::program::RegisterTypes<'a> {
+        let program = self.units.unit(location.unit).program.program();
+        program.functions[location.func.0 as usize].verified_register_types(program)
     }
 
     /// Enumerates conservative host-object references without materializing a root vector.
@@ -553,21 +614,13 @@ impl<'a> InvocationInspection<'a> {
         origin: impl Fn(u32) -> ObjectRootOrigin,
         visit: &mut impl FnMut(ObjectRoot),
     ) {
-        let FunctionInspection { facts, registers } = self.function(frame.location);
-        let facts = if frame.started {
-            facts.instruction(frame.location.pc)
-        } else {
-            None
-        };
+        let (registers, facts) = self.facts(frame.location, frame.started);
         for (register, &vreg) in (0_u32..).zip(registers.iter()) {
             if !matches!(vreg, VReg::Obj(_) | VReg::Exn(_)) {
                 continue;
             }
             let initialized = frame.bound.contains(&vreg)
-                || facts
-                    .as_ref()
-                    .and_then(|facts| facts.register(register))
-                    .is_some_and(|fact| matches!(fact.before, ValueFact::Contract(_)));
+                || facts.is_some_and(|facts| facts.get(register as usize));
             if !initialized {
                 continue;
             }

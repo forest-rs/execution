@@ -33,6 +33,7 @@ use core::fmt;
 
 use crate::analysis::cfg::BasicBlock;
 use crate::analysis::dataflow;
+use crate::analysis::init_table::{self, InitTable, InitTableBuilder};
 use crate::analysis::liveness;
 use crate::analysis::protection::Protection;
 use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
@@ -69,6 +70,9 @@ use crate::vm::Vm;
 pub struct VerifiedProgram {
     program: Program,
     verified_functions: Vec<ExecFunc>,
+    /// Per function, the registers paused frames may show. Kept apart from the executable
+    /// functions, which the interpreter reads, since execution never does.
+    init_tables: Vec<InitTable>,
 }
 
 /// A non-fatal verifier lint warning.
@@ -151,6 +155,12 @@ impl VerifiedProgram {
     #[must_use]
     pub(crate) fn verified(&self, func: FuncId) -> Option<&ExecFunc> {
         self.verified_functions.get(func.0 as usize)
+    }
+
+    /// The registers definitely initialized at `func`'s block entries and wait points.
+    #[must_use]
+    pub(crate) fn init_table(&self, func: FuncId) -> Option<&InitTable> {
+        self.init_tables.get(func.0 as usize)
     }
 
     /// Consumes `self` and returns the underlying program.
@@ -1326,15 +1336,18 @@ pub fn verify_program_owned(
     verify_signature_ranges(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
+    let mut init_tables = Vec::with_capacity(program.functions.len());
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        verified_functions
-            .push(verify_function_container(&program, func_id, func, cfg, false)?.exec);
+        let out = verify_function_container(&program, func_id, func, cfg, false)?;
+        verified_functions.push(out.exec);
+        init_tables.push(out.init);
     }
 
     Ok(VerifiedProgram {
         program,
         verified_functions,
+        init_tables,
     })
 }
 
@@ -1352,11 +1365,13 @@ pub fn verify_program_owned_with_lints(
     verify_signature_ranges(&program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
+    let mut init_tables = Vec::with_capacity(program.functions.len());
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
         let out = verify_function_container(&program, func_id, func, cfg, true)?;
         verified_functions.push(out.exec);
+        init_tables.push(out.init);
         lints.extend(out.lints);
     }
 
@@ -1364,6 +1379,7 @@ pub fn verify_program_owned_with_lints(
         VerifiedProgram {
             program,
             verified_functions,
+            init_tables,
         },
         lints,
     ))
@@ -1395,6 +1411,7 @@ fn verify_signature_ranges(program: &Program) -> Result<(), VerifyError> {
 
 struct ExecFuncContainer {
     exec: ExecFunc,
+    init: InitTable,
     lints: Vec<VerifyLint>,
 }
 
@@ -1855,13 +1872,26 @@ fn verify_function_bytecode(
     let entry_init = initial_init(reg_count, arg_types.len());
     let (in_sets, out_sets) =
         compute_must_init(&blocks, &reachable, reg_count, &entry_init, decoded)?;
+    // Retained so paused frames need not repeat this analysis to show their registers.
+    let mut init = InitTableBuilder::new(reg_count, blocks.len());
 
     // Validate reads, consuming the block states now that the fixpoint is complete.
     for (b_idx, (block, mut state)) in blocks.iter().zip(in_sets).enumerate() {
-        if !reachable[b_idx] {
+        let live = reachable[b_idx];
+        if live {
+            let params = match &decoded[block.instr_start].instr {
+                Instr::Block { params } => params.as_slice(),
+                _ => &[],
+            };
+            init.entry(block.start_pc, &state, params);
+        } else {
             state = BitSet::new_full(reg_count);
+            init.unreachable(block.start_pc);
         }
         for di in decoded.iter().take(block.instr_end).skip(block.instr_start) {
+            if live && init_table::is_wait_point(di.opcode) && di.offset != block.start_pc {
+                init.wait_point(di.offset, &state);
+            }
             if has_blocks && reachable[b_idx] {
                 blocks::validate_initialized(
                     func_id,
@@ -3762,6 +3792,7 @@ fn verify_function_bytecode(
             span_by_instr_ix,
             protection,
         },
+        init: init.finish(),
         lints,
     })
 }

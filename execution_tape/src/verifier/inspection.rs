@@ -59,7 +59,8 @@ pub struct FunctionStats {
     /// Bytes for the typed-bank elements of one frame; strings/bytes occupy handles only.
     /// Unit registers have no runtime bank or payload storage.
     pub register_bytes: usize,
-    /// Bytes occupied by populated elements of this function's prepared buffers.
+    /// Bytes occupied by populated elements of this function's prepared buffers, including the
+    /// table of registers initialized where its frames can pause, which inspection reads.
     pub prepared_used_bytes: usize,
     /// Bytes reserved by this function's prepared buffers, including spare capacity.
     pub prepared_capacity_bytes: usize,
@@ -176,12 +177,17 @@ impl<'a> VerifiedFunction<'a> {
     #[must_use]
     pub fn stats(self) -> FunctionStats {
         let executable = self.executable;
+        let init = self
+            .program
+            .init_table(self.id)
+            .expect("verified function table");
         let buffers = [
             buffer_bytes(&executable.contract_checks),
             buffer_bytes(&executable.reg_layout.arg_regs),
             buffer_bytes(&executable.operands),
             buffer_bytes(&executable.instrs),
             buffer_bytes(&executable.span_by_instr_ix),
+            (init.bytes(), init.bytes()),
         ];
         let counts = executable.reg_layout.counts;
         FunctionStats {

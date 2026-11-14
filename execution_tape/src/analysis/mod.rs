@@ -9,5 +9,6 @@
 pub(crate) mod bitset;
 pub(crate) mod cfg;
 pub(crate) mod dataflow;
+pub(crate) mod init_table;
 pub(crate) mod liveness;
 pub(crate) mod protection;

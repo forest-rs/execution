@@ -93,6 +93,42 @@ Use the ordinary `vm` cases with `--save-baseline <name>` on main, then `--basel
 the candidate. Keep benchmark output in a locally ignored directory; do not compare a candidate
 only against an older optimization branch.
 
+### Paused-frame snapshots
+
+`frame_snapshot` pauses a chain of distinct functions at a yielded host call and reads every
+frame's registers, as a debugger or condition chooser does: `frames()`, then `registers()` per
+frame, keeping the available values. `fresh_view` takes a new `inspect()` view per iteration;
+`reused_view` keeps one. Cases are named `<frames>x<registers per function>`.
+
+Verification now retains, per function, the registers definitely initialized at each block
+entry and call-like instruction, and a view resolves each frame once instead of once per
+register. Before that, every fresh view re-ran the verifier's function analysis. On macOS
+arm64, 2026-11-14, 30 samples with 1 s warmup and 3 s measurement, with a load average around
+15 from other jobs, against main `5972010`:
+
+| Case | Before | After |
+|---|---:|---:|
+| `fresh_view/1x9` | 3.03 µs | 0.42 µs |
+| `fresh_view/10x9` | 29.27 µs | 3.60 µs |
+| `fresh_view/10x41` | 67.21 µs | 11.64 µs |
+| `reused_view/10x9` | 5.95 µs | 2.47 µs |
+| `reused_view/10x41` | 28.19 µs | 9.60 µs |
+| `live_inspection/fresh_register_query` | 40.69 µs | 1.96 µs |
+| `live_inspection/cached_register_query` | 62.97 ns | 17.82 ns |
+
+The table costs 4 bytes per checkpoint plus 8 bytes per 64 registers per checkpoint: 48 bytes
+for the 13-instruction functions here (about 5% of their prepared bytes), 12 bytes for the
+1,000-addition function. `FunctionStats::prepared_used_bytes` includes it. Verification does
+no extra pass to build it and measured within 1–3% of main, about this machine's noise; the
+interpreter and its prepared functions are unchanged. A fresh register query in a leaf paused
+mid-block decodes the instructions since the preceding checkpoint, which is why it still costs
+more than a cached one.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench stepping -- \
+  'frame_snapshot|live_inspection' --warm-up-time 1 --measurement-time 3 --sample-size 30 --noplot
+```
+
 ### Invocation ownership
 
 `stepping` also includes `invocation_ownership/{borrowed_vm,owned_vm}`. Both prepare a fresh
