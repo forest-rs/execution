@@ -12,6 +12,8 @@ mod contracts;
 mod control;
 use contracts::RefinementState;
 mod diagnostic;
+mod host_calls;
+pub use host_calls::{HostCallSite, HostCallSites};
 mod inspection;
 mod metadata;
 mod regions;

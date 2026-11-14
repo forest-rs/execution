@@ -8,6 +8,9 @@
 //! per bound program, so units installed from any bound program can call the same host. Each
 //! [`BoundHost`] supplies independent mutable state while borrowing those tables. The ordinary [`Host`] ABI, VM return
 //! validation, fuel charging, tracing, and access recording continue to apply.
+//!
+//! [`HostFunctions::bind_checked`] also hands every host call's statically known arguments to an
+//! embedder check, so constant arguments such as names are validated before anything runs.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -15,9 +18,9 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
-use crate::program::{HostSigId, Program};
-use crate::value::Value;
-use crate::verifier::VerifiedProgram;
+use crate::program::{HostSigId, Program, SpanId};
+use crate::value::{FuncId, Value};
+use crate::verifier::{HostCallSite, VerifiedProgram};
 
 /// A host operation with mutable per-instance state and the ordinary host ABI.
 pub type HostCallback<S> =
@@ -121,6 +124,89 @@ impl<S> HostFunctions<S> {
         Ok(bindings)
     }
 
+    /// Binds `program` as [`Self::bind`] does, and also passes every reachable host call to
+    /// `check` with the arguments known before the program runs.
+    ///
+    /// This is where an embedder validates constant arguments, such as names, against its own
+    /// schema, so a wrong one is rejected at load rather than when the call executes. Only facts
+    /// true on every path reach `check`; see [`VerifiedProgram::host_call_sites`]. Calls to an
+    /// import that fails to bind are not checked. Failures contain every rejected import and
+    /// every rejected call, each call with its location and `check`'s message.
+    ///
+    /// ```
+    /// use execution_tape::asm::{FunctionSig, ProgramBuilder};
+    /// use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
+    /// use execution_tape::host_binding::HostFunctions;
+    /// use execution_tape::program::ValueType;
+    /// use execution_tape::value::Value;
+    ///
+    /// fn set(_: &mut (), _: &[ValueRef<'_>], _: &mut [Value], _: HostContext<'_, '_>) -> Result<u64, HostError> {
+    ///     Ok(0)
+    /// }
+    /// let signature = HostSig { args: vec![ValueType::Str, ValueType::F32], rets: vec![] };
+    /// let mut functions = HostFunctions::new();
+    /// functions.register("settings.set", signature.clone(), set)?;
+    ///
+    /// let mut pb = ProgramBuilder::new();
+    /// let import = pb.host_sig_for("settings.set", signature);
+    /// let entry = pb.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
+    /// let mut body = pb.function_asm(entry)?;
+    /// let value = pb.argument(entry, 0)?;
+    /// let name = body.alloc_register(ValueType::Str);
+    /// body.const_pool(name, pb.const_str("rustiness"));
+    /// let [] = pb.emit_call(&mut body, import, &[name, value])?;
+    /// body.ret(0, &[]);
+    /// pb.define_function(entry, body)?;
+    /// let program = pb.build_verified()?;
+    ///
+    /// let schema = ["age", "wetness"];
+    /// let error = functions
+    ///     .bind_checked(&program, |site| match (site.symbol(), site.arg(0)) {
+    ///         ("settings.set", Some(ValueRef::Str(name))) if !schema.contains(&name) => {
+    ///             Err(format!("nothing named {name:?}"))
+    ///         }
+    ///         ("settings.set", None) => Err("the name must be a constant".into()),
+    ///         _ => Ok(()),
+    ///     })
+    ///     .unwrap_err();
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "1 host call rejected; settings.set in function 0 at pc 3: nothing named \"rustiness\""
+    /// );
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn bind_checked<'program, E: fmt::Display>(
+        &self,
+        program: &'program VerifiedProgram,
+        mut check: impl FnMut(&HostCallSite<'_>) -> Result<(), E>,
+    ) -> Result<HostBindings<'program, S>, BindingError> {
+        let (table, mut error) = match self.table(program) {
+            Ok(table) => (Some(table), BindingError::default()),
+            Err(error) => (None, error),
+        };
+        for site in program.host_call_sites().iter() {
+            if error.imports.iter().any(|e| e.import == site.import()) {
+                continue;
+            }
+            if let Err(message) = check(&site) {
+                error.calls.push(CallError {
+                    import: site.import(),
+                    symbol: Box::from(site.symbol()),
+                    function: site.function(),
+                    pc: site.pc(),
+                    span: site.span(),
+                    message: alloc::string::ToString::to_string(&message).into_boxed_str(),
+                });
+            }
+        }
+        match table {
+            Some(table) if error.calls.is_empty() => Ok(HostBindings {
+                tables: alloc::vec![table],
+            }),
+            _ => Err(error),
+        }
+    }
+
     fn table<'program>(
         &self,
         program: &'program VerifiedProgram,
@@ -162,7 +248,10 @@ impl<S> HostFunctions<S> {
             });
         }
         if !errors.is_empty() {
-            return Err(BindingError { imports: errors });
+            return Err(BindingError {
+                imports: errors,
+                calls: Vec::new(),
+            });
         }
         Ok(Table {
             program: source,
@@ -356,22 +445,69 @@ pub struct ImportError {
     pub available: Vec<HostSig>,
 }
 
-/// All imports rejected by one binding attempt, in program declaration order.
+/// One host call rejected by the check passed to [`HostFunctions::bind_checked`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CallError {
+    /// Program-local import index of the called operation.
+    pub import: HostSigId,
+    /// The called symbol.
+    pub symbol: Box<str>,
+    /// Function containing the call.
+    pub function: FuncId,
+    /// Bytecode offset of the call within its function.
+    pub pc: u32,
+    /// Source span of the call, if the program records one.
+    pub span: Option<SpanId>,
+    /// Why the check rejected the call.
+    pub message: Box<str>,
+}
+
+impl fmt::Display for CallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} in function {} at pc {}",
+            self.symbol, self.function.0, self.pc
+        )?;
+        if let Some(span) = self.span {
+            write!(f, " (span {span})")?;
+        }
+        write!(f, ": {}", self.message)
+    }
+}
+
+/// Everything rejected by one binding attempt, in program order.
+///
+/// A failed binding always has at least one entry in `imports` or `calls`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BindingError {
-    /// Missing or mismatched imports. A failed binding always has at least one entry.
+    /// Missing or mismatched imports, in import-ID order.
     pub imports: Vec<ImportError>,
+    /// Calls rejected by [`HostFunctions::bind_checked`], in function then bytecode order.
+    pub calls: Vec<CallError>,
 }
 
 impl fmt::Display for BindingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} host imports could not be bound", self.imports.len())?;
+        let mut sep = "";
+        if !self.imports.is_empty() {
+            write!(f, "{} host imports could not be bound", self.imports.len())?;
+            sep = "; ";
+        }
         for import in &self.imports {
             write!(
                 f,
                 "; import {} ({}) {:?}",
                 import.import.0, import.symbol, import.kind
             )?;
+        }
+        if !self.calls.is_empty() {
+            let plural = if self.calls.len() == 1 { "" } else { "s" };
+            write!(f, "{sep}{} host call{plural} rejected", self.calls.len())?;
+        }
+        for call in &self.calls {
+            write!(f, "; {call}")?;
         }
         Ok(())
     }
@@ -461,6 +597,80 @@ mod tests {
         assert_eq!(error.imports[1].available, [available]);
         assert_eq!(error.imports[1].expected, signature());
         assert!(alloc::format!("{error}").contains("missing"));
+    }
+
+    #[test]
+    fn checked_binding_reports_rejected_calls_with_locations_and_skips_unbound_imports() {
+        let str_sig = HostSig {
+            args: vec![ValueType::Str],
+            rets: vec![],
+        };
+        let mut pb = ProgramBuilder::new();
+        let named = pb.host_sig_for("named", str_sig.clone());
+        let missing = pb.host_sig_for("missing", str_sig.clone());
+        let f = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            })
+            .unwrap();
+        let mut a = pb.function_asm(f).unwrap();
+        let mut calls = Vec::new();
+        for (import, text) in [(named, "good"), (named, "bad"), (missing, "bad")] {
+            let r = a.alloc_register(ValueType::Str);
+            a.const_pool(r, pb.const_str(text));
+            calls.push(a.pc());
+            let [] = pb.emit_call(&mut a, import, &[r]).unwrap();
+        }
+        a.ret(0, &[]);
+        pb.define_function(f, a).unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut functions = HostFunctions::<()>::new();
+        functions
+            .register("named", str_sig, |_, _, _, _| Ok(0))
+            .unwrap();
+        let mut seen = Vec::new();
+        let error = functions
+            .bind_checked(&p, |site| {
+                seen.push(site.pc());
+                match site.arg(0) {
+                    Some(ValueRef::Str("bad")) => Err("nothing named \"bad\""),
+                    _ => Ok(()),
+                }
+            })
+            .unwrap_err();
+        // The call to the unbound import is not checked.
+        assert_eq!(seen, calls[..2]);
+        assert_eq!(error.imports.len(), 1);
+        assert_eq!(error.imports[0].import, missing);
+        assert_eq!(error.calls.len(), 1);
+        let call = &error.calls[0];
+        assert_eq!(
+            (call.import, &*call.symbol, call.function, call.pc),
+            (named, "named", FuncId(0), calls[1])
+        );
+        assert_eq!(
+            alloc::format!("{call}"),
+            alloc::format!(
+                "named in function 0 at pc {}: nothing named \"bad\"",
+                calls[1]
+            )
+        );
+        assert!(alloc::format!("{error}").contains("1 host call rejected"));
+
+        functions
+            .register(
+                "missing",
+                HostSig {
+                    args: vec![ValueType::Str],
+                    rets: vec![],
+                },
+                |_, _, _, _| Ok(0),
+            )
+            .unwrap();
+        let bindings = functions.bind_checked(&p, |_| Ok::<(), &str>(())).unwrap();
+        assert_eq!(bindings.import_count(), 2);
     }
 
     #[test]

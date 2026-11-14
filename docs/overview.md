@@ -238,6 +238,12 @@ validates every declared import, including unused imports, before any operation 
 failure reports all missing symbols and signature mismatches in import-ID order, with expected
 and available signatures. No mutable host state is consumed on failure.
 
+`VerifiedProgram::host_call_sites` lists every reachable host call with the arguments that are
+constants on every path to it, borrowed as the host would receive them. `bind_checked` binds and
+hands each call site to an embedder check, so a constant argument such as a name is validated
+against the embedder's own schema at load. Rejected calls are reported with their function, pc,
+span and the check's message, beside any rejected imports.
+
 `HostBindings::with_state` creates per-VM host instances that borrow one immutable callback
 table. Each instance owns independent state, available through `vm.host().state()` and
 `vm.host_mut().state_mut()` between runs. The definition registry can be dropped after binding;

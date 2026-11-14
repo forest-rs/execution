@@ -16,6 +16,15 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Expose the arguments of host calls that are known before a program runs.
+  `VerifiedProgram::host_call_sites` lists every reachable `host_call` with its import, symbol,
+  function, pc and span, and each argument as `Some(ValueRef)` when every path to the call loads
+  the same constant into it (through constants, `mov` and block arguments). Nothing is guessed:
+  disagreeing joins, other writes, function arguments and call results are `None`.
+  `HostFunctions::bind_checked` binds and passes each call site to an embedder check; rejected
+  calls are reported as `CallError`s with their location. Migration: `BindingError` gains a
+  `calls` field (empty from `bind`).
+
 - Add 32-bit numerics under the `0xFD` prefix (`OpcodePrefix::Numeric32`), in aligned blocks:
   `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` and conversions from `0xC0`. Each
   family mirrors its 64-bit counterpart (constants, wrapping and `_ovf` arithmetic, trapping
