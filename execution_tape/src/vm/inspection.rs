@@ -179,7 +179,9 @@ pub struct RegisterValue<'a> {
 /// Where a conservatively retained host-object reference occurs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObjectRootOrigin {
-    /// An initialized paused register.
+    /// An initialized register of an active frame.
+    ///
+    /// An exception reference register contributes the objects in its exception's payload.
     Register {
         /// Activation containing the register.
         activation: ActivationId,
@@ -200,6 +202,22 @@ pub enum ObjectRootOrigin {
     CallbackResult {
         /// Callback result position, independent of the host return signature.
         index: usize,
+    },
+    /// An initialized register of a frame held by an unresumed in-guest continuation.
+    ///
+    /// `cont.new`, `cont.bind` and a `suspend` handled by a guest `on` clause move frames off the
+    /// active stack, so [`InvocationInspection::frames`] does not list them, but resuming the
+    /// continuation can still read these registers. An unstarted frame's only initialized
+    /// registers are the arguments bound to it. As for [`Self::Register`], an exception reference
+    /// register contributes the objects in its exception's payload.
+    Continuation {
+        /// The frame's activation, which keeps its identity when resumed; `None` for an
+        /// unstarted frame, whose activation begins when the continuation is first resumed.
+        activation: Option<ActivationId>,
+        /// Where the frame waits: its `suspend` or pending call, or an unstarted frame's entry.
+        location: TraceLocation,
+        /// Source register number.
+        register: u32,
     },
     /// An immediate field of a retained or temporary VM aggregate.
     Aggregate {
@@ -222,6 +240,24 @@ pub struct ObjectRoot {
 struct FunctionInspection<'a> {
     facts: FunctionAnalysis<'a>,
     registers: Vec<VReg>,
+}
+
+/// One frame's register storage, wherever it lives, and what establishes its initialization.
+pub(super) struct FrameRegisters<'a> {
+    /// Where the frame stopped: its next instruction, a pending call or `suspend`, or the entry
+    /// of an unstarted frame.
+    pub(super) location: TraceLocation,
+    /// Whether the frame has run, so the facts before `location` establish initialization. An
+    /// unstarted frame's only initialized registers are `bound`.
+    pub(super) started: bool,
+    /// Registers written since the frame stopped, which its facts cannot show initialized.
+    pub(super) bound: &'a [VReg],
+    /// The frame's register base within `objs` and `exns`.
+    pub(super) base: RegBase,
+    /// Object registers.
+    pub(super) objs: &'a [Obj],
+    /// Exception reference registers.
+    pub(super) exns: &'a [Option<Arc<Exception>>],
 }
 
 /// Borrowed live state plus lazily computed debugger indexes.
@@ -308,16 +344,32 @@ impl<'a> InvocationInspection<'a> {
         let waiting = child || pending || suspended;
         let location = self.control.paused_location(self.ctx, index);
         PausedFrame {
-            activation: ActivationId {
-                owner: Arc::clone(self.control.owner.as_ref().expect("invocation identity")),
-                ordinal: activation.ordinal,
-            },
+            activation: self.activation_id(activation),
             location,
             caller: activation.caller,
             waiting_for_return: waiting,
             register_count: self.units.unit(frame.unit).program.program().functions
                 [frame.func.0 as usize]
                 .reg_count,
+        }
+    }
+    /// The facts and register mapping of `location`'s function, built on first use.
+    fn function(&mut self, location: TraceLocation) -> &mut FunctionInspection<'a> {
+        let program: &'a VerifiedProgram = &self.units.unit(location.unit).program;
+        self.functions
+            .entry((location.unit.0, location.func.0))
+            .or_insert_with(|| FunctionInspection {
+                facts: ProgramAnalysis::from(program)
+                    .function(location.func)
+                    .expect("verified function"),
+                registers: observations::register_map(program.program(), location.func)
+                    .expect("verified ledger"),
+            })
+    }
+    fn activation_id(&self, activation: Activation) -> ActivationId {
+        ActivationId {
+            owner: Arc::clone(self.control.owner.as_ref().expect("invocation identity")),
+            ordinal: activation.ordinal,
         }
     }
     fn index(&self, id: &ActivationId) -> Option<usize> {
@@ -337,6 +389,9 @@ impl<'a> InvocationInspection<'a> {
     }
 
     /// Visits active frames, innermost first, without constructing register indexes.
+    ///
+    /// Frames held by unresumed continuations are not active and are not listed; their object
+    /// references are reported by [`Self::visit_objects`].
     pub fn frames(&self) -> impl ExactSizeIterator<Item = PausedFrame> + DoubleEndedIterator + '_ {
         let count = if self.active {
             self.ctx.frames.len()
@@ -346,32 +401,26 @@ impl<'a> InvocationInspection<'a> {
         (0..count).rev().map(|index| self.frame_at(index))
     }
 
-    /// Queries one register. Unknown, retired or foreign activations and absent registers return
-    /// `None`. A known declaration without definite initialization returns a value with `None`.
-    /// Waiting callers use facts before their pending call, never hypothetical returned values.
+    /// Queries one register. Unknown, retired or foreign activations, activations suspended in a
+    /// continuation and absent registers return `None`. A known declaration without definite
+    /// initialization returns a value with `None`. Waiting callers use facts before their pending
+    /// call, never hypothetical returned values.
     pub fn register(&mut self, id: &ActivationId, register: u32) -> Option<RegisterValue<'a>> {
         let index = self.index(id)?;
         let frame = self.frame_at(index);
-        let program: &'a VerifiedProgram = &self.units.unit(frame.location.unit).program;
-        let function = self
-            .functions
-            .entry((frame.location.unit.0, frame.location.func.0))
-            .or_insert_with(|| FunctionInspection {
-                facts: ProgramAnalysis::from(program)
-                    .function(frame.location.func)
-                    .expect("verified function"),
-                registers: observations::register_map(program.program(), frame.location.func)
-                    .expect("verified ledger"),
-            });
+        let (ctx, sources) = (
+            self.ctx,
+            ValueSources::new(self.units, self.args, self.aggregates),
+        );
+        let function = self.function(frame.location);
         let fact = function
             .facts
             .instruction(frame.location.pc)?
             .register(register)?;
         let value = if matches!(fact.before, ValueFact::Contract(_)) {
-            let ctx = self.ctx;
             read_value_ref_at(
                 &ctx.arena,
-                ValueSources::new(self.units, self.args, self.aggregates),
+                sources,
                 &ctx.bools,
                 &ctx.i64s,
                 &ctx.u64s,
@@ -384,7 +433,7 @@ impl<'a> InvocationInspection<'a> {
                 &ctx.aggs,
                 &ctx.funcs,
                 &ctx.closures,
-                self.ctx.frames[index].base,
+                ctx.frames[index].base,
                 *function.registers.get(register as usize)?,
             )
             .ok()
@@ -411,32 +460,48 @@ impl<'a> InvocationInspection<'a> {
 
     /// Enumerates conservative host-object references without materializing a root vector.
     ///
-    /// Includes initialized active registers, borrowed arguments, pending callback results,
-    /// committed outputs and every
-    /// VM aggregate field (including retained results and uncommitted temporaries). Duplicates
-    /// and no-longer-needed values may occur; this is not a minimal liveness set. No uninitialized
-    /// register slots are read. The collector must additionally trace its own heap, globals,
-    /// snapshots and other external roots. Object identity, relocation and reclamation belong to
-    /// that collector. This method performs no collection or host-state mutation.
+    /// Includes initialized registers of active frames and of frames held by unresumed
+    /// continuations, the payloads of exceptions those registers reference, borrowed arguments,
+    /// pending callback results, committed outputs and every VM aggregate field (including
+    /// retained results and uncommitted temporaries). Duplicates and no-longer-needed values may
+    /// occur; this is not a minimal liveness set. No uninitialized register slots are read. The
+    /// collector must additionally trace its own heap, globals, snapshots and other external
+    /// roots. Object identity, relocation and reclamation belong to that collector. This method
+    /// performs no collection or host-state mutation.
     pub fn visit_objects(&mut self, mut visit: impl FnMut(ObjectRoot)) {
-        for index in (0..if self.active {
-            self.ctx.frames.len()
-        } else {
-            0
-        })
-            .rev()
-        {
+        let ctx = self.ctx;
+        for index in (0..if self.active { ctx.frames.len() } else { 0 }).rev() {
             let frame = self.frame_at(index);
-            for register in self.registers(&frame.activation).expect("active frame") {
-                if let Some(ValueRef::Obj(object)) = register.value {
-                    visit(ObjectRoot {
-                        object,
-                        origin: ObjectRootOrigin::Register {
-                            activation: frame.activation.clone(),
-                            register: register.register,
-                        },
-                    });
-                }
+            let registers = FrameRegisters {
+                location: frame.location,
+                started: true,
+                bound: &[],
+                base: ctx.frames[index].base,
+                objs: &ctx.objs,
+                exns: &ctx.exns,
+            };
+            self.visit_frame(
+                registers,
+                |register| ObjectRootOrigin::Register {
+                    activation: frame.activation.clone(),
+                    register,
+                },
+                &mut visit,
+            );
+        }
+        if self.active {
+            for (activation, registers) in ctx.continuations.held(self.units) {
+                let activation = activation.map(|activation| self.activation_id(activation));
+                let location = registers.location;
+                self.visit_frame(
+                    registers,
+                    |register| ObjectRootOrigin::Continuation {
+                        activation: activation.clone(),
+                        location,
+                        register,
+                    },
+                    &mut visit,
+                );
             }
         }
         for (index, value) in self.args.iter().enumerate() {
@@ -475,6 +540,56 @@ impl<'a> InvocationInspection<'a> {
                 object,
                 origin: ObjectRootOrigin::Aggregate { aggregate, index },
             });
+        }
+    }
+
+    /// Visits the objects in a frame's initialized object and exception reference registers.
+    ///
+    /// An exception reference contributes the objects of its payload, under its register's origin.
+    fn visit_frame(
+        &mut self,
+        frame: FrameRegisters<'a>,
+        origin: impl Fn(u32) -> ObjectRootOrigin,
+        visit: &mut impl FnMut(ObjectRoot),
+    ) {
+        let FunctionInspection { facts, registers } = self.function(frame.location);
+        let facts = if frame.started {
+            facts.instruction(frame.location.pc)
+        } else {
+            None
+        };
+        for (register, &vreg) in (0_u32..).zip(registers.iter()) {
+            if !matches!(vreg, VReg::Obj(_) | VReg::Exn(_)) {
+                continue;
+            }
+            let initialized = frame.bound.contains(&vreg)
+                || facts
+                    .as_ref()
+                    .and_then(|facts| facts.register(register))
+                    .is_some_and(|fact| matches!(fact.before, ValueFact::Contract(_)));
+            if !initialized {
+                continue;
+            }
+            match vreg {
+                VReg::Obj(r) => visit(ObjectRoot {
+                    object: frame.objs[frame.base.objs + r.0 as usize],
+                    origin: origin(register),
+                }),
+                VReg::Exn(r) => {
+                    let Some(exception) = &frame.exns[frame.base.exns + r.0 as usize] else {
+                        continue;
+                    };
+                    for value in exception.payload() {
+                        if let Value::Obj(object) = value {
+                            visit(ObjectRoot {
+                                object: *object,
+                                origin: origin(register),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }

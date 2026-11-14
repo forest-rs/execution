@@ -406,6 +406,19 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                             activation,
                             register,
                         } => format!("frame #{} r{register}", activation.ordinal()),
+                        ObjectRootOrigin::Continuation {
+                            activation: Some(activation),
+                            register,
+                            ..
+                        } => format!("suspended frame #{} r{register}", activation.ordinal()),
+                        ObjectRootOrigin::Continuation {
+                            activation: None,
+                            location,
+                            register,
+                        } => format!(
+                            "unstarted u{}:f{} r{register}",
+                            location.unit.0, location.func.0
+                        ),
                         ObjectRootOrigin::Argument { index } => format!("argument[{index}]"),
                         ObjectRootOrigin::Output { index } => format!("output[{index}]"),
                         ObjectRootOrigin::CallbackResult { index } => {

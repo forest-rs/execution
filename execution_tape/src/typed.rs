@@ -37,6 +37,9 @@ pub(crate) enum RegClass {
 }
 
 impl RegClass {
+    /// The number of classes, for tables indexed by `class as usize`.
+    pub(crate) const COUNT: usize = Self::Cont as usize + 1;
+
     pub(crate) fn of(t: ValueType) -> Self {
         match t {
             ValueType::Unit => Self::Unit,

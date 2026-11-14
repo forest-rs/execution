@@ -27,6 +27,7 @@ use super::*;
 use crate::program::{CallSigId, TagId};
 use crate::typed::ExecCatch;
 use crate::value::TagRef;
+use inspection::FrameRegisters;
 use units::ListId;
 
 /// A continuation register value: an invocation table slot and its generation.
@@ -158,6 +159,64 @@ impl Continuations {
     /// Frames held by live continuations.
     pub(super) fn frames(&self) -> usize {
         self.frames
+    }
+
+    /// Every frame held by a live continuation, root first within each continuation, with its
+    /// activation; an unstarted frame gets one only when first resumed.
+    ///
+    /// Consumed and dropped continuations hold none: their frames were reinstated or released.
+    pub(super) fn held<'a>(
+        &'a self,
+        units: &'a UnitTable,
+    ) -> impl Iterator<Item = (Option<inspection::Activation>, FrameRegisters<'a>)> {
+        self.slots
+            .iter()
+            .filter(|slot| slot.live)
+            .flat_map(move |slot| {
+                let segment = &slot.segment;
+                let top = segment.frames.len() - 1;
+                segment
+                    .frames
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, frame)| {
+                        let body = units
+                            .unit(frame.unit)
+                            .program
+                            .verified(frame.func)
+                            .expect("held verified function");
+                        let started = !matches!(slot.inputs, Inputs::Entry);
+                        // A started frame waits after its `suspend` or pending call.
+                        let pc = if started {
+                            body.pc_at_ix(frame.instr_ix - 1)
+                                .expect("a started frame waits after an instruction")
+                        } else {
+                            frame.pc
+                        };
+                        let bound = if index == top {
+                            let inputs = match slot.inputs {
+                                Inputs::Entry => &body.reg_layout.arg_regs[..],
+                                Inputs::Results(results) => body.vregs(results),
+                            };
+                            &inputs[..slot.bound]
+                        } else {
+                            &[]
+                        };
+                        let registers = FrameRegisters {
+                            location: TraceLocation {
+                                unit: frame.unit,
+                                func: frame.func,
+                                pc,
+                            },
+                            started,
+                            bound,
+                            base: frame.base,
+                            objs: &segment.objs,
+                            exns: &segment.exns,
+                        };
+                        (segment.activations.get(index).copied(), registers)
+                    })
+            })
     }
 
     /// The live slot `cont` names, or the trap for a consumed or never-created continuation.
