@@ -44,6 +44,12 @@ impl HostSpec {
     }
 }
 
+impl From<crate::host_binding::HostImport> for HostSpec {
+    fn from(import: crate::host_binding::HostImport) -> Self {
+        Self::new(import.symbol(), import.args(), import.rets())
+    }
+}
+
 /// A collection of host-call signatures to be registered.
 ///
 /// # Example
