@@ -87,6 +87,7 @@ pub struct ActivationExit {
 
 /// Why a recorded activation ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ActivationOutcome {
     /// It returned to its caller, or a callback returned to its host request.
     Returned,

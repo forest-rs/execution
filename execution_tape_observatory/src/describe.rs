@@ -3,6 +3,8 @@
 
 //! Bounded descriptions of recorded values and source operands, without guest-state inference.
 
+use std::borrow::Cow;
+
 use execution_tape::disasm::{CallTarget, ConstValue, InstrView, Operands};
 use execution_tape::host::HostError;
 use execution_tape::program::{HostSigId, Program, TagId, ValueType};
@@ -98,6 +100,10 @@ pub(super) fn verification(
                 .and_then(|ids| ids.get(index as usize))
                 .copied(),
         ),
+        other => {
+            let position = other.to_string();
+            (position.clone(), position.clone(), position, None)
+        }
     };
     let mut indexed = root;
     let mut trail = label;
@@ -353,14 +359,15 @@ pub(super) fn signature(program: &Program, id: HostSigId) -> String {
     )
 }
 
-pub(super) fn host_error(error: &HostError) -> &'static str {
+pub(super) fn host_error(error: &HostError) -> Cow<'static, str> {
     match error {
-        HostError::UnknownSymbol => "unknown symbol",
-        HostError::SignatureMismatch => "signature mismatch",
-        HostError::ProgramMismatch => "program mismatch",
-        HostError::Failed => "host failed",
-        HostError::Custom(_) => "typed host failure (payload retained)",
-        HostError::Throw(_) => "raised a guest exception",
+        HostError::UnknownSymbol => "unknown symbol".into(),
+        HostError::SignatureMismatch => "signature mismatch".into(),
+        HostError::ProgramMismatch => "program mismatch".into(),
+        HostError::Failed => "host failed".into(),
+        HostError::Custom(_) => "typed host failure (payload retained)".into(),
+        HostError::Throw(_) => "raised a guest exception".into(),
+        other => other.to_string().into(),
     }
 }
 

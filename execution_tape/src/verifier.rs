@@ -76,6 +76,7 @@ pub struct VerifiedProgram {
 /// Lints are best-effort: they are intended to help frontend authors diagnose low-quality
 /// bytecode, without changing the acceptance criteria of verification.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VerifyLint {
     /// A basic block is unreachable from function entry.
     UnreachableBlock {
@@ -161,6 +162,7 @@ impl VerifiedProgram {
 
 /// A verification error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VerifyError {
     /// A statically known callable contradicts the exact signature of an indirect call or of
     /// the continuation `cont.new` creates.
@@ -1142,6 +1144,7 @@ impl From<DecodeError> for VerifyError {
 
 /// A place that can only hold values the embedding can see, so never an `Exn` reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExceptionPlace {
     /// A host signature argument or result.
     HostSig {

@@ -27,6 +27,7 @@ use crate::{
 
 /// Why an executable callable could not be retained.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallableError {
     /// The invocation has no successful outputs to retain.
     NoSuccessfulResult,

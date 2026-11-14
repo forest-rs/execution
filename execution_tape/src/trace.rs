@@ -164,6 +164,7 @@ pub enum ScopeKind {
 
 /// Outcome of a run, instruction attempt, or scope.
 #[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
 pub enum TraceOutcome<'a> {
     /// Completed successfully.
     Ok,
@@ -233,6 +234,7 @@ impl From<TraceLocation> for CodeLocation {
 /// The extra fuel charge is observed before debit. A failed call does not charge extra fuel,
 /// and partial writes to its return buffer are discarded.
 #[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
 pub enum HostCallOutcome<'a> {
     /// The host returned values and an additional fuel charge.
     Returned {
@@ -260,6 +262,7 @@ pub enum HostCallOutcome<'a> {
 /// Values are observed before arity, kind, payload-work and contract checks, so an invalid
 /// answer is observed before the trap it causes.
 #[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
 pub enum SuspensionAnswer<'a> {
     /// The embedding resumed the suspension with these values for the `suspend`'s results.
     Resumed {
@@ -288,6 +291,7 @@ pub enum SuspensionAnswer<'a> {
 /// until return compaction or trap rollback. Do not interpret a pre-commit handle as the final
 /// returned identity, or reuse a handle map across runs.
 #[derive(Copy, Clone)]
+#[non_exhaustive]
 pub enum ValueEvent<'a> {
     /// Embedding-requested guest reentry while a host instruction remains pending.
     /// Observed before callback target, argument or fuel validation. IDs and handles use this

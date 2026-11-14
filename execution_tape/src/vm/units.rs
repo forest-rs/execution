@@ -349,6 +349,7 @@ impl Tag {
 /// in a fresh VM reproduces every [`UnitId`] and [`TagRef`], which is how replay rebuilds a
 /// recorded VM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StoreEvent {
     /// [`Vm::install`] created this unit.
     Installed(UnitId),

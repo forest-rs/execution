@@ -16,6 +16,7 @@ use core::num::{NonZeroU32, NonZeroU64};
 
 /// A decode error for `execution_tape` binary artifacts.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Input ended unexpectedly.
     UnexpectedEof,

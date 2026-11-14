@@ -135,6 +135,7 @@ fn host_requests(c: &mut Criterion) {
                                     _ => unreachable!("ordinary host owns delivery"),
                                 }
                             }
+                            status => unreachable!("unexpected run status {status:?}"),
                         }
                     }
                     let out = run.result().unwrap().unwrap();

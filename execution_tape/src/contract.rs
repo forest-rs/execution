@@ -209,6 +209,7 @@ impl ContractTable {
 
 /// Why a contract could not be constructed. Failed insertion leaves the table unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContractBuildError {
     /// A child is absent; create children before their parents in the same builder.
     UnknownChild(ContractId),
@@ -502,6 +503,7 @@ impl<const N: usize> PartialEq<&[ValueType; N]> for ContractKinds<'_> {
 
 /// Concrete disagreement with a compositional contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContractMismatch {
     /// The storage kind differs, including nominal host object types.
     Kind {
@@ -720,6 +722,7 @@ impl core::error::Error for ContractViolation {
 
 /// Guest boundary whose contract is being checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContractPosition {
     /// Argument admission, including a closure's injected environment at index zero.
     Argument {
@@ -779,6 +782,7 @@ impl fmt::Display for ContractPosition {
 
 /// An invalid nominal refinement in a program contract definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContractDefinitionError {
     /// Struct identity is absent from the program schema.
     UnknownStruct(TypeId),

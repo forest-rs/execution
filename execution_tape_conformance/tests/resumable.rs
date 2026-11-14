@@ -269,6 +269,7 @@ fn hard_limits_accumulate_across_resumes_and_terminal_traps_do_not_repeat_effect
                         panic!("default invocations dispatch their host synchronously")
                     }
                     Ok(RunStatus::Complete) => panic!("expected the same hard limit"),
+                    Ok(status) => panic!("unexpected run status {status:?}"),
                 }
             };
             assert_eq!((actual.func, actual.pc), (expected.func, expected.pc));
@@ -488,6 +489,7 @@ fn contract_proof_work_and_successful_proofs_survive_suspension() {
                 panic!("the second cached visit must still consume contract work")
             }
             Err(error) => break error,
+            Ok(status) => panic!("unexpected run status {status:?}"),
         }
     };
     assert!(matches!(error.trap, Trap::ContractWorkExceeded { .. }));

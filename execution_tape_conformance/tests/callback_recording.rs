@@ -458,7 +458,10 @@ fn rejected_callback_admission_and_nested_host_failure_replay_as_actual_traps() 
             Some(InstructionStatus::Complete)
         );
         let ControlAction::CallGuest { returned, .. } =
-            record.control_commands().next().unwrap().action;
+            record.control_commands().next().unwrap().action
+        else {
+            panic!("the host requested a guest callback");
+        };
         assert!(
             returned.is_none(),
             "failed callbacks cannot acquire a successful return"
@@ -511,7 +514,10 @@ fn cancelled_callback_is_inspectable_but_cannot_replay_as_complete() {
         assert_eq!(record.status(), Err(&CaptureFault::MissingCompletion));
         assert_eq!(record.control_commands().len(), 1);
         let ControlAction::CallGuest { returned, .. } =
-            record.control_commands().next().unwrap().action;
+            record.control_commands().next().unwrap().action
+        else {
+            panic!("the host requested a guest callback");
+        };
         assert_eq!(
             returned.is_some(),
             return_first,

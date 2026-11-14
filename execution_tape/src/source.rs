@@ -106,6 +106,7 @@ impl Default for SourceLimits {
 
 /// Source data could not be validated or attached. Failed construction exposes no partial map.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SourceError {
     /// An input item/byte budget was exceeded.
     Limit(&'static str),

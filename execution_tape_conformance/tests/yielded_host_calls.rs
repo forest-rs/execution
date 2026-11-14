@@ -270,6 +270,7 @@ fn external_completion_runs_no_native_host_and_finishes_only_its_instruction() {
                 );
             }
             RunStatus::Complete => break,
+            status => unreachable!("unexpected run status {status:?}"),
         }
     }
     assert_eq!(requests, 2);
@@ -885,6 +886,7 @@ fn yielded_dispatch_has_exactly_the_same_trace_register_phases_and_fuel_as_sync_
                     assert_eq!(mirror.0.borrow().len(), before);
                     call.pending_host_call().unwrap().dispatch().unwrap();
                 }
+                status => unreachable!("unexpected run status {status:?}"),
             }
         }
         let fuel = call.remaining_fuel();

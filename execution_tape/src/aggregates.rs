@@ -22,6 +22,7 @@ use crate::value::{AggHandle, AggType, ShapeId, Value};
 
 /// An aggregate heap error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AggError {
     /// Handle was out of bounds.
     BadHandle,

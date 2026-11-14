@@ -158,6 +158,7 @@ pub struct DecodedInstruction {
 
 /// Encoding failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EncodeError {
     /// Operand count mismatch for an opcode.
     ArityMismatch {
@@ -229,6 +230,7 @@ impl core::error::Error for EncodeError {}
 
 /// Decoding failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Byte stream was malformed.
     Format(FormatDecodeError),

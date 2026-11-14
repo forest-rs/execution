@@ -202,6 +202,7 @@ impl Default for RecordLimits {
 
 /// The capture budget that was exhausted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CaptureResource {
     /// Captured value occurrences.
     Values,
@@ -221,6 +222,7 @@ pub enum CaptureResource {
 
 /// Why a recording cannot be replayed as a complete invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CaptureFault {
     /// The sink did not observe invocation values.
     MissingEntry,
@@ -286,6 +288,7 @@ pub struct RecordedTag<'a> {
 
 /// One install or tag definition of the recorded VM, in the order it happened.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum StoreRecord<'a> {
     /// A program was installed.
     Installed(RecordedUnit<'a>),
@@ -329,6 +332,7 @@ pub struct Invocation<'a> {
 
 /// Recorded return values and extra fuel, or the original typed host error.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HostOutcome<'a> {
     /// Raw host return slots before VM ABI validation.
     Returned {
@@ -390,6 +394,7 @@ pub struct YieldedSuspension<'a> {
 
 /// The embedding's raw answer to a yielded suspension, before VM validation.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RecordedAnswer<'a> {
     /// Resumed with values for the `suspend`'s results.
     Resumed(&'a [RecordedValue]),

@@ -402,6 +402,7 @@ impl execution_graph::NodeTask<String, TrapInfo> for GraphGuest {
                     outputs.push(result);
                     return Poll::Ready(Ok(()));
                 }
+                Ok(status) => unreachable!("unexpected run status {status:?}"),
             }
         }
     }

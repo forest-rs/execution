@@ -8,6 +8,7 @@ use super::*;
 
 /// A malformed typed block declaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockDeclarationError {
     /// Function entry parameters must come from the function signature.
     EntryParameters,
@@ -29,6 +30,7 @@ pub enum BlockDeclarationError {
 
 /// A failed control-flow edge contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockEdgeError {
     /// The encoded branch argument split exceeds the combined list.
     InvalidArgumentSplit,

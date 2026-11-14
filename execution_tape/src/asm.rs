@@ -87,6 +87,7 @@ impl core::error::Error for UnresolvedLabel {}
 
 /// A bytecode builder error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AsmError {
     /// A label was referenced but never placed.
     UnresolvedLabel,
@@ -172,6 +173,7 @@ impl From<VerifyError> for AsmError {
 
 /// A [`ProgramBuilder`] error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BuildError {
     /// A signature references an absent compositional contract.
     Contract(ContractBuildError),

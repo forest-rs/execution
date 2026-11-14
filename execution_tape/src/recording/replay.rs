@@ -23,6 +23,7 @@ use core::cell::RefCell;
 
 /// Difference between the replay and the captured boundary contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Divergence {
     /// Host invocation occurred at another guest instruction.
     Location {
@@ -115,6 +116,7 @@ pub enum Divergence {
 
 /// Boundary being checked when replay diverged.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReplayBoundary {
     /// Checking one retained instruction attempt or completion.
     Instruction {
@@ -172,6 +174,7 @@ pub enum ReplayBoundary {
 
 /// Replay could not establish the captured invocation's result.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum ReplayError {
     /// A partial capture cannot be replayed as complete.
     Incomplete(CaptureFault),

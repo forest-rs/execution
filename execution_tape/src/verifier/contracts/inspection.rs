@@ -47,6 +47,7 @@ impl<'a> From<&'a VerifiedProgram> for ProgramAnalysis<'a> {
 
 /// A guaranteed value fact at a source instruction, distinct from its fixed storage kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ValueFact {
     /// The instruction is not reachable from the function entry.
     Unreachable,

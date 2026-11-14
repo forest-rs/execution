@@ -12,6 +12,7 @@ use crate::program::{Function, Program, ValueType};
 
 /// Why a protected region or one of its clauses is invalid.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegionError {
     /// The parent is not an earlier region of the same function.
     Parent {
@@ -139,6 +140,7 @@ impl core::fmt::Display for RegionError {
 
 /// Why a region run is invalid.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegionRunError {
     /// The run names a region outside the function's region table.
     UnknownRegion {
