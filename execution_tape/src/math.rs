@@ -16,7 +16,8 @@
 //! this crate without `libm`. The table below names the `libm` function that computes the same
 //! bits, for code that already calls `libm`.
 //!
-//! **Transcendental functions** (`pow`, `exp`, `ln`, `sin`, `cos`, `atan2`) are *defined* as the
+//! **Transcendental functions** (`pow`, `exp`, `ln`, `sin`, `cos`, `atan2`, in both widths) are
+//! *defined* as the
 //! results of the [`libm`](https://crates.io/crates/libm) crate at exactly version **0.2.16**,
 //! built without its default features. They are not correctly rounded; they are reproducible.
 //! Upgrading the pinned version, or replacing the implementation (for example with correctly
@@ -66,13 +67,13 @@
 //! | [`max_f32`] / [`max_f64`] | `f32.max` / `f64_max` | `fmaximumf` / `fmaximum` |
 //! | [`min_num_f32`] / [`min_num_f64`] | `f32.min_num` / `f64_min_num` | `fminimum_numf` / `fminimum_num` |
 //! | [`max_num_f32`] / [`max_num_f64`] | `f32.max_num` / `f64_max_num` | `fmaximum_numf` / `fmaximum_num` |
-//! | [`clamp_f32`] | `f32.clamp` | none (Rust's [`f32::clamp`]) |
-//! | [`pow_f32`] | `f32.pow` | `powf` (defining) |
-//! | [`exp_f32`] | `f32.exp` | `expf` (defining) |
-//! | [`ln_f32`] | `f32.ln` | `logf` (defining) |
-//! | [`sin_f32`] | `f32.sin` | `sinf` (defining) |
-//! | [`cos_f32`] | `f32.cos` | `cosf` (defining) |
-//! | [`atan2_f32`] | `f32.atan2` | `atan2f` (defining) |
+//! | [`clamp_f32`] / [`clamp_f64`] | `f32.clamp` / `f64.clamp` | none (Rust's [`f32::clamp`] / [`f64::clamp`]) |
+//! | [`pow_f32`] / [`pow_f64`] | `f32.pow` / `f64.pow` | `powf` / `pow` (defining) |
+//! | [`exp_f32`] / [`exp_f64`] | `f32.exp` / `f64.exp` | `expf` / `exp` (defining) |
+//! | [`ln_f32`] / [`ln_f64`] | `f32.ln` / `f64.ln` | `logf` / `log` (defining) |
+//! | [`sin_f32`] / [`sin_f64`] | `f32.sin` / `f64.sin` | `sinf` / `sin` (defining) |
+//! | [`cos_f32`] / [`cos_f64`] | `f32.cos` / `f64.cos` | `cosf` / `cos` (defining) |
+//! | [`atan2_f32`] / [`atan2_f64`] | `f32.atan2` / `f64.atan2` | `atan2f` / `atan2` (defining) |
 //!
 //! `libm`'s `fmin`/`fmax` (IEEE 754-2008 `minNum`/`maxNum`) and Rust's `f32::min`/`f32::max` may
 //! return either zero when the inputs are zeros of opposite sign; [`min_num_f32`] and friends
@@ -429,6 +430,90 @@ pub fn max_num_f64(a: f64, b: f64) -> f64 {
     }
 }
 
+/// `f64.clamp`: `x` limited to `lo..=hi`, or `None` when the bounds are invalid.
+///
+/// Exactly as [`clamp_f32`], in `f64`: `None` unless `lo <= hi` (the VM traps with
+/// [`Trap::ClampBoundsInvalid`](crate::vm::Trap::ClampBoundsInvalid) there, where
+/// [`f64::clamp`] panics), and otherwise bit-identical to [`f64::clamp`].
+#[inline]
+#[must_use]
+pub fn clamp_f64(x: f64, lo: f64, hi: f64) -> Option<f64> {
+    // Written as a negated `<=` so that NaN bounds fail the check.
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "a NaN bound must be rejected, which `lo > hi` would not do"
+    )]
+    if !(lo <= hi) {
+        return None;
+    }
+    Some(if x < lo {
+        lo
+    } else if x > hi {
+        hi
+    } else {
+        x
+    })
+}
+
+// --- f64: transcendental functions (pinned libm) --------------------------------------------
+
+/// `f64.pow`: `base` raised to `exponent`, as computed by `libm::pow` 0.2.16.
+///
+/// Special cases follow C99 Annex F like [`pow_f32`]. A NaN result's bits are not specified.
+#[inline]
+#[must_use]
+pub fn pow_f64(base: f64, exponent: f64) -> f64 {
+    libm::pow(base, exponent)
+}
+
+/// `f64.exp`: e raised to `x`, as computed by `libm::exp` 0.2.16.
+///
+/// Not correctly rounded: `exp_f64(1.0)` is one ulp above [`core::f64::consts::E`]. A NaN
+/// result's bits are not specified.
+#[inline]
+#[must_use]
+pub fn exp_f64(x: f64) -> f64 {
+    libm::exp(x)
+}
+
+/// `f64.ln`: the natural logarithm of `x`, as computed by `libm::log` 0.2.16.
+///
+/// `ln(±0.0) == -inf`; a negative `x` gives NaN, whose bits are not specified.
+#[inline]
+#[must_use]
+pub fn ln_f64(x: f64) -> f64 {
+    libm::log(x)
+}
+
+/// `f64.sin`: the sine of `x` radians, as computed by `libm::sin` 0.2.16.
+///
+/// Arguments of any magnitude are reduced exactly; `sin(±inf)` is NaN, whose bits are not
+/// specified.
+#[inline]
+#[must_use]
+pub fn sin_f64(x: f64) -> f64 {
+    libm::sin(x)
+}
+
+/// `f64.cos`: the cosine of `x` radians, as computed by `libm::cos` 0.2.16.
+///
+/// Arguments of any magnitude are reduced exactly; `cos(±inf)` is NaN, whose bits are not
+/// specified.
+#[inline]
+#[must_use]
+pub fn cos_f64(x: f64) -> f64 {
+    libm::cos(x)
+}
+
+/// `f64.atan2`: the angle of the point `(x, y)` in radians, in `-pi..=pi`, as computed by
+/// `libm::atan2` 0.2.16. Note the argument order: `y` first. A NaN result's bits are not
+/// specified.
+#[inline]
+#[must_use]
+pub fn atan2_f64(y: f64, x: f64) -> f64 {
+    libm::atan2(y, x)
+}
+
 /// The lesser of two non-NaN values, ordering `-0.0` below `+0.0`.
 #[inline]
 fn ordered_min(a: f64, b: f64) -> f64 {
@@ -729,5 +814,56 @@ mod tests {
             clamp_f32(nan, 0.0, 1.0).map(f32::to_bits),
             Some(0x7FA0_0001)
         );
+
+        let xs: Vec<f64> = f64_inputs().into_iter().step_by(4099).collect();
+        for &lo in &xs {
+            for &hi in &xs {
+                for &x in &xs {
+                    let got = clamp_f64(x, lo, hi);
+                    if lo <= hi {
+                        assert_eq!(
+                            got.map(f64::to_bits),
+                            Some(x.clamp(lo, hi).to_bits()),
+                            "clamp({x:e}, {lo:e}, {hi:e})"
+                        );
+                    } else {
+                        assert_eq!(got, None, "clamp({x:e}, {lo:e}, {hi:e})");
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            clamp_f64(-0.0, 0.0, 1.0).map(f64::to_bits),
+            Some(0x8000_0000_0000_0000)
+        );
+        assert_eq!(clamp_f64(0.5, 0.0, f64::NAN), None);
+    }
+
+    /// The transcendental functions are their `libm` counterparts by construction; this pins
+    /// that each calls the one its documentation names, in the right argument order.
+    #[test]
+    fn transcendental_functions_call_their_defining_libm_routines() {
+        let xs: Vec<f64> = f64_inputs().into_iter().step_by(211).collect();
+        let unary: [(&str, Unary64, Unary64); 4] = [
+            ("exp", exp_f64, libm::exp),
+            ("ln", ln_f64, libm::log),
+            ("sin", sin_f64, libm::sin),
+            ("cos", cos_f64, libm::cos),
+        ];
+        let binary: [(&str, Binary64, Binary64); 2] = [
+            ("pow", pow_f64, libm::pow),
+            ("atan2", atan2_f64, libm::atan2),
+        ];
+        for &a in &xs {
+            for (name, ours, theirs) in unary {
+                assert!(same64(ours(a), theirs(a)), "{name}({a:e})");
+            }
+            for &b in xs.iter().step_by(7) {
+                for (name, ours, theirs) in binary {
+                    assert!(same64(ours(a, b), theirs(a, b)), "{name}({a:e}, {b:e})");
+                }
+            }
+        }
+        assert!(!same64(atan2_f64(1.0, 0.0), libm::atan2(0.0, 1.0)));
     }
 }

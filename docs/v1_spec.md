@@ -70,13 +70,14 @@ result each instruction produces; this section says how far that result can be r
   supported platform: Linux, macOS, Windows and WebAssembly, on x86-64, AArch64 and other
   targets. This covers `add`, `sub`, `mul`, `div` and `sqrt` (correctly rounded: to nearest,
   ties to even), `rem` (the exact remainder of truncating division), `floor`, `ceil`, `trunc`,
-  `nearest` and `round_half_away` (exact), `min`, `max`, `min_num`, `max_num` and `f32.clamp`,
+  `nearest` and `round_half_away` (exact), `min`, `max`, `min_num`, `max_num` and `clamp`,
   `neg`, `abs` and `copysign`, the comparisons, every conversion between `f32`, `f64` and the
   integer types (a float result rounds once, to nearest with ties to even; an integer result
-  follows [Float-to-integer conversions](#float-to-integer-conversions)), and the `f32` math
-  intrinsics `pow`, `exp`, `ln`, `sin`, `cos` and `atan2`, whose results are defined by a pinned
-  `libm` rather than by correct rounding (see [Math intrinsics](#math-intrinsics)). Subnormal
-  inputs and results are honored, never flushed to zero. No instruction converts between `Decimal` and a float.
+  follows [Float-to-integer conversions](#float-to-integer-conversions)), and the math
+  intrinsics `pow`, `exp`, `ln`, `sin`, `cos` and `atan2` in both widths, whose results are
+  defined by a pinned `libm` rather than by correct rounding (see
+  [Math intrinsics](#math-intrinsics)). Subnormal inputs and results are honored, never flushed
+  to zero. No instruction converts between `Decimal` and a float.
 - **No contraction.** Each instruction rounds its own result in its own width. A multiply
   followed by an add is never fused into a multiply-add, and no sequence of instructions is
   evaluated at another precision.
@@ -90,9 +91,9 @@ result each instruction produces; this section says how far that result can be r
 - **Scope.** The contract assumes IEEE 754 binary arithmetic in the default floating-point
   environment: round to nearest and no flush-to-zero or denormals-are-zero mode. A host that
   changes that environment while the VM runs is outside it, as are targets whose Rust float
-  arithmetic is not IEEE 754 (x87-only `i586`). The `f32` math intrinsics are inside the
-  contract; every other transcendental function, including all `f64` ones, is a host call, which
-  the contract does not cover.
+  arithmetic is not IEEE 754 (x87-only `i586`). The `f32` and `f64` math intrinsics are inside
+  the contract; every other transcendental function (`tan`, `exp2`, `log10`, ...) is a host
+  call, which the contract does not cover.
 - **Implementations.** The interpreter uses native IEEE `add`, `sub`, `mul` and `div` and
   Rust's `as` conversions, whose rounding and saturation Rust defines exactly. It computes
   `rem`, `sqrt`, rounding, `min`/`max` and `clamp` in the core itself, without `std` or `libm`,
@@ -325,7 +326,11 @@ prefix's space, so each prefix opens 256 opcodes. Both bytes are fixed-width: th
 form and no second spelling of an opcode, so an opcode's bytes identify it exactly and
 `codec::canonicalize` never rewrites them. Currently assigned:
 
-- `0xFC` (`OpcodePrefix::Extended`): general extension space.
+- `0xFC` (`OpcodePrefix::Extended`): general extension space. Assigned so far: `u64` bit
+  operations from `0x00`, stack switching from `0x05`, `f64` exact operations (`round_half_away`,
+  `clamp`) from `0x0B`, and the `f64` math intrinsics in the block `0x10..=0x1F`, in the same
+  order as the `f32` ones at `0xFD 0xA0` (`0xFC 0x10` is `f64.pow` as `0xFD 0xA0` is
+  `f32.pow`). New instruction families take the next free byte outside that block.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
   (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
   conversions from `0xC0`).
@@ -863,8 +868,9 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
   `f32`) are returned unchanged, and a NaN input produces a NaN. The
   common emulation `trunc(x + copysign(0.5, x))` is not equivalent: it rounds `0.49999997f32` to
   `1.0` and odd integers just above 2^23 (2^52 for `f64`) to their even neighbors.
-- `f32` transcendental functions are specified under [Math intrinsics](#math-intrinsics); other
-  transcendental functions (including all `f64` ones) are host-provided.
+- `f64.clamp` and the `f64` transcendental functions `pow`, `exp`, `ln`, `sin`, `cos` and
+  `atan2` are specified, with their `f32` forms, under [Math intrinsics](#math-intrinsics); other
+  transcendental functions are host-provided.
 
 #### Float-to-integer conversions
 Every float-to-integer conversion (`f64_to_i64`, `f64_to_u64`, `f32.to_i32`, `f32.to_u32`,
@@ -885,12 +891,14 @@ just as for signed ones, and `-1.0` is the first negative value outside an unsig
   accepts, both forms give the same result.
 
 #### Math intrinsics
-The `f32` math intrinsics are `f32.pow` (`a` raised to `b`), `f32.exp`, `f32.ln` (natural
-logarithm), `f32.sin`, `f32.cos` (radians) and `f32.atan2` (`y` first, result in `-pi..=pi`).
-Their results are **defined as those of the Rust `libm` crate at exactly version 0.2.16**
-(`libm::powf`, `expf`, `logf`, `sinf`, `cosf`, `atan2f`), built without default features. They
-are not correctly rounded; they are reproducible, and they match native Rust code that calls
-`libm` 0.2.16 bit for bit.
+The math intrinsics are `pow` (`a` raised to `b`), `exp`, `ln` (natural logarithm), `sin`,
+`cos` (radians) and `atan2` (`y` first, result in `-pi..=pi`), in both widths: `f32.pow` through
+`f32.atan2` and `f64.pow` through `f64.atan2`. Their results are **defined as those of the Rust
+`libm` crate at exactly version 0.2.16** (`libm::powf`, `expf`, `logf`, `sinf`, `cosf`,
+`atan2f` for `f32`; `libm::pow`, `exp`, `log`, `sin`, `cos`, `atan2` for `f64`), built without
+default features. They are not correctly rounded (`f64.exp(1.0)` is one ulp above the correctly
+rounded e); they are reproducible, and they match native Rust code that calls `libm` 0.2.16 bit
+for bit.
 
 - **Determinism.** These instructions are inside the
   [Floating-point determinism](#floating-point-determinism) contract: a result that is not NaN is
@@ -906,7 +914,8 @@ are not correctly rounded; they are reproducible, and they match native Rust cod
   payload come from the hardware's NaN propagation inside `libm` and do differ between platforms.
 - **Implementation.** `execution_tape::math` publishes the functions the VM runs for these
   instructions (`math::pow_f32`, `math::exp_f32`, `math::ln_f32`, `math::sin_f32`,
-  `math::cos_f32`, `math::atan2_f32`), along with the exact `f32`/`f64` operations, so native
+  `math::cos_f32`, `math::atan2_f32` and their `_f64` forms), along with the exact `f32`/`f64`
+  operations, so native
   code can compute the same bits as a tape program. They never depend on the `std` feature, so a
   `std` build does not route them to the platform C library.
 - **Versioning.** The `libm` dependency is pinned with `=0.2.16`. Moving to another `libm` release,
@@ -919,11 +928,11 @@ are not correctly rounded; they are reproducible, and they match native Rust cod
   `libm` only with an `execution_tape` release that moves this definition, and native code in
   the same build that calls `libm` computes the same bits as the intrinsics.
 
-`f32.clamp dst, a, lo, hi` traps with `ClampBoundsInvalid` unless `lo <= hi`, so it traps when
-`lo > hi` or either bound is NaN (where Rust's `f32::clamp` panics). Otherwise it returns `lo` if
-`a < lo`, `hi` if `a > hi`, and `a` otherwise, bit for bit what `f32::clamp` returns (so
-`clamp(-0.0, 0.0, 1.0)` is `-0.0`, and a NaN `a` gives a NaN). It is exact and does not use
-`libm`.
+`f32.clamp dst, a, lo, hi` and `f64.clamp dst, a, lo, hi` trap with `ClampBoundsInvalid` unless
+`lo <= hi`, so they trap when `lo > hi` or either bound is NaN (where Rust's `f32::clamp` and
+`f64::clamp` panic). Otherwise they return `lo` if `a < lo`, `hi` if `a > hi`, and `a`
+otherwise, bit for bit what Rust's `clamp` returns (so `clamp(-0.0, 0.0, 1.0)` is `-0.0`, and a
+NaN `a` gives a NaN). They are exact and do not use `libm`.
 
 ### Comparisons + branching
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
@@ -1190,6 +1199,16 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x09 cont.bind dst, from_sig_id, to_sig_id, cont, argc, args...`
 - `0xFC 0x0A cont.drop cont`
 - `0xFC 0x0B f64.round_half_away dst, a` (ties away from zero)
+- `0xFC 0x0C f64.clamp dst, a, lo, hi` (traps with `ClampBoundsInvalid` unless `lo <= hi`)
+
+`f64` math intrinsics (`0xFC 0x10..=0x1F`, ordered like the `f32` block at `0xFD 0xA0`; see
+[Math intrinsics](#math-intrinsics)):
+- `0xFC 0x10 f64.pow dst, a, b`
+- `0xFC 0x11 f64.exp dst, a`
+- `0xFC 0x12 f64.ln dst, a`
+- `0xFC 0x13 f64.sin dst, a`
+- `0xFC 0x14 f64.cos dst, a`
+- `0xFC 0x15 f64.atan2 dst, y, x`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits

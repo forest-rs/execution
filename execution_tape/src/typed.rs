@@ -460,6 +460,38 @@ pub(crate) enum ExecInstr {
         dst: F64Reg,
         a: F64Reg,
     },
+    F64Clamp {
+        dst: F64Reg,
+        a: F64Reg,
+        lo: F64Reg,
+        hi: F64Reg,
+    },
+    F64Pow {
+        dst: F64Reg,
+        a: F64Reg,
+        b: F64Reg,
+    },
+    F64Exp {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Ln {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Sin {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Cos {
+        dst: F64Reg,
+        a: F64Reg,
+    },
+    F64Atan2 {
+        dst: F64Reg,
+        y: F64Reg,
+        x: F64Reg,
+    },
     F64CopySign {
         dst: F64Reg,
         a: F64Reg,

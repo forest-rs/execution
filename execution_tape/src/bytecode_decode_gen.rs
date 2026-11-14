@@ -1379,6 +1379,70 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 a,
             }
         },
+        Opcode::F64Clamp => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let lo = crate::codec_primitives::read_reg(r)?;
+            let hi = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Clamp {
+                dst,
+                a,
+                lo,
+                hi,
+            }
+        },
+        Opcode::F64Pow => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Pow {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F64Exp => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Exp {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Ln => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Ln {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Sin => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Sin {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Cos => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Cos {
+                dst,
+                a,
+            }
+        },
+        Opcode::F64Atan2 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let y = crate::codec_primitives::read_reg(r)?;
+            let x = crate::codec_primitives::read_reg(r)?;
+            Instr::F64Atan2 {
+                dst,
+                y,
+                x,
+            }
+        },
         Opcode::ConstI32 => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let imm = crate::codec_primitives::read_i32_sleb(r)?;

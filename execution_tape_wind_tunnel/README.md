@@ -19,6 +19,16 @@ whose host is swapped with `Vm::replace_host` around each call.
 cargo bench -p execution_tape_wind_tunnel --bench borrowed_host
 ```
 
+## Math intrinsics
+
+`math_intrinsics` chains 128 dependent `pow`, `sin` and (for `f64`) `exp` calls three ways: as
+the tape intrinsic, as a host call computing the same `execution_tape::math` function, and
+natively. Divide each time by 128 for a per-call cost.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench math_intrinsics
+```
+
 ## Retained executable callable costs
 
 The `callables` suite includes `retained_callable` cases that separate capturing an environment,

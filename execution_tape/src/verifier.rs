@@ -2402,6 +2402,38 @@ fn verify_function_bytecode(
                 dst: map_f64(*dst)?,
                 a: map_f64(*a)?,
             },
+            Instr::F64Clamp { dst, a, lo, hi } => ExecInstr::F64Clamp {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                lo: map_f64(*lo)?,
+                hi: map_f64(*hi)?,
+            },
+            Instr::F64Pow { dst, a, b } => ExecInstr::F64Pow {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+                b: map_f64(*b)?,
+            },
+            Instr::F64Exp { dst, a } => ExecInstr::F64Exp {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Ln { dst, a } => ExecInstr::F64Ln {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Sin { dst, a } => ExecInstr::F64Sin {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Cos { dst, a } => ExecInstr::F64Cos {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64Atan2 { dst, y, x } => ExecInstr::F64Atan2 {
+                dst: map_f64(*dst)?,
+                y: map_f64(*y)?,
+                x: map_f64(*x)?,
+            },
             Instr::F64CopySign { dst, a, b } => ExecInstr::F64CopySign {
                 dst: map_f64(*dst)?,
                 a: map_f64(*a)?,
@@ -4209,8 +4241,21 @@ fn validate_instr_types(
         | Instr::F64Nearest { a, .. }
         | Instr::F64Sqrt { a, .. }
         | Instr::F64RoundHalfAway { a, .. }
+        | Instr::F64Exp { a, .. }
+        | Instr::F64Ln { a, .. }
+        | Instr::F64Sin { a, .. }
+        | Instr::F64Cos { a, .. }
         | Instr::F64ToBits { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+        }
+        Instr::F64Pow { a: x, b: y, .. } | Instr::F64Atan2 { y: x, x: y, .. } => {
+            check_expected(func_id, pc, *x, t(*x), ValueType::F64)?;
+            check_expected(func_id, pc, *y, t(*y), ValueType::F64)?;
+        }
+        Instr::F64Clamp { a, lo, hi, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
+            check_expected(func_id, pc, *lo, t(*lo), ValueType::F64)?;
+            check_expected(func_id, pc, *hi, t(*hi), ValueType::F64)?;
         }
         Instr::F64FromBits { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;

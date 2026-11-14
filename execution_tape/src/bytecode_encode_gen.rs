@@ -976,6 +976,52 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *a);
             Ok(())
         },
+        Instr::F64Clamp { a, dst, hi, lo } => {
+            out.extend_from_slice(&[0xFC, 0x0C]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *lo);
+            crate::codec_primitives::write_reg(out, *hi);
+            Ok(())
+        },
+        Instr::F64Pow { a, b, dst } => {
+            out.extend_from_slice(&[0xFC, 0x10]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::F64Exp { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x11]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Ln { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x12]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Sin { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x13]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Cos { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x14]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F64Atan2 { dst, x, y } => {
+            out.extend_from_slice(&[0xFC, 0x15]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *y);
+            crate::codec_primitives::write_reg(out, *x);
+            Ok(())
+        },
         Instr::ConstI32 { dst, imm } => {
             out.extend_from_slice(&[0xFD, 0x00]);
             crate::codec_primitives::write_reg(out, *dst);
