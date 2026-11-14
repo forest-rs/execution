@@ -261,10 +261,16 @@ impl<'s> HostCallSite<'s> {
     /// Returns `true` when this calls `import`: the same symbol and complete signature.
     #[must_use]
     pub fn calls(&self, import: HostImport) -> bool {
-        let entry = &self.program.host_sigs[self.site.import.0 as usize];
-        self.symbol() == import.symbol()
-            && self.program.host_sig_args(entry).ok() == Some(import.args())
-            && self.program.host_sig_rets(entry).ok() == Some(import.rets())
+        import.is_declared_as(self.program, self.site.import)
+    }
+
+    /// Returns the import in `surface` this calls, with the same symbol and complete signature.
+    ///
+    /// The result can be matched against the `const`s `surface` is built from:
+    /// `match site.import_in(&SURFACE) { Some(SET) => .., _ => .. }`.
+    #[must_use]
+    pub fn import_in(&self, surface: &[HostImport]) -> Option<HostImport> {
+        HostImport::find(surface, self.program, self.site.import)
     }
 
     /// The function containing the call.

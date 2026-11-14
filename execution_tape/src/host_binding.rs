@@ -6,14 +6,18 @@
 //! [`HostFunctions`] owns operation definitions. Binding checks every declared import against
 //! full argument/return types and produces immutable [`HostBindings`], with one callback table
 //! per bound program, so units installed from any bound program can call the same host. Each
-//! [`BoundHost`] supplies independent mutable state while borrowing those tables. The ordinary [`Host`] ABI, VM return
-//! validation, fuel charging, tracing, and access recording continue to apply.
+//! [`BoundHost`] supplies independent mutable state while sharing those tables. The ordinary
+//! [`Host`] ABI, VM return validation, fuel charging, tracing, and access recording continue to
+//! apply.
 //!
 //! [`HostFunctions::bind_checked`] also hands every host call's statically known arguments to an
 //! embedder check, so constant arguments such as names are validated before anything runs.
+//! [`VerifiedProgram::check_host_calls`] runs the same checks against a list of [`HostImport`]s,
+//! for a host that dispatches without registered callbacks.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -29,7 +33,14 @@ use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 /// [`HostFunctions::implement`] registers its callback, and [`HostCallSite::calls`] recognizes
 /// its calls in a link check.
 ///
+/// The `const`s are also patterns. A host that dispatches with `match` rather than registered
+/// callbacks resolves each call with [`HostContext::import_in`], and a link check each call site
+/// with [`HostCallSite::import_in`], then matches the result against the same `const`s, which
+/// compares the symbol and the complete signature. No separate symbol strings are needed.
+///
 /// ```
+/// use std::sync::Arc;
+///
 /// use execution_tape::asm::{FunctionSig, ProgramBuilder};
 /// use execution_tape::host::{HostContext, HostError, ValueRef};
 /// use execution_tape::host_binding::{HostFunctions, HostImport};
@@ -53,7 +64,7 @@ use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 /// let [] = pb.emit_call_with(&mut body, log_import, ("hello",))?;
 /// body.ret(0, &[]);
 /// pb.define_function(entry, body)?;
-/// let program = pb.build_verified()?;
+/// let program = Arc::new(pb.build_verified()?);
 /// functions.bind(&program)?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -93,6 +104,25 @@ impl HostImport {
     #[must_use]
     pub const fn rets(&self) -> &'static [ValueType] {
         self.rets
+    }
+
+    /// Returns `true` when `program` declares this as its import `id`: the same symbol and
+    /// complete signature.
+    pub(crate) fn is_declared_as(&self, program: &Program, id: HostSigId) -> bool {
+        let Some(entry) = program.host_sigs.get(id.0 as usize) else {
+            return false;
+        };
+        program.symbol_str(entry.symbol).ok() == Some(self.symbol)
+            && program.host_sig_args(entry).ok() == Some(self.args)
+            && program.host_sig_rets(entry).ok() == Some(self.rets)
+    }
+
+    /// Returns the import in `surface` that `program` declares as its import `id`.
+    pub(crate) fn find(surface: &[Self], program: &Program, id: HostSigId) -> Option<Self> {
+        surface
+            .iter()
+            .find(|import| import.is_declared_as(program, id))
+            .copied()
     }
 
     /// The complete signature, as [`HostFunctions::register`] and
@@ -207,15 +237,13 @@ impl<S> HostFunctions<S> {
     /// Validates every declared import, including unused imports, before producing bindings.
     ///
     /// Failures contain all missing symbols and full-signature mismatches in import-ID order.
-    /// Success owns a callback table and borrows only `program`; the registry may then be dropped.
-    /// Binding performs no host calls and needs no mutable host state.
-    pub fn bind<'program>(
-        &self,
-        program: &'program VerifiedProgram,
-    ) -> Result<HostBindings<'program, S>, BindingError> {
-        let mut bindings = HostBindings { tables: Vec::new() };
-        bindings.tables.push(self.table(program)?);
-        Ok(bindings)
+    /// Success owns a callback table and shares `program`; the registry may then be dropped.
+    /// Binding performs no host calls and needs no mutable host state. Units installed from this
+    /// same allocation dispatch through the table, so install `program` itself.
+    pub fn bind(&self, program: &Arc<VerifiedProgram>) -> Result<HostBindings<S>, BindingError> {
+        Ok(HostBindings {
+            tables: Arc::from([self.table(program)?]),
+        })
     }
 
     /// Binds `program` as [`Self::bind`] does, and also passes every reachable host call to
@@ -226,8 +254,12 @@ impl<S> HostFunctions<S> {
     /// true on every path reach `check`; see [`VerifiedProgram::host_call_sites`]. Calls to an
     /// import that fails to bind are not checked. Failures contain every rejected import and
     /// every rejected call, each call with its location and `check`'s message.
+    /// [`VerifiedProgram::check_host_calls`] runs the same checks against declared imports,
+    /// without callbacks.
     ///
     /// ```
+    /// use std::sync::Arc;
+    ///
     /// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
     /// use execution_tape::host::{HostContext, HostError, HostSig, ValueRef};
     /// use execution_tape::host_binding::HostFunctions;
@@ -249,7 +281,7 @@ impl<S> HostFunctions<S> {
     /// let [] = pb.emit_call_with(&mut body, import, ("rustiness", value))?;
     /// body.ret(0, &[]);
     /// pb.define_function(entry, body)?;
-    /// let program = pb.build_verified()?;
+    /// let program = Arc::new(pb.build_verified()?);
     ///
     /// let schema = ["age", "wetness"];
     /// let error = functions
@@ -267,65 +299,135 @@ impl<S> HostFunctions<S> {
     /// );
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn bind_checked<'program, E: fmt::Display>(
+    pub fn bind_checked<E: fmt::Display>(
         &self,
-        program: &'program VerifiedProgram,
-        mut check: impl FnMut(&HostCallSite<'_>) -> Result<(), E>,
-    ) -> Result<HostBindings<'program, S>, BindingError> {
+        program: &Arc<VerifiedProgram>,
+        check: impl FnMut(&HostCallSite<'_>) -> Result<(), E>,
+    ) -> Result<HostBindings<S>, BindingError> {
         let (table, mut error) = match self.table(program) {
             Ok(table) => (Some(table), BindingError::default()),
             Err(error) => (None, error),
         };
-        for site in program.host_call_sites().iter() {
-            if error.imports.iter().any(|e| e.import == site.import()) {
-                continue;
-            }
-            if let Err(message) = check(&site) {
-                error.calls.push(CallError {
-                    import: site.import(),
-                    symbol: Box::from(site.symbol()),
-                    function: site.function(),
-                    pc: site.pc(),
-                    span: site.span(),
-                    message: alloc::string::ToString::to_string(&message).into_boxed_str(),
-                });
-            }
-        }
+        error.calls = check_calls(program, &error.imports, check);
         match table {
             Some(table) if error.calls.is_empty() => Ok(HostBindings {
-                tables: alloc::vec![table],
+                tables: Arc::from([table]),
             }),
             _ => Err(error),
         }
     }
 
-    fn table<'program>(
-        &self,
-        program: &'program VerifiedProgram,
-    ) -> Result<Table<'program, S>, BindingError> {
-        let source = program.program();
-        let mut callbacks = Vec::with_capacity(source.host_sigs.len());
-        let mut errors = Vec::new();
-        for (index, import) in source.host_sigs.iter().enumerate() {
-            let symbol = source
-                .symbol_str(import.symbol)
-                .expect("verified host symbol");
-            let args = source
-                .host_sig_args(import)
-                .expect("verified host arguments");
-            let rets = source.host_sig_rets(import).expect("verified host returns");
+    fn table(&self, program: &Arc<VerifiedProgram>) -> Result<Table<S>, BindingError> {
+        let callbacks = resolve_imports(program.program(), |symbol, hash, args, rets| {
             let overloads = self.operations.get(symbol);
-            if let Some(operation) = overloads.and_then(|s| s.get(&import.sig_hash))
-                && operation.signature.args == args
-                && operation.signature.rets == rets
-            {
-                callbacks.push(operation.callback);
-                continue;
+            match overloads.and_then(|s| s.get(&hash)) {
+                Some(op) if op.signature.args == args && op.signature.rets == rets => {
+                    Ok(op.callback)
+                }
+                _ => Err(overloads.map(|s| s.values().map(|op| op.signature.clone()).collect())),
             }
-            errors.push(ImportError {
+        })?;
+        Ok(Table {
+            program: Arc::clone(program),
+            callbacks: callbacks.into_boxed_slice(),
+        })
+    }
+}
+
+impl VerifiedProgram {
+    /// Checks every import against `imports` and passes every reachable host call to `check`,
+    /// as [`HostFunctions::bind_checked`] does, without registering callbacks.
+    ///
+    /// Each declared import, including unused ones, must be one of `imports`: the same symbol
+    /// and complete signature. This is the link check for a host that dispatches on its own,
+    /// such as one matching [`HostContext::import_in`] against the same `imports`. Failures
+    /// contain every rejected import and every rejected call, as [`BindingError`]s from binding
+    /// do; calls to a rejected import are not checked.
+    ///
+    /// ```
+    /// use execution_tape::asm::{FunctionSig, ProgramBuilder};
+    /// use execution_tape::host::ValueRef;
+    /// use execution_tape::host_binding::HostImport;
+    /// use execution_tape::program::ValueType;
+    ///
+    /// const SET: HostImport = HostImport::new("settings.set", &[ValueType::Str], &[]);
+    /// const SURFACE: [HostImport; 1] = [SET];
+    ///
+    /// let mut pb = ProgramBuilder::new();
+    /// let set = pb.host_import(SET);
+    /// let entry = pb.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![] })?;
+    /// let mut body = pb.function_asm(entry)?;
+    /// let [] = pb.emit_call_with(&mut body, set, ("rustiness",))?;
+    /// body.ret(0, &[]);
+    /// pb.define_function(entry, body)?;
+    /// let program = pb.build_verified()?;
+    ///
+    /// let error = program
+    ///     .check_host_calls(&SURFACE, |site| match (site.import_in(&SURFACE), site.arg(0)) {
+    ///         (Some(SET), Some(ValueRef::Str("age" | "wetness"))) => Ok(()),
+    ///         (Some(SET), _) => Err("not a setting"),
+    ///         _ => Ok(()),
+    ///     })
+    ///     .unwrap_err();
+    /// assert_eq!(error.calls[0].message.as_ref(), "not a setting");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn check_host_calls<E: fmt::Display>(
+        &self,
+        imports: &[HostImport],
+        check: impl FnMut(&HostCallSite<'_>) -> Result<(), E>,
+    ) -> Result<(), BindingError> {
+        let mut error = match resolve_imports(self.program(), |symbol, _, args, rets| {
+            let mut same_symbol = imports.iter().filter(|i| i.symbol == symbol).peekable();
+            if same_symbol.peek().is_none() {
+                return Err(None);
+            }
+            match same_symbol
+                .clone()
+                .find(|i| i.args == args && i.rets == rets)
+            {
+                Some(_) => Ok(()),
+                None => Err(Some(same_symbol.map(HostImport::signature).collect())),
+            }
+        }) {
+            Ok(_) => BindingError::default(),
+            Err(error) => error,
+        };
+        error.calls = check_calls(self, &error.imports, check);
+        if error.imports.is_empty() && error.calls.is_empty() {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+}
+
+/// Resolves each of `program`'s declared imports, in import-ID order, with `find`.
+///
+/// `find` receives the symbol, signature hash, arguments and returns, and on failure the
+/// signatures available for the symbol, or `None` when the symbol is unknown.
+fn resolve_imports<T>(
+    program: &Program,
+    mut find: impl FnMut(&str, SigHash, &[ValueType], &[ValueType]) -> Result<T, Option<Vec<HostSig>>>,
+) -> Result<Vec<T>, BindingError> {
+    let mut found = Vec::with_capacity(program.host_sigs.len());
+    let mut errors = Vec::new();
+    for (index, import) in program.host_sigs.iter().enumerate() {
+        let symbol = program
+            .symbol_str(import.symbol)
+            .expect("verified host symbol");
+        let args = program
+            .host_sig_args(import)
+            .expect("verified host arguments");
+        let rets = program
+            .host_sig_rets(import)
+            .expect("verified host returns");
+        match find(symbol, import.sig_hash, args, rets) {
+            Ok(value) => found.push(value),
+            Err(available) => errors.push(ImportError {
                 import: HostSigId(u32::try_from(index).expect("verified import index")),
                 symbol: Box::from(symbol),
-                kind: if overloads.is_some() {
+                kind: if available.is_some() {
                     ImportErrorKind::SignatureMismatch
                 } else {
                     ImportErrorKind::UnknownSymbol
@@ -334,40 +436,80 @@ impl<S> HostFunctions<S> {
                     args: args.to_vec(),
                     rets: rets.to_vec(),
                 },
-                available: overloads.map_or_else(Vec::new, |s| {
-                    s.values().map(|op| op.signature.clone()).collect()
-                }),
-            });
+                available: available.unwrap_or_default(),
+            }),
         }
-        if !errors.is_empty() {
-            return Err(BindingError {
-                imports: errors,
-                calls: Vec::new(),
-            });
-        }
-        Ok(Table {
-            program: source,
-            callbacks: callbacks.into_boxed_slice(),
+    }
+    if errors.is_empty() {
+        Ok(found)
+    } else {
+        Err(BindingError {
+            imports: errors,
+            calls: Vec::new(),
         })
     }
 }
 
+/// Passes every reachable host call of `program` to `check`, except calls to a rejected import.
+fn check_calls<E: fmt::Display>(
+    program: &VerifiedProgram,
+    rejected: &[ImportError],
+    mut check: impl FnMut(&HostCallSite<'_>) -> Result<(), E>,
+) -> Vec<CallError> {
+    let mut calls = Vec::new();
+    for site in program.host_call_sites().iter() {
+        if rejected.iter().any(|e| e.import == site.import()) {
+            continue;
+        }
+        if let Err(message) = check(&site) {
+            calls.push(CallError {
+                import: site.import(),
+                symbol: Box::from(site.symbol()),
+                function: site.function(),
+                pc: site.pc(),
+                span: site.span(),
+                message: alloc::string::ToString::to_string(&message).into_boxed_str(),
+            });
+        }
+    }
+    calls
+}
+
 /// The validated callbacks of one program, indexed by its import IDs.
-struct Table<'program, S> {
-    program: &'program Program,
+struct Table<S> {
+    program: Arc<VerifiedProgram>,
     callbacks: Box<[HostCallback<S>]>,
+}
+
+impl<S> Clone for Table<S> {
+    fn clone(&self) -> Self {
+        Self {
+            program: Arc::clone(&self.program),
+            callbacks: self.callbacks.clone(),
+        }
+    }
 }
 
 /// Immutable callback choices validated for one or more verified programs.
 ///
-/// Each instance borrows the same tables without copying callbacks or signatures. Bindings refer
-/// to the original program allocations: an equal cloned program is a different binding domain.
-/// Every unit installed from a bound program dispatches through that program's table.
-pub struct HostBindings<'program, S> {
-    tables: Vec<Table<'program, S>>,
+/// The bindings share each bound program, so they need no lifetime and can be stored beside it.
+/// Each instance shares the same tables without copying callbacks or signatures. Bindings refer
+/// to the bound program allocations: an equal program in another allocation is a different
+/// binding domain. Every unit installed from a bound program dispatches through that program's
+/// table.
+pub struct HostBindings<S> {
+    tables: Arc<[Table<S>]>,
 }
 
-impl<S> fmt::Debug for HostBindings<'_, S> {
+impl<S> Clone for HostBindings<S> {
+    fn clone(&self) -> Self {
+        Self {
+            tables: Arc::clone(&self.tables),
+        }
+    }
+}
+
+impl<S> fmt::Debug for HostBindings<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostBindings")
             .field("program_count", &self.tables.len())
@@ -376,34 +518,36 @@ impl<S> fmt::Debug for HostBindings<'_, S> {
     }
 }
 
-impl<'program, S> HostBindings<'program, S> {
+impl<S> HostBindings<S> {
     /// Validates `program`'s imports against `functions` and adds them to these bindings.
     ///
     /// Units of every bound program can then share one [`BoundHost`], as calls across installed
-    /// units require. Binding a program again replaces its table. On failure the bindings are
+    /// units require. Binding a program again replaces its table. Hosts created earlier with
+    /// [`Self::with_state`] keep the tables they were created with. On failure the bindings are
     /// unchanged; the error lists `program`'s rejected imports as [`HostFunctions::bind`] does.
     pub fn bind(
         &mut self,
         functions: &HostFunctions<S>,
-        program: &'program VerifiedProgram,
+        program: &Arc<VerifiedProgram>,
     ) -> Result<(), BindingError> {
         let table = functions.table(program)?;
-        match self
-            .tables
+        let mut tables = self.tables.to_vec();
+        match tables
             .iter_mut()
-            .find(|bound| core::ptr::eq(bound.program, table.program))
+            .find(|bound| Arc::ptr_eq(&bound.program, &table.program))
         {
             Some(bound) => *bound = table,
-            None => self.tables.push(table),
+            None => tables.push(table),
         }
+        self.tables = tables.into();
         Ok(())
     }
 
-    /// Creates a host instance with independent mutable state, borrowing these binding tables.
+    /// Creates a host instance with independent mutable state, sharing these binding tables.
     #[must_use]
-    pub fn with_state(&self, state: S) -> BoundHost<'_, S> {
+    pub fn with_state(&self, state: S) -> BoundHost<S> {
         BoundHost {
-            tables: &self.tables,
+            tables: Arc::clone(&self.tables),
             state,
         }
     }
@@ -427,12 +571,12 @@ impl<'program, S> HostBindings<'program, S> {
 /// A call from a program that was never bound traps with [`HostError::ProgramMismatch`] before
 /// invoking a callback. Argument/return buffers still follow [`Host::call`], including borrowed
 /// aggregate arguments.
-pub struct BoundHost<'bindings, S> {
-    tables: &'bindings [Table<'bindings, S>],
+pub struct BoundHost<S> {
+    tables: Arc<[Table<S>]>,
     state: S,
 }
 
-impl<S> fmt::Debug for BoundHost<'_, S> {
+impl<S> fmt::Debug for BoundHost<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoundHost")
             .field("program_count", &self.tables.len())
@@ -440,7 +584,7 @@ impl<S> fmt::Debug for BoundHost<'_, S> {
     }
 }
 
-impl<S> BoundHost<'_, S> {
+impl<S> BoundHost<S> {
     /// Returns this instance's state; accessible through [`crate::vm::Vm::host`] between runs.
     #[must_use]
     pub fn state(&self) -> &S {
@@ -453,7 +597,7 @@ impl<S> BoundHost<'_, S> {
     }
 }
 
-impl<S> Host for BoundHost<'_, S> {
+impl<S> Host for BoundHost<S> {
     fn call(
         &mut self,
         _symbol: &str,
@@ -466,7 +610,7 @@ impl<S> Host for BoundHost<'_, S> {
         let table = self
             .tables
             .iter()
-            .find(|table| core::ptr::eq(table.program, program))
+            .find(|table| core::ptr::eq(table.program.program(), program))
             .ok_or(HostError::ProgramMismatch)?;
         let callback = table
             .callbacks
@@ -680,7 +824,7 @@ mod tests {
         Ok(0)
     }
 
-    fn program(symbol: &str) -> VerifiedProgram {
+    fn program(symbol: &str) -> Arc<VerifiedProgram> {
         let mut pb = ProgramBuilder::new();
         let sig = pb.host_sig_for(symbol, signature());
         let mut body = Asm::new();
@@ -695,7 +839,7 @@ mod tests {
             },
         )
         .unwrap();
-        pb.build_verified().unwrap()
+        Arc::new(pb.build_verified().unwrap())
     }
 
     #[test]
@@ -705,7 +849,7 @@ mod tests {
         let mismatch = pb.host_sig_for("overloaded", signature());
         pb.host_sig_for("present", signature());
         // All imports are unused; binding validates the complete declared contract.
-        let p = pb.build_verified().unwrap();
+        let p = Arc::new(pb.build_verified().unwrap());
         let mut functions = HostFunctions::new();
         functions
             .register("present", signature(), increment)
@@ -755,7 +899,7 @@ mod tests {
         }
         a.ret(0, &[]);
         pb.define_function(f, a).unwrap();
-        let p = pb.build_verified().unwrap();
+        let p = Arc::new(pb.build_verified().unwrap());
 
         let mut functions = HostFunctions::<()>::new();
         functions
@@ -826,7 +970,7 @@ mod tests {
         let [] = pb.emit_call(&mut a, set, &[r]).unwrap();
         a.ret(0, &[]);
         pb.define_function(f, a).unwrap();
-        let p = pb.build_verified().unwrap();
+        let p = Arc::new(pb.build_verified().unwrap());
 
         let mut functions = HostFunctions::<()>::new();
         functions.implement(SET, |_, _, _, _| Ok(0)).unwrap();
@@ -854,6 +998,92 @@ mod tests {
     }
 
     #[test]
+    fn declared_imports_check_like_binding_without_callbacks() {
+        const NAMED: HostImport = HostImport::new("named", &[ValueType::Str], &[]);
+        const MISSING: HostImport = HostImport::new("missing", &[ValueType::Str], &[]);
+        const NAMED_I64: HostImport = HostImport::new("named", &[ValueType::I64], &[]);
+        let mut pb = ProgramBuilder::new();
+        let [named, missing] = [NAMED, MISSING].map(|i| pb.host_import(i));
+        let f = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            })
+            .unwrap();
+        let mut a = pb.function_asm(f).unwrap();
+        for (import, text) in [(named, "good"), (named, "bad"), (missing, "bad")] {
+            let [] = pb.emit_call_with(&mut a, import, (text,)).unwrap();
+        }
+        a.ret(0, &[]);
+        pb.define_function(f, a).unwrap();
+        let p = Arc::new(pb.build_verified().unwrap());
+        let check = |site: &HostCallSite<'_>| match (site.import_in(&[NAMED]), site.arg(0)) {
+            (Some(NAMED), Some(ValueRef::Str("bad"))) => Err("nothing named \"bad\""),
+            _ => Ok(()),
+        };
+
+        // The same rejections as binding with callbacks for `named` only.
+        let mut functions = HostFunctions::<()>::new();
+        functions.implement(NAMED, |_, _, _, _| Ok(0)).unwrap();
+        let bound = functions.bind_checked(&p, check).unwrap_err();
+        let checked = p.check_host_calls(&[NAMED], check).unwrap_err();
+        assert_eq!(checked, bound);
+        assert_eq!(checked.imports[0].kind, ImportErrorKind::UnknownSymbol);
+        assert_eq!(checked.calls.len(), 1);
+
+        let error = p
+            .check_host_calls(&[NAMED_I64, MISSING], check)
+            .unwrap_err();
+        assert_eq!(error.imports.len(), 1);
+        assert_eq!(error.imports[0].import, named);
+        assert_eq!(error.imports[0].kind, ImportErrorKind::SignatureMismatch);
+        assert_eq!(error.imports[0].available, [NAMED_I64.signature()]);
+        assert!(
+            error.calls.is_empty(),
+            "calls to a rejected import are not checked"
+        );
+
+        assert_eq!(
+            p.check_host_calls(&[NAMED, MISSING], check)
+                .unwrap_err()
+                .calls
+                .len(),
+            1
+        );
+        assert!(
+            p.check_host_calls(&[NAMED, MISSING], |_| Ok::<(), &str>(()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn bindings_and_hosts_own_what_they_dispatch_through() {
+        // Bindings stored beside the program they bind, with no borrow between them.
+        struct Loaded {
+            program: Arc<VerifiedProgram>,
+            bindings: HostBindings<i64>,
+        }
+        let mut functions = HostFunctions::new();
+        functions
+            .register("increment", signature(), increment)
+            .unwrap();
+        let program = program("increment");
+        let loaded = Loaded {
+            bindings: functions.bind(&program).unwrap(),
+            program,
+        };
+        let mut vm = Vm::new(loaded.bindings.with_state(0), Limits::default());
+        let unit = vm.install(Arc::clone(&loaded.program)).unwrap();
+        // The host outlives the bindings it was created from.
+        drop(loaded);
+        let entry = FuncRef::new(unit, FuncId(0));
+        let run =
+            |vm: &mut Vm<BoundHost<i64>>| vm.run(entry, &[Value::I64(1)], TraceMask::NONE, None);
+        assert_eq!(run(&mut vm).unwrap(), [Value::I64(2)]);
+        assert_eq!(*vm.host().state(), 1);
+    }
+
+    #[test]
     fn one_import_declaration_feeds_the_program_the_host_and_link_checks() {
         const INCREMENT: HostImport =
             HostImport::new("increment", &[ValueType::I64], &[ValueType::I64]);
@@ -877,7 +1107,7 @@ mod tests {
             .unwrap();
         a.ret(0, &[value.0]);
         pb.define_function(f, a).unwrap();
-        let p = alloc::sync::Arc::new(pb.build_verified().unwrap());
+        let p = Arc::new(pb.build_verified().unwrap());
 
         let mut functions = HostFunctions::new();
         functions.implement(INCREMENT, increment).unwrap();
@@ -895,7 +1125,7 @@ mod tests {
             })
             .unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
-        let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
+        let unit = vm.install(Arc::clone(&p)).unwrap();
         assert_eq!(
             vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
                 .unwrap(),
@@ -916,7 +1146,7 @@ mod tests {
                 panic!("unexpected write");
             }
         }
-        let p = alloc::sync::Arc::new(program("increment"));
+        let p = program("increment");
         let bindings = {
             let mut functions = HostFunctions::new();
             functions
@@ -927,7 +1157,7 @@ mod tests {
         assert_eq!(bindings.import_count(), 1);
         let mut a = Vm::new(bindings.with_state(0), Limits::default());
         let mut b = Vm::new(bindings.with_state(100), Limits::default());
-        let unit = a.install(alloc::sync::Arc::clone(&p)).unwrap();
+        let unit = a.install(Arc::clone(&p)).unwrap();
         assert_eq!(
             a.run(
                 FuncRef::new(unit, FuncId(0)),
@@ -938,7 +1168,7 @@ mod tests {
             .unwrap(),
             [Value::I64(41)]
         );
-        let unit = b.install(alloc::sync::Arc::clone(&p)).unwrap();
+        let unit = b.install(Arc::clone(&p)).unwrap();
         assert_eq!(
             b.run(
                 FuncRef::new(unit, FuncId(0)),
@@ -954,7 +1184,7 @@ mod tests {
         let mut ctx = ExecutionContext::new();
         let mut outputs = Vec::new();
         let mut reads = Reads::default();
-        let unit = a.install(alloc::sync::Arc::clone(&p)).unwrap();
+        let unit = a.install(Arc::clone(&p)).unwrap();
         a.run_with_ctx(
             &mut ctx,
             FuncRef::new(unit, FuncId(0)),
@@ -972,10 +1202,10 @@ mod tests {
 
     #[test]
     fn program_identity_is_checked_before_a_callback_can_run() {
-        let p = alloc::sync::Arc::new(program("increment"));
+        let p = program("increment");
         // An equal copy is still different code identity.
-        let clone = alloc::sync::Arc::new(VerifiedProgram::clone(&p));
-        let other = alloc::sync::Arc::new(program("different"));
+        let clone = Arc::new(VerifiedProgram::clone(&p));
+        let other = program("different");
         let mut functions = HostFunctions::new();
         functions
             .register("increment", signature(), increment)
@@ -983,7 +1213,7 @@ mod tests {
         let bindings = functions.bind(&p).unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
         for wrong in [&clone, &other] {
-            let unit = vm.install(alloc::sync::Arc::clone(wrong)).unwrap();
+            let unit = vm.install(Arc::clone(wrong)).unwrap();
             let error = vm
                 .run(
                     FuncRef::new(unit, FuncId(0)),
@@ -1001,7 +1231,7 @@ mod tests {
             ));
             assert_eq!(*vm.host().state(), 0);
         }
-        let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
+        let unit = vm.install(Arc::clone(&p)).unwrap();
         assert_eq!(
             vm.run(
                 FuncRef::new(unit, FuncId(0)),
@@ -1046,7 +1276,7 @@ mod tests {
             Err(RegistrationError::HashCollision { .. })
         ));
         functions.register("increment", overload, fail).unwrap();
-        let p = alloc::sync::Arc::new(program("increment"));
+        let p = program("increment");
         let mut colliding = HostFunctions::new();
         colliding
             .insert(
@@ -1065,7 +1295,7 @@ mod tests {
         );
         let bindings = functions.bind(&p).unwrap();
         let mut vm = Vm::new(bindings.with_state(0), Limits::default());
-        let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
+        let unit = vm.install(Arc::clone(&p)).unwrap();
         assert_eq!(
             vm.run(
                 FuncRef::new(unit, FuncId(0)),
@@ -1098,7 +1328,7 @@ mod tests {
             rets[0] = args[0].to_value();
             Ok(1_000_000)
         }
-        let p = alloc::sync::Arc::new(program("increment"));
+        let p = program("increment");
         for (callback, fuel_trap) in [(wrong_type as HostCallback<()>, false), (costly, true)] {
             let mut functions = HostFunctions::new();
             functions
@@ -1107,7 +1337,7 @@ mod tests {
             let bindings = functions.bind(&p).unwrap();
             let error = {
                 let mut vm = Vm::new(bindings.with_state(()), Limits::default());
-                let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
+                let unit = vm.install(Arc::clone(&p)).unwrap();
                 vm.run(
                     FuncRef::new(unit, FuncId(0)),
                     &[Value::I64(1)],

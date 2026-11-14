@@ -64,7 +64,10 @@ This release has an [MSRV][] of 1.88.
 - Declare a host operation once with `host_binding::HostImport`, a `const`-constructible symbol
   and complete signature. `ProgramBuilder::host_import` adds it to a program's import table,
   `HostFunctions::implement` registers its callback, `HostCallSite::calls` matches its call sites
-  in a link check, and it converts into a `host_catalog::HostSpec`.
+  in a link check, and it converts into a `host_catalog::HostSpec`. The constants are also
+  patterns: `HostContext::import_in(&SURFACE)` and `HostCallSite::import_in(&SURFACE)` return
+  the import a call is to, matched by symbol and complete signature, so a host that dispatches
+  with `match` needs no separate symbol strings.
 
 - Pass constants directly as call arguments with `ProgramBuilder::emit_call_with`. Arguments are
   a tuple, such as `(handle, "name", 0.5_f32)`, or a slice of the new `CallArg`. A register in
@@ -84,8 +87,10 @@ This release has an [MSRV][] of 1.88.
   `HostFunctions::bind_checked` binds and passes each call site to an embedder check; rejected
   calls are reported as `CallError`s, which read like verifier diagnostics (`function #F, pc P
   (span S), host call SYMBOL: message`), and `CallError::display_in(&program)` adds the
-  function name, nearest label and instruction as `VerifyError::display_in` does. Migration:
-  `BindingError` gains a `calls` field (empty from `bind`).
+  function name, nearest label and instruction as `VerifyError::display_in` does.
+  `VerifiedProgram::check_host_calls` runs the same import and call checks against a list of
+  `HostImport`s, without registering callbacks. Migration: `BindingError` gains a `calls` field
+  (empty from `bind`).
 
 - Add 32-bit numerics under the `0xFD` prefix (`OpcodePrefix::Numeric32`), in aligned blocks:
   `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` and conversions from `0xC0`. Each
@@ -455,6 +460,13 @@ This release has an [MSRV][] of 1.88.
   Abandoned work now closes with `TraceOutcome::Caught`.
 
 ### Changed
+
+- `HostBindings` and `BoundHost` no longer borrow: they share the bound programs and callback
+  tables, so bindings can be stored beside an `Arc<VerifiedProgram>` and a VM can keep a bound
+  host for as long as it likes. `HostFunctions::bind`, `bind_checked` and `HostBindings::bind`
+  take `&Arc<VerifiedProgram>`, the allocation that units are installed from, instead of
+  `&VerifiedProgram`. Hosts created before a later `HostBindings::bind` keep the tables they were
+  created with. Migration: drop the lifetime parameters, and bind the `Arc` you install.
 
 - `f64_to_u64` now truncates before range-checking, like every other float-to-integer
   conversion and WebAssembly `i64.trunc_f64_u`: an input between `-1.0` and `-0.0`, such as
