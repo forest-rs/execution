@@ -5,9 +5,11 @@
 //!
 //! The body configures and instantiates child modules through opaque host handles: steel, then
 //! paint on one branch (with parameters derived from `age` when `weather` is set), then rust. It
-//! shows typed host imports shared by the program and the host, constants passed directly as
-//! call arguments, and a load-time check of constant parameter names against the child modules'
-//! schemas, so a misspelt name is rejected with its location before anything runs.
+//! shows typed host imports shared by the program and the host and matched as patterns,
+//! constants passed directly as call arguments or loaded once and shared, bindings stored beside
+//! the program they bind, and a load-time check of constant parameter names against the child
+//! modules' schemas, with or without callbacks, so a misspelt name is rejected with its location
+//! before anything runs.
 //!
 //! `cargo run -p execution_tape_examples --bin steel_plate`
 
@@ -15,7 +17,7 @@ use std::sync::Arc;
 
 use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{HostContext, HostError, ValueRef};
-use execution_tape::host_binding::{HostFunctions, HostImport};
+use execution_tape::host_binding::{BindingError, HostBindings, HostFunctions, HostImport};
 use execution_tape::program::{HostTypeId, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncRef, Obj, ObjHandle, Value};
@@ -50,6 +52,16 @@ const OUTPUTS_MATERIAL: HostImport = HostImport::new(
 );
 const OUTPUT_MATERIAL: HostImport =
     HostImport::new("kernel.output.material", &[Str, O(MATERIAL)], &[]);
+/// Every kernel operation.
+const SURFACE: [HostImport; 7] = [
+    BIND_NEW,
+    BIND_SCALAR,
+    BIND_COLOR,
+    BIND_MATERIAL,
+    INSTANTIATE,
+    OUTPUTS_MATERIAL,
+    OUTPUT_MATERIAL,
+];
 
 /// The child modules the body may instantiate, at version 1, with their parameter names.
 const MODULES: [(&str, &[&str]); 3] = [
@@ -183,25 +195,26 @@ fn program() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
 
 /// The link check: every parameter name and module the body names must exist, before it runs.
 fn check(site: &HostCallSite<'_>) -> Result<(), String> {
-    let binds = [BIND_SCALAR, BIND_COLOR, BIND_MATERIAL];
-    if binds.into_iter().any(|op| site.calls(op)) {
-        return match site.arg(1) {
-            Some(ValueRef::Str(name)) if MODULES.iter().any(|(_, p)| p.contains(&name)) => Ok(()),
-            Some(ValueRef::Str(name)) => Err(format!("no child module has a parameter {name:?}")),
-            _ => Err("a parameter name must be a constant".into()),
-        };
-    }
-    if site.calls(INSTANTIATE) {
-        return match (site.arg(0), site.arg(1)) {
-            (Some(ValueRef::Str(name)), Some(ValueRef::U32(1)))
-                if MODULES.iter().any(|(m, _)| *m == name) =>
-            {
+    // The `HostImport` constants are patterns: no separate symbol strings.
+    match (site.import_in(&SURFACE), site.arg(0), site.arg(1)) {
+        (Some(BIND_SCALAR | BIND_COLOR | BIND_MATERIAL), _, Some(ValueRef::Str(name))) => {
+            if MODULES.iter().any(|(_, p)| p.contains(&name)) {
                 Ok(())
+            } else {
+                Err(format!("no child module has a parameter {name:?}"))
             }
-            _ => Err("instantiates a module that is not required".into()),
-        };
+        }
+        (Some(BIND_SCALAR | BIND_COLOR | BIND_MATERIAL), _, _) => {
+            Err("a parameter name must be a constant".into())
+        }
+        (Some(INSTANTIATE), Some(ValueRef::Str(name)), Some(ValueRef::U32(1)))
+            if MODULES.iter().any(|(m, _)| *m == name) =>
+        {
+            Ok(())
+        }
+        (Some(INSTANTIATE), _, _) => Err("instantiates a module that is not required".into()),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// The mock kernel: bindings and instances as plain records.
@@ -233,19 +246,20 @@ fn bind_new(
     Ok(0)
 }
 
+/// One callback for the three `bind` operations, told apart by the import called.
 fn bind(
     k: &mut Kernel,
     args: &[ValueRef<'_>],
     _: &mut [Value],
-    _: HostContext<'_, '_>,
+    ctx: HostContext<'_, '_>,
 ) -> HostResult {
     let [ValueRef::Obj(b), ValueRef::Str(name), values @ ..] = args else {
         return Err(HostError::Failed);
     };
-    let value = match values {
-        [v] => v.to_value(),
+    let value = match (ctx.import_in(&SURFACE), values) {
+        (Some(BIND_SCALAR | BIND_MATERIAL), [v]) => v.to_value(),
         // A color is recorded as its red channel; the example only inspects scalars.
-        [r, _, _] => r.to_value(),
+        (Some(BIND_COLOR), [r, _, _]) => r.to_value(),
         _ => return Err(HostError::Failed),
     };
     let bind = k
@@ -306,6 +320,22 @@ fn kernel() -> Result<HostFunctions<Kernel>, Box<dyn std::error::Error>> {
     Ok(functions)
 }
 
+/// A loaded body: the program and its bindings, stored side by side.
+struct Loaded {
+    program: Arc<VerifiedProgram>,
+    bindings: HostBindings<Kernel>,
+}
+
+/// Links the body to the kernel and binds it, rejecting a misspelt name before anything runs.
+fn load(
+    functions: &HostFunctions<Kernel>,
+    program: VerifiedProgram,
+) -> Result<Loaded, BindingError> {
+    let program = Arc::new(program);
+    let bindings = functions.bind_checked(&program, check)?;
+    Ok(Loaded { program, bindings })
+}
+
 /// A body with one misspelt parameter name.
 fn misspelt() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
     let mut pb = ProgramBuilder::new();
@@ -326,8 +356,7 @@ fn misspelt() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let functions = kernel()?;
-    let program = Arc::new(program()?);
-    let bindings = functions.bind_checked(&program, check)?;
+    let Loaded { program, bindings } = load(&functions, program()?)?;
     println!(
         "link check passed: {} host calls",
         program.host_call_sites().len()
@@ -366,8 +395,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(paint.contains(&("fade".into(), Value::F32(fd))));
     assert_eq!(kernel.output, Some(handle(2, MATERIAL)));
 
+    // The same link check without callbacks, against the declared surface alone.
     let misspelt = misspelt()?;
-    let error = functions.bind_checked(&misspelt, check).unwrap_err();
+    let error = misspelt.check_host_calls(&SURFACE, check).unwrap_err();
     println!("rejected at load: {error}");
     let [call] = &error.calls[..] else {
         panic!("expected one rejected call: {error}");

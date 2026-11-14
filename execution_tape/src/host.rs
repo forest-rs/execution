@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
+use crate::host_binding::HostImport;
 use crate::program::{HostSigId, Program, ValueType};
 use crate::value::AggHandle;
 use crate::value::AggType;
@@ -325,6 +326,78 @@ impl<'vm, 'access> HostContext<'vm, 'access> {
     #[must_use]
     pub fn host_sig_id(&self) -> HostSigId {
         self.host_sig_id
+    }
+
+    /// Returns the import in `surface` being called, with the same symbol and complete signature
+    /// as [`Self::program`] declares for [`Self::host_sig_id`].
+    ///
+    /// A host that dispatches with `match` matches the result against the `const`s `surface` is
+    /// built from, as patterns, so the symbols are written once, in the [`HostImport`]s.
+    /// [`crate::verifier::VerifiedProgram::check_host_calls`] checks a program against the same
+    /// `surface` before it runs. The lookup scans `surface` in order, comparing each entry's
+    /// symbol and signature with the call's.
+    ///
+    /// ```
+    /// use execution_tape::asm::{FunctionSig, ProgramBuilder, Reg};
+    /// use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
+    /// use execution_tape::host_binding::HostImport;
+    /// use execution_tape::program::ValueType::{I64, Str};
+    /// use execution_tape::trace::TraceMask;
+    /// use execution_tape::value::{FuncRef, Value};
+    /// use execution_tape::vm::{Limits, Vm};
+    ///
+    /// const ADD: HostImport = HostImport::new("counter.add", &[I64], &[I64]);
+    /// const LOG: HostImport = HostImport::new("counter.log", &[Str], &[]);
+    /// const SURFACE: [HostImport; 2] = [ADD, LOG];
+    ///
+    /// #[derive(Default)]
+    /// struct Counter {
+    ///     total: i64,
+    ///     log: Vec<String>,
+    /// }
+    /// impl Host for Counter {
+    ///     fn call(
+    ///         &mut self,
+    ///         _: &str,
+    ///         _: SigHash,
+    ///         args: &[ValueRef<'_>],
+    ///         rets: &mut [Value],
+    ///         ctx: HostContext<'_, '_>,
+    ///     ) -> Result<u64, HostError> {
+    ///         match (ctx.import_in(&SURFACE), args) {
+    ///             (Some(ADD), [ValueRef::I64(n)]) => {
+    ///                 self.total += n;
+    ///                 rets[0] = Value::I64(self.total);
+    ///             }
+    ///             (Some(LOG), [ValueRef::Str(line)]) => self.log.push((*line).into()),
+    ///             _ => return Err(HostError::UnknownSymbol),
+    ///         }
+    ///         Ok(0)
+    ///     }
+    /// }
+    ///
+    /// let mut pb = ProgramBuilder::new();
+    /// let [add, log] = SURFACE.map(|import| pb.host_import(import));
+    /// let entry = pb.declare_function(FunctionSig { arg_types: vec![I64], ret_types: vec![I64] })?;
+    /// let n = Reg(pb.argument(entry, 0)?);
+    /// let mut body = pb.function_asm(entry)?;
+    /// let [] = pb.emit_call_with(&mut body, log, ("adding",))?;
+    /// let [total] = pb.emit_call_with(&mut body, add, (n,))?;
+    /// body.ret(0, &[total.0]);
+    /// pb.define_function(entry, body)?;
+    /// let program = pb.build_verified()?;
+    /// program.check_host_calls(&SURFACE, |_| Ok::<(), &str>(()))?;
+    ///
+    /// let mut vm = Vm::new(Counter::default(), Limits::default());
+    /// let unit = vm.install(program)?;
+    /// let out = vm.run(FuncRef::new(unit, entry), &[Value::I64(5)], TraceMask::NONE, None)?;
+    /// assert_eq!(out, [Value::I64(5)]);
+    /// assert_eq!(vm.host().log, ["adding"]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn import_in(&self, surface: &[HostImport]) -> Option<HostImport> {
+        HostImport::find(surface, self.program, self.host_sig_id)
     }
 
     /// Returns the VM aggregate heap for reading aggregate argument contents.
