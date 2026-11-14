@@ -241,6 +241,8 @@ pub(crate) enum Instr {
     F64Nearest { dst: u32, a: u32 },
     /// `dst = sqrt(a)` (`f64`, correctly rounded).
     F64Sqrt { dst: u32, a: u32 },
+    /// `dst = round_half_away(a)` (`f64`, round to nearest integer, ties away from zero).
+    F64RoundHalfAway { dst: u32, a: u32 },
 
     /// `dst = a + b` (`i64`).
     I64Add { dst: u32, a: u32, b: u32 },
@@ -481,6 +483,22 @@ pub(crate) enum Instr {
     F32Le { dst: u32, a: u32, b: u32 },
     /// `dst = (a >= b)` (`f32` -> `bool`; false if NaN).
     F32Ge { dst: u32, a: u32, b: u32 },
+    /// `dst = round_half_away(a)` (`f32`, round to nearest integer, ties away from zero).
+    F32RoundHalfAway { dst: u32, a: u32 },
+    /// `dst = clamp(a, lo, hi)` (`f32`; traps unless `lo <= hi`).
+    F32Clamp { dst: u32, a: u32, lo: u32, hi: u32 },
+    /// `dst = pow(a, b)` (`f32`, pinned `libm::powf`).
+    F32Pow { dst: u32, a: u32, b: u32 },
+    /// `dst = exp(a)` (`f32`, pinned `libm::expf`).
+    F32Exp { dst: u32, a: u32 },
+    /// `dst = ln(a)` (`f32`, pinned `libm::logf`).
+    F32Ln { dst: u32, a: u32 },
+    /// `dst = sin(a)` (`f32`, pinned `libm::sinf`).
+    F32Sin { dst: u32, a: u32 },
+    /// `dst = cos(a)` (`f32`, pinned `libm::cosf`).
+    F32Cos { dst: u32, a: u32 },
+    /// `dst = atan2(y, x)` (`f32`, pinned `libm::atan2f`).
+    F32Atan2 { dst: u32, y: u32, x: u32 },
     /// `dst = i32_to_i64(a)` (`i32` -> `i64`; sign-extends).
     I32ToI64 { dst: u32, a: u32 },
     /// `dst = i64_to_i32(a)` (`i64` -> `i32`; traps when out of range).

@@ -69,12 +69,14 @@ result each instruction produces; this section says how far that result can be r
 - **Bit-exact everywhere.** Every `f32` and `f64` instruction produces the same bits on every
   supported platform: Linux, macOS, Windows and WebAssembly, on x86-64, AArch64 and other
   targets. This covers `add`, `sub`, `mul`, `div` and `sqrt` (correctly rounded: to nearest,
-  ties to even), `rem` (the exact remainder of truncating division), `floor`, `ceil`, `trunc`
-  and `nearest` (exact), `min`, `max`, `min_num` and `max_num`, `neg`, `abs` and `copysign`,
-  the comparisons, and every conversion between `f32`, `f64` and the integer types (a float
-  result rounds once, to nearest with ties to even; an integer result truncates and then traps
-  or saturates as specified). Subnormal inputs and results are honored, never flushed to zero.
-  No instruction converts between `Decimal` and a float.
+  ties to even), `rem` (the exact remainder of truncating division), `floor`, `ceil`, `trunc`,
+  `nearest` and `round_half_away` (exact), `min`, `max`, `min_num`, `max_num` and `f32.clamp`,
+  `neg`, `abs` and `copysign`, the comparisons, every conversion between `f32`, `f64` and the
+  integer types (a float result rounds once, to nearest with ties to even; an integer result
+  truncates and then traps or saturates as specified), and the `f32` math intrinsics `pow`,
+  `exp`, `ln`, `sin`, `cos` and `atan2`, whose results are defined by a pinned `libm` rather than
+  by correct rounding (see [Math intrinsics](#math-intrinsics)). Subnormal inputs and results are
+  honored, never flushed to zero. No instruction converts between `Decimal` and a float.
 - **No contraction.** Each instruction rounds its own result in its own width. A multiply
   followed by an add is never fused into a multiply-add, and no sequence of instructions is
   evaluated at another precision.
@@ -88,16 +90,20 @@ result each instruction produces; this section says how far that result can be r
 - **Scope.** The contract assumes IEEE 754 binary arithmetic in the default floating-point
   environment: round to nearest and no flush-to-zero or denormals-are-zero mode. A host that
   changes that environment while the VM runs is outside it, as are targets whose Rust float
-  arithmetic is not IEEE 754 (x87-only `i586`). Transcendental functions are host calls, which
+  arithmetic is not IEEE 754 (x87-only `i586`). The `f32` math intrinsics are inside the
+  contract; every other transcendental function, including all `f64` ones, is a host call, which
   the contract does not cover.
 - **Implementations.** The interpreter uses native IEEE `add`, `sub`, `mul` and `div` and
   Rust's `as` conversions, whose rounding and saturation Rust defines exactly. It computes
-  `rem`, `sqrt`, rounding and `min`/`max` in the core itself, without `std` or `libm`, so no
-  platform math library is involved. Any other execution engine, such as a future compiled
-  (for example Cranelift) backend, must honor this same contract: it may use native
-  instructions wherever their results agree, and need not canonicalize NaNs. The interpreter
+  `rem`, `sqrt`, rounding, `min`/`max` and `clamp` in the core itself, without `std` or `libm`,
+  and the math intrinsics with the pinned `libm`'s pure-Rust routines, so no platform math
+  library is involved. `execution_tape::math` exposes each of these as a plain function. Any
+  other execution engine, such as a future compiled (for example Cranelift) backend, must honor
+  this same contract: it may use native instructions wherever their results agree, must compute
+  the math intrinsics with the same functions, and need not canonicalize NaNs. The interpreter
   currently quiets a NaN input of the rounding operations, `sqrt`, `rem` and width conversions
-  and keeps its sign and payload; that is not part of the contract.
+  and keeps its sign and payload, and `clamp` returns a NaN `a` unchanged; that is not part of
+  the contract.
 - **Enforcement.** `execution_tape_conformance/tests/float_determinism.rs` pins the edge cases
   (ties, signed zeros, subnormals, saturation, `rem` signs, NaN propagation and preserved NaN
   bits) to literal bit patterns and runs on every CI platform, including `wasm32-wasip1`.
@@ -320,7 +326,8 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
 
 - `0xFC` (`OpcodePrefix::Extended`): general extension space.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
-  (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`, conversions from `0xC0`).
+  (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
+  conversions from `0xC0`).
 
 Every opcode has a 16-bit *code*: its byte for single-byte opcodes, and `prefix << 8 | byte` for
 prefixed ones (`0xFC 0x05` is code `0xFC05`). Traces, recordings and diagnostics report opcodes by
@@ -764,10 +771,11 @@ returning the wrapped value and a `bool` flag, `div`/`rem` that trap with `DivBy
 shifts masked with `& 31` (`i32.shr` arithmetic, `u32.shr` logical), comparisons to `bool`, and
 `u32.clz`/`ctz`/`popcnt`/`rotl`/`rotr` (`clz`/`ctz` of zero are 32). `f32` has the same
 operations as `f64` with the same NaN, signed-zero and rounding rules: `add`/`sub`/`mul`/`div`
-are IEEE single precision; `rem`, `floor`, `ceil`, `trunc`, `nearest` and `sqrt` are computed
-exactly or correctly rounded through the `f64` routines (exact rounding of an `f32` is
-representable as `f32`, and `f64` carries more than `2 * 24 + 2` significand bits, so rounding the
-correctly rounded `f64` square root once to `f32` is correctly rounded). No instruction mixes
+are IEEE single precision; `rem` is the exact remainder; `floor`, `ceil`, `trunc`, `nearest`,
+`round_half_away` and `sqrt` are computed exactly or correctly rounded through the `f64` routines
+(exact rounding of an `f32` is representable as `f32`, and `f64` carries more than `2 * 24 + 2`
+significand bits, so rounding the correctly rounded `f64` square root once to `f32` is correctly
+rounded). No instruction mixes
 widths or signedness; conversions are explicit:
 
 - `i32.to_i64`, `u32.to_u64`, `u32.to_i64`, `i32.to_f64`, `u32.to_f64`, `f32.to_f64`: exact.
@@ -781,6 +789,10 @@ widths or signedness; conversions are explicit:
   `FloatToIntInvalid` on NaN or infinity and `IntCastOverflow` out of range. The `_sat` forms
   saturate instead, and NaN converts to 0.
 - `f32.to_bits`/`f32.from_bits`: raw IEEE bits to and from `u32`.
+
+`f32.round_half_away` and `f64.round_half_away` round like `nearest` but break ties away from zero
+(see floating-point semantics). `f32.clamp` and the `f32` transcendental functions are described
+under [Math intrinsics](#math-intrinsics).
 
 Width conversions of a NaN produce a NaN; `f32.to_bits`, `f32.from_bits`, `neg`, `abs`,
 `copysign` and `const.f32` never alter NaN bits (see
@@ -848,8 +860,52 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
   trap, unlike `f64_to_i64`/`f64_to_u64`.
 - `f64_ne` is `!f64_eq`: it is true when the inputs are unordered (either is NaN), matching
   WebAssembly `f64.ne`.
-- Other rounding modes (e.g. `f64_round_away`) and transcendental functions (e.g. `f64_log`,
-  `f64_exp`) are host-provided.
+- `f64.round_half_away` (and `f32.round_half_away`) rounds to the nearest integer with ties away
+  from zero: IEEE 754 `roundToIntegralTiesToAway`, C's `round`/`roundf`. It differs from
+  `f64_nearest` only on exact ties (`2.5 -> 3.0`, `-0.5 -> -1.0`). It is exact, and follows the
+  rules above for `f64_nearest`: a zero result keeps the input's sign
+  (`round_half_away(-0.4) = -0.0`), infinities and values with magnitude at least 2^52 (2^23 for
+  `f32`) are returned unchanged, and a NaN input produces a NaN. The
+  common emulation `trunc(x + copysign(0.5, x))` is not equivalent: it rounds `0.49999997f32` to
+  `1.0` and odd integers just above 2^23 (2^52 for `f64`) to their even neighbors.
+- `f32` transcendental functions are specified under [Math intrinsics](#math-intrinsics); other
+  transcendental functions (including all `f64` ones) are host-provided.
+
+#### Math intrinsics
+The `f32` math intrinsics are `f32.pow` (`a` raised to `b`), `f32.exp`, `f32.ln` (natural
+logarithm), `f32.sin`, `f32.cos` (radians) and `f32.atan2` (`y` first, result in `-pi..=pi`).
+Their results are **defined as those of the Rust `libm` crate at exactly version 0.2.16**
+(`libm::powf`, `expf`, `logf`, `sinf`, `cosf`, `atan2f`), built without default features. They
+are not correctly rounded; they are reproducible, and they match native Rust code that calls
+`libm` 0.2.16 bit for bit.
+
+- **Determinism.** These instructions are inside the
+  [Floating-point determinism](#floating-point-determinism) contract: a result that is not NaN is
+  bit-for-bit identical on every platform. That holds because `libm` computes them in plain Rust
+  `f32`/`f64` arithmetic, which the contract's own assumptions make exact everywhere, and Rust
+  never contracts it into fused multiply-add.
+  `libm`'s optional `arch` and `unstable-intrinsics` features, which another crate in a build may
+  enable through Cargo feature unification, replace only exactly specified IEEE 754 operations
+  (`sqrt`, `fma`, `rint`, `floor`, `ceil`, `trunc`, `fabs`) with hardware instructions that
+  produce the same bits, so they do not change any non-NaN result. 32-bit x86 without SSE2 is
+  excluded, as it is for arithmetic.
+- **NaN.** As for all arithmetic under the contract, only NaN-ness is guaranteed. The sign and
+  payload come from the hardware's NaN propagation inside `libm` and do differ between platforms.
+- **Implementation.** `execution_tape::math` publishes the functions the VM runs for these
+  instructions (`math::pow_f32`, `math::exp_f32`, `math::ln_f32`, `math::sin_f32`,
+  `math::cos_f32`, `math::atan2_f32`), along with the exact `f32`/`f64` operations, so native
+  code can compute the same bits as a tape program. They never depend on the `std` feature, so a
+  `std` build does not route them to the platform C library.
+- **Versioning.** The `libm` dependency is pinned with `=0.2.16`. Moving to another `libm` release,
+  or to another implementation such as correctly rounded functions, changes results; it is made
+  only deliberately, with a changelog entry and an update to this section and the contract
+  naming the new definition.
+
+`f32.clamp dst, a, lo, hi` traps with `ClampBoundsInvalid` unless `lo <= hi`, so it traps when
+`lo > hi` or either bound is NaN (where Rust's `f32::clamp` panics). Otherwise it returns `lo` if
+`a < lo`, `hi` if `a > hi`, and `a` otherwise, bit for bit what `f32::clamp` returns (so
+`clamp(-0.0, 0.0, 1.0)` is `-0.0`, and a NaN `a` gives a NaN). It is exact and does not use
+`libm`.
 
 ### Comparisons + branching
 - `i64_eq r_dst, r_a, r_b` -> `Bool`
@@ -1115,6 +1171,7 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x08 resume_throw eff_out, call_sig_id, cont, eff_in, tag_id, argc, payload..., retc, rets...`
 - `0xFC 0x09 cont.bind dst, from_sig_id, to_sig_id, cont, argc, args...`
 - `0xFC 0x0A cont.drop cont`
+- `0xFC 0x0B f64.round_half_away dst, a` (ties away from zero)
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits
@@ -1192,6 +1249,16 @@ as `u32le`):
 - `0xFD 0x95 f32.gt dst, a, b`
 - `0xFD 0x96 f32.le dst, a, b`
 - `0xFD 0x97 f32.ge dst, a, b`
+- `0xFD 0x98 f32.round_half_away dst, a` (ties away from zero)
+- `0xFD 0x99 f32.clamp dst, a, lo, hi` (traps with `ClampBoundsInvalid` unless `lo <= hi`)
+
+`f32` math intrinsics (`0xA0..=0xBF`; see [Math intrinsics](#math-intrinsics)):
+- `0xFD 0xA0 f32.pow dst, a, b`
+- `0xFD 0xA1 f32.exp dst, a`
+- `0xFD 0xA2 f32.ln dst, a`
+- `0xFD 0xA3 f32.sin dst, a`
+- `0xFD 0xA4 f32.cos dst, a`
+- `0xFD 0xA5 f32.atan2 dst, y, x`
 
 Conversions (`0xC0..=0xFF`):
 - `0xFD 0xC0 i32.to_i64 dst, a`

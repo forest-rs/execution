@@ -20,6 +20,7 @@ use crate::contract::{Contract, ContractPosition, ContractViolation};
 use crate::decimal::{self, DecimalError};
 use crate::float;
 use crate::host::{AccessSink, Host, HostContext, HostError, ValueRef};
+use crate::math;
 use crate::num32;
 use crate::program::ValueType;
 use crate::program::{ConstEntry, Function, Program};
@@ -278,6 +279,9 @@ pub enum Trap {
     IntDivOverflow,
     /// Float to int conversion encountered NaN or infinity.
     FloatToIntInvalid,
+    /// `f32.clamp` bounds were not ordered: `lo <= hi` was false, because `lo > hi` or a bound
+    /// was NaN.
+    ClampBoundsInvalid,
     /// Index out of bounds (bytes/string ops).
     IndexOutOfBounds,
     /// String slice indices were not on UTF-8 character boundaries.
@@ -422,6 +426,7 @@ impl fmt::Display for Trap {
             Self::DivByZero => write!(f, "divide by zero"),
             Self::IntDivOverflow => write!(f, "integer division overflow"),
             Self::FloatToIntInvalid => write!(f, "float to int invalid"),
+            Self::ClampBoundsInvalid => write!(f, "clamp bounds invalid"),
             Self::IndexOutOfBounds => write!(f, "index out of bounds"),
             Self::StrNotCharBoundary => write!(f, "string slice not on char boundary"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8"),
@@ -2076,56 +2081,68 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Abs { dst, a } => {
-                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a).abs());
+                    ctx.write_f64(base, *dst, math::abs_f64(ctx.read_f64(base, *a)));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Floor { dst, a } => {
-                    ctx.write_f64(base, *dst, float::floor(ctx.read_f64(base, *a)));
+                    ctx.write_f64(base, *dst, math::floor_f64(ctx.read_f64(base, *a)));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Ceil { dst, a } => {
-                    ctx.write_f64(base, *dst, float::ceil(ctx.read_f64(base, *a)));
+                    ctx.write_f64(base, *dst, math::ceil_f64(ctx.read_f64(base, *a)));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Trunc { dst, a } => {
-                    ctx.write_f64(base, *dst, float::trunc(ctx.read_f64(base, *a)));
+                    ctx.write_f64(base, *dst, math::trunc_f64(ctx.read_f64(base, *a)));
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Nearest { dst, a } => {
-                    ctx.write_f64(base, *dst, float::nearest(ctx.read_f64(base, *a)));
+                    ctx.write_f64(
+                        base,
+                        *dst,
+                        math::round_half_even_f64(ctx.read_f64(base, *a)),
+                    );
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Sqrt { dst, a } => {
-                    ctx.write_f64(base, *dst, float::sqrt(ctx.read_f64(base, *a)));
+                    ctx.write_f64(base, *dst, math::sqrt_f64(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64RoundHalfAway { dst, a } => {
+                    ctx.write_f64(
+                        base,
+                        *dst,
+                        math::round_half_away_f64(ctx.read_f64(base, *a)),
+                    );
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64CopySign { dst, a, b } => {
-                    let out = float::copysign(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    let out = math::copysign_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Min { dst, a, b } => {
-                    let out = f64_min(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    let out = math::min_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Max { dst, a, b } => {
-                    let out = f64_max(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    let out = math::max_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64MinNum { dst, a, b } => {
-                    let out = f64_min_num(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    let out = math::min_num_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64MaxNum { dst, a, b } => {
-                    let out = f64_max_num(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    let out = math::max_num_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Rem { dst, a, b } => {
-                    let out = float::rem(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    let out = math::rem_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2715,7 +2732,7 @@ impl<H: Host> Vm<H> {
                 ExecInstr::F32Rem { dst, a, b } => {
                     let a = ctx.read_f32(base, *a);
                     let b = ctx.read_f32(base, *b);
-                    let out = num32::rem(a, b);
+                    let out = math::rem_f32(a, b);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2727,72 +2744,72 @@ impl<H: Host> Vm<H> {
                 }
                 ExecInstr::F32Abs { dst, a } => {
                     let a = ctx.read_f32(base, *a);
-                    let out = num32::abs(a);
+                    let out = math::abs_f32(a);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Min { dst, a, b } => {
                     let a = ctx.read_f32(base, *a);
                     let b = ctx.read_f32(base, *b);
-                    let out = num32::demote(f64_min(num32::promote(a), num32::promote(b)));
+                    let out = math::min_f32(a, b);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Max { dst, a, b } => {
                     let a = ctx.read_f32(base, *a);
                     let b = ctx.read_f32(base, *b);
-                    let out = num32::demote(f64_max(num32::promote(a), num32::promote(b)));
+                    let out = math::max_f32(a, b);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32MinNum { dst, a, b } => {
                     let a = ctx.read_f32(base, *a);
                     let b = ctx.read_f32(base, *b);
-                    let out = num32::demote(f64_min_num(num32::promote(a), num32::promote(b)));
+                    let out = math::min_num_f32(a, b);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32MaxNum { dst, a, b } => {
                     let a = ctx.read_f32(base, *a);
                     let b = ctx.read_f32(base, *b);
-                    let out = num32::demote(f64_max_num(num32::promote(a), num32::promote(b)));
+                    let out = math::max_num_f32(a, b);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32CopySign { dst, a, b } => {
                     let a = ctx.read_f32(base, *a);
                     let b = ctx.read_f32(base, *b);
-                    let out = num32::copysign(a, b);
+                    let out = math::copysign_f32(a, b);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Floor { dst, a } => {
                     let a = ctx.read_f32(base, *a);
-                    let out = num32::floor(a);
+                    let out = math::floor_f32(a);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Ceil { dst, a } => {
                     let a = ctx.read_f32(base, *a);
-                    let out = num32::ceil(a);
+                    let out = math::ceil_f32(a);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Trunc { dst, a } => {
                     let a = ctx.read_f32(base, *a);
-                    let out = num32::trunc(a);
+                    let out = math::trunc_f32(a);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Nearest { dst, a } => {
                     let a = ctx.read_f32(base, *a);
-                    let out = num32::nearest(a);
+                    let out = math::round_half_even_f32(a);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F32Sqrt { dst, a } => {
                     let a = ctx.read_f32(base, *a);
-                    let out = num32::sqrt(a);
+                    let out = math::sqrt_f32(a);
                     ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -2836,6 +2853,51 @@ impl<H: Host> Vm<H> {
                     let b = ctx.read_f32(base, *b);
                     let out = a >= b;
                     ctx.write_bool(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32RoundHalfAway { dst, a } => {
+                    let out = math::round_half_away_f32(ctx.read_f32(base, *a));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Clamp { dst, a, lo, hi } => {
+                    let out = math::clamp_f32(
+                        ctx.read_f32(base, *a),
+                        ctx.read_f32(base, *lo),
+                        ctx.read_f32(base, *hi),
+                    )
+                    .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ClampBoundsInvalid))?;
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Pow { dst, a, b } => {
+                    let out = math::pow_f32(ctx.read_f32(base, *a), ctx.read_f32(base, *b));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Exp { dst, a } => {
+                    let out = math::exp_f32(ctx.read_f32(base, *a));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Ln { dst, a } => {
+                    let out = math::ln_f32(ctx.read_f32(base, *a));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Sin { dst, a } => {
+                    let out = math::sin_f32(ctx.read_f32(base, *a));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Cos { dst, a } => {
+                    let out = math::cos_f32(ctx.read_f32(base, *a));
+                    ctx.write_f32(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32Atan2 { dst, y, x } => {
+                    let out = math::atan2_f32(ctx.read_f32(base, *y), ctx.read_f32(base, *x));
+                    ctx.write_f32(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::I32ToI64 { dst, a } => {
@@ -5561,83 +5623,11 @@ fn read_value_ref_at<'a>(
     })
 }
 
-#[inline]
-fn f64_min_basic(a: f64, b: f64) -> f64 {
-    if a < b {
-        a
-    } else if a > b {
-        b
-    } else if a == 0.0 {
-        if a.is_sign_negative() || b.is_sign_negative() {
-            -0.0
-        } else {
-            0.0
-        }
-    } else {
-        a
-    }
-}
-
-#[inline]
-fn f64_max_basic(a: f64, b: f64) -> f64 {
-    if a > b {
-        a
-    } else if a < b {
-        b
-    } else if a == 0.0 {
-        if a.is_sign_positive() || b.is_sign_positive() {
-            0.0
-        } else {
-            -0.0
-        }
-    } else {
-        a
-    }
-}
-
 /// Maps a failed trapping float-to-integer conversion to its trap.
 fn float_to_int_trap(e: num32::FloatToIntError) -> Trap {
     match e {
         num32::FloatToIntError::Invalid => Trap::FloatToIntInvalid,
         num32::FloatToIntError::Overflow => Trap::IntCastOverflow,
-    }
-}
-
-#[inline]
-fn f64_min(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        f64_min_basic(a, b)
-    }
-}
-
-#[inline]
-fn f64_max(a: f64, b: f64) -> f64 {
-    if a.is_nan() || b.is_nan() {
-        f64::NAN
-    } else {
-        f64_max_basic(a, b)
-    }
-}
-
-#[inline]
-fn f64_min_num(a: f64, b: f64) -> f64 {
-    match (a.is_nan(), b.is_nan()) {
-        (true, true) => f64::NAN,
-        (true, false) => b,
-        (false, true) => a,
-        (false, false) => f64_min_basic(a, b),
-    }
-}
-
-#[inline]
-fn f64_max_num(a: f64, b: f64) -> f64 {
-    match (a.is_nan(), b.is_nan()) {
-        (true, true) => f64::NAN,
-        (true, false) => b,
-        (false, true) => a,
-        (false, false) => f64_max_basic(a, b),
     }
 }
 

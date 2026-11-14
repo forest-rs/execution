@@ -399,6 +399,9 @@ dependencies = [
 [[package]]
 name = "execution_tape"
 version = "0.1.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "execution_tape_codegen"
@@ -415,6 +418,7 @@ version = "0.1.0"
 dependencies = [
  "execution_graph",
  "execution_tape",
+ "libm",
 ]
 
 [[package]]

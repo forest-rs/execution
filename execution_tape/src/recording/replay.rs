@@ -1605,6 +1605,7 @@ fn same_trap(a: &TrapInfo, b: &TrapInfo) -> bool {
         | (Trap::DivByZero, Trap::DivByZero)
         | (Trap::IntDivOverflow, Trap::IntDivOverflow)
         | (Trap::FloatToIntInvalid, Trap::FloatToIntInvalid)
+        | (Trap::ClampBoundsInvalid, Trap::ClampBoundsInvalid)
         | (Trap::IndexOutOfBounds, Trap::IndexOutOfBounds)
         | (Trap::StrNotCharBoundary, Trap::StrNotCharBoundary)
         | (Trap::InvalidUtf8, Trap::InvalidUtf8) => true,

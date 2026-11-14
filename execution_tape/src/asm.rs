@@ -1861,6 +1861,15 @@ impl Asm {
         self
     }
 
+    /// Encodes `f64.round_half_away dst, a` (round to nearest integer, ties away from zero; see
+    /// [`math::round_half_away_f64`](crate::math::round_half_away_f64)).
+    pub fn f64_round_half_away(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F64RoundHalfAway);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
     /// Encodes `f64_copysign dst, a, b` (magnitude of `a`, sign bit of `b`).
     pub fn f64_copysign(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
         self.opcode(Opcode::F64CopySign);
@@ -2711,6 +2720,77 @@ impl Asm {
         self.reg(dst);
         self.reg(a);
         self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.round_half_away dst, a`: `dst = a` rounded to the nearest integer, ties away from zero (see [`math::round_half_away_f32`](crate::math::round_half_away_f32)).
+    pub fn f32_round_half_away(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32RoundHalfAway);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.clamp dst, a, lo, hi`: `dst = a` limited to `lo..=hi`; traps with
+    /// `ClampBoundsInvalid` unless `lo <= hi` (see [`math::clamp_f32`](crate::math::clamp_f32)).
+    pub fn f32_clamp(&mut self, dst: u32, a: u32, lo: u32, hi: u32) -> &mut Self {
+        self.opcode(Opcode::F32Clamp);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(lo);
+        self.reg(hi);
+        self
+    }
+
+    /// Encodes `f32.pow dst, a, b`: `dst = a` raised to `b` (see
+    /// [`math::pow_f32`](crate::math::pow_f32)).
+    pub fn f32_pow(&mut self, dst: u32, a: u32, b: u32) -> &mut Self {
+        self.opcode(Opcode::F32Pow);
+        self.reg(dst);
+        self.reg(a);
+        self.reg(b);
+        self
+    }
+
+    /// Encodes `f32.exp dst, a`: `dst = e^a` (see [`math::exp_f32`](crate::math::exp_f32)).
+    pub fn f32_exp(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Exp);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.ln dst, a`: `dst` = the natural logarithm of `a` (see [`math::ln_f32`](crate::math::ln_f32)).
+    pub fn f32_ln(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Ln);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.sin dst, a`: `dst = sin(a)`, `a` in radians (see [`math::sin_f32`](crate::math::sin_f32)).
+    pub fn f32_sin(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Sin);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.cos dst, a`: `dst = cos(a)`, `a` in radians (see [`math::cos_f32`](crate::math::cos_f32)).
+    pub fn f32_cos(&mut self, dst: u32, a: u32) -> &mut Self {
+        self.opcode(Opcode::F32Cos);
+        self.reg(dst);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.atan2 dst, y, x`: `dst` = the angle of the point `(x, y)` in radians (see
+    /// [`math::atan2_f32`](crate::math::atan2_f32)). Note the operand order: `y` first.
+    pub fn f32_atan2(&mut self, dst: u32, y: u32, x: u32) -> &mut Self {
+        self.opcode(Opcode::F32Atan2);
+        self.reg(dst);
+        self.reg(y);
+        self.reg(x);
         self
     }
 
