@@ -20,7 +20,7 @@ use core::fmt;
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use crate::program::{HostSigId, Program, SpanId, ValueType};
 use crate::value::{FuncId, Value};
-use crate::verifier::{HostCallSite, VerifiedProgram};
+use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 
 /// A host operation's symbol and complete signature, declared once and shared by the program
 /// that imports it and the host that implements it, so the two cannot drift.
@@ -263,7 +263,7 @@ impl<S> HostFunctions<S> {
     ///     .unwrap_err();
     /// assert_eq!(
     ///     error.to_string(),
-    ///     "1 host call rejected; settings.set in function 0 at pc 3: nothing named \"rustiness\""
+    ///     "1 host call rejected; function #0, pc 3, host call settings.set: nothing named \"rustiness\""
     /// );
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -538,6 +538,11 @@ pub struct ImportError {
 }
 
 /// One host call rejected by the check passed to [`HostFunctions::bind_checked`].
+///
+/// [`fmt::Display`] reads like a [`VerifyError`](crate::verifier::VerifyError): the location,
+/// then the symbol, then the check's message, as
+/// `function #F, pc P (span S), host call SYMBOL: message`. The span is left out when the program
+/// records none. [`Self::display_in`] adds the names the program's debug metadata records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CallError {
@@ -557,15 +562,49 @@ pub struct CallError {
 
 impl fmt::Display for CallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} in function {} at pc {}",
-            self.symbol, self.function.0, self.pc
-        )?;
+        write!(f, "function #{}, pc {}", self.function.0, self.pc)?;
         if let Some(span) = self.span {
             write!(f, " (span {span})")?;
         }
-        write!(f, ": {}", self.message)
+        self.fmt_call(f)
+    }
+}
+
+impl CallError {
+    /// Renders this rejection with what `program`'s debug metadata knows about its location, as
+    /// [`VerifyError::display_in`](crate::verifier::VerifyError::display_in) does: the function
+    /// name, the nearest label, the span and the instruction.
+    ///
+    /// ```text
+    /// function #0 "paint", pc 3 (label "weathered" + 3, span 7, host_call eff_out=r0, host_sig#0("settings.set"), eff_in=r0, args=[r1], rets=[]), host call settings.set: nothing named "rustiness"
+    /// ```
+    ///
+    /// `program` must be the program that was checked; metadata it lacks is left out.
+    #[must_use]
+    pub fn display_in<'a>(&'a self, program: &'a Program) -> impl fmt::Display + 'a {
+        CallInProgram {
+            error: self,
+            program,
+        }
+    }
+
+    /// Writes `, host call SYMBOL: message`, which follows the location.
+    fn fmt_call(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, ", host call {}: {}", self.symbol, self.message)
+    }
+}
+
+/// A [`CallError`] rendered with names from the checked program.
+struct CallInProgram<'a> {
+    error: &'a CallError,
+    program: &'a Program,
+}
+
+impl fmt::Display for CallInProgram<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { error, program } = *self;
+        write_location(f, program, error.function.0, Some(error.pc))?;
+        error.fmt_call(f)
     }
 }
 
@@ -745,7 +784,7 @@ mod tests {
         assert_eq!(
             alloc::format!("{call}"),
             alloc::format!(
-                "named in function 0 at pc {}: nothing named \"bad\"",
+                "function #0, pc {}, host call named: nothing named \"bad\"",
                 calls[1]
             )
         );
@@ -763,6 +802,55 @@ mod tests {
             .unwrap();
         let bindings = functions.bind_checked(&p, |_| Ok::<(), &str>(())).unwrap();
         assert_eq!(bindings.import_count(), 2);
+    }
+
+    #[test]
+    fn rejected_calls_read_like_verifier_diagnostics() {
+        const SET: HostImport = HostImport::new("settings.set", &[ValueType::Str], &[]);
+        let mut pb = ProgramBuilder::new();
+        let set = pb.host_import(SET);
+        let f = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![],
+            })
+            .unwrap();
+        pb.set_function_name(f, "paint").unwrap();
+        let mut a = pb.function_asm(f).unwrap();
+        let weathered = a.label_named("weathered");
+        a.place(weathered).unwrap();
+        let r = a.alloc_register(ValueType::Str);
+        a.const_pool(r, pb.const_str("rustiness"));
+        let pc = a.pc();
+        a.span(SpanId::try_from(7_u64).unwrap());
+        let [] = pb.emit_call(&mut a, set, &[r]).unwrap();
+        a.ret(0, &[]);
+        pb.define_function(f, a).unwrap();
+        let p = pb.build_verified().unwrap();
+
+        let mut functions = HostFunctions::<()>::new();
+        functions.implement(SET, |_, _, _, _| Ok(0)).unwrap();
+        let error = functions
+            .bind_checked(&p, |_| Err("nothing named \"rustiness\""))
+            .unwrap_err();
+        let [call] = &error.calls[..] else {
+            panic!("{error}");
+        };
+        assert_eq!(call.span, Some(SpanId::try_from(7_u64).unwrap()));
+        assert_eq!(
+            alloc::format!("{call}"),
+            alloc::format!(
+                "function #0, pc {pc} (span 7), host call settings.set: nothing named \"rustiness\""
+            )
+        );
+        assert_eq!(
+            alloc::format!("{}", call.display_in(p.program())),
+            alloc::format!(
+                "function #0 \"paint\", pc {pc} (label \"weathered\" + {pc}, span 7, host_call eff_out=r0, \
+                 host_sig#0(\"settings.set\"), eff_in=r0, args=[r1], rets=[]), \
+                 host call settings.set: nothing named \"rustiness\""
+            )
+        );
     }
 
     #[test]

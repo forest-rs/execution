@@ -246,34 +246,7 @@ impl fmt::Display for InProgram<'_> {
         let Some(FuncId(func)) = error.function() else {
             return error.fmt_message(f);
         };
-        write!(f, "function #{func}")?;
-        if let Some(name) = program.function_name(func) {
-            write!(f, " {name:?}")?;
-        }
-        if let Some(pc) = error.pc() {
-            write!(f, ", pc {pc}")?;
-            let mut details = Details::new(f);
-            if let Some((label_pc, name)) = label_before(program, func, pc) {
-                match pc - label_pc {
-                    0 => details.item(format_args!("label {name:?}"))?,
-                    offset => details.item(format_args!("label {name:?} + {offset}"))?,
-                }
-            }
-            if let Some(span) = span_at(program, func, pc) {
-                details.item(format_args!("span {span}"))?;
-            }
-            if let Ok(disassembly) = disassemble_function(program, FuncId(func))
-                && let Some(instr) = disassembly.instrs().find(|instr| instr.pc() == pc)
-            {
-                // The disassembler prefixes each line with its pc, which is already shown.
-                let text = instr.to_string();
-                let text = text
-                    .split_once(": ")
-                    .map_or(text.as_str(), |(_, rest)| rest);
-                details.item(format_args!("{text}"))?;
-            }
-            details.finish()?;
-        }
+        write_location(f, program, func, error.pc())?;
         f.write_str(": ")?;
         error.fmt_message(f)?;
         if let Some(reg) = error.register()
@@ -284,6 +257,48 @@ impl fmt::Display for InProgram<'_> {
         }
         Ok(())
     }
+}
+
+/// Writes `function #F "name", pc P (label "L" + N, span S, instruction)`, naming what
+/// `program`'s debug metadata records and leaving out what it lacks.
+///
+/// This is the location prefix of [`VerifyError::display_in`], shared by other diagnostics that
+/// point into a program so they all read alike.
+pub(crate) fn write_location(
+    f: &mut fmt::Formatter<'_>,
+    program: &Program,
+    func: u32,
+    pc: Option<u32>,
+) -> fmt::Result {
+    write!(f, "function #{func}")?;
+    if let Some(name) = program.function_name(func) {
+        write!(f, " {name:?}")?;
+    }
+    let Some(pc) = pc else {
+        return Ok(());
+    };
+    write!(f, ", pc {pc}")?;
+    let mut details = Details::new(f);
+    if let Some((label_pc, name)) = label_before(program, func, pc) {
+        match pc - label_pc {
+            0 => details.item(format_args!("label {name:?}"))?,
+            offset => details.item(format_args!("label {name:?} + {offset}"))?,
+        }
+    }
+    if let Some(span) = span_at(program, func, pc) {
+        details.item(format_args!("span {span}"))?;
+    }
+    if let Ok(disassembly) = disassemble_function(program, FuncId(func))
+        && let Some(instr) = disassembly.instrs().find(|instr| instr.pc() == pc)
+    {
+        // The disassembler prefixes each line with its pc, which is already shown.
+        let text = instr.to_string();
+        let text = text
+            .split_once(": ")
+            .map_or(text.as_str(), |(_, rest)| rest);
+        details.item(format_args!("{text}"))?;
+    }
+    details.finish()
 }
 
 /// Writes ` (a, b, c)`, or nothing when no item is written.

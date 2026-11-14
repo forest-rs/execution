@@ -62,8 +62,10 @@ This release has an [MSRV][] of 1.88.
   the same constant into it (through constants, `mov` and block arguments). Nothing is guessed:
   disagreeing joins, other writes, function arguments and call results are `None`.
   `HostFunctions::bind_checked` binds and passes each call site to an embedder check; rejected
-  calls are reported as `CallError`s with their location. Migration: `BindingError` gains a
-  `calls` field (empty from `bind`).
+  calls are reported as `CallError`s, which read like verifier diagnostics (`function #F, pc P
+  (span S), host call SYMBOL: message`), and `CallError::display_in(&program)` adds the
+  function name, nearest label and instruction as `VerifyError::display_in` does. Migration:
+  `BindingError` gains a `calls` field (empty from `bind`).
 
 - Add 32-bit numerics under the `0xFD` prefix (`OpcodePrefix::Numeric32`), in aligned blocks:
   `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` and conversions from `0xC0`. Each
