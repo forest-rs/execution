@@ -10,7 +10,7 @@
 //! `docs/v1_spec.md`.
 
 mod calls;
-pub use calls::{CallBuildError, CallTarget};
+pub use calls::{CallArg, CallArgs, CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
 mod regions;
