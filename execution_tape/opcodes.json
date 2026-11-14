@@ -4,7 +4,7 @@
     {
       "name": "Extended",
       "byte": "0xFC",
-      "doc": "General extension space. New instruction families allocate the next free byte here."
+      "doc": "General extension space: `u64` bit operations from `0x00`, stack switching from `0x05`,\n`f64` exact operations from `0x0B`, and the `f64` math intrinsics in `0x10..=0x1F`.\nNew instruction families allocate the next free byte outside those blocks."
     },
     {
       "name": "Numeric32",
@@ -4226,6 +4226,209 @@
           "role": "a",
           "encoding": "reg_u32_uleb",
           "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Clamp",
+      "mnemonic": "f64.clamp",
+      "prefix": "0xFC",
+      "byte": "0x0C",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = clamp(a, lo, hi)` (`f64`; traps unless `lo <= hi`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "lo",
+          "encoding": "reg_u32_uleb",
+          "field": "lo",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "hi",
+          "encoding": "reg_u32_uleb",
+          "field": "hi",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Pow",
+      "mnemonic": "f64.pow",
+      "prefix": "0xFC",
+      "byte": "0x10",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = pow(a, b)` (`f64`, bit-identical to the pinned `libm::pow`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Exp",
+      "mnemonic": "f64.exp",
+      "prefix": "0xFC",
+      "byte": "0x11",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = exp(a)` (`f64`, bit-identical to the pinned `libm::exp`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Ln",
+      "mnemonic": "f64.ln",
+      "prefix": "0xFC",
+      "byte": "0x12",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = ln(a)` (`f64`, bit-identical to the pinned `libm::log`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Sin",
+      "mnemonic": "f64.sin",
+      "prefix": "0xFC",
+      "byte": "0x13",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = sin(a)` (`f64`, bit-identical to the pinned `libm::sin`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Cos",
+      "mnemonic": "f64.cos",
+      "prefix": "0xFC",
+      "byte": "0x14",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = cos(a)` (`f64`, bit-identical to the pinned `libm::cos`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64Atan2",
+      "mnemonic": "f64.atan2",
+      "prefix": "0xFC",
+      "byte": "0x15",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = atan2(y, x)` (`f64`, bit-identical to the pinned `libm::atan2`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "y",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "x",
           "access": "read"
         }
       ]

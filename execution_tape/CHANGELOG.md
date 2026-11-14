@@ -31,6 +31,15 @@ This release has an [MSRV][] of 1.88.
   `f32_exp`, `f32_ln`, `f32_sin`, `f32_cos`, `f32_atan2`, `f32_clamp`, `f32_round_half_away`
   and `f64_round_half_away`; `OperandRole` gains `Lo` and `Hi`.
 
+- Add the `f64` math intrinsics to match: `f64.pow` (`0xFC 0x10`), `f64.exp`, `f64.ln`,
+  `f64.sin`, `f64.cos` and `f64.atan2` (`0xFC 0x15`), in an `0xFC 0x10..=0x1F` block ordered like
+  the `f32` one, defined as `libm` 0.2.16's `pow`, `exp`, `log`, `sin`, `cos` and `atan2` under
+  the same determinism contract; and `f64.clamp` (`0xFC 0x0C`), which traps with
+  `Trap::ClampBoundsInvalid` like `f32.clamp`. `f64` transcendentals no longer need a host call,
+  which the contract does not cover. `math` gains `pow_f64`, `exp_f64`, `ln_f64`, `sin_f64`,
+  `cos_f64`, `atan2_f64` and `clamp_f64`, and `Asm` the matching `f64_*` emitters. The
+  `math_intrinsics` wind-tunnel bench now covers `f64`.
+
 - Add `execution_tape::math`, the floating-point operations the VM computes as plain functions
   (`math::pow_f32`, `math::round_half_even_f32`, `math::min_num_f64`, ...), so native code can
   compute exactly the bits a tape program does. Each function documents its `libm` counterpart.

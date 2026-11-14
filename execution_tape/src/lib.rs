@@ -318,7 +318,7 @@
 //! - `recording`: owned bounded observations, instruction histories and checked replay.
 //! - `disasm`: human-readable disassembly for verified programs.
 //! - `math`: the floating-point operations the VM computes, as plain functions native code can
-//!   call to get the same bits, including the `f32` transcendentals pinned to `libm`.
+//!   call to get the same bits, including the `f32` and `f64` transcendentals pinned to `libm`.
 //!
 //! ## The pinned `libm`
 //!

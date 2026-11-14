@@ -243,6 +243,20 @@ pub(crate) enum Instr {
     F64Sqrt { dst: u32, a: u32 },
     /// `dst = round_half_away(a)` (`f64`, round to nearest integer, ties away from zero).
     F64RoundHalfAway { dst: u32, a: u32 },
+    /// `dst = clamp(a, lo, hi)` (`f64`; traps unless `lo <= hi`).
+    F64Clamp { dst: u32, a: u32, lo: u32, hi: u32 },
+    /// `dst = pow(a, b)` (`f64`, pinned `libm::pow`).
+    F64Pow { dst: u32, a: u32, b: u32 },
+    /// `dst = exp(a)` (`f64`, pinned `libm::exp`).
+    F64Exp { dst: u32, a: u32 },
+    /// `dst = ln(a)` (`f64`, pinned `libm::log`).
+    F64Ln { dst: u32, a: u32 },
+    /// `dst = sin(a)` (`f64`, pinned `libm::sin`).
+    F64Sin { dst: u32, a: u32 },
+    /// `dst = cos(a)` (`f64`, pinned `libm::cos`).
+    F64Cos { dst: u32, a: u32 },
+    /// `dst = atan2(y, x)` (`f64`, pinned `libm::atan2`).
+    F64Atan2 { dst: u32, y: u32, x: u32 },
 
     /// `dst = a + b` (`i64`).
     I64Add { dst: u32, a: u32, b: u32 },

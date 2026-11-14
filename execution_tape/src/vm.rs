@@ -279,8 +279,8 @@ pub enum Trap {
     IntDivOverflow,
     /// Float to int conversion encountered NaN or infinity.
     FloatToIntInvalid,
-    /// `f32.clamp` bounds were not ordered: `lo <= hi` was false, because `lo > hi` or a bound
-    /// was NaN.
+    /// `f32.clamp` or `f64.clamp` bounds were not ordered: `lo <= hi` was false, because
+    /// `lo > hi` or a bound was NaN.
     ClampBoundsInvalid,
     /// Index out of bounds (bytes/string ops).
     IndexOutOfBounds,
@@ -2114,6 +2114,42 @@ impl<H: Host> Vm<H> {
                         *dst,
                         math::round_half_away_f64(ctx.read_f64(base, *a)),
                     );
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Clamp { dst, a, lo, hi } => {
+                    let out = math::clamp_f64(
+                        ctx.read_f64(base, *a),
+                        ctx.read_f64(base, *lo),
+                        ctx.read_f64(base, *hi),
+                    )
+                    .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::ClampBoundsInvalid))?;
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Pow { dst, a, b } => {
+                    let out = math::pow_f64(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Exp { dst, a } => {
+                    ctx.write_f64(base, *dst, math::exp_f64(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Ln { dst, a } => {
+                    ctx.write_f64(base, *dst, math::ln_f64(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Sin { dst, a } => {
+                    ctx.write_f64(base, *dst, math::sin_f64(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Cos { dst, a } => {
+                    ctx.write_f64(base, *dst, math::cos_f64(ctx.read_f64(base, *a)));
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64Atan2 { dst, y, x } => {
+                    let out = math::atan2_f64(ctx.read_f64(base, *y), ctx.read_f64(base, *x));
+                    ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64CopySign { dst, a, b } => {
