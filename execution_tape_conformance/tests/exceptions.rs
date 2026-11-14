@@ -405,9 +405,10 @@ fn shaped_program(statically_wrong: bool) -> Result<(VerifiedProgram, TagId, u32
 
 #[test]
 fn payload_contracts_are_checked_statically_and_where_the_exception_is_raised() {
-    let Err(BuildError::Verify(VerifyError::ContractMismatch { pc, position, .. })) =
-        shaped_program(true)
-    else {
+    let Err(BuildError::Verify(rejected)) = shaped_program(true) else {
+        panic!("a statically contradicted payload must fail verification");
+    };
+    let VerifyError::ContractMismatch { pc, position, .. } = rejected.error else {
         panic!("a statically contradicted payload must fail verification");
     };
     assert!(matches!(position, ContractPosition::Payload { tag, index: 0 } if tag.0 == 0));

@@ -203,8 +203,12 @@ mod tests {
         for result in [
             verify_program(&p, &cfg),
             verify_program_with_lints(&p, &cfg).map(|_| ()),
-            verify_program_owned(p.clone(), &cfg).map(|_| ()),
-            verify_program_owned_with_lints(p.clone(), &cfg).map(|_| ()),
+            verify_program_owned(p.clone(), &cfg)
+                .map(|_| ())
+                .map_err(VerifyError::from),
+            verify_program_owned_with_lints(p.clone(), &cfg)
+                .map(|_| ())
+                .map_err(VerifyError::from),
         ] {
             assert!(
                 matches!(result, Err(VerifyError::InvalidMetadata { table: actual, .. }) if actual == table),

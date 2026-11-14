@@ -461,6 +461,16 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `verify_program_owned` and `verify_program_owned_with_lints` return the rejected program with
+  the error, as the new `verifier::RejectedProgram { error, program }`, so the error can be
+  rendered with `VerifyError::display_in` without decoding the program again. Its `Display` does
+  exactly that; its `Debug` shows the error alone. `BuildError::Verify` and `AsmError::Verify`
+  now hold a `Box<RejectedProgram>` (the built program, or the function alone for
+  `Asm::finish_checked`), and render the same way. Migration: read `.error` for the
+  `VerifyError`, or convert with `VerifyError::from`; match `BuildError::Verify(rejected)` and
+  inspect `rejected.error`. `From<VerifyError>` for `BuildError` and `AsmError` is removed, as
+  neither can be built without the program.
+
 - `HostBindings` and `BoundHost` no longer borrow: they share the bound programs and callback
   tables, so bindings can be stored beside an `Arc<VerifiedProgram>` and a VM can keep a bound
   host for as long as it likes. `HostFunctions::bind`, `bind_checked` and `HostBindings::bind`

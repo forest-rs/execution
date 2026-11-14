@@ -401,7 +401,7 @@ fn verifier_meets_tuple_shapes_at_branch_joins() {
             }
         } else {
             assert!(matches!(
-                result,
+                result.map_err(|rejected| rejected.error),
                 Err(VerifyError::UnknownAggregateShape { .. })
             ));
         }

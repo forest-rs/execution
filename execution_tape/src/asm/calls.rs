@@ -646,6 +646,7 @@ impl ProgramBuilder {
 mod tests {
     use super::*;
     use crate::value::FuncRef;
+    use crate::verifier::VerifyError;
     use crate::{
         host::{Host, HostContext, HostError, SigHash, ValueRef},
         trace::TraceMask,
@@ -830,7 +831,8 @@ mod tests {
         program.define_function(function, body).unwrap();
         assert!(matches!(
             program.build_verified(),
-            Err(BuildError::Verify(VerifyError::UninitializedRead { .. }))
+            Err(BuildError::Verify(rejected))
+                if matches!(rejected.error, VerifyError::UninitializedRead { .. })
         ));
     }
 
@@ -1027,7 +1029,8 @@ mod tests {
         program.define_function(FuncId(0), body).unwrap();
         assert!(matches!(
             program.build_verified(),
-            Err(BuildError::Verify(VerifyError::UninitializedRead { reg, .. })) if reg == name.0
+            Err(BuildError::Verify(rejected))
+                if matches!(rejected.error, VerifyError::UninitializedRead { reg, .. } if reg == name.0)
         ));
     }
 

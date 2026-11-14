@@ -55,12 +55,16 @@ fn error(program: &Program) -> VerifyError {
         "verification entrypoints must diagnose the same invalid contract"
     );
     assert_eq!(
-        verify_program_owned(program.clone(), &config).unwrap_err(),
+        verify_program_owned(program.clone(), &config)
+            .unwrap_err()
+            .error,
         expected,
         "verification entrypoints must diagnose the same invalid contract"
     );
     assert_eq!(
-        verify_program_owned_with_lints(program.clone(), &config).unwrap_err(),
+        verify_program_owned_with_lints(program.clone(), &config)
+            .unwrap_err()
+            .error,
         expected,
         "verification entrypoints must diagnose the same invalid contract"
     );

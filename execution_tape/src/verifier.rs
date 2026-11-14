@@ -1227,66 +1227,124 @@ pub fn verify_program_with_lints(
 }
 
 /// Verifies `program` and returns a [`VerifiedProgram`] wrapper on success.
+///
+/// A rejected program is returned unchanged with the error, in a [`RejectedProgram`] that renders
+/// the error with the program's own names and locations.
+#[expect(
+    clippy::result_large_err,
+    reason = "the verified program holds the same program, so boxing the error would not shrink the result"
+)]
 pub fn verify_program_owned(
     program: Program,
     cfg: &VerifyConfig,
-) -> Result<VerifiedProgram, VerifyError> {
-    metadata::verify(&program)?;
-    verify_host_sigs(&program)?;
-    verify_call_sigs(&program)?;
-    tags::verify(&program)?;
-    verify_exception_places(&program)?;
-    verify_function_value_names(&program)?;
-    verify_signature_ranges(&program)?;
-
-    let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
-    let mut init_tables = Vec::with_capacity(program.functions.len());
-    for (i, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let out = verify_function_container(&program, func_id, func, cfg, false)?;
-        verified_functions.push(out.exec);
-        init_tables.push(out.init);
-    }
-
-    Ok(VerifiedProgram {
-        program,
-        verified_functions,
-        init_tables,
-    })
+) -> Result<VerifiedProgram, RejectedProgram> {
+    verify_owned(program, cfg, false).map(|(verified, _)| verified)
 }
 
 /// Verifies `program`, returning the [`VerifiedProgram`] plus non-fatal lint warnings.
+///
+/// A rejected program is returned with the error, as [`verify_program_owned`] does.
+#[expect(
+    clippy::result_large_err,
+    reason = "the verified program holds the same program, so boxing the error would not shrink the result"
+)]
 pub fn verify_program_owned_with_lints(
     program: Program,
     cfg: &VerifyConfig,
-) -> Result<(VerifiedProgram, Vec<VerifyLint>), VerifyError> {
-    metadata::verify(&program)?;
-    verify_host_sigs(&program)?;
-    verify_call_sigs(&program)?;
-    tags::verify(&program)?;
-    verify_exception_places(&program)?;
-    verify_function_value_names(&program)?;
-    verify_signature_ranges(&program)?;
+) -> Result<(VerifiedProgram, Vec<VerifyLint>), RejectedProgram> {
+    verify_owned(program, cfg, true)
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "the verified program holds the same program, so boxing the error would not shrink the result"
+)]
+fn verify_owned(
+    program: Program,
+    cfg: &VerifyConfig,
+    collect_lints: bool,
+) -> Result<(VerifiedProgram, Vec<VerifyLint>), RejectedProgram> {
+    match verify_functions(&program, cfg, collect_lints) {
+        Ok((verified_functions, init_tables, lints)) => Ok((
+            VerifiedProgram {
+                program,
+                verified_functions,
+                init_tables,
+            },
+            lints,
+        )),
+        Err(error) => Err(RejectedProgram { error, program }),
+    }
+}
+
+type VerifiedFunctions = (Vec<ExecFunc>, Vec<InitTable>, Vec<VerifyLint>);
+
+/// Verifies `program` for execution, returning each function's prepared form and the lints.
+fn verify_functions(
+    program: &Program,
+    cfg: &VerifyConfig,
+    collect_lints: bool,
+) -> Result<VerifiedFunctions, VerifyError> {
+    metadata::verify(program)?;
+    verify_host_sigs(program)?;
+    verify_call_sigs(program)?;
+    tags::verify(program)?;
+    verify_exception_places(program)?;
+    verify_function_value_names(program)?;
+    verify_signature_ranges(program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     let mut init_tables = Vec::with_capacity(program.functions.len());
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = u32::try_from(i).unwrap_or(u32::MAX);
-        let out = verify_function_container(&program, func_id, func, cfg, true)?;
+        let out = verify_function_container(program, func_id, func, cfg, collect_lints)?;
         verified_functions.push(out.exec);
         init_tables.push(out.init);
         lints.extend(out.lints);
     }
+    Ok((verified_functions, init_tables, lints))
+}
 
-    Ok((
-        VerifiedProgram {
-            program,
-            verified_functions,
-            init_tables,
-        },
-        lints,
-    ))
+/// A program the verifier rejected, returned with the error.
+///
+/// [`verify_program_owned`] consumes its program; this hands it back, so the error can be
+/// rendered with the program's names and locations without decoding it again, and the program
+/// can be inspected or repaired. `Display` renders [`VerifyError::display_in`] the program;
+/// `Debug` shows the error alone.
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RejectedProgram {
+    /// Why the program was rejected.
+    pub error: VerifyError,
+    /// The rejected program, unchanged.
+    pub program: Program,
+}
+
+impl fmt::Debug for RejectedProgram {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RejectedProgram")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for RejectedProgram {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.display_in(&self.program).fmt(f)
+    }
+}
+
+impl core::error::Error for RejectedProgram {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl From<RejectedProgram> for VerifyError {
+    fn from(rejected: RejectedProgram) -> Self {
+        rejected.error
+    }
 }
 
 /// Checks that every call signature and function signature resolves.
@@ -5077,7 +5135,62 @@ mod tests {
         TypeTableDef, ValueType,
     };
     use crate::value::FuncId;
+    use alloc::string::ToString;
     use alloc::vec;
+
+    /// A builder for `mistyped(finish: u32)`, which adds `finish` as an `f32`.
+    fn mistyped() -> ProgramBuilder {
+        let mut pb = ProgramBuilder::new();
+        let entry = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::U32],
+                ret_types: vec![],
+            })
+            .unwrap();
+        pb.set_function_name(entry, "mistyped").unwrap();
+        pb.set_function_input_name(entry, 0, "finish").unwrap();
+        let finish = pb.argument(entry, 0).unwrap();
+        let mut a = pb.function_asm(entry).unwrap();
+        let sum = a.alloc_register(ValueType::F32);
+        a.f32_add(sum, finish, finish).ret(0, &[]);
+        pb.define_function(entry, a).unwrap();
+        pb
+    }
+
+    #[test]
+    fn a_rejected_program_comes_back_with_the_error_and_renders_in_its_names() {
+        let program = mistyped().build();
+        let rendered = "function #0 \"mistyped\", pc 0 (f32.add r2, [r1, r1]): \
+                        r1 declared U32, required F32 (r1 is input \"finish\")";
+        let rejected = verify_program_owned(program.clone(), &VerifyConfig::default()).unwrap_err();
+        assert_eq!(rejected.program, program);
+        assert!(matches!(
+            rejected.error,
+            VerifyError::RegisterTypeMismatch { reg: 1, .. }
+        ));
+        assert_eq!(rejected.to_string(), rendered);
+        assert_eq!(
+            alloc::format!("{rejected:?}"),
+            alloc::format!("RejectedProgram {{ error: {:?}, .. }}", rejected.error)
+        );
+        let with_lints = verify_program_owned_with_lints(program, &VerifyConfig::default());
+        assert_eq!(with_lints.unwrap_err(), rejected);
+        assert_eq!(VerifyError::from(rejected.clone()), rejected.error);
+
+        for error in [
+            mistyped().build_verified().unwrap_err(),
+            mistyped().build_checked().unwrap_err(),
+        ] {
+            let BuildError::Verify(built) = &error else {
+                panic!("expected a verifier rejection: {error:?}");
+            };
+            assert_eq!(**built, rejected);
+            assert_eq!(
+                error.to_string(),
+                alloc::format!("verification failed: {rendered}")
+            );
+        }
+    }
 
     fn tuple_contract(
         pb: &mut ProgramBuilder,
@@ -5177,7 +5290,8 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let result = verify_program_owned(builder.build(), &VerifyConfig::default());
+            let result = verify_program_owned(builder.build(), &VerifyConfig::default())
+                .map_err(|rejected| rejected.error);
             if ret_type == ValueType::Bool {
                 result.unwrap();
             } else {
@@ -5235,7 +5349,8 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let result = verify_program_owned(builder.build(), &VerifyConfig::default());
+            let result = verify_program_owned(builder.build(), &VerifyConfig::default())
+                .map_err(|rejected| rejected.error);
             match right_type {
                 Some(ValueType::I64) => {
                     result.unwrap();
@@ -5726,7 +5841,8 @@ mod tests {
         let err = pb.build_verified().unwrap_err();
         assert!(matches!(
             err,
-            BuildError::Verify(VerifyError::FunctionOutputNameDuplicate { func: 0, .. })
+            BuildError::Verify(rejected)
+                if matches!(rejected.error, VerifyError::FunctionOutputNameDuplicate { func: 0, .. })
         ));
     }
 
@@ -5753,7 +5869,8 @@ mod tests {
         let err = pb.build_verified().unwrap_err();
         assert!(matches!(
             err,
-            BuildError::Verify(VerifyError::FunctionInputNameDuplicate { func: 0, .. })
+            BuildError::Verify(rejected)
+                if matches!(rejected.error, VerifyError::FunctionInputNameDuplicate { func: 0, .. })
         ));
     }
 
@@ -6357,7 +6474,8 @@ mod tests {
                 },
             )
             .unwrap();
-            let result = verify_program_owned(pb.build(), &VerifyConfig::default());
+            let result = verify_program_owned(pb.build(), &VerifyConfig::default())
+                .map_err(|rejected| rejected.error);
             if accepted {
                 result.unwrap();
             } else {
@@ -6393,12 +6511,15 @@ mod tests {
         .unwrap();
         assert!(matches!(
             pb.build_verified(),
-            Err(BuildError::Verify(VerifyError::RegisterTypeMismatch {
-                pc: None,
-                declared: ValueType::I64,
-                required: ValueType::Agg,
-                ..
-            }))
+            Err(BuildError::Verify(rejected)) if matches!(
+                rejected.error,
+                VerifyError::RegisterTypeMismatch {
+                    pc: None,
+                    declared: ValueType::I64,
+                    required: ValueType::Agg,
+                    ..
+                }
+            )
         ));
     }
 
@@ -6581,11 +6702,15 @@ mod tests {
                 expected
             );
             assert_eq!(
-                verify_program_owned(program.clone(), &cfg).unwrap_err(),
+                verify_program_owned(program.clone(), &cfg)
+                    .unwrap_err()
+                    .error,
                 expected
             );
             assert_eq!(
-                verify_program_owned_with_lints(program, &cfg).unwrap_err(),
+                verify_program_owned_with_lints(program, &cfg)
+                    .unwrap_err()
+                    .error,
                 expected
             );
         }
