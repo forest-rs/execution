@@ -15,13 +15,15 @@
 
 use std::sync::Arc;
 
-use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder, Reg};
+use std::error::Error;
+
+use execution_tape::asm::{BuildError, CallArg, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{HostContext, HostError, ValueRef};
-use execution_tape::host_binding::{BindingError, HostBindings, HostFunctions, HostImport};
-use execution_tape::program::{HostTypeId, ValueType};
+use execution_tape::host_binding::{HostBindings, HostFunctions, HostImport};
+use execution_tape::program::{HostTypeId, Program, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::{FuncRef, Obj, ObjHandle, Value};
-use execution_tape::verifier::{HostCallSite, VerifiedProgram};
+use execution_tape::verifier::{HostCallSite, VerifiedProgram, VerifyConfig, verify_program_owned};
 use execution_tape::vm::{Limits, Vm};
 
 use ValueType::{Bool, F32, Obj as O, Str, U32, U64};
@@ -83,8 +85,8 @@ fn weathered(chipping: f32, fade: f32, age: f32) -> (f32, f32) {
     (chipping.max(0.6 * age * age), (fade + 0.9 * age).min(1.0))
 }
 
-/// The steel plate's body as a tape program.
-fn program() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
+/// The steel plate's body as a tape program, as it would be stored: unverified.
+fn program() -> Result<Program, Box<dyn Error>> {
     // --- tape source: begin
     let mut pb = ProgramBuilder::new();
     pb.set_program_name("example.steel_plate@1");
@@ -189,7 +191,7 @@ fn program() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
     let [] = pb.emit_call_with(&mut a, output_material, (material, m))?;
     a.ret(0, &[]);
     pb.define_function(entry, a)?;
-    Ok(pb.build_verified()?)
+    Ok(pb.build())
     // --- tape source: end
 }
 
@@ -308,7 +310,7 @@ fn output_material(
     Ok(0)
 }
 
-fn kernel() -> Result<HostFunctions<Kernel>, Box<dyn std::error::Error>> {
+fn kernel() -> Result<HostFunctions<Kernel>, Box<dyn Error>> {
     let mut functions = HostFunctions::new();
     functions.implement(BIND_NEW, bind_new)?;
     for op in [BIND_SCALAR, BIND_COLOR, BIND_MATERIAL] {
@@ -321,23 +323,40 @@ fn kernel() -> Result<HostFunctions<Kernel>, Box<dyn std::error::Error>> {
 }
 
 /// A loaded body: the program and its bindings, stored side by side.
+#[derive(Debug)]
 struct Loaded {
     program: Arc<VerifiedProgram>,
     bindings: HostBindings<Kernel>,
 }
 
-/// Links the body to the kernel and binds it, rejecting a misspelt name before anything runs.
-fn load(
-    functions: &HostFunctions<Kernel>,
-    program: VerifiedProgram,
-) -> Result<Loaded, BindingError> {
+/// Decodes, verifies, links and binds a stored body, all before anything runs.
+fn load(functions: &HostFunctions<Kernel>, bytes: &[u8]) -> Result<Loaded, Box<dyn Error>> {
+    // A rejected program comes back with the error, which renders in the program's own names.
+    let program = verify_program_owned(Program::decode(bytes)?, &VerifyConfig::default())?;
     let program = Arc::new(program);
     let bindings = functions.bind_checked(&program, check)?;
     Ok(Loaded { program, bindings })
 }
 
+/// A body that adds its `u32` argument as an `f32`.
+fn mistyped() -> Result<Program, BuildError> {
+    let mut pb = ProgramBuilder::new();
+    let entry = pb.declare_function(FunctionSig {
+        arg_types: vec![U32],
+        ret_types: vec![],
+    })?;
+    pb.set_function_name(entry, "mistyped")?;
+    pb.set_function_input_name(entry, 0, "finish")?;
+    let finish = pb.argument(entry, 0)?;
+    let mut a = pb.function_asm(entry)?;
+    let sum = a.alloc_register(F32);
+    a.f32_add(sum, finish, finish).ret(0, &[]);
+    pb.define_function(entry, a)?;
+    Ok(pb.build())
+}
+
 /// A body with one misspelt parameter name.
-fn misspelt() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
+fn misspelt() -> Result<VerifiedProgram, Box<dyn Error>> {
     let mut pb = ProgramBuilder::new();
     let [bind_new, bind_scalar] = [BIND_NEW, BIND_SCALAR].map(|i| pb.host_import(i));
     let entry = pb.declare_function(FunctionSig {
@@ -354,9 +373,9 @@ fn misspelt() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
     Ok(pb.build_verified()?)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let functions = kernel()?;
-    let Loaded { program, bindings } = load(&functions, program()?)?;
+    let Loaded { program, bindings } = load(&functions, &program()?.encode())?;
     println!(
         "link check passed: {} host calls",
         program.host_call_sites().len()
@@ -394,6 +413,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(paint.contains(&("chipping".into(), Value::F32(chip))));
     assert!(paint.contains(&("fade".into(), Value::F32(fd))));
     assert_eq!(kernel.output, Some(handle(2, MATERIAL)));
+
+    let error = load(&functions, &mistyped()?.encode()).unwrap_err();
+    println!("rejected at load: {error}");
+    assert!(error.to_string().contains("(r1 is input \"finish\")"));
 
     // The same link check without callbacks, against the declared surface alone.
     let misspelt = misspelt()?;

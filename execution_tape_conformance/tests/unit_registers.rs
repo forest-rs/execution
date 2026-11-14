@@ -204,10 +204,8 @@ fn unit_declarations_and_unselected_operands_still_require_initialization() {
         builder.define_function(entry, body).unwrap();
         assert!(matches!(
             builder.build_verified(),
-            Err(BuildError::Verify(VerifyError::UninitializedRead {
-                reg: 2,
-                ..
-            }))
+            Err(BuildError::Verify(rejected))
+                if matches!(rejected.error, VerifyError::UninitializedRead { reg: 2, .. })
         ));
     }
 }

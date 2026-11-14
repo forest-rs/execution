@@ -23,6 +23,11 @@ impl Host for NoHost {
     }
 }
 
+/// Verifies `program`, keeping only the error of a rejection.
+fn verify_owned(program: Program, cfg: &VerifyConfig) -> Result<VerifiedProgram, VerifyError> {
+    verify_program_owned(program, cfg).map_err(VerifyError::from)
+}
+
 fn program(asm: Asm, args: &[ValueType], returns: &[ValueType]) -> Program {
     let mut builder = ProgramBuilder::new();
     builder
@@ -39,7 +44,7 @@ fn program(asm: Asm, args: &[ValueType], returns: &[ValueType]) -> Program {
 }
 
 fn verify(asm: Asm, args: &[ValueType], returns: &[ValueType]) -> VerifiedProgram {
-    verify_program_owned(program(asm, args, returns), &VerifyConfig::default()).unwrap()
+    verify_owned(program(asm, args, returns), &VerifyConfig::default()).unwrap()
 }
 
 fn run(p: &VerifiedProgram, args: &[Value]) -> Vec<Value> {
@@ -404,7 +409,7 @@ fn matching_shapes_propagate_but_conflicting_or_opaque_edges_cannot_invent_them(
             ],
             &[ValueType::I64],
         );
-        let result = verify_program_owned(p, &VerifyConfig::default());
+        let result = verify_owned(p, &VerifyConfig::default());
         if mode == 0 {
             assert!(result.is_ok(), "{result:?}");
         } else {
@@ -459,7 +464,7 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
         asm.place(join).unwrap();
         asm.ret(0, &[4]);
         assert_eq!(
-            verify_program_owned(
+            verify_owned(
                 program(asm, &[], &[ValueType::I64]),
                 &VerifyConfig::default()
             )
@@ -486,7 +491,7 @@ fn edge_errors_identify_the_source_arm_target_and_argument() {
     asm.place(join).unwrap();
     asm.ret(0, &[1]);
     assert_eq!(
-        verify_program_owned(
+        verify_owned(
             program(asm, &[], &[ValueType::I64]),
             &VerifyConfig::default()
         )
@@ -515,7 +520,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
         asm.place(join).unwrap();
         asm.ret(0, &[]);
         assert!(
-            matches!(verify_program_owned(program(asm,&[ValueType::I64],&[]),&VerifyConfig::default()),Err(VerifyError::BlockDeclaration{pc:p,..}) if p==pc)
+            matches!(verify_owned(program(asm,&[ValueType::I64],&[]),&VerifyConfig::default()),Err(VerifyError::BlockDeclaration{pc:p,..}) if p==pc)
         );
     }
     let mut asm = Asm::new();
@@ -524,7 +529,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
     asm.place(entry).unwrap();
     asm.ret(0, &[]);
     assert!(matches!(
-        verify_program_owned(program(asm, &[], &[]), &VerifyConfig::default()),
+        verify_owned(program(asm, &[], &[]), &VerifyConfig::default()),
         Err(VerifyError::BlockDeclaration {
             error: BlockDeclarationError::EntryParameters,
             ..
@@ -541,7 +546,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
     asm.place(interior).unwrap();
     asm.ret(0, &[2]);
     assert_eq!(
-        verify_program_owned(
+        verify_owned(
             program(asm, &[ValueType::I64], &[ValueType::I64]),
             &VerifyConfig::default()
         )
@@ -561,7 +566,7 @@ fn declarations_reject_invalid_parameters_and_bypassed_headers() {
     asm.place(join).unwrap();
     asm.ret(0, &[2]);
     assert!(matches!(
-        verify_program_owned(
+        verify_owned(
             program(asm, &[], &[ValueType::I64]),
             &VerifyConfig::default()
         ),
@@ -765,7 +770,7 @@ fn malformed_headers_lists_and_splits_fail_without_panics() {
         p.functions[0].bytecode.offset = 0;
         p.functions[0].bytecode.len = u32::try_from(bytes.len()).unwrap();
         p.bytecode_data = bytes;
-        let result = verify_program_owned(p, &VerifyConfig::default());
+        let result = verify_owned(p, &VerifyConfig::default());
         if split == 0 {
             assert!(result.is_ok());
         } else {
@@ -906,7 +911,7 @@ fn uninitialized_edge_arguments_report_the_offending_arm_and_slot() {
     asm.place(join).unwrap();
     asm.ret(0, &[2]);
     assert_eq!(
-        verify_program_owned(
+        verify_owned(
             program(asm, &[], &[ValueType::I64]),
             &VerifyConfig::default()
         )

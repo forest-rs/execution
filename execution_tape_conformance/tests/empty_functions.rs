@@ -29,13 +29,13 @@ fn empty_function_is_rejected_at_every_preparation_entrypoint() {
     let expected = VerifyError::MissingTerminator { func: 0, pc: 0 };
     assert_eq!(verify_program(&program, &config), Err(expected.clone()));
     assert!(
-        matches!(verify_program_owned(program.clone(), &config), Err(error) if error == expected)
+        matches!(verify_program_owned(program.clone(), &config), Err(rejected) if rejected.error == expected)
     );
     assert!(
         matches!(verify_program_with_lints(&program, &config), Err(error) if error == expected)
     );
     assert!(
-        matches!(verify_program_owned_with_lints(program.clone(), &config), Err(error) if error == expected)
+        matches!(verify_program_owned_with_lints(program.clone(), &config), Err(rejected) if rejected.error == expected)
     );
     assert!(matches!(ProgramAnalysis::new(&program, &config), Err(error) if error == expected));
     let roundtrip = Program::decode(&program.encode()).unwrap();

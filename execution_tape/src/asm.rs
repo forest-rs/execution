@@ -19,6 +19,7 @@ pub use regions::Catch;
 mod tags;
 pub use tags::TagBuildError;
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -38,7 +39,7 @@ use crate::program::{
 use crate::value::FuncId;
 use crate::value::{Decimal, DecimalRounding};
 use crate::verifier::{
-    VerifiedProgram, VerifyConfig, VerifyError, verify_program, verify_program_owned,
+    RejectedProgram, VerifiedProgram, VerifyConfig, verify_program, verify_program_owned,
 };
 
 #[cfg(doc)]
@@ -93,7 +94,10 @@ pub enum AsmError {
     /// A label was referenced but never placed.
     UnresolvedLabel,
     /// The produced bytecode failed verification under the provided function signature.
-    Verify(VerifyError),
+    ///
+    /// The rejected program holds the function alone, as function 0; its `Display` names the
+    /// instruction at fault.
+    Verify(Box<RejectedProgram>),
     /// Isolated assembly checking cannot resolve program-local contracts; use [`ProgramBuilder`].
     ProgramContract(ContractId),
     /// A signature references an absent contract or exceeds the table address space.
@@ -104,7 +108,7 @@ impl fmt::Display for AsmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnresolvedLabel => write!(f, "unresolved label"),
-            Self::Verify(e) => write!(f, "verification failed: {e}"),
+            Self::Verify(rejected) => write!(f, "verification failed: {rejected}"),
             Self::ProgramContract(id) => write!(
                 f,
                 "contract {} needs its ProgramBuilder for verification",
@@ -118,7 +122,7 @@ impl fmt::Display for AsmError {
 impl core::error::Error for AsmError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Verify(e) => Some(e),
+            Self::Verify(rejected) => Some(&**rejected),
             Self::Contract(error) => Some(error),
             _ => None,
         }
@@ -166,12 +170,6 @@ impl From<ContractBuildError> for AsmError {
     }
 }
 
-impl From<VerifyError> for AsmError {
-    fn from(e: VerifyError) -> Self {
-        Self::Verify(e)
-    }
-}
-
 /// A [`ProgramBuilder`] error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -213,7 +211,10 @@ pub enum BuildError {
         func: u32,
     },
     /// The produced program failed verification.
-    Verify(VerifyError),
+    ///
+    /// The rejected program comes with the error. `Display` renders the error with the
+    /// program's function names, labels and instructions.
+    Verify(Box<RejectedProgram>),
     /// A label was referenced but never placed.
     UnresolvedLabel,
 }
@@ -263,7 +264,7 @@ impl fmt::Display for BuildError {
                 }
             }
             Self::MissingFunctionBody { func } => write!(f, "missing function body for {func}"),
-            Self::Verify(e) => write!(f, "verification failed: {e}"),
+            Self::Verify(rejected) => write!(f, "verification failed: {rejected}"),
             Self::UnresolvedLabel => write!(f, "unresolved label"),
         }
     }
@@ -272,7 +273,7 @@ impl fmt::Display for BuildError {
 impl core::error::Error for BuildError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Verify(e) => Some(e),
+            Self::Verify(rejected) => Some(&**rejected),
             Self::Contract(error) => Some(error),
             Self::Call(error) => Some(error),
             Self::Closure(error) => Some(error),
@@ -282,9 +283,9 @@ impl core::error::Error for BuildError {
     }
 }
 
-impl From<VerifyError> for BuildError {
-    fn from(e: VerifyError) -> Self {
-        Self::Verify(e)
+impl From<RejectedProgram> for BuildError {
+    fn from(rejected: RejectedProgram) -> Self {
+        Self::Verify(Box::new(rejected))
     }
 }
 
@@ -1058,8 +1059,10 @@ impl ProgramBuilder {
             }
         }
         let p = self.build();
-        verify_program(&p, cfg)?;
-        Ok(p)
+        match verify_program(&p, cfg) {
+            Ok(()) => Ok(p),
+            Err(error) => Err(RejectedProgram { error, program: p }.into()),
+        }
     }
 
     /// Builds the [`Program`], verifies it, then wraps it as a [`VerifiedProgram`].
@@ -1366,8 +1369,13 @@ impl Asm {
             region_runs: parts.region_runs.clone(),
         });
         let p = builder.build();
-        verify_program(&p, cfg)?;
-        Ok(parts)
+        match verify_program(&p, cfg) {
+            Ok(()) => Ok(parts),
+            Err(error) => Err(AsmError::Verify(Box::new(RejectedProgram {
+                error,
+                program: p,
+            }))),
+        }
     }
 
     /// Encodes `nop`.
@@ -3886,10 +3894,8 @@ mod tests {
         builder.define_function(function, body).unwrap();
         assert!(matches!(
             builder.build_verified(),
-            Err(BuildError::Verify(VerifyError::UninitializedRead {
-                reg: 1,
-                ..
-            }))
+            Err(BuildError::Verify(rejected))
+                if matches!(rejected.error, VerifyError::UninitializedRead { reg: 1, .. })
         ));
     }
 
@@ -3977,6 +3983,7 @@ mod tests {
     use super::*;
     use crate::bytecode::{Instr, decode_instructions};
     use crate::program::StructTypeDef;
+    use crate::verifier::VerifyError;
     use alloc::vec;
 
     #[test]
@@ -4030,7 +4037,8 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            AsmError::Verify(VerifyError::UninitializedRead { .. })
+            AsmError::Verify(rejected)
+                if matches!(rejected.error, VerifyError::UninitializedRead { .. })
         ));
     }
 

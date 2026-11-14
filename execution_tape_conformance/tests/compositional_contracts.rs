@@ -158,12 +158,16 @@ fn statically_wrong_nested_result_reports_member_path() {
             },
         )
         .unwrap();
-    match builder.build_verified().unwrap_err() {
-        execution_tape::asm::BuildError::Verify(VerifyError::ContractMismatch {
+    let execution_tape::asm::BuildError::Verify(rejected) = builder.build_verified().unwrap_err()
+    else {
+        panic!("expected a verifier rejection");
+    };
+    match rejected.error {
+        VerifyError::ContractMismatch {
             position: ContractPosition::Result { index: 0 },
             error,
             ..
-        }) => {
+        } => {
             assert_eq!(
                 error.path,
                 vec![
@@ -551,7 +555,7 @@ fn even_unused_nominal_refinements_must_match_the_schema() {
         let id = builder.contract(contract).unwrap();
         let error = builder.build_verified().unwrap_err();
         assert!(
-            matches!(error,execution_tape::asm::BuildError::Verify(VerifyError::InvalidContract{contract,error:ContractDefinitionError::UnknownStruct(_)|ContractDefinitionError::FieldCount{..}|ContractDefinitionError::MemberKind{..}}) if contract==id)
+            matches!(error,execution_tape::asm::BuildError::Verify(rejected) if matches!(rejected.error, VerifyError::InvalidContract{contract,error:ContractDefinitionError::UnknownStruct(_)|ContractDefinitionError::FieldCount{..}|ContractDefinitionError::MemberKind{..}} if contract==id))
         );
     }
 }
@@ -1172,7 +1176,7 @@ fn opaque_calls_erase_previous_projection_facts() {
             )
             .unwrap();
         assert!(
-            matches!(b.build_verified(),Err(execution_tape::asm::BuildError::Verify(VerifyError::UnknownAggregateShape{func,pc,reg:2})) if func==entry.0&&pc==projection)
+            matches!(b.build_verified(),Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(rejected.error, VerifyError::UnknownAggregateShape{func,pc,reg:2} if func==entry.0&&pc==projection))
         );
     }
 }
@@ -1197,8 +1201,9 @@ fn aliased_opaque_member_does_not_inherit_its_containers_shape() {
         .unwrap();
     assert!(matches!(
         b.build_verified(),
-        Err(execution_tape::asm::BuildError::Verify(
-            VerifyError::UnknownAggregateShape { func, pc, reg: 1 }
-        )) if func == entry.0 && pc == projection
+        Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(
+            rejected.error,
+            VerifyError::UnknownAggregateShape { func, pc, reg: 1 } if func == entry.0 && pc == projection
+        )
     ));
 }

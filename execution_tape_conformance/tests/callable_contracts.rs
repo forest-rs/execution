@@ -340,9 +340,8 @@ fn statically_known_incompatible_indirect_targets_are_rejected() {
     b.push_function_checked(a, sig(&[], &[])).unwrap();
     assert!(matches!(
         b.build_verified(),
-        Err(execution_tape::asm::BuildError::Verify(
-            VerifyError::CallIndirectContractMismatch { .. }
-        ))
+        Err(execution_tape::asm::BuildError::Verify(rejected))
+            if matches!(rejected.error, VerifyError::CallIndirectContractMismatch { .. })
     ));
 }
 
