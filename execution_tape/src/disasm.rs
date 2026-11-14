@@ -1270,6 +1270,7 @@ fn is_continuation(instr: &Instr) -> bool {
         instr,
         Instr::ContNew { .. }
             | Instr::ContBind { .. }
+            | Instr::ContDrop { .. }
             | Instr::Resume { .. }
             | Instr::ResumeThrow { .. }
             | Instr::Suspend { .. }
@@ -1312,6 +1313,10 @@ fn fmt_continuation(w: &mut fmt::Formatter<'_>, program: &Program, instr: &Instr
             write!(w, ", args=")?;
             fmt_reg_list(w, args)?;
             fmt_call_sig_annotation(w, program, CallSigId(*to_sig))
+        }
+        Instr::ContDrop { cont } => {
+            write!(w, " cont=")?;
+            fmt_reg(w, *cont)
         }
         Instr::Resume {
             eff_out,

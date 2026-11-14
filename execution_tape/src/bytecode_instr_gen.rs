@@ -148,6 +148,7 @@ impl Instr {
             Self::Suspend { .. } => Opcode::Suspend,
             Self::ResumeThrow { .. } => Opcode::ResumeThrow,
             Self::ContBind { .. } => Opcode::ContBind,
+            Self::ContDrop { .. } => Opcode::ContDrop,
             Self::ConstI32 { .. } => Opcode::ConstI32,
             Self::I32Add { .. } => Opcode::I32Add,
             Self::I32Sub { .. } => Opcode::I32Sub,

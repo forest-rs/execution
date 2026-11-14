@@ -2203,6 +2203,9 @@ fn verify_function_bytecode(
                 cont: map_cont(*cont)?,
                 args: push_vregs(args)?,
             },
+            Instr::ContDrop { cont } => ExecInstr::ContDrop {
+                cont: map_cont(*cont)?,
+            },
             Instr::Resume {
                 eff_out,
                 call_sig,
@@ -4161,6 +4164,7 @@ fn validate_instr_types(
         }
         Instr::ContNew { .. }
         | Instr::ContBind { .. }
+        | Instr::ContDrop { .. }
         | Instr::Resume { .. }
         | Instr::ResumeThrow { .. }
         | Instr::Suspend { .. } => {

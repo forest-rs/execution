@@ -1205,9 +1205,9 @@ fn continuations_cannot_cross_the_invocation_boundary() {
 
 #[test]
 fn abandoned_continuations_hold_their_frames_until_the_invocation_ends() {
-    // Current behaviour: a continuation that is never resumed again keeps its frames charged
-    // against `max_call_depth` until the invocation ends. `take_first(n)` starts `n`
-    // generators, takes one value from each and drops it.
+    // A continuation that is never resumed or dropped keeps its frames charged against
+    // `max_call_depth` until the invocation ends. `take_first(n)` starts `n` generators, takes
+    // one value from each and abandons it; `cont.drop` would release it instead.
     let mut b = ProgramBuilder::new();
     let yield_tag = b.declare_tag("yield", &[ValueType::I64.into()]).unwrap();
     let generator = emit_generator(&mut b, yield_tag);
@@ -1547,4 +1547,301 @@ fn cont_bind_consumes_its_continuation() {
         matches!(result, Err(Trap::ContinuationConsumed)),
         "{result:?}"
     );
+}
+
+struct Droppers {
+    program: Arc<VerifiedProgram>,
+    take_and_drop: FuncId,
+    drop_unstarted: FuncId,
+    drop_twice: FuncId,
+    resume_dropped: FuncId,
+    drop_returned: FuncId,
+    reuse: FuncId,
+}
+
+/// Functions that release continuations with `cont.drop`.
+///
+/// - `take_and_drop(n)` starts `n` generators one after another, takes one value from each and
+///   drops the rest of it, returning zero.
+/// - `drop_unstarted(n)` creates and drops `n` unstarted continuations, returning zero.
+/// - `drop_twice()`, `resume_dropped()` and `drop_returned()` reuse a consumed continuation.
+/// - `reuse(stale)` drops `first`, creates `second` in its slot, and resumes `first` when
+///   `stale`, else `second`, which returns seven.
+fn droppers() -> Droppers {
+    let mut b = ProgramBuilder::new();
+    let yield_tag = b.declare_tag("yield", &[ValueType::I64.into()]).unwrap();
+    let generator = emit_generator(&mut b, yield_tag);
+    let start = b.call_sig(sig(&[ValueType::I64], &[])).unwrap();
+    let unit_to_i64 = b.call_sig(sig(&[], &[ValueType::I64])).unwrap();
+    let count = sig(&[ValueType::I64], &[ValueType::I64]);
+
+    let seven = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+    let mut asm = b.function_asm(seven).unwrap();
+    let out = asm.alloc_register(ValueType::I64);
+    asm.const_i64(out, 7);
+    asm.ret(0, &[out]);
+    b.define_function(seven, asm).unwrap();
+
+    // Both loops count `n` down to zero around `body`, which may use `f` and `cont`.
+    let counted =
+        |b: &mut ProgramBuilder,
+         body: &dyn Fn(&mut Asm, u32, u32, u32, execution_tape::asm::Label)| {
+            let func = b.declare_function(&count).unwrap();
+            let mut asm = b.function_asm(func).unwrap();
+            let n = b.argument(func, 0).unwrap();
+            let f = asm.alloc_register(ValueType::Func);
+            let cont = asm.alloc_register(ValueType::Cont);
+            let (zero, one, done) = (
+                asm.alloc_register(ValueType::I64),
+                asm.alloc_register(ValueType::I64),
+                asm.alloc_register(ValueType::Bool),
+            );
+            let (check, looped, exit, next) = (asm.label(), asm.label(), asm.label(), asm.label());
+            asm.const_i64(zero, 0);
+            asm.const_i64(one, 1);
+            asm.const_func(f, generator);
+            asm.jmp(check);
+            asm.place(check).unwrap();
+            asm.i64_ge(done, zero, n);
+            asm.br(done, exit, looped);
+            asm.place(looped).unwrap();
+            body(&mut asm, f, cont, one, next);
+            asm.place(next).unwrap();
+            asm.i64_sub(n, n, one);
+            asm.jmp(check);
+            asm.place(exit).unwrap();
+            asm.ret(0, &[n]);
+            b.define_function(func, asm).unwrap();
+            func
+        };
+    let take_and_drop = counted(&mut b, &|asm, f, cont, one, next| {
+        let (value, rest) = (
+            asm.alloc_register(ValueType::I64),
+            asm.alloc_register(ValueType::Cont),
+        );
+        let yielded = asm.block(&[value, rest]);
+        asm.cont_new(cont, start, f);
+        protected_resume(
+            asm,
+            &[Catch::On(yield_tag, yielded)],
+            start,
+            cont,
+            &[one],
+            &[],
+        );
+        asm.trap(1);
+        asm.place(yielded).unwrap();
+        asm.cont_drop(rest);
+        asm.jmp(next);
+    });
+    let drop_unstarted = counted(&mut b, &|asm, f, cont, _, next| {
+        asm.cont_new(cont, start, f);
+        asm.cont_drop(cont);
+        asm.jmp(next);
+    });
+
+    // `misuse(edit)` creates a continuation of `seven` and then applies `edit` to it.
+    let misuse = |b: &mut ProgramBuilder, edit: &dyn Fn(&mut Asm, u32, u32)| {
+        let func = b.declare_function(sig(&[], &[ValueType::I64])).unwrap();
+        let mut asm = b.function_asm(func).unwrap();
+        let f = asm.alloc_register(ValueType::Func);
+        let cont = asm.alloc_register(ValueType::Cont);
+        let out = asm.alloc_register(ValueType::I64);
+        asm.const_func(f, seven);
+        asm.cont_new(cont, unit_to_i64, f);
+        edit(&mut asm, cont, out);
+        asm.ret(0, &[out]);
+        b.define_function(func, asm).unwrap();
+        func
+    };
+    let drop_twice = misuse(&mut b, &|asm, cont, out| {
+        asm.cont_drop(cont);
+        asm.cont_drop(cont);
+        asm.const_i64(out, 0);
+    });
+    let resume_dropped = misuse(&mut b, &|asm, cont, out| {
+        asm.cont_drop(cont);
+        asm.resume(0, unit_to_i64, cont, 0, &[], &[out]);
+    });
+    let drop_returned = misuse(&mut b, &|asm, cont, out| {
+        asm.resume(0, unit_to_i64, cont, 0, &[], &[out]);
+        asm.cont_drop(cont);
+    });
+
+    let reuse = b
+        .declare_function(sig(&[ValueType::Bool], &[ValueType::I64]))
+        .unwrap();
+    let mut asm = b.function_asm(reuse).unwrap();
+    let stale = b.argument(reuse, 0).unwrap();
+    let f = asm.alloc_register(ValueType::Func);
+    let (first, second) = (
+        asm.alloc_register(ValueType::Cont),
+        asm.alloc_register(ValueType::Cont),
+    );
+    let out = asm.alloc_register(ValueType::I64);
+    let (old, new) = (asm.label(), asm.label());
+    asm.const_func(f, seven);
+    asm.cont_new(first, unit_to_i64, f);
+    asm.cont_drop(first);
+    asm.cont_new(second, unit_to_i64, f);
+    asm.br(stale, old, new);
+    asm.place(old).unwrap();
+    asm.resume(0, unit_to_i64, first, 0, &[], &[out]);
+    asm.ret(0, &[out]);
+    asm.place(new).unwrap();
+    asm.resume(0, unit_to_i64, second, 0, &[], &[out]);
+    asm.ret(0, &[out]);
+    b.define_function(reuse, asm).unwrap();
+
+    Droppers {
+        program: Arc::new(b.build_verified().unwrap()),
+        take_and_drop,
+        drop_unstarted,
+        drop_twice,
+        resume_dropped,
+        drop_returned,
+        reuse,
+    }
+}
+
+#[test]
+fn cont_drop_releases_the_frames_of_suspended_and_unstarted_continuations() {
+    let fixture = droppers();
+    // The caller and one generator frame fit; without `cont.drop`, the second generator would
+    // not (see `abandoned_continuations_hold_their_frames_until_the_invocation_ends`).
+    let limits = Limits {
+        max_call_depth: 2,
+        ..Limits::default()
+    };
+    for func in [fixture.take_and_drop, fixture.drop_unstarted] {
+        assert_eq!(
+            run(&fixture.program, func, &[Value::I64(100)], limits.clone()).unwrap(),
+            vec![Value::I64(0)]
+        );
+    }
+}
+
+#[test]
+fn cont_drop_consumes_its_continuation() {
+    let fixture = droppers();
+    for func in [
+        fixture.drop_twice,
+        fixture.resume_dropped,
+        fixture.drop_returned,
+    ] {
+        let result = run(&fixture.program, func, &[], Limits::default());
+        assert!(
+            matches!(result, Err(Trap::ContinuationConsumed)),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_dropped_continuations_slot_is_reused_without_aliasing() {
+    let fixture = droppers();
+    let result = run(
+        &fixture.program,
+        fixture.reuse,
+        &[Value::Bool(false)],
+        Limits::default(),
+    );
+    assert_eq!(result.unwrap(), vec![Value::I64(7)]);
+    // The stale reference names the reused slot, but not its new continuation.
+    let result = run(
+        &fixture.program,
+        fixture.reuse,
+        &[Value::Bool(true)],
+        Limits::default(),
+    );
+    assert!(
+        matches!(result, Err(Trap::ContinuationConsumed)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn cont_drop_is_verified_disassembled_encoded_and_recorded() {
+    use execution_tape::opcode::Opcode;
+    use execution_tape::recording::{InstructionCapture, RecordLimits, Recorder, ReplayOutcome};
+    use execution_tape::trace::TraceSink as _;
+    use execution_tape::verifier::VerifyError;
+    let fixture = droppers();
+    let program = fixture.program.program();
+    let text = execution_tape::disasm::disassemble(program).to_string();
+    assert!(text.contains("cont.drop cont=r"), "{text}");
+    let decoded = execution_tape::program::Program::decode(&program.encode()).unwrap();
+    assert_eq!(&decoded, program);
+
+    // Only an initialized `Cont` register can be dropped.
+    let error = rejected(|b| {
+        let f = b.declare_function(sig(&[], &[])).unwrap();
+        let mut asm = b.function_asm(f).unwrap();
+        let value = asm.alloc_register(ValueType::I64);
+        asm.const_i64(value, 1);
+        asm.cont_drop(value);
+        asm.ret(0, &[]);
+        b.define_function(f, asm).unwrap();
+    });
+    assert!(
+        matches!(
+            error,
+            VerifyError::RegisterTypeMismatch {
+                declared: ValueType::I64,
+                required: ValueType::Cont,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    let error = rejected(|b| {
+        let f = b.declare_function(sig(&[], &[])).unwrap();
+        let mut asm = b.function_asm(f).unwrap();
+        let cont = asm.alloc_register(ValueType::Cont);
+        asm.cont_drop(cont);
+        asm.ret(0, &[]);
+        b.define_function(f, asm).unwrap();
+    });
+    assert!(
+        matches!(error, VerifyError::UninitializedRead { .. }),
+        "{error:?}"
+    );
+
+    // Recordings name the opcode in instruction history and replay re-executes the release,
+    // including the trap for a reused continuation.
+    for (func, args, expected) in [
+        (fixture.take_and_drop, vec![Value::I64(3)], None),
+        (fixture.drop_twice, vec![], Some(())),
+    ] {
+        let mut recorder = Recorder::new(Arc::clone(&fixture.program), RecordLimits::default())
+            .with_instructions(InstructionCapture::default());
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(Arc::clone(&fixture.program)).unwrap();
+        let live = vm.run(
+            FuncRef::new(unit, func),
+            &args,
+            recorder.mask(),
+            Some(&mut recorder),
+        );
+        let recording = recorder.finish();
+        recording.status().unwrap();
+        assert!(
+            recording
+                .instructions()
+                .any(|step| step.opcode == Opcode::ContDrop.code())
+        );
+        match (expected, live, recording.replay()) {
+            (None, Ok(live), Ok(ReplayOutcome::Returned(values))) => {
+                assert_eq!(values.values(), live);
+            }
+            (Some(()), Err(live), Ok(ReplayOutcome::Trapped(info))) => {
+                assert!(matches!(live.trap, Trap::ContinuationConsumed));
+                assert!(matches!(info.trap, Trap::ContinuationConsumed));
+                assert_eq!((info.func, info.pc), (live.func, live.pc));
+            }
+            (expected, live, replayed) => {
+                panic!("expected {expected:?}, live {live:?}, replay {replayed:?}")
+            }
+        }
+    }
 }

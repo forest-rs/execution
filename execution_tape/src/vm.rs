@@ -1685,6 +1685,11 @@ impl<H: Host> Vm<H> {
                         .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
                     ctx.write_cont(base, *dst, bound);
                 }
+                ExecInstr::ContDrop { cont } => {
+                    let cont = ctx.read_cont(base, *cont);
+                    ctx.drop_continuation(budget, cont)
+                        .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                }
                 ExecInstr::Resume {
                     call_sig,
                     cont,

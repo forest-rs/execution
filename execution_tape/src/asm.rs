@@ -1440,6 +1440,18 @@ impl Asm {
         self
     }
 
+    /// Encodes `cont.drop cont`.
+    ///
+    /// Consumes the continuation in `cont` without resuming it, releasing its frames and slot.
+    /// Its activations never run again, so their protected regions do not either; raise into
+    /// it with [`Self::resume_throw`] instead to unwind through them. Continuations its
+    /// registers refer to are not released with it: drop each abandoned one.
+    pub fn cont_drop(&mut self, cont: u32) -> &mut Self {
+        self.opcode(Opcode::ContDrop);
+        self.reg(cont);
+        self
+    }
+
     /// Encodes `resume eff_out, call_sig, cont, eff_in, args..., rets...`.
     ///
     /// Consumes the continuation in `cont`, whose type must be `call_sig`, and runs it on top of

@@ -14,8 +14,9 @@
 //! Registers name continuations by [`ContRef`]: a table slot and a generation. Consuming a
 //! continuation bumps its slot's generation, so every copy of the reference goes stale and
 //! one-shot use is a single comparison. The table is invocation-scoped: unresumed
-//! continuations are released when the invocation ends. Their frames stay charged to the
-//! invocation's frame budget meanwhile, so abandoned continuations cannot grow without bound.
+//! continuations are released by `cont.drop` or when the invocation ends. Their frames stay
+//! charged to the invocation's frame budget meanwhile, so abandoned continuations cannot grow
+//! without bound.
 //!
 //! The switch points are explicit instructions (`resume`, `resume_throw`, `suspend`), and the
 //! handler search only reads frames and their prepared region tables. A native tier can keep
@@ -167,6 +168,19 @@ impl Continuations {
             .ok_or(Trap::ContinuationConsumed)
     }
 
+    /// Marks the live slot `cont` names consumed, so every copy of `cont` goes stale.
+    ///
+    /// Its segment stays stored until reinstated or discarded.
+    fn retire(&mut self, cont: ContRef) {
+        let slot = &mut self.slots[cont.slot as usize];
+        debug_assert!(
+            slot.live && slot.generation == cont.generation,
+            "only a live continuation is retired"
+        );
+        slot.live = false;
+        slot.generation = slot.generation.saturating_add(1);
+    }
+
     /// A slot ready to receive a segment.
     fn vacant(&mut self) -> u32 {
         if let Some(slot) = self.free.pop() {
@@ -293,10 +307,23 @@ impl Registers {
             return Err(Trap::ContinuationSignatureMismatch { signature });
         }
         let (inputs, bound) = (slot.inputs, slot.bound);
-        let slot = &mut self.continuations.slots[cont.slot as usize];
-        slot.live = false;
-        slot.generation = slot.generation.saturating_add(1);
+        self.continuations.retire(cont);
         Ok((cont.slot, inputs, bound))
+    }
+
+    /// Consumes `cont` without resuming it, releasing its frames and registers.
+    ///
+    /// Any continuation can be dropped, whatever its type; the slot's buffers keep their
+    /// capacity for reuse, and its generation moves on so every copy of `cont` goes stale.
+    pub(super) fn drop_continuation(
+        &mut self,
+        budget: &mut Budget,
+        cont: ContRef,
+    ) -> Result<(), Trap> {
+        self.continuations.live(cont)?;
+        self.continuations.retire(cont);
+        budget.frames -= self.continuations.discard(cont.slot);
+        Ok(())
     }
 
     /// Publishes the continuation just captured into `slot` and returns its reference.

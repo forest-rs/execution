@@ -387,7 +387,8 @@
 //! continuation, which a later `resume` continues with the tag's results. `resume_throw` raises
 //! an exception at the suspension point instead, and `cont.bind` binds leading inputs.
 //! Continuations are typed by call signatures, checked across units, consumed by use, and live
-//! until resumed or the invocation ends; their frames count against the call-depth limit.
+//! until resumed, released with `cont.drop`, or the invocation ends; their frames count against
+//! the call-depth limit meanwhile.
 //! Generators, coroutines and resumable conditions are guest code on these primitives.
 //!
 //! A suspension that no `on` clause handles traps with `UnhandledSuspension`, unless the

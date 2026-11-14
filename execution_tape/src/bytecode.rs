@@ -155,6 +155,8 @@ pub(crate) enum Instr {
         cont: u32,
         args: Vec<u32>,
     },
+    /// Release `cont` without resuming it.
+    ContDrop { cont: u32 },
 
     /// `dst = ()`.
     ConstUnit { dst: u32 },

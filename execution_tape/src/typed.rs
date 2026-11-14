@@ -230,6 +230,10 @@ pub(crate) enum ExecInstr {
         cont: ContReg,
         args: VRegSlice,
     },
+    /// Release a continuation without resuming it.
+    ContDrop {
+        cont: ContReg,
+    },
     /// Run a continuation on top of this activation.
     Resume {
         call_sig: CallSigId,

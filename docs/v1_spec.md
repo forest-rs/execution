@@ -899,9 +899,10 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   its results the values it finally returns. Instructions name the signature they expect; the
   VM compares canonical contracts, so continuations cross units like indirect calls do. A
   different type traps with `ContinuationSignatureMismatch`.
-- Continuations are one-shot. `resume`, `resume_throw` and `cont.bind` consume theirs; every
-  copy of a consumed reference traps with `ContinuationConsumed`. A continuation lives until it
-  is consumed or its invocation ends. Its activations count against `max_call_depth` meanwhile,
+- Continuations are one-shot. `resume`, `resume_throw`, `cont.bind` and `cont.drop` consume
+  theirs; every copy of a consumed reference traps with `ContinuationConsumed`, including after
+  its slot holds a new continuation. A continuation lives until it is consumed or its invocation
+  ends. Its activations count against `max_call_depth` meanwhile,
   including the entry activation `cont.new` allocates.
 - `cont.new r_dst, call_sig_id, r_func`: creates an unstarted continuation of the `Func` or
   `Closure` in `r_func`, checked against `call_sigs[call_sig_id]` as `call_indirect` checks its
@@ -910,6 +911,12 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   `from_sig` and binds `args` to its leading inputs, producing one of type `to_sig`, whose
   arguments must be the remaining arguments and whose results must be identical
   (`ContBindSignature`).
+- `cont.drop r_cont`: consumes a continuation of any type without resuming it and releases its
+  activations, which no longer count against `max_call_depth`. They never run again, so their
+  protected regions do not either; `resume_throw` unwinds through them instead. Continuations
+  that the dropped activations' registers refer to are not released with them, since `Cont`
+  references can be copied; drop each one that is abandoned. A consumed or dropped
+  continuation traps with `ContinuationConsumed`.
 - `resume r_eff_out, call_sig_id, r_cont, r_eff_in, args... -> rets...`: consumes a continuation
   of type `call_sig` and runs it on top of the resuming activation with `args`. When its bottom
   activation returns, `rets` receive the results. An exception escaping it propagates from the
@@ -1063,6 +1070,7 @@ Under the `0xFC` prefix (each opcode is the two bytes shown):
 - `0xFC 0x07 suspend eff_out, tag_id, eff_in, argc, payload..., retc, rets...`
 - `0xFC 0x08 resume_throw eff_out, call_sig_id, cont, eff_in, tag_id, argc, payload..., retc, rets...`
 - `0xFC 0x09 cont.bind dst, from_sig_id, to_sig_id, cont, argc, args...`
+- `0xFC 0x0A cont.drop cont`
 
 Under the `0xFD` prefix, the 32-bit numerics in aligned family blocks (operands in encoding
 order; `const.i32` takes an SLEB128 `i32`, `const.u32` a ULEB128 `u32` and `const.f32` its bits

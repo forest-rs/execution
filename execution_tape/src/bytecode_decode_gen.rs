@@ -1365,6 +1365,12 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 args,
             }
         },
+        Opcode::ContDrop => {
+            let cont = crate::codec_primitives::read_reg(r)?;
+            Instr::ContDrop {
+                cont,
+            }
+        },
         Opcode::ConstI32 => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let imm = crate::codec_primitives::read_i32_sleb(r)?;

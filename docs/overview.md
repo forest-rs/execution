@@ -476,8 +476,9 @@ raises a tag to the nearest `on` clause protecting a `resume` that runs it. The 
 the payload and the suspended activations as a new continuation; resuming it continues after the
 `suspend` with the tag's results. `resume_throw` raises an exception at the suspension point, and
 `cont.bind` binds leading inputs. Continuations are typed by call signatures, checked across
-units, and consumed by use. They live in the invocation until resumed or the invocation ends, and
-their frames count against its call-depth budget. Suspended activations close their profiling
+units, and consumed by use. They live in the invocation until resumed, released with
+`cont.drop`, or the invocation ends, and their frames count against its call-depth budget
+meanwhile. Suspended activations close their profiling
 scopes as `Suspended` and re-enter them when resumed; recordings replay switching as ordinary
 guest control. Generators, coroutines and resumable conditions are guest code on these
 primitives.

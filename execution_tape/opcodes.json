@@ -4188,6 +4188,24 @@
       ]
     },
     {
+      "name": "ContDrop",
+      "mnemonic": "cont.drop",
+      "prefix": "0xFC",
+      "byte": "0x0A",
+      "terminator": false,
+      "flags": [],
+      "doc": "Release a continuation without resuming it, freeing its frames.",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "src",
+          "encoding": "reg_u32_uleb",
+          "field": "cont",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "ConstI32",
       "mnemonic": "const.i32",
       "prefix": "0xFD",
