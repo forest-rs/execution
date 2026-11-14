@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder};
+use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{HostContext, HostError, ValueRef};
 use execution_tape::host_binding::{HostFunctions, HostImport};
 use execution_tape::program::{HostTypeId, ValueType};
@@ -106,14 +106,17 @@ fn program() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
     for (i, n) in (0..).zip(names) {
         pb.set_function_input_name(entry, i, n)?;
     }
-    let arg = |i: u32| pb.argument(entry, i).expect("declared argument");
+    let arg = |i: u32| Reg(pb.argument(entry, i).expect("declared argument"));
     let [finish, brushing, mill_scale, paint_r, paint_g, paint_b] = [0, 1, 2, 3, 4, 5].map(arg);
     let [gloss, chipping, fade, age, wetness, weather] = [6, 7, 8, 9, 10, 11].map(arg);
     let mut a = pb.function_asm(entry)?;
+    // Constants several calls share, loaded once at entry so that they reach every branch.
+    let [material, base_input] = ["material", "base"].map(|name| pb.emit_const(&mut a, name));
+    let version = pb.emit_const(&mut a, CallArg::U32(1));
 
     // let steel = bind(); if finish == BARE { steel.brushing = ..; steel.mill_scale = .. }
     let (bare, is_bare) = (a.alloc_register(U32), a.alloc_register(Bool));
-    a.const_u32(bare, BARE).u32_eq(is_bare, finish, bare);
+    a.const_u32(bare, BARE).u32_eq(is_bare, finish.0, bare);
     let [steel] = pb.emit_call_with(&mut a, bind_new, ())?;
     let (l_bare, l_steel) = (a.label(), a.label());
     a.br(is_bare, l_bare, l_steel);
@@ -124,53 +127,54 @@ fn program() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
     a.place(l_steel)?;
 
     // let base = instantiate(steel@1 as "steel", steel).material
-    let module = ("library.steel", CallArg::U32(1), "steel", steel);
+    let module = ("library.steel", version, "steel", steel);
     let [out] = pb.emit_call_with(&mut a, instantiate, module)?;
-    let [steel_m] = pb.emit_call_with(&mut a, outputs_material, (out, "material"))?;
-    let base = a.alloc_register(O(MATERIAL));
-    a.mov(base, steel_m);
+    let [steel_m] = pb.emit_call_with(&mut a, outputs_material, (out, material))?;
+    let base = Reg(a.alloc_register(O(MATERIAL)));
+    a.mov(base.0, steel_m.0);
 
     // if finish != BARE { derive; paint }
     let (l_paint, l_rust) = (a.label(), a.label());
     a.br(is_bare, l_rust, l_paint);
     a.place(l_paint)?;
     let (chip, fd) = (a.alloc_register(F32), a.alloc_register(F32));
-    a.mov(chip, chipping).mov(fd, fade);
+    a.mov(chip, chipping.0).mov(fd, fade.0);
     let (l_weather, l_painting) = (a.label(), a.label());
-    a.br(weather, l_weather, l_painting);
+    a.br(weather.0, l_weather, l_painting);
     a.place(l_weather)?;
     // chip = max(chipping, 0.6 * age * age); fd = min(fade + 0.9 * age, 1)
     // `max_num`/`min_num`: Rust's `f32::max`/`min` favor numbers.
     let (k, t) = (a.alloc_register(F32), a.alloc_register(F32));
-    a.const_f32(k, 0.6).f32_mul(t, k, age).f32_mul(t, t, age);
-    a.f32_max_num(chip, chipping, t);
-    a.const_f32(k, 0.9).f32_mul(t, k, age).f32_add(t, fade, t);
+    a.const_f32(k, 0.6).f32_mul(t, k, age.0);
+    a.f32_mul(t, t, age.0).f32_max_num(chip, chipping.0, t);
+    a.const_f32(k, 0.9).f32_mul(t, k, age.0);
+    a.f32_add(t, fade.0, t);
     a.const_f32(k, 1.0).f32_min_num(fd, t, k);
     a.jmp(l_painting);
     a.place(l_painting)?;
     let [paint] = pb.emit_call_with(&mut a, bind_new, ())?;
-    let [] = pb.emit_call_with(&mut a, bind_material, (paint, "base", base))?;
+    let [] = pb.emit_call_with(&mut a, bind_material, (paint, base_input, base))?;
     let color = (paint, "color", paint_r, paint_g, paint_b);
     let [] = pb.emit_call_with(&mut a, bind_color, color)?;
     let [] = pb.emit_call_with(&mut a, bind_scalar, (paint, "gloss", gloss))?;
-    let [] = pb.emit_call_with(&mut a, bind_scalar, (paint, "chipping", chip))?;
-    let [] = pb.emit_call_with(&mut a, bind_scalar, (paint, "fade", fd))?;
-    let module = ("library.paint", CallArg::U32(1), "paint", paint);
+    let [] = pb.emit_call_with(&mut a, bind_scalar, (paint, "chipping", Reg(chip)))?;
+    let [] = pb.emit_call_with(&mut a, bind_scalar, (paint, "fade", Reg(fd)))?;
+    let module = ("library.paint", version, "paint", paint);
     let [out] = pb.emit_call_with(&mut a, instantiate, module)?;
-    let [painted] = pb.emit_call_with(&mut a, outputs_material, (out, "material"))?;
-    a.mov(base, painted);
+    let [painted] = pb.emit_call_with(&mut a, outputs_material, (out, material))?;
+    a.mov(base.0, painted.0);
     a.jmp(l_rust);
     a.place(l_rust)?;
 
     // output.material = instantiate(rust@1 as "rust", { base, age, wetness }).material
     let [rust] = pb.emit_call_with(&mut a, bind_new, ())?;
-    let [] = pb.emit_call_with(&mut a, bind_material, (rust, "base", base))?;
+    let [] = pb.emit_call_with(&mut a, bind_material, (rust, base_input, base))?;
     let [] = pb.emit_call_with(&mut a, bind_scalar, (rust, "age", age))?;
     let [] = pb.emit_call_with(&mut a, bind_scalar, (rust, "wetness", wetness))?;
-    let module = ("library.rust", CallArg::U32(1), "rust", rust);
+    let module = ("library.rust", version, "rust", rust);
     let [out] = pb.emit_call_with(&mut a, instantiate, module)?;
-    let [m] = pb.emit_call_with(&mut a, outputs_material, (out, "material"))?;
-    let [] = pb.emit_call_with(&mut a, output_material, ("material", m))?;
+    let [m] = pb.emit_call_with(&mut a, outputs_material, (out, material))?;
+    let [] = pb.emit_call_with(&mut a, output_material, (material, m))?;
     a.ret(0, &[]);
     pb.define_function(entry, a)?;
     Ok(pb.build_verified()?)
@@ -311,7 +315,7 @@ fn misspelt() -> Result<VerifiedProgram, Box<dyn std::error::Error>> {
         ret_types: vec![],
     })?;
     pb.set_function_name(entry, "rusted_plate")?;
-    let age = pb.argument(entry, 0)?;
+    let age = Reg(pb.argument(entry, 0)?);
     let mut a = pb.function_asm(entry)?;
     let [rust] = pb.emit_call_with(&mut a, bind_new, ())?;
     let [] = pb.emit_call_with(&mut a, bind_scalar, (rust, "rustiness", age))?;
