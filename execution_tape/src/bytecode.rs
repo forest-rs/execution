@@ -723,7 +723,7 @@ pub(crate) enum Instr {
     U64ToF64 { dst: u32, a: u32 },
     /// `dst = trunc(a)` (`f64` to `i64`, traps on NaN/inf/out-of-range).
     F64ToI64 { dst: u32, a: u32 },
-    /// `dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).
+    /// `dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range; `-0.5` converts to `0`).
     F64ToU64 { dst: u32, a: u32 },
     /// `dst = trunc_sat(a)` (`f64` to `i64`, saturating; NaN -> 0, never traps).
     F64ToI64Sat { dst: u32, a: u32 },

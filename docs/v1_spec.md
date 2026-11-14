@@ -73,10 +73,10 @@ result each instruction produces; this section says how far that result can be r
   `nearest` and `round_half_away` (exact), `min`, `max`, `min_num`, `max_num` and `f32.clamp`,
   `neg`, `abs` and `copysign`, the comparisons, every conversion between `f32`, `f64` and the
   integer types (a float result rounds once, to nearest with ties to even; an integer result
-  truncates and then traps or saturates as specified), and the `f32` math intrinsics `pow`,
-  `exp`, `ln`, `sin`, `cos` and `atan2`, whose results are defined by a pinned `libm` rather than
-  by correct rounding (see [Math intrinsics](#math-intrinsics)). Subnormal inputs and results are
-  honored, never flushed to zero. No instruction converts between `Decimal` and a float.
+  follows [Float-to-integer conversions](#float-to-integer-conversions)), and the `f32` math
+  intrinsics `pow`, `exp`, `ln`, `sin`, `cos` and `atan2`, whose results are defined by a pinned
+  `libm` rather than by correct rounding (see [Math intrinsics](#math-intrinsics)). Subnormal
+  inputs and results are honored, never flushed to zero. No instruction converts between `Decimal` and a float.
 - **No contraction.** Each instruction rounds its own result in its own width. A multiply
   followed by an add is never fused into a multiply-add, and no sequence of instructions is
   evaluated at another precision.
@@ -105,8 +105,9 @@ result each instruction produces; this section says how far that result can be r
   and keeps its sign and payload, and `clamp` returns a NaN `a` unchanged; that is not part of
   the contract.
 - **Enforcement.** `execution_tape_conformance/tests/float_determinism.rs` pins the edge cases
-  (ties, signed zeros, subnormals, saturation, `rem` signs, NaN propagation and preserved NaN
-  bits) to literal bit patterns and runs on every CI platform, including `wasm32-wasip1`.
+  (ties, signed zeros, subnormals, saturation, float-to-integer range edges, `rem` signs, NaN
+  propagation and preserved NaN bits) to literal bit patterns and runs on every CI platform,
+  including `wasm32-wasip1`.
 
 ## Value model
 
@@ -785,9 +786,8 @@ widths or signedness; conversions are explicit:
   `u32.to_i32_wrap`, `i64.to_u64_wrap`, `u64.to_i64_wrap`: reinterpret the bits.
 - `f64.to_f32`, `i32.to_f32`, `u32.to_f32`, `i64.to_f32`, `u64.to_f32`: round once to nearest,
   ties to even (`f64.to_f32` overflows to infinity).
-- `f32.to_i32`, `f32.to_u32`, `f64.to_i32`, `f64.to_u32`: truncate; trap with
-  `FloatToIntInvalid` on NaN or infinity and `IntCastOverflow` out of range. The `_sat` forms
-  saturate instead, and NaN converts to 0.
+- `f32.to_i32`, `f32.to_u32`, `f64.to_i32`, `f64.to_u32` and their `_sat` forms: truncate,
+  then trap or saturate; see [Float-to-integer conversions](#float-to-integer-conversions).
 - `f32.to_bits`/`f32.from_bits`: raw IEEE bits to and from `u32`.
 
 `f32.round_half_away` and `f64.round_half_away` round like `nearest` but break ties away from zero
@@ -853,11 +853,6 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
 - `f64_copysign` returns the bits of `a` with the sign bit of `b` (WebAssembly `f64.copysign`). It
   inspects no other bits: NaN payloads (including signaling NaNs) pass through unchanged, and a NaN
   `b` contributes only its sign.
-- `f64_to_i64_sat`/`f64_to_u64_sat` truncate toward zero and saturate, matching WebAssembly
-  `i64.trunc_sat_f64_s`/`i64.trunc_sat_f64_u`: values below the target range (including `-inf`, and
-  any negative value for `u64`) produce the minimum (`i64::MIN` or `0`), values at or above 2^63
-  (`i64`) or 2^64 (`u64`) (including `+inf`) produce the maximum, and NaN produces `0`. They never
-  trap, unlike `f64_to_i64`/`f64_to_u64`.
 - `f64_ne` is `!f64_eq`: it is true when the inputs are unordered (either is NaN), matching
   WebAssembly `f64.ne`.
 - `f64.round_half_away` (and `f32.round_half_away`) rounds to the nearest integer with ties away
@@ -870,6 +865,24 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
   `1.0` and odd integers just above 2^23 (2^52 for `f64`) to their even neighbors.
 - `f32` transcendental functions are specified under [Math intrinsics](#math-intrinsics); other
   transcendental functions (including all `f64` ones) are host-provided.
+
+#### Float-to-integer conversions
+Every float-to-integer conversion (`f64_to_i64`, `f64_to_u64`, `f32.to_i32`, `f32.to_u32`,
+`f64.to_i32`, `f64.to_u32` and their `_sat` forms) first truncates its input toward zero and only
+then fits the truncated value to the target type; no range check looks at the input before
+truncation. So `-0.5` and `-0.9999999` truncate to `-0.0` and convert to `0` for unsigned targets
+just as for signed ones, and `-1.0` is the first negative value outside an unsigned range.
+
+- The trapping forms match WebAssembly `i32.trunc_f32_s`/`_u`, `i32.trunc_f64_s`/`_u` and
+  `i64.trunc_f64_s`/`_u`: NaN and infinities trap with `FloatToIntInvalid`, and a finite input
+  whose truncation is outside the target range traps with `IntCastOverflow`. The accepted inputs
+  are exactly those with `min - 1 < x < max + 1`: `-1 < x < 2^32` for `u32`, `-1 < x < 2^64` for
+  `u64`, `-2^31 - 1 < x < 2^31` for `i32` and `-2^63 - 1 < x < 2^63` for `i64`. In particular
+  2^32 and 2^64 themselves trap, while the largest float below each converts.
+- The `_sat` forms match WebAssembly `trunc_sat` and never trap: a truncation below the target
+  range (including `-inf`) produces the minimum (`i32::MIN`, `i64::MIN` or `0`), one above it
+  (including `+inf`) produces the maximum, and NaN produces `0`. On every input the trapping form
+  accepts, both forms give the same result.
 
 #### Math intrinsics
 The `f32` math intrinsics are `f32.pow` (`a` raised to `b`), `f32.exp`, `f32.ln` (natural
@@ -1344,8 +1357,9 @@ Projection:
 - `0x6F u64_rem dst, a, b` (traps on divide-by-zero)
 - `0x70 i64_to_f64 dst, a`
 - `0x71 u64_to_f64 dst, a`
-- `0x72 f64_to_i64 dst, a` (truncates; traps on NaN/inf/out-of-range)
-- `0x73 f64_to_u64 dst, a` (truncates; traps on NaN/inf/out-of-range/negative)
+- `0x72 f64_to_i64 dst, a` (truncates, then traps on NaN/inf/out-of-range; see
+  [Float-to-integer conversions](#float-to-integer-conversions))
+- `0x73 f64_to_u64 dst, a` (truncates, then traps on NaN/inf/out-of-range; `-0.5` converts to `0`)
 - `0x74 dec_to_i64 dst, a` (traps if `a.scale != 0` or mantissa is outside `i64`)
 - `0x75 dec_to_u64 dst, a` (traps if `a.scale != 0` or mantissa is outside `u64`)
 - `0x76 i64_to_dec dst, a, scale_u8` (traps on overflow)

@@ -1451,7 +1451,7 @@ pub enum Opcode {
     U64ToF64 = 0x71,
     /// `dst = trunc(a)` (`f64` to `i64`, traps on NaN/inf/out-of-range).
     F64ToI64 = 0x72,
-    /// `dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).
+    /// `dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range; `-0.5` converts to `0`).
     F64ToU64 = 0x73,
     /// `dst = a.mantissa` (`Decimal` to `i64`, traps if `scale != 0` or outside `i64`).
     DecToI64 = 0x74,

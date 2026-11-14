@@ -3576,7 +3576,7 @@ impl Asm {
         self
     }
 
-    /// Encodes `f64_to_u64 dst, a` (truncates, traps on NaN/inf/out-of-range/negative).
+    /// Encodes `f64_to_u64 dst, a` (truncates, traps on NaN/inf/out-of-range; `-0.5` converts to `0`).
     pub fn f64_to_u64(&mut self, dst: u32, a: u32) -> &mut Self {
         self.opcode(Opcode::F64ToU64);
         self.reg(dst);

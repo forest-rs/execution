@@ -434,6 +434,12 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `f64_to_u64` now truncates before range-checking, like every other float-to-integer
+  conversion and WebAssembly `i64.trunc_f64_u`: an input between `-1.0` and `-0.0`, such as
+  `-0.5`, converts to `0` instead of trapping with `IntCastOverflow`. `f32.to_u32` and
+  `f64.to_u32` already behaved this way. The specification now states the rule once, under
+  "Float-to-integer conversions", and the float determinism suite pins every conversion's edges.
+
 - `RecordedValue`'s `Debug` shows a float's value beside its bits, as `F32(0.1 [0x3dcccccd])`,
   instead of the bits alone.
 
