@@ -163,9 +163,7 @@ struct Site {
 /// let entry = pb.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
 /// let mut body = pb.function_asm(entry)?;
 /// let value = pb.argument(entry, 0)?;
-/// let name = body.alloc_register(ValueType::Str);
-/// body.const_pool(name, pb.const_str("rustiness"));
-/// let [] = pb.emit_call(&mut body, set, &[name, value])?;
+/// let [] = pb.emit_call_with(&mut body, set, ("rustiness", value))?;
 /// body.ret(0, &[]);
 /// pb.define_function(entry, body)?;
 /// let program = pb.build_verified()?;

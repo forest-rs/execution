@@ -60,6 +60,17 @@ pub enum CallBuildError {
     },
     /// An argument or indirect callee register is not declared.
     Register(u32),
+    /// A constant argument's kind disagrees with the signature.
+    ConstantKind {
+        /// Requested target.
+        target: CallTarget,
+        /// Zero-based argument position.
+        index: usize,
+        /// Signature's required kind.
+        expected: ValueType,
+        /// The constant's kind.
+        actual: ValueType,
+    },
     /// An argument's declared storage kind disagrees with the signature.
     ArgumentKind {
         /// Requested target.
@@ -111,6 +122,15 @@ impl fmt::Display for CallBuildError {
                 f,
                 "call to {target:?}, argument {index} at r{register} requires {expected:?}, register declares {actual:?}"
             ),
+            Self::ConstantKind {
+                target,
+                index,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "call to {target:?}, argument {index} requires {expected:?}, constant is {actual:?}"
+            ),
             Self::CalleeKind(actual) => write!(
                 f,
                 "indirect call requires Func or Closure, register declares {actual:?}"
@@ -125,6 +145,132 @@ impl fmt::Display for CallBuildError {
     }
 }
 impl core::error::Error for CallBuildError {}
+
+/// One argument of [`ProgramBuilder::emit_call_with`]: a register, or a constant that the call
+/// loads into a fresh register of its kind immediately before it.
+///
+/// A `u32` converts to [`Self::Register`], as registers are `u32` throughout the assembler, so an
+/// integer constant is always spelled out: `CallArg::U32(1)`. Strings, `f32`, `f64`, `bool` and
+/// [`Decimal`] convert to constants. Strings and bytes are interned in the program's constant
+/// pool, so each distinct value is stored once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum CallArg<'a> {
+    /// A function-local register.
+    Register(u32),
+    /// `()`.
+    Unit,
+    /// A boolean constant.
+    Bool(bool),
+    /// An `i32` constant.
+    I32(i32),
+    /// A `u32` constant.
+    U32(u32),
+    /// An `i64` constant.
+    I64(i64),
+    /// A `u64` constant.
+    U64(u64),
+    /// An `f32` constant, loaded with its exact bits.
+    F32(f32),
+    /// An `f64` constant, loaded with its exact bits.
+    F64(f64),
+    /// A decimal constant.
+    Decimal(Decimal),
+    /// A byte-string constant.
+    Bytes(&'a [u8]),
+    /// A string constant.
+    Str(&'a str),
+}
+
+impl CallArg<'_> {
+    /// The kind of value this argument supplies, or `None` for a register.
+    fn constant_kind(&self) -> Option<ValueType> {
+        Some(match self {
+            Self::Register(_) => return None,
+            Self::Unit => ValueType::Unit,
+            Self::Bool(_) => ValueType::Bool,
+            Self::I32(_) => ValueType::I32,
+            Self::U32(_) => ValueType::U32,
+            Self::I64(_) => ValueType::I64,
+            Self::U64(_) => ValueType::U64,
+            Self::F32(_) => ValueType::F32,
+            Self::F64(_) => ValueType::F64,
+            Self::Decimal(_) => ValueType::Decimal,
+            Self::Bytes(_) => ValueType::Bytes,
+            Self::Str(_) => ValueType::Str,
+        })
+    }
+}
+
+impl From<u32> for CallArg<'_> {
+    fn from(register: u32) -> Self {
+        Self::Register(register)
+    }
+}
+impl<'a> From<&'a str> for CallArg<'a> {
+    fn from(value: &'a str) -> Self {
+        Self::Str(value)
+    }
+}
+impl From<bool> for CallArg<'_> {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+impl From<f32> for CallArg<'_> {
+    fn from(value: f32) -> Self {
+        Self::F32(value)
+    }
+}
+impl From<f64> for CallArg<'_> {
+    fn from(value: f64) -> Self {
+        Self::F64(value)
+    }
+}
+impl From<Decimal> for CallArg<'_> {
+    fn from(value: Decimal) -> Self {
+        Self::Decimal(value)
+    }
+}
+
+/// The arguments of [`ProgramBuilder::emit_call_with`]: a tuple of up to twelve values that
+/// convert into [`CallArg`], such as `(handle, "name", 0.5_f32)`, or a slice of [`CallArg`].
+pub trait CallArgs<'a> {
+    /// Appends these arguments to `out`, in order.
+    fn push_into(self, out: &mut Vec<CallArg<'a>>);
+}
+
+impl<'a> CallArgs<'a> for &[CallArg<'a>] {
+    fn push_into(self, out: &mut Vec<CallArg<'a>>) {
+        out.extend_from_slice(self);
+    }
+}
+
+macro_rules! tuple_call_args {
+    ($($name:ident)*) => {
+        impl<'a, $($name: Into<CallArg<'a>>),*> CallArgs<'a> for ($($name,)*) {
+            #[allow(non_snake_case, reason = "tuple fields are named after their types")]
+            #[allow(unused_variables, reason = "the empty tuple pushes nothing")]
+            fn push_into(self, out: &mut Vec<CallArg<'a>>) {
+                let ($($name,)*) = self;
+                $(out.push($name.into());)*
+            }
+        }
+    };
+}
+tuple_call_args!();
+tuple_call_args!(A);
+tuple_call_args!(A B);
+tuple_call_args!(A B C);
+tuple_call_args!(A B C D);
+tuple_call_args!(A B C D E);
+tuple_call_args!(A B C D E F);
+tuple_call_args!(A B C D E F G);
+tuple_call_args!(A B C D E F G H);
+tuple_call_args!(A B C D E F G H I);
+tuple_call_args!(A B C D E F G H I J);
+tuple_call_args!(A B C D E F G H I J K);
+tuple_call_args!(A B C D E F G H I J K L);
 
 enum Kinds<'a> {
     Contracts(&'a [ContractId], &'a ContractTableBuilder),
@@ -206,6 +352,122 @@ impl ProgramBuilder {
         args: &[u32],
     ) -> Result<[u32; N], CallBuildError> {
         let target = target.into();
+        let results = self.check_call(
+            body,
+            target,
+            args.iter().map(|&register| CallArg::Register(register)),
+            N,
+            0,
+        )?;
+        let results = core::array::from_fn(|index| body.alloc_register(results.get(index)));
+        match target {
+            CallTarget::Function(id) => {
+                body.call(0, id, 0, args, &results);
+            }
+            CallTarget::Host(id) => {
+                body.host_call(0, id, 0, args, &results);
+            }
+            CallTarget::Indirect { signature, callee } => {
+                body.call_indirect(0, signature, callee, 0, args, &results);
+            }
+        }
+        Ok(results)
+    }
+
+    /// Emits a call as [`Self::emit_call`] does, accepting constants as arguments.
+    ///
+    /// Each constant is loaded into a fresh register of its kind just before the call, in
+    /// argument order, and strings and bytes are interned in the constant pool. The bytecode is
+    /// exactly what [`Asm::alloc_register`], the matching `const_*` or [`Asm::const_pool`] load
+    /// and [`Self::emit_call`] produce by hand. Every check, including each constant's kind
+    /// against the signature, happens before anything is emitted.
+    ///
+    /// ```
+    /// use execution_tape::asm::{CallArg, FunctionSig, ProgramBuilder};
+    /// use execution_tape::host::HostSig;
+    /// use execution_tape::program::ValueType;
+    /// let mut program = ProgramBuilder::new();
+    /// let set = program.host_sig_for(
+    ///     "settings.set",
+    ///     HostSig { args: vec![ValueType::Str, ValueType::U32, ValueType::F32], rets: vec![] },
+    /// );
+    /// let entry = program.declare_function(FunctionSig { arg_types: vec![ValueType::F32], ret_types: vec![] })?;
+    /// let mut body = program.function_asm(entry)?;
+    /// let value = program.argument(entry, 0)?;
+    /// // A `u32` is a register; an integer constant is spelled out.
+    /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(1), value))?;
+    /// let [] = program.emit_call_with(&mut body, set, ("age", CallArg::U32(2), 0.5_f32))?;
+    /// body.ret(0, &[]);
+    /// program.define_function(entry, body)?;
+    /// program.build_verified()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn emit_call_with<'a, const N: usize>(
+        &mut self,
+        body: &mut Asm,
+        target: impl Into<CallTarget>,
+        args: impl CallArgs<'a>,
+    ) -> Result<[u32; N], CallBuildError> {
+        let target = target.into();
+        let mut operands = Vec::new();
+        args.push_into(&mut operands);
+        let constants = operands
+            .iter()
+            .filter(|arg| !matches!(arg, CallArg::Register(_)))
+            .count();
+        self.check_call(body, target, operands.iter().copied(), N, constants)?;
+        let registers: Vec<u32> = operands
+            .into_iter()
+            .map(|arg| self.load(body, arg))
+            .collect();
+        self.emit_call(body, target, &registers)
+    }
+
+    /// Interns `value` in the constant pool and loads it into a fresh `Str` register of `body`.
+    ///
+    /// One call in place of [`Self::const_str`], [`Asm::alloc_register`] and
+    /// [`Asm::const_pool`], with identical bytecode. Equal strings share one pool entry.
+    pub fn emit_const_str(&mut self, body: &mut Asm, value: &str) -> u32 {
+        self.load(body, CallArg::Str(value))
+    }
+
+    /// Loads a constant into a fresh register, or returns a register argument unchanged.
+    fn load(&mut self, body: &mut Asm, arg: CallArg<'_>) -> u32 {
+        let Some(kind) = arg.constant_kind() else {
+            let CallArg::Register(register) = arg else {
+                unreachable!("only registers have no constant kind")
+            };
+            return register;
+        };
+        let dst = body.alloc_register(kind);
+        match arg {
+            CallArg::Register(_) => unreachable!("registers are returned above"),
+            CallArg::Unit => body.const_unit(dst),
+            CallArg::Bool(v) => body.const_bool(dst, v),
+            CallArg::I32(v) => body.const_i32(dst, v),
+            CallArg::U32(v) => body.const_u32(dst, v),
+            CallArg::I64(v) => body.const_i64(dst, v),
+            CallArg::U64(v) => body.const_u64(dst, v),
+            CallArg::F32(v) => body.const_f32_bits(dst, v.to_bits()),
+            CallArg::F64(v) => body.const_f64_bits(dst, v.to_bits()),
+            CallArg::Decimal(v) => body.const_decimal_value(dst, v),
+            CallArg::Bytes(v) => body.const_pool(dst, self.const_bytes(v)),
+            CallArg::Str(v) => body.const_pool(dst, self.const_str(v)),
+        };
+        dst
+    }
+
+    /// Checks a call before anything is emitted, returning the target's result kinds.
+    ///
+    /// `temporaries` counts registers the caller allocates for constants before the call.
+    fn check_call<'s>(
+        &'s self,
+        body: &Asm,
+        target: CallTarget,
+        args: impl ExactSizeIterator<Item = CallArg<'s>>,
+        result_count: usize,
+        temporaries: usize,
+    ) -> Result<Kinds<'s>, CallBuildError> {
         let (parameters, results) = match target {
             CallTarget::Function(id) => {
                 let function = self
@@ -249,51 +511,55 @@ impl ProgramBuilder {
                 actual: args.len(),
             });
         }
-        if N != results.len() {
+        if result_count != results.len() {
             return Err(CallBuildError::Results {
                 target,
                 expected: results.len(),
-                actual: N,
+                actual: result_count,
             });
         }
         if body.register_types.first() != Some(&ValueType::Unit) {
             return Err(CallBuildError::EffectRegister);
         }
-        for (index, register) in args.iter().enumerate() {
-            let actual = *body
-                .register_types
-                .get(*register as usize)
-                .ok_or(CallBuildError::Register(*register))?;
+        for (index, arg) in args.enumerate() {
             let expected = parameters.get(index);
-            if actual != expected {
-                return Err(CallBuildError::ArgumentKind {
-                    target,
-                    register: *register,
-                    index,
-                    expected,
-                    actual,
-                });
+            match arg {
+                CallArg::Register(register) => {
+                    let actual = *body
+                        .register_types
+                        .get(register as usize)
+                        .ok_or(CallBuildError::Register(register))?;
+                    if actual != expected {
+                        return Err(CallBuildError::ArgumentKind {
+                            target,
+                            register,
+                            index,
+                            expected,
+                            actual,
+                        });
+                    }
+                }
+                constant => {
+                    let actual = constant.constant_kind().expect("a constant argument");
+                    if actual != expected {
+                        return Err(CallBuildError::ConstantKind {
+                            target,
+                            index,
+                            expected,
+                            actual,
+                        });
+                    }
+                }
             }
         }
         if body
             .register_types
             .len()
-            .checked_add(N)
+            .checked_add(result_count)
+            .and_then(|count| count.checked_add(temporaries))
             .is_none_or(|count| count.saturating_sub(1) > u32::MAX as usize)
         {
             return Err(CallBuildError::RegisterSpace);
-        }
-        let results = core::array::from_fn(|index| body.alloc_register(results.get(index)));
-        match target {
-            CallTarget::Function(id) => {
-                body.call(0, id, 0, args, &results);
-            }
-            CallTarget::Host(id) => {
-                body.host_call(0, id, 0, args, &results);
-            }
-            CallTarget::Indirect { signature, callee } => {
-                body.call_indirect(0, signature, callee, 0, args, &results);
-            }
         }
         Ok(results)
     }
@@ -489,5 +755,154 @@ mod tests {
             program.build_verified(),
             Err(BuildError::Verify(VerifyError::UninitializedRead { .. }))
         ));
+    }
+
+    /// Declares `f(f32)` importing `h(str, u32, f32, bool, i64, bytes, str) -> u32`.
+    fn constant_program() -> (ProgramBuilder, Asm, HostSigId, u32) {
+        let mut program = ProgramBuilder::new();
+        let h = program.host_sig_for(
+            "h",
+            HostSig {
+                args: vec![
+                    ValueType::Str,
+                    ValueType::U32,
+                    ValueType::F32,
+                    ValueType::Bool,
+                    ValueType::I64,
+                    ValueType::Bytes,
+                    ValueType::Str,
+                ],
+                rets: vec![ValueType::U32],
+            },
+        );
+        let f = program
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::F32],
+                ret_types: vec![],
+            })
+            .unwrap();
+        let body = program.function_asm(f).unwrap();
+        let argument = program.argument(f, 0).unwrap();
+        (program, body, h, argument)
+    }
+
+    fn finish(mut program: ProgramBuilder, mut body: Asm) -> Program {
+        body.ret(0, &[]);
+        program.define_function(FuncId(0), body).unwrap();
+        program.build_checked().unwrap()
+    }
+
+    #[test]
+    fn constant_arguments_emit_exactly_the_hand_written_loads() {
+        let (mut program, mut body, h, x) = constant_program();
+        for _ in 0..2 {
+            let [_] = program
+                .emit_call_with(
+                    &mut body,
+                    h,
+                    (
+                        "name",
+                        CallArg::U32(7),
+                        x,
+                        true,
+                        CallArg::I64(-3),
+                        CallArg::Bytes(b"raw"),
+                        "name",
+                    ),
+                )
+                .unwrap();
+        }
+        let r = program.emit_const_str(&mut body, "name");
+        let [_] = program
+            .emit_call_with(
+                &mut body,
+                h,
+                &[
+                    CallArg::Register(r),
+                    CallArg::U32(1),
+                    CallArg::F32(f32::from_bits(0x7fc0_0001)),
+                    CallArg::Bool(false),
+                    CallArg::I64(0),
+                    CallArg::Bytes(&[]),
+                    CallArg::Str(""),
+                ][..],
+            )
+            .unwrap();
+        let sugared = finish(program, body);
+
+        let (mut program, mut body, h, x) = constant_program();
+        for _ in 0..2 {
+            let name = body.alloc_register(ValueType::Str);
+            body.const_pool(name, program.const_str("name"));
+            let seven = body.alloc_register(ValueType::U32);
+            body.const_u32(seven, 7);
+            let flag = body.alloc_register(ValueType::Bool);
+            body.const_bool(flag, true);
+            let n = body.alloc_register(ValueType::I64);
+            body.const_i64(n, -3);
+            let raw = body.alloc_register(ValueType::Bytes);
+            body.const_pool(raw, program.const_bytes(b"raw"));
+            let again = body.alloc_register(ValueType::Str);
+            body.const_pool(again, program.const_str("name"));
+            let [_] = program
+                .emit_call(&mut body, h, &[name, seven, x, flag, n, raw, again])
+                .unwrap();
+        }
+        let r = body.alloc_register(ValueType::Str);
+        body.const_pool(r, program.const_str("name"));
+        let one = body.alloc_register(ValueType::U32);
+        body.const_u32(one, 1);
+        let nan = body.alloc_register(ValueType::F32);
+        body.const_f32_bits(nan, 0x7fc0_0001);
+        let flag = body.alloc_register(ValueType::Bool);
+        body.const_bool(flag, false);
+        let zero = body.alloc_register(ValueType::I64);
+        body.const_i64(zero, 0);
+        let empty = body.alloc_register(ValueType::Bytes);
+        body.const_pool(empty, program.const_bytes(&[]));
+        let blank = body.alloc_register(ValueType::Str);
+        body.const_pool(blank, program.const_str(""));
+        let [_] = program
+            .emit_call(&mut body, h, &[r, one, nan, flag, zero, empty, blank])
+            .unwrap();
+        let by_hand = finish(program, body);
+
+        assert_eq!(sugared, by_hand);
+        // "name", b"raw", b"" and "" each occupy one pool entry.
+        assert_eq!(sugared.const_pool.len(), 4);
+    }
+
+    #[test]
+    fn rejected_constant_calls_emit_and_intern_nothing() {
+        let (mut program, mut body, h, x) = constant_program();
+        let (pc, registers) = (body.pc(), body.register_types.len());
+        let args = (
+            "fresh",
+            7.0_f64,
+            x,
+            true,
+            CallArg::I64(0),
+            CallArg::Bytes(b""),
+            "",
+        );
+        assert_eq!(
+            program.emit_call_with::<1>(&mut body, h, args),
+            Err(CallBuildError::ConstantKind {
+                target: CallTarget::Host(h),
+                index: 1,
+                expected: ValueType::U32,
+                actual: ValueType::F64,
+            })
+        );
+        assert_eq!(
+            program.emit_call_with::<1>(&mut body, h, ("fresh", x)),
+            Err(CallBuildError::Arguments {
+                target: CallTarget::Host(h),
+                expected: 7,
+                actual: 2,
+            })
+        );
+        assert_eq!((body.pc(), body.register_types.len()), (pc, registers));
+        assert!(program.const_pool.is_empty());
     }
 }

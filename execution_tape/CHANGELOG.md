@@ -16,6 +16,13 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Pass constants directly as call arguments with `ProgramBuilder::emit_call_with`. Arguments are
+  a tuple, such as `(handle, "name", 0.5_f32)`, or a slice of the new `CallArg`; a `u32` is a
+  register and integer constants are spelled `CallArg::U32(1)`. Each constant is loaded into a
+  fresh register just before the call, strings and bytes are interned once in the constant pool,
+  and the bytecode is identical to the hand-written loads. `ProgramBuilder::emit_const_str` loads
+  one interned string into a fresh register. `CallBuildError` gains `ConstantKind`.
+
 - Expose the arguments of host calls that are known before a program runs.
   `VerifiedProgram::host_call_sites` lists every reachable `host_call` with its import, symbol,
   function, pc and span, and each argument as `Some(ValueRef)` when every path to the call loads
