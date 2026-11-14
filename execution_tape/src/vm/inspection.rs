@@ -58,7 +58,9 @@ pub(super) struct Activation {
 pub(super) struct ExecutionControl {
     pub(super) remaining: u64,
     pub(super) yield_host_calls: bool,
+    pub(super) yield_suspensions: bool,
     pub(super) pending_host: Option<host_call::PendingHost>,
+    pub(super) pending_suspension: Option<invocation::PendingSuspend>,
     pub(super) callbacks: Option<Box<invocation::callback::Callbacks>>,
     owner: Option<Arc<()>>,
     frames: Vec<Activation>,
@@ -69,11 +71,13 @@ impl ExecutionControl {
         self.owner.as_ref().expect("resumable control identity")
     }
 
-    pub(super) fn start(yield_host_calls: bool) -> Self {
+    pub(super) fn start(yield_host_calls: bool, yield_suspensions: bool) -> Self {
         Self {
             remaining: 0,
             yield_host_calls,
+            yield_suspensions,
             pending_host: None,
+            pending_suspension: None,
             callbacks: None,
             owner: Some(Arc::new(())),
             frames: vec![Activation {
@@ -90,6 +94,11 @@ impl ExecutionControl {
                 .expect("nested activation has caller")
         } else if let Some(pending) = self
             .pending_host
+            .filter(|pending| pending.depth == ctx.frames.len())
+        {
+            pending.location
+        } else if let Some(pending) = self
+            .pending_suspension
             .filter(|pending| pending.depth == ctx.frames.len())
         {
             pending.location
@@ -142,11 +151,13 @@ impl ExecutionControl {
 pub struct PausedFrame {
     /// Identity retained across resumes until this activation returns.
     pub activation: ActivationId,
-    /// Next instruction for the active leaf; pending call instruction for a waiting caller.
+    /// Next instruction for the active leaf; pending call instruction for a waiting caller, or
+    /// the `suspend` of a leaf whose suspension waits for the embedding.
     pub location: TraceLocation,
     /// Instruction that entered this activation; `None` for the root.
     pub caller: Option<TraceLocation>,
-    /// Whether a guest callee or yielded host operation has not returned yet.
+    /// Whether a guest callee or yielded host operation has not returned yet, or a yielded
+    /// suspension has not been resumed yet.
     pub waiting_for_return: bool,
     /// Number of source register declarations, including r0 and unused registers.
     pub register_count: u32,
@@ -289,8 +300,12 @@ impl<'a> InvocationInspection<'a> {
         let pending = self
             .control
             .pending_host
-            .filter(|pending| !child && pending.depth == self.ctx.frames.len());
-        let waiting = child || pending.is_some();
+            .is_some_and(|pending| !child && pending.depth == self.ctx.frames.len());
+        let suspended = self
+            .control
+            .pending_suspension
+            .is_some_and(|pending| !child && pending.depth == self.ctx.frames.len());
+        let waiting = child || pending || suspended;
         let location = self.control.paused_location(self.ctx, index);
         PausedFrame {
             activation: ActivationId {

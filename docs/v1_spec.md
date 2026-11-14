@@ -920,10 +920,15 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   for the tag (comparing VM tags, as catch clauses do) receives the payload and a new
   continuation of the activations above that `resume`, typed by the tag's results and the
   `resume`'s results. Resuming it continues after the `suspend`, whose `rets` receive the resume
-  values. No matching clause traps with `UnhandledSuspension`; a search that reaches a guest
-  callback's root traps with `SuspensionAcrossHost`, since a pending host request cannot be
-  suspended. Payload contracts are checked at the `suspend`, resume values against the resume
-  signature's contracts.
+  values. No matching clause traps with `UnhandledSuspension`, unless the invocation yields
+  suspensions (`InvocationOptions::yield_suspensions`): then the suspension waits for the
+  embedding, which resumes it with values for the tag's results (checked for arity, kind,
+  payload work and the suspending unit's result contracts, as `ContractPosition::Resumption`),
+  raises an exception at the `suspend`, or discards it, which traps with
+  `UnhandledSuspension` there. A search that reaches a guest callback's root traps with
+  `SuspensionAcrossHost`, since a pending host request cannot be suspended. Payload contracts
+  are checked at the `suspend`, before it is handled, yielded or trapped as unhandled; resume
+  values against the resume signature's contracts.
 - `resume_throw r_eff_out, call_sig_id, r_cont, r_eff_in, tag_id, payload... -> rets...`:
   consumes and reinstates a continuation like `resume`, then raises `tag` with `payload` at its
   suspension point, where its own regions may catch it. The raise is located at that `suspend`
@@ -931,10 +936,13 @@ Continuations follow WebAssembly stack switching (`cont.new`, `resume`, `suspend
   are the `resume_throw`'s. An unstarted continuation is discarded instead and the exception
   raised at the `resume_throw`.
 - Each instruction costs one fuel. Switching is deterministic guest control: recordings need no
-  new evidence and replay re-executes it. Activations whose continuation suspends close their
-  call-frame scopes with `TraceOutcome::Suspended`; resuming enters new scopes for them at their
-  new depths. The interpreter moves a suspended continuation's frames and registers off its one
-  contiguous stack and back on resume; a native tier may instead give each continuation its own
+  new evidence and replay re-executes it. A suspension yielded to the embedding is the
+  exception: recordings retain its payload and the embedding's answer, and replay answers it
+  again. Activations whose continuation suspends close their call-frame scopes with
+  `TraceOutcome::Suspended`, including when it is yielded; resuming enters new scopes for them
+  at their new depths. The interpreter moves a suspended continuation's frames and registers off
+  its one contiguous stack and back on resume, and leaves a yielded suspension's frames in place;
+  a native tier may instead give each continuation, and the invocation's own root, its own
   machine stack.
 
 ### Host calls

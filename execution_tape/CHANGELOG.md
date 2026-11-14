@@ -95,6 +95,26 @@ This release has an [MSRV][] of 1.88.
   paused at any instruction boundary inside a continuation. Migration: no caller changes are
   required.
 
+- Let suspensions that no guest handler handles reach the embedding. An invocation started with
+  `InvocationOptions::yield_suspensions()` reports `RunStatus::AwaitingHandler` instead of
+  trapping with `Trap::UnhandledSuspension`, and `Invocation::pending_suspension` borrows a
+  `PendingSuspension` with the tag, payload and result kinds, inspection of the suspended frames,
+  host access and installs. The embedding answers once: `resume` with values for the tag's
+  results (checked for count, kind and payload work like a host return, a wrong count trapping
+  `Trap::ArityMismatch`, and against the suspending unit's result contracts as
+  `ContractPosition::Resumption`), `resume_throw` to raise an exception at the `suspend`, or
+  `discard` to end the invocation with `UnhandledSuspension`. Suspensions inside guest callbacks
+  still trap with `SuspensionAcrossHost`, and default invocations and `Vm::run` keep trapping.
+  A suspension's payload contracts are now checked before it traps as unhandled, so the trap
+  does not depend on whether the invocation yields suspensions.
+  The suspended activations close their scopes as `Suspended` and re-enter when answered. Trace
+  sinks observe `ValueEvent::SuspensionYielded` and `ValueEvent::SuspensionAnswered` (with
+  `trace::SuspensionAnswer`), recordings retain `Recording::suspensions` (`YieldedSuspension`,
+  `RecordedAnswer`, bounded by `RecordLimits::suspensions`), and replay checks each payload and
+  answers again. Migration: handle `RunStatus::AwaitingHandler`, the new `ValueEvent`,
+  `ContractPosition`, `CaptureResource`, `ReplayBoundary` and `Divergence` variants in
+  exhaustive matches, and initialize `RecordLimits::suspensions` in struct literals.
+
 - Declare the values that resume a suspension to a tag with
   `ProgramBuilder::declare_tag_with_results` and `import_tag_with_results`, or
   `Vm::define_tag_with_results` for embedding-defined tags, so the store tags that units share

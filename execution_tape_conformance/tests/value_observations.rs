@@ -46,6 +46,9 @@ impl TraceSink for Observe {
             ValueEvent::Thrown { .. } | ValueEvent::Rethrown { .. } | ValueEvent::Caught { .. } => {
                 panic!("fixture raises no exceptions")
             }
+            ValueEvent::SuspensionYielded { .. } | ValueEvent::SuspensionAnswered { .. } => {
+                panic!("fixture yields no suspensions")
+            }
             ValueEvent::Installed { .. } => panic!("fixture installs nothing while running"),
             ValueEvent::Entry {
                 entry,
@@ -478,7 +481,9 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                 | ValueEvent::Installed { .. }
                 | ValueEvent::Thrown { .. }
                 | ValueEvent::Rethrown { .. }
-                | ValueEvent::Caught { .. } => return,
+                | ValueEvent::Caught { .. }
+                | ValueEvent::SuspensionYielded { .. }
+                | ValueEvent::SuspensionAnswered { .. } => return,
                 ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
                     panic!("fixture does not request callbacks")
                 }

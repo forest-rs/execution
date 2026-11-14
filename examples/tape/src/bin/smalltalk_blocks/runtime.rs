@@ -228,6 +228,9 @@ impl Runtime {
             RunStatus::CallbackReturned => {
                 return Err("the block runtime starts no callbacks".into());
             }
+            RunStatus::AwaitingHandler => {
+                return Err("the block runtime yields no suspensions".into());
+            }
         }
         let site = self.site()?;
         let request = self

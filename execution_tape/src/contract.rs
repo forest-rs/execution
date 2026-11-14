@@ -692,6 +692,9 @@ impl ContractViolation {
             ContractPosition::Payload { tag, index } => {
                 write!(f, "throw tag#{}: payload[{index}]", tag.0)?;
             }
+            ContractPosition::Resumption { tag, index } => {
+                write!(f, "resumption of tag#{}: value[{index}]", tag.0)?;
+            }
         }
         self.fmt_suffix(f)
     }
@@ -744,6 +747,14 @@ pub enum ContractPosition {
         /// Zero-based payload position.
         index: u32,
     },
+    /// A value the embedding resumed a yielded suspension with, checked against its tag's
+    /// results.
+    Resumption {
+        /// Program-local tag of the `suspend`.
+        tag: crate::program::TagId,
+        /// Zero-based result position.
+        index: u32,
+    },
 }
 
 impl fmt::Display for ContractPosition {
@@ -759,6 +770,9 @@ impl fmt::Display for ContractPosition {
             ),
             Self::Result { index } => write!(f, "result[{index}]"),
             Self::Payload { tag, index } => write!(f, "payload[{index}] of tag#{}", tag.0),
+            Self::Resumption { tag, index } => {
+                write!(f, "resumption value[{index}] of tag#{}", tag.0)
+            }
         }
     }
 }

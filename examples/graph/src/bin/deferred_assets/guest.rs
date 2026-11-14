@@ -138,6 +138,7 @@ impl Guest {
             RunStatus::AwaitingHost => {}
             RunStatus::Suspended => unreachable!("unbounded quantum"),
             RunStatus::CallbackReturned => unreachable!("asset loading starts no callbacks"),
+            RunStatus::AwaitingHandler => unreachable!("asset loading yields no suspensions"),
             RunStatus::Complete => return Err(SceneError::Expected("asset request before result")),
         }
         if self.request.is_none() {

@@ -481,3 +481,18 @@ their frames count against its call-depth budget. Suspended activations close th
 scopes as `Suspended` and re-enter them when resumed; recordings replay switching as ordinary
 guest control. Generators, coroutines and resumable conditions are guest code on these
 primitives.
+
+A suspension that no `on` clause handles traps with `UnhandledSuspension` unless the invocation
+opts into `InvocationOptions::yield_suspensions()`. Then the embedding is the handler of last
+resort: `resume` reports `AwaitingHandler`, and `pending_suspension()` borrows the tag, payload
+and result kinds. The embedding answers once: `resume` writes values for the tag's results,
+checked for count, kind and payload work like a host return (a wrong count traps
+`ArityMismatch`) and against the tag's result contracts; `resume_throw` raises an exception at the `suspend`, where the
+guest's regions may catch it; `discard` ends the invocation with `UnhandledSuspension`. The view
+borrows its invocation, so a suspension can be answered only while it waits and only once.
+While it waits, its frames stay on the stack, inspectable and charged to the call-depth budget,
+and the embedding may install code or use its host; their profiling scopes close as
+`Suspended` and re-enter when answered. A language REPL answers conditions this way, any number
+of times per run. A suspension that reaches a guest callback's root still traps with
+`SuspensionAcrossHost`. Recordings retain each yielded suspension's payload and the
+embedding's answer (`Recording::suspensions`); replay checks the payload and answers again.

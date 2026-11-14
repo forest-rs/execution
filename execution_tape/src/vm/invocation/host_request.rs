@@ -89,7 +89,8 @@ impl PendingHost {
         }
     }
 }
-fn arguments<'a>(
+/// Borrows the values of registers a waiting instruction already read successfully.
+pub(in crate::vm) fn read_registers<'a>(
     ctx: &'a Registers,
     sources: ValueSources<'a>,
     base: &'a RegBase,
@@ -255,7 +256,7 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     pub fn arguments(&self) -> impl ExactSizeIterator<Item = ValueRef<'_>> {
         let inv = &self.running;
         let code = self.code();
-        arguments(
+        read_registers(
             &inv.continuation.ctx,
             code.sources(&inv.continuation.args, inv.vm.memory.aggs()),
             self.pending.base(&inv.continuation.ctx),
@@ -439,7 +440,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             arg_vec = vec![ValueRef::Unit; site.args.len()];
             &mut arg_vec
         };
-        for (slot, value) in args.iter_mut().zip(arguments(
+        for (slot, value) in args.iter_mut().zip(read_registers(
             &self.continuation.ctx,
             code.sources(&self.continuation.args, vm.memory.aggs()),
             request.base(&self.continuation.ctx),
@@ -588,28 +589,32 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             self.budget.aggregate_work += results.work.aggregate;
             self.budget.payload_work += results.work.payload;
         }
+        self.continuation.control.pending_host = None;
+        self.finish_abandoned(pending.location)
+    }
+
+    /// Ends the invocation after a delivery to the waiting instruction at `location` was
+    /// abandoned part way, so that it can be neither retried nor continued.
+    pub(super) fn finish_abandoned(&mut self, location: TraceLocation) -> TrapInfo {
         let span = self.continuation.ctx.span_at(
-            self.vm.units.unit(pending.location.unit).program.program(),
-            pending.location.func,
-            pending.location.pc,
+            self.vm.units.unit(location.unit).program.program(),
+            location.func,
+            location.pc,
         );
-        let error = self.continuation.ctx.trap(
-            pending.location.func,
-            pending.location.pc,
-            span,
-            Trap::HostCallAbandoned,
-        );
+        let error =
+            self.continuation
+                .ctx
+                .trap(location.func, location.pc, span, Trap::HostCallAbandoned);
         self.vm.memory.rollback(self.checkpoint);
         self.budget.frames -= self.continuation.ctx.held_frames();
         self.budget.contract_scratch.clear_proofs();
         self.continuation.outputs.clear();
-        self.continuation.control.pending_host = None;
         // Install the terminal state before invoking observers, as in normal finish.
         // Unwinding from cancellation must not expose the fallthrough continuation.
         self.continuation.outcome = Some(Err(error.clone()));
         self.continuation
             .trace
-            .cancel(self.continuation.program.program(), pending.location, span);
+            .cancel(self.continuation.program.program(), location, span);
         callback::finish_instructions(
             &mut self.continuation.control,
             &mut self.continuation.trace,
@@ -641,7 +646,7 @@ fn finish_pending<P: TracePolicy>(
     let location = request.location;
     let program = request.program(code).program();
     if P::values_enabled(trace) {
-        let args: Vec<_> = arguments(
+        let args: Vec<_> = read_registers(
             ctx,
             code.sources(root_args, heap),
             request.base(ctx),

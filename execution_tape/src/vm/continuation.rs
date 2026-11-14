@@ -39,7 +39,7 @@ impl<'a> Continuation<'a> {
             entry: entry.func,
             args,
             ctx: Registers::default(),
-            control: ExecutionControl::start(options.yield_host_calls),
+            control: ExecutionControl::start(options.yield_host_calls, options.yield_suspensions),
             trace: TraceCtx::with_observer(options.mask.unwrap_or(TraceMask::NONE), options.trace),
             access: options.access,
             host_results: None,
