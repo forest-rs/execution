@@ -411,6 +411,9 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- `RecordedValue`'s `Debug` shows a float's value beside its bits, as `F32(0.1 [0x3dcccccd])`,
+  instead of the bits alone.
+
 - `VerifyError` messages now share one location prefix, `function #F, pc P: `, which leaves the
   pc out when there is none instead of printing `pc=Some(0)` or `pc=None`. Matching on message
   text needs updating; the variants are unchanged.
