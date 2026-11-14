@@ -392,6 +392,36 @@ Continuations are typed by call signatures, checked across units, consumed by us
 until resumed or the invocation ends; their frames count against the call-depth limit.
 Generators, coroutines and resumable conditions are guest code on these primitives.
 
+A suspension that no `on` clause handles traps with `UnhandledSuspension`, unless the
+invocation opts into `InvocationOptions::yield_suspensions()`. Then the embedding is the
+handler of last resort: `resume` reports `RunStatus::AwaitingHandler`, and
+`pending_suspension()` borrows the tag and payload. The embedding answers once, by resuming
+with the tag's results, raising an exception at the `suspend`, or discarding the suspension,
+which ends the invocation with `UnhandledSuspension`. A REPL can answer a condition with a
+restart this way, as often as the guest signals one:
+
+```rust
+use execution_tape::{host::Host, value::Value, vm::{Invocation, RunStatus, TrapInfo}};
+fn drive<H: Host>(run: &mut Invocation<'_, H>,
+    choose: impl Fn(&str) -> Value) -> Result<(), TrapInfo> {
+    loop {
+        match run.resume(u64::MAX)? {
+            RunStatus::Complete => return Ok(()),
+            RunStatus::AwaitingHandler => {
+                let condition = run.pending_suspension().expect("waiting suspension");
+                let restart = choose(condition.tag_name());
+                condition.resume(vec![restart])?;
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+While it waits, the suspended frames stay inspectable and the embedding can install code or
+use its host. A suspension inside a guest callback still traps with `SuspensionAcrossHost`.
+Recordings retain each yielded suspension and its answer, and replay answers it again.
+
 ## Owned executable callables
 
 [`callable::Callable`] retains an exact prepared program and an optional independent closure

@@ -6,10 +6,14 @@ use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use crate::program::{HostSigId, Program};
 use crate::recording::control::Action;
 use crate::recording::{
-    AggregateId, CallOutcome, CaptureFault, End, RecordedValue, Recording, Store, UnitRecord,
+    AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedValue, Recording, Store,
+    UnitRecord,
 };
-use crate::trace::{ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent};
+use crate::trace::{
+    ScopeKind, SuspensionAnswer, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
+};
 use crate::value::{AggHandle, AggType, Closure, TagRef, UnitId, Value};
+use crate::verifier::VerifiedProgram;
 use crate::vm::{InstallError, Trap, TrapInfo, Units, Vm};
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
@@ -63,6 +67,13 @@ pub enum Divergence {
         /// Recorded count.
         expected: usize,
         /// Observed command admissions.
+        actual: usize,
+    },
+    /// The number of suspensions yielded to the embedding differs.
+    Suspensions {
+        /// Recorded count.
+        expected: usize,
+        /// Observed count, including an extra yielded suspension.
         actual: usize,
     },
     /// A host outcome, command or guest return occurred out of observation order.
@@ -131,6 +142,11 @@ pub enum ReplayBoundary {
     /// Checking a command's actual guest return.
     ControlReturn {
         /// Zero-based command ordinal.
+        index: usize,
+    },
+    /// Checking a suspension yielded to the embedding, or delivering its recorded answer.
+    Suspension {
+        /// Zero-based ordinal, also indexing [`Recording::suspensions`].
         index: usize,
     },
     /// Checking the top-level return candidate before heap commit.
@@ -203,6 +219,9 @@ struct State {
     instructions: usize,
     pending: Vec<usize>,
     commands: usize,
+    /// Yielded suspensions observed, and how many of them replay answered.
+    suspensions: usize,
+    answered: usize,
     sequence: usize,
     active_commands: Vec<usize>,
     boundary: ReplayBoundary,
@@ -557,6 +576,35 @@ fn check_sequence(state: &State, expected: usize) -> Result<(), ReplayError> {
     Ok(())
 }
 
+/// Where replay repeats installs: a waiting host request or a waiting suspension.
+trait Installs {
+    fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError>;
+    fn units(&self) -> Units<'_>;
+}
+impl Installs for crate::vm::PendingHostCall<'_, '_, NoReplayEffects> {
+    fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
+        Self::install(self, program)
+    }
+    fn units(&self) -> Units<'_> {
+        Self::units(self)
+    }
+}
+impl Installs for crate::vm::PendingSuspension<'_, '_, NoReplayEffects> {
+    fn install(&mut self, program: Arc<VerifiedProgram>) -> Result<UnitId, InstallError> {
+        Self::install(self, program)
+    }
+    fn units(&self) -> Units<'_> {
+        Self::units(self)
+    }
+}
+
+/// A recorded answer to a yielded suspension, ready to deliver.
+enum Reply {
+    Resume(Vec<Value>),
+    Throw(TagRef, Vec<Value>),
+    Discard,
+}
+
 struct RecordedHost<'a> {
     record: &'a Recording,
     state: Rc<RefCell<State>>,
@@ -565,10 +613,7 @@ impl RecordedHost<'_> {
     /// Repeats the installs recorded before the next observation, while the request waits.
     ///
     /// No state borrow is held across an install: it reports [`ValueEvent::Installed`].
-    fn install_due(
-        &mut self,
-        request: &mut crate::vm::PendingHostCall<'_, '_, NoReplayEffects>,
-    ) -> Result<(), ReplayError> {
+    fn install_due(&mut self, request: &mut impl Installs) -> Result<(), ReplayError> {
         loop {
             let unit = {
                 let state = self.state.borrow();
@@ -594,6 +639,43 @@ impl RecordedHost<'_> {
             check_install(&state, unit, installed, request.units())?;
             state.stored += 1;
         }
+    }
+
+    /// The recorded answer to the suspension waiting now, after repeating installs before it.
+    fn answer(
+        &mut self,
+        pending: &mut crate::vm::PendingSuspension<'_, '_, NoReplayEffects>,
+    ) -> Result<Reply, ReplayError> {
+        self.install_due(pending)?;
+        let mut state = self.state.borrow_mut();
+        if let Some(error) = &state.error {
+            return Err(error.clone());
+        }
+        // The yielded event was checked against the record when it was observed.
+        let index = state.answered;
+        state.boundary = ReplayBoundary::Suspension { index };
+        state.location = Some(pending.location());
+        let answer = self
+            .record
+            .suspensions
+            .get(index)
+            .filter(|_| index + 1 == state.suspensions)
+            .and_then(|yielded| yielded.answer.as_ref())
+            .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
+        state.answered += 1;
+        let heap = pending.aggregates();
+        Ok(match answer {
+            Answer::Resumed(values) => Reply::Resume(state.materialize(
+                self.record,
+                self.record.arena.slice(values),
+                heap,
+            )?),
+            Answer::Threw { tag, payload } => Reply::Throw(
+                *tag,
+                state.materialize(self.record, self.record.arena.slice(payload), heap)?,
+            ),
+            Answer::Discarded => Reply::Discard,
+        })
     }
 
     fn invoke(
@@ -1051,6 +1133,84 @@ impl TraceSink for Check<'_> {
                     )?;
                     state.sequence += 1;
                 }
+                ValueEvent::SuspensionYielded {
+                    location,
+                    tag,
+                    payload,
+                    aggregates,
+                    ..
+                } => {
+                    let index = state.suspensions;
+                    state.boundary = ReplayBoundary::Suspension { index };
+                    state.location = Some(location);
+                    let yielded = self.record.suspensions.get(index).ok_or_else(|| {
+                        state.mismatch(Divergence::Suspensions {
+                            expected: self.record.suspensions.len(),
+                            actual: index + 1,
+                        })
+                    })?;
+                    check_sequence(&state, yielded.sequence)?;
+                    if yielded.location != location || yielded.tag != tag {
+                        return Err(state.mismatch(Divergence::Location {
+                            expected: yielded.location,
+                            actual: Some(location),
+                        }));
+                    }
+                    if !self.record.frames.is_empty() && yielded.frame != state.top {
+                        return Err(state.mismatch(Divergence::CallStack));
+                    }
+                    state.matches(
+                        self.record,
+                        self.record.arena.slice(&yielded.payload),
+                        payload.iter().copied(),
+                        aggregates,
+                    )?;
+                    state.suspensions += 1;
+                }
+                ValueEvent::SuspensionAnswered {
+                    location,
+                    tag,
+                    answer,
+                    aggregates,
+                } => {
+                    let index = state.suspensions.wrapping_sub(1);
+                    state.boundary = ReplayBoundary::Suspension { index };
+                    state.location = Some(location);
+                    let yielded = self
+                        .record
+                        .suspensions
+                        .get(index)
+                        .filter(|yielded| yielded.location == location && yielded.tag == tag)
+                        .ok_or_else(|| state.mismatch(Divergence::Outcome))?;
+                    check_sequence(&state, yielded.sequence)?;
+                    match (&yielded.answer, answer) {
+                        (Some(Answer::Resumed(expected)), SuspensionAnswer::Resumed { values }) => {
+                            state.matches(
+                                self.record,
+                                self.record.arena.slice(expected),
+                                values.iter().map(ValueRef::from_value),
+                                aggregates,
+                            )?;
+                        }
+                        (
+                            Some(Answer::Threw {
+                                tag: expected,
+                                payload: recorded,
+                            }),
+                            SuspensionAnswer::Threw { tag, payload, .. },
+                        ) if *expected == tag => {
+                            state.matches(
+                                self.record,
+                                self.record.arena.slice(recorded),
+                                payload.iter().map(ValueRef::from_value),
+                                aggregates,
+                            )?;
+                        }
+                        (Some(Answer::Discarded), SuspensionAnswer::Discarded) => {}
+                        _ => return Err(state.mismatch(Divergence::Outcome)),
+                    }
+                    state.sequence += 1;
+                }
                 ValueEvent::ReturnCandidate {
                     location,
                     values,
@@ -1244,33 +1404,49 @@ impl Recording {
             record: self,
             state: Rc::clone(&state),
         };
-        let options = crate::vm::InvocationOptions::default()
-            .yield_host_calls()
-            .trace(
-                TraceMask::INSTR
-                    | TraceMask::VALUES
-                    | if self
-                        .history
-                        .as_ref()
-                        .is_some_and(|h| !h.config.watches.is_empty())
-                    {
-                        TraceMask::REGISTERS
-                    } else {
-                        TraceMask::NONE
-                    }
-                    | if self.frames.is_empty() {
-                        TraceMask::NONE
-                    } else {
-                        TraceMask::CALL
-                    },
-                &mut check,
-            );
+        let mut options = crate::vm::InvocationOptions::default().yield_host_calls();
+        if !self.suspensions.is_empty() {
+            // The original yielded suspensions, so it opted in; replay answers them again.
+            options = options.yield_suspensions();
+        }
+        let options = options.trace(
+            TraceMask::INSTR
+                | TraceMask::VALUES
+                | if self
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| !h.config.watches.is_empty())
+                {
+                    TraceMask::REGISTERS
+                } else {
+                    TraceMask::NONE
+                }
+                | if self.frames.is_empty() {
+                    TraceMask::NONE
+                } else {
+                    TraceMask::CALL
+                },
+            &mut check,
+        );
         let result = match vm.start_prepaid(entry.func, &args, options, entry.work) {
             Err(error) => Err(error),
             Ok(mut invocation) => loop {
                 match invocation.resume(u64::MAX) {
                     Err(error) => break Err(error),
                     Ok(crate::vm::RunStatus::Suspended) => {}
+                    Ok(crate::vm::RunStatus::AwaitingHandler) => {
+                        let mut pending = invocation
+                            .pending_suspension()
+                            .expect("yielded replay suspension");
+                        let delivered = match recorded_host.answer(&mut pending)? {
+                            Reply::Resume(values) => pending.resume(values),
+                            Reply::Throw(tag, payload) => pending.resume_throw(tag, payload),
+                            Reply::Discard => Err(pending.discard()),
+                        };
+                        if let Err(error) = delivered {
+                            break Err(error);
+                        }
+                    }
                     Ok(crate::vm::RunStatus::Complete) => {
                         break Ok(invocation.take_outputs().expect("completed replay outputs"));
                     }
@@ -1336,6 +1512,17 @@ impl Recording {
             return Err(state.mismatch(Divergence::ControlCommands {
                 expected: self.commands.len(),
                 actual: state.commands,
+            }));
+        }
+        let answered = self
+            .suspensions
+            .iter()
+            .filter(|yielded| yielded.answer.is_some())
+            .count();
+        if state.suspensions != self.suspensions.len() || state.answered != answered {
+            return Err(state.mismatch(Divergence::Suspensions {
+                expected: self.suspensions.len(),
+                actual: state.suspensions,
             }));
         }
         if !state.pending.is_empty()
@@ -2276,5 +2463,129 @@ mod tests {
                 "altered work or missing host nodes must fail checked replay"
             );
         }
+    }
+
+    /// `f(x)` suspends `ask(x) -> i64` with no handler and returns the answer; the embedding
+    /// answers `x + 1`.
+    fn yielded_record() -> Recording {
+        use crate::vm::{InvocationOptions, RunStatus};
+        let mut b = ProgramBuilder::new();
+        let ask = b
+            .declare_tag_with_results("ask", &[ValueType::I64.into()], &[ValueType::I64.into()])
+            .unwrap();
+        let f = b
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut asm = b.function_asm(f).unwrap();
+        let x = b.argument(f, 0).unwrap();
+        let answer = asm.alloc_register(ValueType::I64);
+        asm.suspend(0, ask, 0, &[x], &[answer]);
+        asm.ret(0, &[answer]);
+        b.define_function(f, asm).unwrap();
+        let program = Arc::new(b.build_verified().unwrap());
+        let mut recorder = Recorder::new(Arc::clone(&program), RecordLimits::default());
+        let mut vm = Vm::new(Echo, Limits::default());
+        let unit = vm.install(program).unwrap();
+        let args = [Value::I64(4)];
+        let mask = recorder.mask();
+        let mut run = vm
+            .start(
+                FuncRef::new(unit, f),
+                &args,
+                InvocationOptions::default()
+                    .yield_suspensions()
+                    .trace(mask, &mut recorder),
+            )
+            .unwrap();
+        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::AwaitingHandler);
+        run.pending_suspension()
+            .unwrap()
+            .resume(vec![Value::I64(5)])
+            .unwrap();
+        assert_eq!(run.resume(u64::MAX).unwrap(), RunStatus::Complete);
+        drop(run);
+        recorder.finish()
+    }
+
+    #[test]
+    fn changed_or_missing_yielded_suspensions_are_rejected() {
+        let diverged = |record: &Recording| match record.replay() {
+            Err(ReplayError::Diverged {
+                boundary, reason, ..
+            }) => (boundary, reason),
+            other => panic!("expected divergence, got {other:?}"),
+        };
+        assert!(matches!(
+            yielded_record().replay(),
+            Ok(ReplayOutcome::Returned(values)) if values.values() == [Value::I64(5)]
+        ));
+
+        // The guest's payload is checked against the re-executed `suspend`.
+        let mut changed = yielded_record();
+        let payload = changed.suspensions[0].payload.start;
+        changed.arena.values[payload] = RecordedValue::I64(99);
+        assert_eq!(
+            diverged(&changed),
+            (
+                ReplayBoundary::Suspension { index: 0 },
+                Divergence::Value {
+                    aggregate: None,
+                    index: 0
+                }
+            )
+        );
+
+        // A changed tag or location names another suspension.
+        let mut changed = yielded_record();
+        changed.suspensions[0].tag = TagRef(99);
+        assert!(matches!(
+            diverged(&changed),
+            (
+                ReplayBoundary::Suspension { index: 0 },
+                Divergence::Location { .. }
+            )
+        ));
+
+        // Without recorded suspensions replay does not yield them, so the guest traps instead.
+        let mut missing = yielded_record();
+        missing.suspensions.clear();
+        diverged(&missing);
+        // A second yielded suspension the recording lacks is an extra one in replay.
+        let mut extra = yielded_record();
+        let mut copy = extra.suspensions[0].clone();
+        copy.sequence += 1;
+        extra.suspensions.push(copy);
+        assert_eq!(
+            diverged(&extra),
+            (
+                ReplayBoundary::Completion,
+                Divergence::Suspensions {
+                    expected: 2,
+                    actual: 1
+                }
+            )
+        );
+
+        // A recorded answer is delivered again: a changed one changes the result.
+        let mut changed = yielded_record();
+        let Some(Answer::Resumed(values)) = &changed.suspensions[0].answer else {
+            panic!("resumed answer");
+        };
+        let value = values.start;
+        changed.arena.values[value] = RecordedValue::I64(6);
+        assert!(matches!(
+            diverged(&changed),
+            (ReplayBoundary::ReturnCandidate, Divergence::Value { .. })
+        ));
+        // Discarding instead never re-enters the activations the recording saw resume.
+        let mut discarded = yielded_record();
+        discarded.suspensions[0].answer = Some(Answer::Discarded);
+        assert!(matches!(
+            diverged(&discarded),
+            (ReplayBoundary::Completion, Divergence::CallStack)
+        ));
     }
 }

@@ -55,7 +55,9 @@ mod observations;
 mod ownership;
 mod units;
 mod work;
-pub use invocation::{Invocation, InvocationOptions, PendingHostCall, RunStatus};
+pub use invocation::{
+    Invocation, InvocationOptions, PendingHostCall, PendingSuspension, RunStatus,
+};
 use ownership::BorrowedOrOwned;
 pub use units::{InstallError, StoreEvent, TagError, Units};
 pub(crate) use units::{Unit, UnitTable};
@@ -260,7 +262,8 @@ pub enum Trap {
     },
     /// A yielded host delivery was started but abandoned before producing a complete outcome.
     /// This includes panic unwinding and cancellation of a polled asynchronous producer.
-    /// Its external effects are unknown and cannot safely be retried.
+    /// Its external effects are unknown and cannot safely be retried. An answer to a yielded
+    /// suspension that an observer's panic interrupted ends the same way.
     HostCallAbandoned,
     /// Integer cast overflow (e.g. `u64_to_i64` out of range).
     IntCastOverflow,
@@ -675,6 +678,8 @@ struct ReturnSite {
 enum Progress {
     Suspended,
     AwaitingHost,
+    /// A suspension reached the root and waits for the embedding to handle it.
+    AwaitingHandler,
     Returned(ReturnSite),
 }
 
@@ -1756,22 +1761,29 @@ impl<H: Host> Vm<H> {
                     continue;
                 }
                 ExecInstr::Suspend { tag, args, rets } => {
-                    self.suspend::<P>(
-                        ctx,
-                        budget,
-                        trace,
-                        control,
-                        TraceLocation {
-                            unit: unit_id,
-                            func: func_id,
-                            pc,
-                        },
-                        span_id,
-                        *tag,
-                        vf.vregs(*args),
-                        *rets,
-                    )
-                    .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    let handled = self
+                        .suspend::<P>(
+                            ctx,
+                            budget,
+                            trace,
+                            control,
+                            sources,
+                            TraceLocation {
+                                unit: unit_id,
+                                func: func_id,
+                                pc,
+                            },
+                            span_id,
+                            *tag,
+                            *args,
+                            *rets,
+                        )
+                        .map_err(|trap| ctx.trap(func_id, pc, span_id, trap))?;
+                    if handled.is_none() {
+                        // Only resumable invocations opt into yielding suspensions.
+                        debug_assert!(YIELD, "synchronous execution cannot yield a suspension");
+                        return Ok(Progress::AwaitingHandler);
+                    }
                     // The handler's instruction attempt starts on the next iteration.
                     continue;
                 }

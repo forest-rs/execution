@@ -4,17 +4,17 @@
 use crate::host::ValueRef;
 use crate::program::Program;
 use crate::recording::{
-    Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry, InstructionCapture,
-    InstructionOutcome, InstructionStatus, Propagation, RecordLimits, Recording, Store, TagRecord,
-    Thrown, UnitRecord,
+    Answer, Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry,
+    InstructionCapture, InstructionOutcome, InstructionStatus, Propagation, RecordLimits,
+    Recording, Store, TagRecord, Thrown, UnitRecord, Yielded,
     control::{Action, Command, Returned},
     frames::{ActivationExit, ActivationOutcome, Frame, FrameId},
     instructions::History,
     values::Builder,
 };
 use crate::trace::{
-    HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask,
-    TraceOutcome, TraceSink, ValueEvent,
+    HostCallOutcome, RegisterEvent, RegisterPhase, ScopeKind, SuspensionAnswer, TraceLocation,
+    TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
 use crate::value::{FuncRef, UnitId};
 use crate::verifier::VerifiedProgram;
@@ -40,10 +40,13 @@ pub struct Recorder {
     entry: Option<Entry>,
     calls: Vec<Call>,
     commands: Vec<Command>,
+    suspensions: Vec<Yielded>,
     sequence: usize,
     active_commands: Vec<usize>,
     frames: Vec<Frame>,
     top: Option<FrameId>,
+    /// An answered yielded suspension's root activation re-enters next.
+    reentering: bool,
     outcome_frame: Option<FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
     thrown: Vec<Thrown>,
@@ -71,10 +74,12 @@ impl Recorder {
             entry: None,
             calls: Vec::new(),
             commands: Vec::new(),
+            suspensions: Vec::new(),
             sequence: 0,
             active_commands: Vec::new(),
             frames: Vec::new(),
             top: None,
+            reentering: false,
             outcome_frame: None,
             candidate: None,
             thrown: Vec::new(),
@@ -143,6 +148,7 @@ impl Recorder {
             entry: self.entry,
             calls: self.calls,
             commands: self.commands,
+            suspensions: self.suspensions,
             frames: self.frames,
             outcome_frame: if self.fault.is_none() {
                 self.outcome_frame
@@ -405,6 +411,83 @@ impl Recorder {
                     args,
                     outcome,
                 });
+                self.sequence += 1;
+            }
+            ValueEvent::SuspensionYielded {
+                location,
+                tag,
+                payload,
+                aggregates,
+                ..
+            } => {
+                if self.entry.is_none()
+                    || self.end.is_some()
+                    || self.candidate.is_some()
+                    || self
+                        .suspensions
+                        .last()
+                        .is_some_and(|last| last.answer.is_none())
+                {
+                    return Err(CaptureFault::InvalidSequence);
+                }
+                if self.suspensions.len() >= self.builder.limits.suspensions {
+                    return Err(CaptureFault::Budget {
+                        resource: CaptureResource::Suspensions,
+                        limit: self.builder.limits.suspensions,
+                    });
+                }
+                self.check_location(location)?;
+                let payload = self.builder.roots(payload.iter().copied(), aggregates)?;
+                // The answer takes the next observation; installs while it waits come before.
+                self.suspensions.push(Yielded {
+                    sequence: self.sequence,
+                    location,
+                    tag,
+                    payload,
+                    frame: self.top,
+                    answer: None,
+                });
+            }
+            ValueEvent::SuspensionAnswered {
+                location,
+                tag,
+                answer,
+                aggregates,
+            } => {
+                let sequence = self.sequence;
+                let Some(yielded) = self.suspensions.last_mut().filter(|last| {
+                    last.answer.is_none()
+                        && last.location == location
+                        && last.tag == tag
+                        && last.sequence == sequence
+                }) else {
+                    return Err(CaptureFault::InvalidSequence);
+                };
+                let (answer, reentering) = match answer {
+                    SuspensionAnswer::Resumed { values } => (
+                        Answer::Resumed(
+                            self.builder
+                                .roots(values.iter().map(ValueRef::from_value), aggregates)?,
+                        ),
+                        true,
+                    ),
+                    SuspensionAnswer::Threw { tag, payload, .. } => (
+                        Answer::Threw {
+                            tag,
+                            payload: self
+                                .builder
+                                .roots(payload.iter().map(ValueRef::from_value), aggregates)?,
+                        },
+                        true,
+                    ),
+                    SuspensionAnswer::Discarded => (Answer::Discarded, false),
+                };
+                yielded.answer = Some(answer);
+                if let Some(history) = &mut self.history {
+                    history.begin_answer();
+                }
+                // Every suspended activation closed its scope; resuming re-enters the root.
+                self.reentering = reentering && self.top.is_none() && !self.frames.is_empty();
                 self.sequence += 1;
             }
             ValueEvent::ReturnCandidate {
@@ -688,7 +771,9 @@ impl TraceSink for Recorder {
             | ValueEvent::ReturnCandidate { location, .. }
             | ValueEvent::Thrown { location, .. }
             | ValueEvent::Rethrown { location, .. }
-            | ValueEvent::Caught { location, .. } => location.unit,
+            | ValueEvent::Caught { location, .. }
+            | ValueEvent::SuspensionYielded { location, .. }
+            | ValueEvent::SuspensionAnswered { location, .. } => location.unit,
         };
         let location = match event {
             ValueEvent::Entry { .. } | ValueEvent::Installed { .. } => None,
@@ -698,7 +783,9 @@ impl TraceSink for Recorder {
             | ValueEvent::ReturnCandidate { location, .. }
             | ValueEvent::Thrown { location, .. }
             | ValueEvent::Rethrown { location, .. }
-            | ValueEvent::Caught { location, .. } => Some(location),
+            | ValueEvent::Caught { location, .. }
+            | ValueEvent::SuspensionYielded { location, .. }
+            | ValueEvent::SuspensionAnswered { location, .. } => Some(location),
         };
         if self.check_at(program, unit)
             && let Err(error) = self.capture(event)
@@ -733,7 +820,7 @@ impl TraceSink for Recorder {
             .map_or(1, |top| self.frames[top.index()].depth.saturating_add(1));
         let valid_parent = match (self.top, caller) {
             (None, None) => {
-                self.frames.is_empty()
+                (self.frames.is_empty() || self.reentering)
                     && self
                         .entry
                         .as_ref()
@@ -771,6 +858,7 @@ impl TraceSink for Recorder {
             });
             self.top = Some(top);
         }
+        self.reentering = false;
     }
 
     fn scope_exit(

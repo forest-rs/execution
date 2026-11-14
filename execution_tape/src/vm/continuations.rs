@@ -486,44 +486,59 @@ impl<H: Host> Vm<H> {
         if YIELD {
             control.reinstate(activations, location);
         }
-        if trace.enabled(TraceMask::CALL) {
-            // Each reinstated activation re-enters under its resumer: the root under this
-            // instruction, the others under the call that entered them.
-            let mut caller = location;
-            for depth in root..ctx.frames.len() {
-                let frame = &ctx.frames[depth];
-                let at = TraceLocation {
-                    unit: frame.unit,
-                    func: frame.func,
-                    pc: frame.pc,
-                };
-                let body = self
-                    .units
-                    .unit(frame.unit)
-                    .program
-                    .verified(frame.func)
-                    .expect("active verified function");
-                let program = self.units.unit(frame.unit).program.program();
-                let span = ctx.span_at(program, at.func, at.pc);
-                P::call_scope_enter(trace, program, depth + 1, at, span, Some(caller));
-                caller = TraceLocation {
-                    pc: frame
-                        .instr_ix
-                        .checked_sub(1)
-                        .and_then(|ix| body.pc_at_ix(ix))
-                        .unwrap_or(frame.pc),
-                    ..at
-                };
-            }
-        }
+        // The root re-enters under this instruction.
+        self.reenter_scopes(ctx, trace, root, Some(location));
         Ok(())
+    }
+
+    /// Re-enters the scopes of the activations from depth index `root` up, outermost first.
+    ///
+    /// Each re-enters under the instruction that entered it: the root under `resumer` (`None`
+    /// for the invocation's root), the others under their caller's waiting call.
+    pub(super) fn reenter_scopes(
+        &self,
+        ctx: &Registers,
+        trace: &mut TraceCtx<'_>,
+        root: usize,
+        resumer: Option<TraceLocation>,
+    ) {
+        if !trace.enabled(TraceMask::CALL) {
+            return;
+        }
+        let mut caller = resumer;
+        for depth in root..ctx.frames.len() {
+            let frame = &ctx.frames[depth];
+            let at = TraceLocation {
+                unit: frame.unit,
+                func: frame.func,
+                pc: frame.pc,
+            };
+            let body = self
+                .units
+                .unit(frame.unit)
+                .program
+                .verified(frame.func)
+                .expect("active verified function");
+            let program = self.units.unit(frame.unit).program.program();
+            let span = ctx.span_at(program, at.func, at.pc);
+            trace.call_scope_enter_if_enabled(program, depth + 1, at, span, caller);
+            caller = Some(TraceLocation {
+                pc: frame
+                    .instr_ix
+                    .checked_sub(1)
+                    .and_then(|ix| body.pc_at_ix(ix))
+                    .unwrap_or(frame.pc),
+                ..at
+            });
+        }
     }
 
     /// Suspends to the nearest `on` clause for `tag` and continues at its handler.
     ///
-    /// The payload `args` of the current frame is written to the handler's parameters, the
-    /// frames above the resumer become a new continuation, and the clause's last parameter
-    /// receives it. Returns the handler's location.
+    /// The payload of the current frame is written to the handler's parameters, the frames
+    /// above the resumer become a new continuation, and the clause's last parameter receives it.
+    /// Returns the handler's location, or `None` when no clause handles it and the invocation
+    /// yields it to the embedding instead.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors the interpreter state borrowed by other instruction helpers"
@@ -534,21 +549,48 @@ impl<H: Host> Vm<H> {
         budget: &mut Budget,
         trace: &mut TraceCtx<'_>,
         control: &mut ExecutionControl,
+        sources: ValueSources<'_>,
         location: TraceLocation,
         span_id: Option<u64>,
         tag: TagId,
-        args: &[VReg],
+        payload: VRegSlice,
         rets: VRegSlice,
-    ) -> Result<TraceLocation, Trap> {
+    ) -> Result<Option<TraceLocation>, Trap> {
         let raised = self
             .units
             .unit(location.unit)
             .tag(tag)
             .expect("verified tag");
-        let handler = self.find_handler(ctx, raised)?;
+        let found = self.find_handler(ctx, raised)?;
         let top = ctx.frames.len() - 1;
         let base = ctx.frames[top].base;
+        let suspending = self
+            .units
+            .unit(location.unit)
+            .program
+            .verified(location.func)
+            .expect("active verified function");
+        let args = suspending.vregs(payload);
+        // The payload is checked whoever handles it, so its trap never depends on whether the
+        // invocation yields suspensions.
         self.check_payload(ctx, budget, location, tag, base, args)?;
+        let Some(handler) = found else {
+            if !control.yield_suspensions {
+                return Err(Trap::UnhandledSuspension { tag: raised });
+            }
+            self.yield_suspension::<P>(
+                ctx,
+                trace,
+                control,
+                sources,
+                location,
+                span_id,
+                (tag, raised),
+                payload,
+                rets,
+            );
+            return Ok(None);
+        };
 
         let resumer = &ctx.frames[handler.resumer];
         let (resumer_unit, resumer_func, resumer_base) = (resumer.unit, resumer.func, resumer.base);
@@ -601,14 +643,78 @@ impl<H: Host> Vm<H> {
         let resumer = &mut ctx.frames[handler.resumer];
         resumer.instr_ix = target_ix;
         resumer.pc = target.pc;
-        Ok(target)
+        Ok(Some(target))
+    }
+
+    /// Yields a suspension that reached the invocation's root to the embedding.
+    ///
+    /// The frames stay in place, waiting at the `suspend` like a frame waiting at a yielded host
+    /// call, so inspection still sees them. Their scopes close as suspended, exactly as when a
+    /// guest handler captures them, and re-enter when the embedding answers.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the interpreter state borrowed by other instruction helpers"
+    )]
+    fn yield_suspension<P: TracePolicy>(
+        &self,
+        ctx: &Registers,
+        trace: &mut TraceCtx<'_>,
+        control: &mut ExecutionControl,
+        sources: ValueSources<'_>,
+        location: TraceLocation,
+        span_id: Option<u64>,
+        (tag, raised): (TagId, TagRef),
+        payload: VRegSlice,
+        rets: VRegSlice,
+    ) {
+        // Until the observers below return, the suspension is abandoned: an observer that panics
+        // must not leave the invocation resumable after a `suspend` with unwritten results.
+        control.pending_suspension = Some(invocation::PendingSuspend {
+            location,
+            span: span_id,
+            tag,
+            payload,
+            rets,
+            depth: ctx.frames.len(),
+            abandoned: true,
+        });
+        let program = self.units.unit(location.unit).program.program();
+        // Control leaves the `suspend` for the embedding, which chooses what runs next.
+        P::instr_end(trace, program, None);
+        if P::values_enabled(trace) {
+            let body = self
+                .units
+                .unit(location.unit)
+                .program
+                .verified(location.func)
+                .expect("active verified function");
+            let base = &ctx.frames[ctx.frames.len() - 1].base;
+            let values: Vec<_> =
+                invocation::read_registers(ctx, sources, base, body.vregs(payload)).collect();
+            P::values(trace, program, || ValueEvent::SuspensionYielded {
+                location,
+                tag: raised,
+                local: tag,
+                payload: &values,
+                aggregates: self.memory.aggs(),
+            });
+        }
+        if trace.enabled(TraceMask::CALL) {
+            for depth in (0..ctx.frames.len()).rev() {
+                let program = self.units.unit(ctx.frames[depth].unit).program.program();
+                trace.suspend_frame(program, depth + 1, location, span_id);
+            }
+        }
+        if let Some(pending) = &mut control.pending_suspension {
+            pending.abandoned = false;
+        }
     }
 
     /// Finds the innermost `resume` whose `on` clauses handle `tag`.
     ///
-    /// Only frames above a resumed root are suspendable; reaching the stack's root, or the
-    /// root of a guest callback, ends the search.
-    fn find_handler(&self, ctx: &Registers, tag: TagRef) -> Result<Handler, Trap> {
+    /// Only frames above a resumed root are suspendable. Reaching the stack's root ends the
+    /// search with `None`; reaching the root of a guest callback traps.
+    fn find_handler(&self, ctx: &Registers, tag: TagRef) -> Result<Option<Handler>, Trap> {
         for index in (1..ctx.frames.len()).rev() {
             let Some(return_to) = ctx.frames[index].return_to else {
                 return Err(Trap::SuspensionAcrossHost { tag });
@@ -635,14 +741,14 @@ impl<H: Host> Vm<H> {
                 protection.handle(raising, |local| unit.tag(local) == Some(tag))
             });
             if let Some(clause) = clause {
-                return Ok(Handler {
+                return Ok(Some(Handler {
                     resumer: index - 1,
                     clause,
                     results: unit.call_sig_lists(call_sig).1,
-                });
+                }));
             }
         }
-        Err(Trap::UnhandledSuspension { tag })
+        Ok(None)
     }
 
     /// Checks a suspension payload against its tag's refined payload contracts.

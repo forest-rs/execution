@@ -69,6 +69,20 @@ pub(super) fn verification(
                 .and_then(|ids| ids.get(index as usize))
                 .copied(),
         ),
+        ContractPosition::Resumption { tag, index } => (
+            format!("Resumption of {}", exception_tag(program, tag)),
+            format!("value[{index}]"),
+            format!(
+                "Resumption value {} of {}",
+                u64::from(index) + 1,
+                exception_tag(program, tag)
+            ),
+            program
+                .tag(tag)
+                .and_then(|entry| program.tag_result_contracts(entry).ok())
+                .and_then(|ids| ids.get(index as usize))
+                .copied(),
+        ),
         ContractPosition::Argument { callee, index } => (
             format!("Call to {}", function(program, callee)),
             format!("argument[{index}]"),

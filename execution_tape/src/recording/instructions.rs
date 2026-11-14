@@ -225,6 +225,10 @@ impl History {
     pub(crate) fn begin_catch(&mut self) {
         self.control_boundary = true;
     }
+    /// The embedding answered a yielded suspension, whose `suspend` recorded no successor.
+    pub(crate) fn begin_answer(&mut self) {
+        self.control_boundary = true;
+    }
     pub(crate) fn begin_callback(&mut self, location: TraceLocation) {
         if self.status == InstructionStatus::Incomplete {
             return;

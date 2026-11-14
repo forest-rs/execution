@@ -45,6 +45,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 ReplayBoundary::Thrown { index } => format!("thrown exception #{index}"),
                 ReplayBoundary::Rethrown { index } => format!("rethrow #{index}"),
                 ReplayBoundary::Caught { index } => format!("catch #{index}"),
+                ReplayBoundary::Suspension { index } => format!("yielded suspension #{index}"),
                 ReplayBoundary::ControlCommand { index } => format!("control command {index}"),
                 ReplayBoundary::ControlReturn { index } => {
                     format!("guest return for command {index}")
@@ -86,6 +87,9 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                 Divergence::CallStack => "guest call stack mismatch".into(),
                 Divergence::ControlCommands { expected, actual } => {
                     format!("control command count: expected {expected}, observed {actual}")
+                }
+                Divergence::Suspensions { expected, actual } => {
+                    format!("yielded suspensions: expected {expected}, observed {actual}")
                 }
                 Divergence::ObservationOrder { expected, actual } => {
                     format!("observation order: expected {expected}, observed {actual}")

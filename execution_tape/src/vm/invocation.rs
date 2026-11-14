@@ -10,7 +10,11 @@ use alloc::sync::Arc;
 
 mod host_request;
 pub use host_request::PendingHostCall;
+pub(super) use host_request::read_registers;
 pub(super) mod callback;
+mod suspension;
+pub(super) use suspension::PendingSuspend;
+pub use suspension::PendingSuspension;
 
 /// Progress after executing an invocation's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +30,12 @@ pub enum RunStatus {
     /// [`PendingHostCall::take_callback_results`], then complete the request or call back again.
     /// Resuming alone does not invoke the host.
     CallbackReturned,
+    /// A `suspend` that no guest `on` clause handles is waiting for the embedding to handle it.
+    ///
+    /// Only invocations started with [`InvocationOptions::yield_suspensions`] report this.
+    /// Query [`Invocation::pending_suspension`] for the tag and payload, then resume, raise into
+    /// or discard it. Resuming the invocation alone executes nothing and reports this again.
+    AwaitingHandler,
     /// The root returned and its results were committed.
     Complete,
 }
@@ -47,6 +57,7 @@ impl RunStatus {
 #[derive(Default)]
 pub struct InvocationOptions<'a> {
     pub(super) yield_host_calls: bool,
+    pub(super) yield_suspensions: bool,
     pub(super) mask: Option<TraceMask>,
     pub(super) trace: Option<BorrowedOrOwned<'a, dyn TraceSink + 'a>>,
     pub(super) access: Option<BorrowedOrOwned<'a, dyn AccessSink + 'a>>,
@@ -57,6 +68,7 @@ impl fmt::Debug for InvocationOptions<'_> {
         f.debug_struct("InvocationOptions")
             .field("mask", &self.mask)
             .field("yield_host_calls", &self.yield_host_calls)
+            .field("yield_suspensions", &self.yield_suspensions)
             .field("access_recording", &self.access.is_some())
             .finish_non_exhaustive()
     }
@@ -71,6 +83,20 @@ impl<'a> InvocationOptions<'a> {
     #[must_use]
     pub fn yield_host_calls(mut self) -> Self {
         self.yield_host_calls = true;
+        self
+    }
+
+    /// Yields suspensions that no guest handler handles to the embedding, which handles them.
+    ///
+    /// A `suspend` whose search for an `on` clause reaches the invocation's root returns
+    /// [`RunStatus::AwaitingHandler`] instead of trapping with [`Trap::UnhandledSuspension`].
+    /// [`Invocation::pending_suspension`] then exposes its tag and payload, and resumes it with
+    /// the tag's results, raises an exception at it, or discards it. A suspension inside a guest
+    /// callback still traps with [`Trap::SuspensionAcrossHost`]: only one that reaches the root
+    /// of the invocation's own stack is yielded. Default invocations keep trapping.
+    #[must_use]
+    pub fn yield_suspensions(mut self) -> Self {
+        self.yield_suspensions = true;
         self
     }
     /// Requests the existing VM observation callbacks for the entire logical invocation.
@@ -269,11 +295,19 @@ impl<H: Host> Invocation<'_, H> {
             }
             return Ok(RunStatus::waiting(pending));
         }
+        if let Some(pending) = self.continuation.control.pending_suspension {
+            if pending.abandoned {
+                self.continuation.control.pending_suspension = None;
+                return Err(self.running().finish_abandoned(pending.location));
+            }
+            return Ok(RunStatus::AwaitingHandler);
+        }
         let result = self
             .continuation
             .advance(&mut self.vm, &mut self.budget, quantum)
             .and_then(|progress| match progress {
                 Progress::Suspended => Ok(RunStatus::Suspended),
+                Progress::AwaitingHandler => Ok(RunStatus::AwaitingHandler),
                 Progress::AwaitingHost => Ok(RunStatus::waiting(
                     self.continuation
                         .control
@@ -307,7 +341,12 @@ impl<H: Host> Invocation<'_, H> {
                 }
             });
         match &result {
-            Ok(RunStatus::Suspended | RunStatus::AwaitingHost | RunStatus::CallbackReturned) => {}
+            Ok(
+                RunStatus::Suspended
+                | RunStatus::AwaitingHost
+                | RunStatus::CallbackReturned
+                | RunStatus::AwaitingHandler,
+            ) => {}
             Ok(RunStatus::Complete) => self.running().finish(Ok(())),
             Err(error) => self.running().finish(Err(error.clone())),
         }
@@ -534,6 +573,12 @@ impl<H: Host> Running<'_, '_, H> {
                 self.continuation
                     .control
                     .pending_host
+                    .map(|pending| pending.location)
+            })
+            .or_else(|| {
+                self.continuation
+                    .control
+                    .pending_suspension
                     .map(|pending| pending.location)
             })
             .or_else(|| {

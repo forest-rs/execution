@@ -22,6 +22,11 @@
 //! Commands, callback returns and native host outcomes carry a shared observation sequence.
 //! A callback return does not complete its parent host request or publish the root result.
 //!
+//! Suspensions yielded to the embedding (see
+//! [`InvocationOptions::yield_suspensions`](crate::vm::InvocationOptions::yield_suspensions))
+//! are retained as [`YieldedSuspension`]s: the guest's payload, which replay checks, and the
+//! embedding's answer, which replay delivers again instead of asking an embedding.
+//!
 //! Exceptions retain each raise and its payload once, each catch and its handler, and each
 //! rethrow's link to the exception it rethrows. A host-raised exception is retained as the host
 //! outcome, so replay delivers the same tag and payload instead of running the host again.
@@ -172,6 +177,8 @@ pub struct RecordLimits {
     pub host_calls: usize,
     /// Maximum embedding control commands, including rejected guest callback requests.
     pub control_commands: usize,
+    /// Maximum suspensions yielded to the embedding.
+    pub suspensions: usize,
     /// Maximum entered guest activations, including ones with no host observations.
     /// The effective limit is capped at `u32::MAX` for compact recording-local identities.
     pub call_frames: usize,
@@ -186,6 +193,7 @@ impl Default for RecordLimits {
             aggregates: 100_000,
             host_calls: 10_000,
             control_commands: 10_000,
+            suspensions: 10_000,
             call_frames: 100_000,
             payload_bytes: 64 * 1024 * 1024,
         }
@@ -203,6 +211,8 @@ pub enum CaptureResource {
     HostCalls,
     /// Embedding control commands.
     ControlCommands,
+    /// Suspensions yielded to the embedding.
+    Suspensions,
     /// Entered guest activations.
     CallFrames,
     /// Copied byte/string contents and trap symbol text.
@@ -360,6 +370,40 @@ pub struct HostCall<'a> {
     pub stack: Option<CallStack<'a>>,
 }
 
+/// A suspension the guest yielded to the embedding, and the embedding's answer.
+#[derive(Debug)]
+pub struct YieldedSuspension<'a> {
+    /// Zero-based observation order of the answer, shared with host calls, control commands
+    /// and callback returns. Installs made while the suspension waited come before it.
+    pub sequence: usize,
+    /// The `suspend` instruction.
+    pub location: TraceLocation,
+    /// The suspended VM tag, which replay reproduces.
+    pub tag: TagRef,
+    /// Captured payload values, which replay checks against the re-executed guest.
+    pub payload: &'a [RecordedValue],
+    /// The embedding's raw answer, or `None` when the invocation ended while it waited.
+    pub answer: Option<RecordedAnswer<'a>>,
+    /// Suspended guest frames, innermost first, when call-frame callbacks were captured.
+    pub stack: Option<CallStack<'a>>,
+}
+
+/// The embedding's raw answer to a yielded suspension, before VM validation.
+#[derive(Debug)]
+pub enum RecordedAnswer<'a> {
+    /// Resumed with values for the `suspend`'s results.
+    Resumed(&'a [RecordedValue]),
+    /// Raised an exception at the `suspend`.
+    Threw {
+        /// Raised VM tag, which replay reproduces.
+        tag: TagRef,
+        /// Captured payload values.
+        payload: &'a [RecordedValue],
+    },
+    /// Discarded the suspension, ending the invocation.
+    Discarded,
+}
+
 /// Authoritative final VM outcome of the original invocation.
 #[derive(Debug)]
 pub enum Outcome<'a> {
@@ -382,6 +426,8 @@ pub struct RecordStats {
     pub host_calls: usize,
     /// Retained embedding control commands.
     pub control_commands: usize,
+    /// Retained yielded suspensions.
+    pub suspensions: usize,
     /// Retained entered guest activations, shared by boundary stacks.
     pub call_frames: usize,
     /// Copied byte/string contents and trap symbol text, counted once per retained allocation.
@@ -411,6 +457,21 @@ enum CallOutcome {
     Returned { values: Range<usize>, fuel: u64 },
     Failed(HostError),
     Threw { tag: TagRef, payload: Range<usize> },
+}
+#[derive(Clone, Debug)]
+struct Yielded {
+    sequence: usize,
+    location: TraceLocation,
+    tag: TagRef,
+    payload: Range<usize>,
+    frame: Option<frames::FrameId>,
+    answer: Option<Answer>,
+}
+#[derive(Clone, Debug)]
+enum Answer {
+    Resumed(Range<usize>),
+    Threw { tag: TagRef, payload: Range<usize> },
+    Discarded,
 }
 #[derive(Debug)]
 enum End {
@@ -458,6 +519,7 @@ pub struct Recording {
     entry: Option<Entry>,
     calls: Vec<Call>,
     commands: Vec<control::Command>,
+    suspensions: Vec<Yielded>,
     frames: Vec<frames::Frame>,
     outcome_frame: Option<frames::FrameId>,
     candidate: Option<(TraceLocation, Range<usize>)>,
@@ -634,6 +696,29 @@ impl Recording {
         self.commands.iter().map(|command| command.view(self))
     }
 
+    /// Iterates suspensions yielded to the embedding, in order, with their answers.
+    ///
+    /// Sequence numbers interleave answers with host outcomes, commands and callback returns.
+    pub fn suspensions(&self) -> impl ExactSizeIterator<Item = YieldedSuspension<'_>> {
+        self.suspensions.iter().map(|yielded| YieldedSuspension {
+            sequence: yielded.sequence,
+            location: yielded.location,
+            tag: yielded.tag,
+            payload: self.arena.slice(&yielded.payload),
+            answer: yielded.answer.as_ref().map(|answer| match answer {
+                Answer::Resumed(values) => RecordedAnswer::Resumed(self.arena.slice(values)),
+                Answer::Threw { tag, payload } => RecordedAnswer::Threw {
+                    tag: *tag,
+                    payload: self.arena.slice(payload),
+                },
+                Answer::Discarded => RecordedAnswer::Discarded,
+            }),
+            stack: yielded
+                .frame
+                .map(|frame| CallStack::new(&self.frames, frame, yielded.location)),
+        })
+    }
+
     /// Borrows one complete aggregate node without expanding other nodes.
     pub fn aggregate(&self, id: AggregateId) -> Option<Aggregate<'_>> {
         self.arena.aggregate(id)
@@ -713,6 +798,7 @@ impl Recording {
             aggregates: self.arena.nodes.len(),
             host_calls: self.calls.len(),
             control_commands: self.commands.len(),
+            suspensions: self.suspensions.len(),
             call_frames: self.frames.len(),
             payload_bytes: self.arena.payload_bytes,
         }

@@ -255,6 +255,31 @@ pub enum HostCallOutcome<'a> {
     },
 }
 
+/// The embedding's raw answer to a yielded suspension, before the VM validates it.
+///
+/// Values are observed before arity, kind, payload-work and contract checks, so an invalid
+/// answer is observed before the trap it causes.
+#[derive(Copy, Clone, Debug)]
+pub enum SuspensionAnswer<'a> {
+    /// The embedding resumed the suspension with these values for the `suspend`'s results.
+    Resumed {
+        /// Supplied values, in the order of the tag's results.
+        values: &'a [Value],
+    },
+    /// The embedding raised an exception at the `suspend`.
+    Threw {
+        /// Raised VM tag, not yet checked to exist.
+        tag: TagRef,
+        /// The tag's ID in the suspending program, if that program declares or imports it.
+        local: Option<TagId>,
+        /// Raw payload values.
+        payload: &'a [Value],
+    },
+    /// The embedding discarded the suspension, ending the invocation with
+    /// [`crate::vm::Trap::UnhandledSuspension`].
+    Discarded,
+}
+
 /// Borrowed values at an execution boundary, enabled by [`TraceMask::VALUES`].
 ///
 /// Aggregate and closure-environment handles belong to the supplied heap. Use its snapshot
@@ -369,6 +394,39 @@ pub enum ValueEvent<'a> {
         /// Payload values in tag order.
         values: &'a [Value],
         /// Storage containing payload aggregates at the throw site.
+        aggregates: &'a AggHeap,
+    },
+    /// A `suspend` that no guest `on` clause handles was yielded to the embedding.
+    ///
+    /// Only invocations that opt into
+    /// [`InvocationOptions::yield_suspensions`](crate::vm::InvocationOptions::yield_suspensions)
+    /// yield suspensions. Payload contracts have been checked. The suspended activations then
+    /// close their scopes with [`TraceOutcome::Suspended`], innermost first; the embedding's
+    /// answer is reported by [`Self::SuspensionAnswered`].
+    SuspensionYielded {
+        /// The `suspend` instruction.
+        location: TraceLocation,
+        /// VM tag being suspended to.
+        tag: TagRef,
+        /// The tag's ID in the suspending program.
+        local: TagId,
+        /// Payload values in tag order, borrowed from the suspended registers.
+        payload: &'a [ValueRef<'a>],
+        /// Storage containing payload aggregates.
+        aggregates: &'a AggHeap,
+    },
+    /// The embedding answered a yielded suspension, before the VM validates the answer.
+    ///
+    /// A resumption or raised exception then re-enters the suspended activations' scopes,
+    /// outermost first, before the values are checked or the exception raised at the `suspend`.
+    SuspensionAnswered {
+        /// The `suspend` instruction.
+        location: TraceLocation,
+        /// VM tag the suspension was yielded to.
+        tag: TagRef,
+        /// Raw answer.
+        answer: SuspensionAnswer<'a>,
+        /// Storage containing answer aggregates.
         aggregates: &'a AggHeap,
     },
     /// `throw_ref` raised a caught exception again, before propagation.
@@ -503,6 +561,32 @@ impl core::fmt::Debug for ValueEvent<'_> {
                 .field("tag", tag)
                 .field("local", local)
                 .field("values", values)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::SuspensionYielded {
+                location,
+                tag,
+                local,
+                payload,
+                aggregates,
+            } => f
+                .debug_struct("SuspensionYielded")
+                .field("location", location)
+                .field("tag", tag)
+                .field("local", local)
+                .field("payload", payload)
+                .field("aggregate_count", &aggregates.len_u32())
+                .finish(),
+            Self::SuspensionAnswered {
+                location,
+                tag,
+                answer,
+                aggregates,
+            } => f
+                .debug_struct("SuspensionAnswered")
+                .field("location", location)
+                .field("tag", tag)
+                .field("answer", answer)
                 .field("aggregate_count", &aggregates.len_u32())
                 .finish(),
             Self::Rethrown {

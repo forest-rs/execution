@@ -553,6 +553,7 @@ impl Runtime {
             RunStatus::Complete => return Ok(Status::Complete),
             RunStatus::AwaitingHost => false,
             RunStatus::CallbackReturned => true,
+            RunStatus::AwaitingHandler => return Err(Error::Abi("unexpected yielded suspension")),
         };
         let key = self.key()?;
         let mut request = self
