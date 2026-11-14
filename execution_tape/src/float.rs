@@ -3,7 +3,7 @@
 
 //! Exact `f64` operations with WebAssembly semantics, implemented without `std` or `libm`.
 //!
-//! `f64::{floor, ceil, trunc, round_ties_even, sqrt}` live in `std` (they lower to libm calls or
+//! `f64::{floor, ceil, trunc, round, round_ties_even, sqrt}` live in `std` (they lower to libm calls or
 //! hardware instructions there), so this `no_std` crate implements them on the bit representation.
 //! Every function here is exact: the rounding functions return an integral value chosen by their
 //! rounding direction, [`sqrt`] returns the correctly rounded square root
@@ -53,6 +53,12 @@ pub(crate) fn trunc(x: f64) -> f64 {
 #[inline]
 pub(crate) fn nearest(x: f64) -> f64 {
     round_to_integral(x, Rounding::NearestEven)
+}
+
+/// Rounds to the nearest integer, choosing the integer farther from zero on ties.
+#[inline]
+pub(crate) fn round_half_away(x: f64) -> f64 {
+    round_to_integral(x, Rounding::NearestAway)
 }
 
 /// Returns `magnitude` with the sign bit of `sign` (WebAssembly `f64.copysign`).
@@ -107,6 +113,7 @@ enum Rounding {
     Ceil,
     Trunc,
     NearestEven,
+    NearestAway,
 }
 
 impl Rounding {
@@ -131,6 +138,7 @@ impl Rounding {
                 Ordering::Equal => int_is_odd,
                 Ordering::Less => false,
             },
+            Self::NearestAway => frac_vs_half != Ordering::Less,
         }
     }
 }
@@ -349,7 +357,9 @@ fn isqrt_shifted(m: u64) -> (u64, u64) {
 mod tests {
     extern crate std;
 
-    use super::{ceil, copysign, floor, nearest, rem, sqrt, to_i64_sat, to_u64_sat, trunc};
+    use super::{
+        ceil, copysign, floor, nearest, rem, round_half_away, sqrt, to_i64_sat, to_u64_sat, trunc,
+    };
     use std::vec::Vec;
 
     /// Bitwise equality, treating any two NaNs as equal.
@@ -488,6 +498,7 @@ mod tests {
             assert_same("ceil", x, ceil(x), x.ceil());
             assert_same("trunc", x, trunc(x), x.trunc());
             assert_same("nearest", x, nearest(x), x.round_ties_even());
+            assert_same("round_half_away", x, round_half_away(x), x.round());
             assert_same("sqrt", x, sqrt(x), x.sqrt());
         }
     }
@@ -517,6 +528,8 @@ mod tests {
         assert_eq!(nearest(0.5).to_bits(), pos_zero);
         assert_eq!(nearest(-0.49999999999999994).to_bits(), neg_zero);
         assert_eq!(nearest(-f64::from_bits(1)).to_bits(), neg_zero);
+        assert_eq!(round_half_away(-0.49999999999999994).to_bits(), neg_zero);
+        assert_eq!(round_half_away(-0.0).to_bits(), neg_zero);
         assert_eq!(sqrt(-0.0).to_bits(), neg_zero);
         assert_eq!(sqrt(0.0).to_bits(), pos_zero);
     }
@@ -539,8 +552,13 @@ mod tests {
         assert_eq!(nearest(-3.5), -4.0);
         assert_eq!(nearest(4503599627370495.5), 4503599627370496.0);
         // Already integral values (|x| >= 2^52) are unchanged.
+        assert_eq!(round_half_away(0.49999999999999994), 0.0);
+        assert_eq!(round_half_away(0.5), 1.0);
+        assert_eq!(round_half_away(2.5), 3.0);
+        assert_eq!(round_half_away(-2.5), -3.0);
+        assert_eq!(round_half_away(4503599627370495.5), 4503599627370496.0);
         for x in [4503599627370497.0, 9007199254740993.0, 1e300, f64::MAX] {
-            for op in [floor, ceil, trunc, nearest] {
+            for op in [floor, ceil, trunc, nearest, round_half_away] {
                 assert_eq!(op(x).to_bits(), x.to_bits());
                 assert_eq!(op(-x).to_bits(), (-x).to_bits());
             }
@@ -549,7 +567,7 @@ mod tests {
 
     #[test]
     fn infinities_pass_through() {
-        for op in [floor, ceil, trunc, nearest] {
+        for op in [floor, ceil, trunc, nearest, round_half_away] {
             assert_eq!(op(f64::INFINITY), f64::INFINITY);
             assert_eq!(op(f64::NEG_INFINITY), f64::NEG_INFINITY);
         }
@@ -562,7 +580,7 @@ mod tests {
         let quiet = 0x7FF8_0000_0000_0001_u64;
         let signaling = 0x7FF0_0000_0000_0001_u64;
         let neg_signaling = 0xFFF4_0000_0000_0000_u64;
-        for op in [floor, ceil, trunc, nearest, sqrt] {
+        for op in [floor, ceil, trunc, nearest, round_half_away, sqrt] {
             assert_eq!(op(f64::from_bits(quiet)).to_bits(), quiet);
             assert_eq!(op(f64::from_bits(signaling)).to_bits(), quiet);
             assert_eq!(

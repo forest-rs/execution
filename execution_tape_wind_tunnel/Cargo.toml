@@ -76,3 +76,7 @@ harness = false
 [[bench]]
 name = "borrowed_host"
 harness = false
+
+[[bench]]
+name = "math_intrinsics"
+harness = false

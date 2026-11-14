@@ -1371,6 +1371,14 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 cont,
             }
         },
+        Opcode::F64RoundHalfAway => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64RoundHalfAway {
+                dst,
+                a,
+            }
+        },
         Opcode::ConstI32 => {
             let dst = crate::codec_primitives::read_reg(r)?;
             let imm = crate::codec_primitives::read_i32_sleb(r)?;
@@ -2025,6 +2033,78 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 dst,
                 a,
                 b,
+            }
+        },
+        Opcode::F32RoundHalfAway => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32RoundHalfAway {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Clamp => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let lo = crate::codec_primitives::read_reg(r)?;
+            let hi = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Clamp {
+                dst,
+                a,
+                lo,
+                hi,
+            }
+        },
+        Opcode::F32Pow => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            let b = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Pow {
+                dst,
+                a,
+                b,
+            }
+        },
+        Opcode::F32Exp => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Exp {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Ln => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Ln {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Sin => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Sin {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Cos => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Cos {
+                dst,
+                a,
+            }
+        },
+        Opcode::F32Atan2 => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let y = crate::codec_primitives::read_reg(r)?;
+            let x = crate::codec_primitives::read_reg(r)?;
+            Instr::F32Atan2 {
+                dst,
+                y,
+                x,
             }
         },
         Opcode::I32ToI64 => {

@@ -43,6 +43,11 @@ ratatui = { version = "0.30.2", default-features = false, features = [
   "crossterm",
 ] }
 
+# `execution_tape::math` promises results bit-identical to this exact release. Upgrading it is a
+# deliberate, versioned change: a CHANGELOG entry and the statement in `docs/v1_spec.md`.
+# Default features are off so the pure-Rust routines run on every target (see the spec).
+libm = { version = "=0.2.16", default-features = false }
+
 # Applications opt into runtime capture and export; the adapter only requires alloc.
 footfall = { version = "0.2.0", default-features = false }
 

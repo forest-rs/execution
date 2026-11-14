@@ -7,8 +7,9 @@
 //!
 //! `f32` rounding and square root reuse the exact `f64` routines in [`crate::float`]. Widening an
 //! `f32` to `f64` is exact, and:
-//! - `floor`, `ceil`, `trunc` and `nearest` of an exact `f32` value are integers that are again
-//!   exactly representable as `f32`, so narrowing the `f64` result is exact;
+//! - `floor`, `ceil`, `trunc`, `nearest` and `round_half_away` of an exact `f32` value are
+//!   integers that are again exactly representable as `f32`, so narrowing the `f64` result is
+//!   exact;
 //! - `f64` has more than `2 * 24 + 2` significand bits, so rounding the correctly rounded `f64`
 //!   square root to `f32` gives the correctly rounded `f32` square root (no double-rounding
 //!   error);
@@ -78,6 +79,12 @@ pub(crate) fn trunc(x: f32) -> f32 {
 #[inline]
 pub(crate) fn nearest(x: f32) -> f32 {
     demote(float::nearest(promote(x)))
+}
+
+/// Rounds to the nearest integer, ties away from zero.
+#[inline]
+pub(crate) fn round_half_away(x: f32) -> f32 {
+    demote(float::round_half_away(promote(x)))
 }
 
 /// Correctly rounded square root.
@@ -240,6 +247,9 @@ mod tests {
         assert!(sqrt(-1.0).is_nan());
         assert_eq!(rem(7.5, 2.0), 1.5);
         assert_eq!(rem(-7.5, 2.0), -1.5);
+        assert_eq!(round_half_away(2.5), 3.0);
+        assert_eq!(round_half_away(-0.5), -1.0);
+        assert_eq!(round_half_away(0.499_999_97), 0.0);
     }
 
     /// Square root via `f64` agrees with a direct exact check on many inputs.

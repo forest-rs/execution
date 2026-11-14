@@ -2397,6 +2397,10 @@ fn verify_function_bytecode(
                 dst: map_f64(*dst)?,
                 a: map_f64(*a)?,
             },
+            Instr::F64RoundHalfAway { dst, a } => ExecInstr::F64RoundHalfAway {
+                dst: map_f64(*dst)?,
+                a: map_f64(*a)?,
+            },
             Instr::F64CopySign { dst, a, b } => ExecInstr::F64CopySign {
                 dst: map_f64(*dst)?,
                 a: map_f64(*a)?,
@@ -2937,6 +2941,42 @@ fn verify_function_bytecode(
                 dst: map_bool(*dst)?,
                 a: map_f32(*a)?,
                 b: map_f32(*b)?,
+            },
+            Instr::F32RoundHalfAway { dst, a } => ExecInstr::F32RoundHalfAway {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Exp { dst, a } => ExecInstr::F32Exp {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Ln { dst, a } => ExecInstr::F32Ln {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Sin { dst, a } => ExecInstr::F32Sin {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Cos { dst, a } => ExecInstr::F32Cos {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32Clamp { dst, a, lo, hi } => ExecInstr::F32Clamp {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                lo: map_f32(*lo)?,
+                hi: map_f32(*hi)?,
+            },
+            Instr::F32Pow { dst, a, b } => ExecInstr::F32Pow {
+                dst: map_f32(*dst)?,
+                a: map_f32(*a)?,
+                b: map_f32(*b)?,
+            },
+            Instr::F32Atan2 { dst, y, x } => ExecInstr::F32Atan2 {
+                dst: map_f32(*dst)?,
+                y: map_f32(*y)?,
+                x: map_f32(*x)?,
             },
             Instr::I32ToI64 { dst, a } => ExecInstr::I32ToI64 {
                 dst: map_i64(*dst)?,
@@ -4167,6 +4207,7 @@ fn validate_instr_types(
         | Instr::F64Trunc { a, .. }
         | Instr::F64Nearest { a, .. }
         | Instr::F64Sqrt { a, .. }
+        | Instr::F64RoundHalfAway { a, .. }
         | Instr::F64ToBits { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
         }
@@ -4458,6 +4499,22 @@ fn validate_instr_types(
         Instr::F32Ge { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
             check_expected(func_id, pc, *b, t(*b), ValueType::F32)?;
+        }
+        Instr::F32RoundHalfAway { a, .. }
+        | Instr::F32Exp { a, .. }
+        | Instr::F32Ln { a, .. }
+        | Instr::F32Sin { a, .. }
+        | Instr::F32Cos { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F32Pow { a: x, b: y, .. } | Instr::F32Atan2 { y: x, x: y, .. } => {
+            check_expected(func_id, pc, *x, t(*x), ValueType::F32)?;
+            check_expected(func_id, pc, *y, t(*y), ValueType::F32)?;
+        }
+        Instr::F32Clamp { a, lo, hi, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+            check_expected(func_id, pc, *lo, t(*lo), ValueType::F32)?;
+            check_expected(func_id, pc, *hi, t(*hi), ValueType::F32)?;
         }
         Instr::I32ToI64 { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;

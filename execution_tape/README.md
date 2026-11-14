@@ -303,6 +303,8 @@ Ordinary verification, preparation and execution retain none of these facts.
   values for recording and diagnostics.
 - `recording`: owned bounded observations, instruction histories and checked replay.
 - `disasm`: human-readable disassembly for verified programs.
+- `math`: the floating-point operations the VM computes, as plain functions native code can
+  call to get the same bits, including the `f32` transcendentals pinned to `libm`.
 
 ## Resumable execution
 

@@ -970,6 +970,12 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *cont);
             Ok(())
         },
+        Instr::F64RoundHalfAway { a, dst } => {
+            out.extend_from_slice(&[0xFC, 0x0B]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
         Instr::ConstI32 { dst, imm } => {
             out.extend_from_slice(&[0xFD, 0x00]);
             crate::codec_primitives::write_reg(out, *dst);
@@ -1430,6 +1436,58 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg(out, *dst);
             crate::codec_primitives::write_reg(out, *a);
             crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::F32RoundHalfAway { a, dst } => {
+            out.extend_from_slice(&[0xFD, 0x98]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F32Clamp { a, dst, hi, lo } => {
+            out.extend_from_slice(&[0xFD, 0x99]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *lo);
+            crate::codec_primitives::write_reg(out, *hi);
+            Ok(())
+        },
+        Instr::F32Pow { a, b, dst } => {
+            out.extend_from_slice(&[0xFD, 0xA0]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            crate::codec_primitives::write_reg(out, *b);
+            Ok(())
+        },
+        Instr::F32Exp { a, dst } => {
+            out.extend_from_slice(&[0xFD, 0xA1]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F32Ln { a, dst } => {
+            out.extend_from_slice(&[0xFD, 0xA2]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F32Sin { a, dst } => {
+            out.extend_from_slice(&[0xFD, 0xA3]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F32Cos { a, dst } => {
+            out.extend_from_slice(&[0xFD, 0xA4]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *a);
+            Ok(())
+        },
+        Instr::F32Atan2 { dst, x, y } => {
+            out.extend_from_slice(&[0xFD, 0xA5]);
+            crate::codec_primitives::write_reg(out, *dst);
+            crate::codec_primitives::write_reg(out, *y);
+            crate::codec_primitives::write_reg(out, *x);
             Ok(())
         },
         Instr::I32ToI64 { a, dst } => {

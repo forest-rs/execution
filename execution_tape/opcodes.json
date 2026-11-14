@@ -9,7 +9,7 @@
     {
       "name": "Numeric32",
       "byte": "0xFD",
-      "doc": "32-bit numerics in aligned blocks: `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`,\nconversions from `0xC0`."
+      "doc": "32-bit numerics in aligned blocks: `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`\n(math intrinsics from `0xA0`), conversions from `0xC0`."
     }
   ],
   "opcodes": [
@@ -4206,6 +4206,31 @@
       ]
     },
     {
+      "name": "F64RoundHalfAway",
+      "mnemonic": "f64.round_half_away",
+      "prefix": "0xFC",
+      "byte": "0x0B",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = round_half_away(a)` (`f64`, rounds to nearest integer, ties away from zero).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
       "name": "ConstI32",
       "mnemonic": "const.i32",
       "prefix": "0xFD",
@@ -6293,6 +6318,234 @@
           "role": "b",
           "encoding": "reg_u32_uleb",
           "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32RoundHalfAway",
+      "mnemonic": "f32.round_half_away",
+      "prefix": "0xFD",
+      "byte": "0x98",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = round_half_away(a)` (`f32`, rounds to nearest integer, ties away from zero).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Clamp",
+      "mnemonic": "f32.clamp",
+      "prefix": "0xFD",
+      "byte": "0x99",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = clamp(a, lo, hi)` (`f32`; traps unless `lo <= hi`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "lo",
+          "encoding": "reg_u32_uleb",
+          "field": "lo",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "hi",
+          "encoding": "reg_u32_uleb",
+          "field": "hi",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Pow",
+      "mnemonic": "f32.pow",
+      "prefix": "0xFD",
+      "byte": "0xA0",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = pow(a, b)` (`f32`, bit-identical to the pinned `libm::powf`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "b",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Exp",
+      "mnemonic": "f32.exp",
+      "prefix": "0xFD",
+      "byte": "0xA1",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = exp(a)` (`f32`, bit-identical to the pinned `libm::expf`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Ln",
+      "mnemonic": "f32.ln",
+      "prefix": "0xFD",
+      "byte": "0xA2",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = ln(a)` (`f32`, natural logarithm, bit-identical to the pinned `libm::logf`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Sin",
+      "mnemonic": "f32.sin",
+      "prefix": "0xFD",
+      "byte": "0xA3",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = sin(a)` (`f32`, bit-identical to the pinned `libm::sinf`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Cos",
+      "mnemonic": "f32.cos",
+      "prefix": "0xFD",
+      "byte": "0xA4",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = cos(a)` (`f32`, bit-identical to the pinned `libm::cosf`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32Atan2",
+      "mnemonic": "f32.atan2",
+      "prefix": "0xFD",
+      "byte": "0xA5",
+      "terminator": false,
+      "flags": [],
+      "doc": "`dst = atan2(y, x)` (`f32`, bit-identical to the pinned `libm::atan2f`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "y",
+          "access": "read"
+        },
+        {
+          "kind": "reg",
+          "role": "b",
+          "encoding": "reg_u32_uleb",
+          "field": "x",
           "access": "read"
         }
       ]

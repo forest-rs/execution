@@ -438,6 +438,37 @@ fn cases() -> Vec<Case> {
         case!(F64ToU32Sat, [F64], [U32], |v| one(Value::U32(
             f64v(&v[0]) as u32
         ))),
+        case!(F32RoundHalfAway, [F32], [F32], |v| one(Value::F32(
+            f(&v[0]).round()
+        ))),
+        case!(F32Clamp, [F32, F32, F32], [F32], |v| {
+            let (x, lo, hi) = (f(&v[0]), f(&v[1]), f(&v[2]));
+            // Rust's `f32::clamp` panics exactly where the instruction traps.
+            if lo <= hi {
+                one(Value::F32(x.clamp(lo, hi)))
+            } else {
+                Err(Trap::ClampBoundsInvalid)
+            }
+        }),
+        case!(F32Pow, [F32, F32], [F32], |v| one(Value::F32(libm::powf(
+            f(&v[0]),
+            f(&v[1])
+        )))),
+        case!(F32Exp, [F32], [F32], |v| one(Value::F32(libm::expf(f(
+            &v[0]
+        ))))),
+        case!(F32Ln, [F32], [F32], |v| one(Value::F32(libm::logf(f(
+            &v[0]
+        ))))),
+        case!(F32Sin, [F32], [F32], |v| one(Value::F32(libm::sinf(f(
+            &v[0]
+        ))))),
+        case!(F32Cos, [F32], [F32], |v| one(Value::F32(libm::cosf(f(
+            &v[0]
+        ))))),
+        case!(F32Atan2, [F32, F32], [F32], |v| one(Value::F32(
+            libm::atan2f(f(&v[0]), f(&v[1]))
+        ))),
         case!(I32ToF32, [I32], [F32], |v| one(Value::F32(i(&v[0]) as f32))),
         case!(U32ToF32, [U32], [F32], |v| one(Value::F32(u(&v[0]) as f32))),
         case!(I64ToF32, [I64], [F32], |v| one(Value::F32(
@@ -516,6 +547,12 @@ fn samples(t: ValueType) -> Vec<Value> {
             -2_147_483_904.0,
             4_294_967_040.0,
             4_294_967_296.0,
+            0.499_999_97,
+            8_388_609.0,
+            -8_388_607.5,
+            1e-40,
+            core::f32::consts::PI,
+            -1e9,
         ]
         .map(Value::F32)
         .to_vec(),

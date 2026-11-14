@@ -16,6 +16,23 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add deterministic `f32` math intrinsics under the `0xFD` prefix, in an `f32` sub-block from
+  `0xA0`: `f32.pow` (`0xA0`), `f32.exp`, `f32.ln`, `f32.sin`, `f32.cos` and `f32.atan2`
+  (`0xA5`). Their results are defined as those of the `libm` crate at exactly version 0.2.16,
+  which is now a dependency (pinned with `=`, default features off): bit-identical on every
+  platform for non-NaN results, NaN-ness only for NaN results, and not correctly rounded.
+  Upgrading `libm` changes results and will be called out here. Also add `f32.clamp` (`0xFD
+  0x99`), which traps with the new `Trap::ClampBoundsInvalid` unless `lo <= hi` and otherwise
+  matches `f32::clamp` bit for bit, and `f32.round_half_away` (`0xFD 0x98`) and
+  `f64.round_half_away` (`0xFC 0x0B`), exact rounding with ties away from zero (C's
+  `roundf`/`round`), beside the existing ties-to-even `nearest`. `Asm` gains `f32_pow`,
+  `f32_exp`, `f32_ln`, `f32_sin`, `f32_cos`, `f32_atan2`, `f32_clamp`, `f32_round_half_away`
+  and `f64_round_half_away`; `OperandRole` gains `Lo` and `Hi`.
+
+- Add `execution_tape::math`, the floating-point operations the VM computes as plain functions
+  (`math::pow_f32`, `math::round_half_even_f32`, `math::min_num_f64`, ...), so native code can
+  compute exactly the bits a tape program does. Each function documents its `libm` counterpart.
+
 - Add `Vm::replace_host`, which moves a VM's installed units, retained aggregates and limits to
   a VM around another host and returns the previous one. A host that borrows per-call state can
   now run against units installed once, by swapping it in for a call and a parked host back

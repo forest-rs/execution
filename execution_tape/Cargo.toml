@@ -15,6 +15,7 @@ default = []
 std = []
 
 [dependencies]
+libm.workspace = true
 
 [lints]
 workspace = true

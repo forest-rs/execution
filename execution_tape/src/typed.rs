@@ -456,6 +456,10 @@ pub(crate) enum ExecInstr {
         dst: F64Reg,
         a: F64Reg,
     },
+    F64RoundHalfAway {
+        dst: F64Reg,
+        a: F64Reg,
+    },
     F64CopySign {
         dst: F64Reg,
         a: F64Reg,
@@ -961,6 +965,42 @@ pub(crate) enum ExecInstr {
         dst: BoolReg,
         a: F32Reg,
         b: F32Reg,
+    },
+    F32RoundHalfAway {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Clamp {
+        dst: F32Reg,
+        a: F32Reg,
+        lo: F32Reg,
+        hi: F32Reg,
+    },
+    F32Pow {
+        dst: F32Reg,
+        a: F32Reg,
+        b: F32Reg,
+    },
+    F32Exp {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Ln {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Sin {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Cos {
+        dst: F32Reg,
+        a: F32Reg,
+    },
+    F32Atan2 {
+        dst: F32Reg,
+        y: F32Reg,
+        x: F32Reg,
     },
     I32ToI64 {
         dst: I64Reg,
