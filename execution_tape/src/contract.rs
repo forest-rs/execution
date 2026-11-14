@@ -838,7 +838,7 @@ mod tests {
         };
         assert_eq!(
             format!("{rejected}"),
-            "function #2 at byte 15: result[0][0][0]: expected bool, found i64"
+            "function #2, pc 15: result[0][0][0]: expected bool, found i64"
         );
         let trapped = crate::vm::Trap::ContractMismatch {
             function: crate::value::FuncRef::new(crate::value::UnitId(0), FuncId(2)),

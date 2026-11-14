@@ -173,6 +173,11 @@ impl VerifiedProgram {
 }
 
 /// A verification error.
+///
+/// [`fmt::Display`] prefixes the message with its location as `function #F, pc P: `. When the
+/// rejected program is still at hand, [`Self::display_in`] adds the function and label names,
+/// span, instruction and argument names its debug metadata records. [`Self::function`],
+/// [`Self::pc`] and [`Self::register`] expose the location for other tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum VerifyError {
@@ -772,246 +777,158 @@ pub enum InvalidJumpTargetReason {
     NotInstructionBoundary,
 }
 
+/// Renders a diagnostic as `function #F, pc P: message`, omitting the parts it does not have.
+///
+/// [`VerifyError::display_in`] renders the same message with names from the rejected program.
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(func) = self.function() {
+            write!(f, "function #{}", func.0)?;
+            if let Some(pc) = self.pc() {
+                write!(f, ", pc {pc}")?;
+            }
+            f.write_str(": ")?;
+        }
+        self.fmt_message(f)
+    }
+}
+
+impl VerifyError {
+    /// Writes what went wrong, without the function and pc that [`fmt::Display`] prefixes.
+    fn fmt_message(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CallIndirectContractMismatch { func, pc, call_sig } => write!(
-                f,
-                "function #{func} at {pc}: callable does not match indirect signature #{call_sig}"
-            ),
+            Self::CallIndirectContractMismatch { call_sig, .. } => {
+                write!(f, "callable does not match indirect signature #{call_sig}")
+            }
             Self::InvalidContract { contract, error } => {
                 write!(f, "invalid contract {}: {error:?}", contract.0)
             }
             Self::ContractMismatch {
-                func,
-                pc,
-                position,
-                error,
-            } => {
-                write!(f, "function #{func} at byte {pc}: ")?;
-                error.fmt_at(f, *position)
-            }
-
-            Self::BlockDeclaration { func, pc, error } => {
-                write!(f, "invalid block: function {func} pc={pc}: {error:?}")
-            }
+                position, error, ..
+            } => error.fmt_at(f, *position),
+            Self::BlockDeclaration { error, .. } => write!(f, "invalid block: {error:?}"),
             Self::BlockEdge {
-                func,
-                pc,
-                arm,
-                target,
-                error,
-            } => write!(
-                f,
-                "invalid block edge: function {func} pc={pc} arm={arm} target={target}: {error:?}"
-            ),
+                arm, target, error, ..
+            } => write!(f, "invalid block edge: arm {arm} to pc {target}: {error:?}"),
             Self::InvalidMetadata {
                 table,
                 entry,
                 error,
             } => write!(f, "invalid {table:?} metadata entry {entry}: {error}"),
             Self::Decode(e) => write!(f, "decode failed: {e}"),
-            Self::InternalOpcodeSchemaMismatch { func, pc, opcode } => write!(
+            Self::InternalOpcodeSchemaMismatch { opcode, .. } => write!(
                 f,
-                "internal opcode schema mismatch: function {func} pc={pc} opcode={}",
+                "internal opcode schema mismatch: opcode {}",
                 CodeBytes(*opcode)
             ),
-            Self::UnsupportedInstruction { func, pc, opcode } => write!(
+            Self::UnsupportedInstruction { opcode, .. } => write!(
                 f,
-                "unsupported instruction at this verifier/runtime stage: function {func} pc={pc} opcode={}",
+                "unsupported instruction at this verifier/runtime stage: opcode {}",
                 CodeBytes(*opcode)
             ),
-            Self::FunctionBytecodeOutOfBounds { func } => {
-                write!(f, "function {func} bytecode out of bounds")
-            }
-            Self::FunctionSpansOutOfBounds { func } => {
-                write!(f, "function {func} spans out of bounds")
-            }
-            Self::FunctionArgTypesOutOfBounds { func } => {
-                write!(f, "function {func} arg types out of bounds")
-            }
-            Self::FunctionRetTypesOutOfBounds { func } => {
-                write!(f, "function {func} ret types out of bounds")
-            }
-            Self::FunctionSigCountMismatch { func } => {
-                write!(f, "function {func} signature count mismatch")
-            }
-            Self::UnsupportedValueType { func, value_type } => {
-                write!(
-                    f,
-                    "function {func} uses unsupported value type in this verifier/runtime stage: {value_type:?}"
-                )
-            }
-            Self::FunctionInputNameArgOutOfBounds { func, arg } => {
-                write!(
-                    f,
-                    "function {func} input name arg index out of bounds: {arg}"
-                )
-            }
-            Self::FunctionInputNameEmpty { func, arg } => {
-                write!(f, "function {func} input name is empty for arg {arg}")
-            }
-            Self::FunctionInputNameDuplicate { func, name } => {
-                write!(
-                    f,
-                    "function {func} input name is duplicated (symbol_id={})",
-                    name.0
-                )
-            }
-            Self::FunctionInputNameDuplicateArgIndex { func, arg } => {
-                write!(
-                    f,
-                    "function {func} input name arg index is duplicated: {arg}"
-                )
-            }
-            Self::FunctionOutputNameRetOutOfBounds { func, ret } => {
-                write!(
-                    f,
-                    "function {func} output name ret index out of bounds: {ret}"
-                )
-            }
-            Self::FunctionOutputNameEmpty { func, ret } => {
-                write!(f, "function {func} output name is empty for ret {ret}")
-            }
-            Self::FunctionOutputNameDuplicate { func, name } => {
-                write!(
-                    f,
-                    "function {func} output name is duplicated (symbol_id={})",
-                    name.0
-                )
-            }
-            Self::FunctionOutputNameDuplicateRetIndex { func, ret } => {
-                write!(
-                    f,
-                    "function {func} output name ret index is duplicated: {ret}"
-                )
-            }
-            Self::BadSpanDeltas { func } => {
-                write!(f, "function {func} span table has bad pc_deltas")
-            }
-            Self::RegCountTooLarge { func, reg_count } => {
-                write!(f, "function {func} reg_count {reg_count} is too large")
-            }
-            Self::ArgCountExceedsRegs { func } => {
-                write!(f, "function {func} arg_count exceeds reg_count")
-            }
-            Self::InvalidJumpTarget {
-                func,
-                pc,
-                target,
-                reason,
-            } => write!(
+            Self::FunctionBytecodeOutOfBounds { .. } => f.write_str("bytecode out of bounds"),
+            Self::FunctionSpansOutOfBounds { .. } => f.write_str("spans out of bounds"),
+            Self::FunctionArgTypesOutOfBounds { .. } => f.write_str("arg types out of bounds"),
+            Self::FunctionRetTypesOutOfBounds { .. } => f.write_str("ret types out of bounds"),
+            Self::FunctionSigCountMismatch { .. } => f.write_str("signature count mismatch"),
+            Self::UnsupportedValueType { value_type, .. } => write!(
                 f,
-                "function {func} pc={pc} invalid jump target pc={target} ({reason:?})"
+                "uses unsupported value type in this verifier/runtime stage: {value_type:?}"
             ),
-            Self::EffectInNotR0 { func, pc, reg } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} effect input must be r0 (got r{reg})"
-                )
+            Self::FunctionInputNameArgOutOfBounds { arg, .. } => {
+                write!(f, "input name arg index out of bounds: {arg}")
             }
-            Self::EffectOutNotR0 { func, pc, reg } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} effect output must be r0 (got r{reg})"
-                )
+            Self::FunctionInputNameEmpty { arg, .. } => {
+                write!(f, "input name is empty for arg {arg}")
             }
-            Self::RegOutOfBounds { func, pc, reg } => {
-                write!(f, "function {func} pc={pc} register out of bounds: r{reg}")
+            Self::FunctionInputNameDuplicate { name, .. } => {
+                write!(f, "input name is duplicated (symbol_id={})", name.0)
             }
-            Self::UninitializedRead { func, pc, reg } => {
-                write!(f, "function {func} pc={pc} uninitialized read: r{reg}")
+            Self::FunctionInputNameDuplicateArgIndex { arg, .. } => {
+                write!(f, "input name arg index is duplicated: {arg}")
             }
-            Self::CallArityMismatch { func, pc } => {
-                write!(f, "function {func} pc={pc} call arity mismatch")
+            Self::FunctionOutputNameRetOutOfBounds { ret, .. } => {
+                write!(f, "output name ret index out of bounds: {ret}")
             }
-            Self::ReturnArityMismatch { func, pc } => {
-                write!(f, "function {func} pc={pc} return arity mismatch")
+            Self::FunctionOutputNameEmpty { ret, .. } => {
+                write!(f, "output name is empty for ret {ret}")
             }
-            Self::HostCallArityMismatch { func, pc } => {
-                write!(f, "function {func} pc={pc} host_call arity mismatch")
+            Self::FunctionOutputNameDuplicate { name, .. } => {
+                write!(f, "output name is duplicated (symbol_id={})", name.0)
             }
-            Self::FuncIdOutOfBounds { func, pc, func_id } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} function id out of bounds: func#{func_id}"
-                )
+            Self::FunctionOutputNameDuplicateRetIndex { ret, .. } => {
+                write!(f, "output name ret index is duplicated: {ret}")
             }
-            Self::StructTypeOutOfBounds { func, pc, type_id } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} struct type_id out of bounds: {type_id}"
-                )
+            Self::BadSpanDeltas { .. } => f.write_str("span table has bad pc_deltas"),
+            Self::RegCountTooLarge { reg_count, .. } => {
+                write!(f, "reg_count {reg_count} is too large")
             }
-            Self::StructArityMismatch { func, pc, type_id } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} struct arity mismatch for type_id={type_id}"
-                )
+            Self::ArgCountExceedsRegs { .. } => f.write_str("arg_count exceeds reg_count"),
+            Self::InvalidJumpTarget { target, reason, .. } => {
+                let reason = match reason {
+                    InvalidJumpTargetReason::OutOfRange => "past the end of the function",
+                    InvalidJumpTargetReason::NotInstructionBoundary => {
+                        "not at an instruction boundary"
+                    }
+                };
+                write!(f, "invalid jump target pc {target} ({reason})")
             }
-            Self::ArrayElemTypeOutOfBounds {
-                func,
-                pc,
-                elem_type_id,
-            } => write!(
-                f,
-                "function {func} pc={pc} array elem_type_id out of bounds: {elem_type_id}"
-            ),
-            Self::ArrayLenMismatch { func, pc } => {
-                write!(f, "function {func} pc={pc} array len mismatch")
+            Self::EffectInNotR0 { reg, .. } => {
+                write!(f, "effect input must be r0 (got r{reg})")
             }
+            Self::EffectOutNotR0 { reg, .. } => {
+                write!(f, "effect output must be r0 (got r{reg})")
+            }
+            Self::RegOutOfBounds { reg, .. } => write!(f, "register out of bounds: r{reg}"),
+            Self::UninitializedRead { reg, .. } => write!(f, "uninitialized read: r{reg}"),
+            Self::CallArityMismatch { .. } => f.write_str("call arity mismatch"),
+            Self::ReturnArityMismatch { .. } => f.write_str("return arity mismatch"),
+            Self::HostCallArityMismatch { .. } => f.write_str("host_call arity mismatch"),
+            Self::FuncIdOutOfBounds { func_id, .. } => {
+                write!(f, "function id out of bounds: function #{func_id}")
+            }
+            Self::StructTypeOutOfBounds { type_id, .. } => {
+                write!(f, "struct type_id out of bounds: {type_id}")
+            }
+            Self::StructArityMismatch { type_id, .. } => {
+                write!(f, "struct arity mismatch for type_id={type_id}")
+            }
+            Self::ArrayElemTypeOutOfBounds { elem_type_id, .. } => {
+                write!(f, "array elem_type_id out of bounds: {elem_type_id}")
+            }
+            Self::ArrayLenMismatch { .. } => f.write_str("array len mismatch"),
             Self::StructFieldIndexOutOfBounds {
-                func,
-                pc,
                 type_id,
                 field_index,
+                ..
             } => write!(
                 f,
-                "function {func} pc={pc} struct field_index out of bounds (type_id={type_id}, field_index={field_index})"
+                "struct field_index out of bounds (type_id={type_id}, field_index={field_index})"
             ),
-            Self::InvalidDecimalRounding { func, pc, rounding } => write!(
-                f,
-                "function {func} pc={pc} invalid decimal rounding mode {rounding}"
-            ),
-            Self::TupleIndexOutOfBounds {
-                func,
-                pc,
-                arity,
-                index,
-            } => write!(
-                f,
-                "function {func} pc={pc} tuple index out of bounds (arity {arity}, index {index})"
-            ),
-            Self::ConstOutOfBounds { func, pc, const_id } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} const id out of bounds: {const_id}"
-                )
+            Self::InvalidDecimalRounding { rounding, .. } => {
+                write!(f, "invalid decimal rounding mode {rounding}")
             }
-            Self::HostSigOutOfBounds { func, pc, host_sig } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} host_sig out of bounds: {host_sig}"
-                )
+            Self::TupleIndexOutOfBounds { arity, index, .. } => write!(
+                f,
+                "tuple index out of bounds (arity {arity}, index {index})"
+            ),
+            Self::ConstOutOfBounds { const_id, .. } => {
+                write!(f, "const id out of bounds: {const_id}")
             }
-            Self::CallSigOutOfBounds { func, pc, call_sig } => {
-                write!(
-                    f,
-                    "function {func} pc={pc} call_sig out of bounds: {call_sig}"
-                )
+            Self::HostSigOutOfBounds { host_sig, .. } => {
+                write!(f, "host_sig out of bounds: {host_sig}")
+            }
+            Self::CallSigOutOfBounds { call_sig, .. } => {
+                write!(f, "call_sig out of bounds: {call_sig}")
             }
             Self::HostSigMalformed { host_sig } => write!(f, "host_sig {host_sig} malformed"),
-            Self::CallSigMalformed { call_sig } => {
-                write!(f, "call_sig {call_sig} malformed")
+            Self::CallSigMalformed { call_sig } => write!(f, "call_sig {call_sig} malformed"),
+            Self::HostCallSigMalformed { host_sig, .. } => {
+                write!(f, "host_sig {host_sig} malformed (via host_call)")
             }
-            Self::HostCallSigMalformed { func, pc, host_sig } => write!(
-                f,
-                "function {func} pc={pc} host_sig {host_sig} malformed (via host_call)"
-            ),
-            Self::CallIndirectSigMalformed { func, pc, call_sig } => write!(
-                f,
-                "function {func} pc={pc} call_sig {call_sig} malformed (via call.indirect)"
-            ),
+            Self::CallIndirectSigMalformed { call_sig, .. } => {
+                write!(f, "call_sig {call_sig} malformed (via call.indirect)")
+            }
             Self::HostSigHashMismatch { host_sig } => {
                 write!(f, "host_sig {host_sig} sig_hash mismatch")
             }
@@ -1019,110 +936,94 @@ impl fmt::Display for VerifyError {
                 f,
                 "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
             ),
-            Self::ExceptionReference { place } => {
-                write!(f, "exception references cannot appear in {place}")
-            }
-            Self::ContinuationReference { place } => {
-                write!(f, "continuation references cannot appear in {place}")
-            }
+            Self::ExceptionReference { place } => match place {
+                ExceptionPlace::Aggregate { reg, .. } => {
+                    write!(
+                        f,
+                        "exception references cannot be stored in a tuple (r{reg})"
+                    )
+                }
+                place => write!(f, "exception references cannot appear in {place}"),
+            },
+            Self::ContinuationReference { place } => match place {
+                ExceptionPlace::Aggregate { reg, .. } => write!(
+                    f,
+                    "continuation references cannot be stored in a tuple (r{reg})"
+                ),
+                place => write!(f, "continuation references cannot appear in {place}"),
+            },
             Self::ContBindSignature {
-                func,
-                pc,
-                from_sig,
-                to_sig,
+                from_sig, to_sig, ..
             } => write!(
                 f,
-                "function {func} pc={pc}: cont.bind from call_sig {from_sig} to call_sig {to_sig} \
-                 must drop exactly the bound leading arguments and keep the results"
+                "cont.bind from call_sig {from_sig} to call_sig {to_sig} must drop exactly the \
+                 bound leading arguments and keep the results"
             ),
-            Self::InvalidRegion {
-                func,
-                region,
-                error,
-            } => write!(f, "function {func} region#{region}: {error}"),
-            Self::InvalidRegionRun { func, run, error } => {
-                write!(f, "function {func} region run {run}: {error}")
-            }
-            Self::TagOutOfBounds { func, pc, tag } => {
-                write!(f, "function {func} pc={pc} throw: tag#{tag} out of bounds")
-            }
+            Self::InvalidRegion { region, error, .. } => write!(f, "region#{region}: {error}"),
+            Self::InvalidRegionRun { run, error, .. } => write!(f, "region run {run}: {error}"),
+            Self::TagOutOfBounds { tag, .. } => write!(f, "throw: tag#{tag} out of bounds"),
             Self::ThrowArityMismatch {
-                func,
-                pc,
                 tag,
                 name,
                 expected,
                 actual,
+                ..
             } => write!(
                 f,
-                "function {func} pc={pc} throw tag#{tag} (\"{name}\") expects {expected} payload values, got {actual}"
+                "throw tag#{tag} (\"{name}\") expects {expected} payload values, got {actual}"
             ),
             Self::ThrowPayloadMismatch {
-                func,
-                pc,
                 tag,
                 name,
                 index,
                 reg,
                 expected,
                 actual,
+                ..
             } => write!(
                 f,
-                "function {func} pc={pc} throw tag#{tag} (\"{name}\") payload[{index}] requires {expected:?}, r{reg} declares {actual:?}"
+                "throw tag#{tag} (\"{name}\") payload[{index}] requires {expected:?}, r{reg} \
+                 declares {actual:?}"
             ),
-            Self::MissingRegisterTypes { func } => write!(
-                f,
-                "function {func} has no register declarations (r0 must be Unit)"
-            ),
+            Self::MissingRegisterTypes { .. } => {
+                f.write_str("no register declarations (r0 must be Unit)")
+            }
             Self::RegisterTypeMismatch {
-                func,
-                pc,
                 reg,
                 declared,
                 required,
-            } => write!(
-                f,
-                "function {func} pc={pc:?} r{reg} declared {declared:?}, required {required:?}"
-            ),
-            Self::UnknownAggregateShape { func, pc, reg } => write!(
-                f,
-                "function {func} pc={pc} r{reg} has no proven projection kind"
-            ),
-            Self::CallCalleeArgTypesOutOfBounds { func, pc, callee } => write!(
-                f,
-                "function {func} pc={pc} callee f{callee} arg types out of bounds"
-            ),
-            Self::CallCalleeRetTypesOutOfBounds { func, pc, callee } => write!(
-                f,
-                "function {func} pc={pc} callee f{callee} ret types out of bounds"
-            ),
-            Self::MissingTerminator { func, pc } => write!(
-                f,
-                "function {func} pc={pc} block can fall through without a terminator"
-            ),
+                ..
+            } => write!(f, "r{reg} declared {declared:?}, required {required:?}"),
+            Self::UnknownAggregateShape { reg, .. } => {
+                write!(f, "r{reg} has no proven projection kind")
+            }
+            Self::CallCalleeArgTypesOutOfBounds { callee, .. } => {
+                write!(f, "callee function #{callee} arg types out of bounds")
+            }
+            Self::CallCalleeRetTypesOutOfBounds { callee, .. } => {
+                write!(f, "callee function #{callee} ret types out of bounds")
+            }
+            Self::MissingTerminator { .. } => {
+                f.write_str("block can fall through without a terminator")
+            }
             Self::InternalBlockInconsistent {
-                func,
-                pc,
                 instr_start,
                 instr_end,
+                ..
             } => write!(
                 f,
-                "function {func} pc={pc} internal verifier error: inconsistent basic blocks (instrs {instr_start}..{instr_end})"
+                "internal verifier error: inconsistent basic blocks (instrs \
+                 {instr_start}..{instr_end})"
             ),
-            Self::BytecodeDecode { func } => write!(f, "function {func} bytecode decode failed"),
-            Self::UnknownOpcode { func, pc, opcode } => write!(
-                f,
-                "function {func} pc={pc}: unknown opcode {}",
-                CodeBytes(*opcode)
-            ),
+            Self::BytecodeDecode { .. } => f.write_str("bytecode decode failed"),
+            Self::UnknownOpcode { opcode, .. } => {
+                write!(f, "unknown opcode {}", CodeBytes(*opcode))
+            }
             Self::AggKindMismatch {
-                func,
-                pc,
-                expected,
-                actual,
+                expected, actual, ..
             } => write!(
                 f,
-                "function {func} pc={pc} aggregate kind mismatch (expected {expected:?}, got {actual:?})"
+                "aggregate kind mismatch (expected {expected:?}, got {actual:?})"
             ),
         }
     }
@@ -1203,7 +1104,7 @@ impl fmt::Display for ExceptionPlace {
                 write!(f, "array element type {elem_type_id}")
             }
             Self::Aggregate { func, pc, reg } => {
-                write!(f, "a tuple built in function {func} at pc={pc} (r{reg})")
+                write!(f, "a tuple built in function #{func} at pc {pc} (r{reg})")
             }
         }
     }

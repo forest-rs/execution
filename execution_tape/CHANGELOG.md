@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add `VerifyError::display_in(&program)`, which renders a verifier diagnostic with what the
+  rejected program's debug metadata knows about its location: the function name, the nearest
+  label and offset, the span, the instruction, and the input name of an argument register. Add
+  `VerifyError::register`, beside `function` and `pc`, for the register a diagnostic names.
+
 - Declare a host operation once with `host_binding::HostImport`, a `const`-constructible symbol
   and complete signature. `ProgramBuilder::host_import` adds it to a program's import table,
   `HostFunctions::implement` registers its callback, `HostCallSite::calls` matches its call sites
@@ -405,6 +410,10 @@ This release has an [MSRV][] of 1.88.
   Abandoned work now closes with `TraceOutcome::Caught`.
 
 ### Changed
+
+- `VerifyError` messages now share one location prefix, `function #F, pc P: `, which leaves the
+  pc out when there is none instead of printing `pc=Some(0)` or `pc=None`. Matching on message
+  text needs updating; the variants are unchanged.
 
 - The specification now states float determinism normatively (`docs/v1_spec.md`, "Floating-point
   determinism"), replacing the note that float nondeterminism was acceptable: every `f32` and
