@@ -238,6 +238,10 @@ validates every declared import, including unused imports, before any operation 
 failure reports all missing symbols and signature mismatches in import-ID order, with expected
 and available signatures. No mutable host state is consumed on failure.
 
+A `HostImport` constant declares an operation's symbol and complete signature once. The program
+adds it with `ProgramBuilder::host_import`, the host registers it with `HostFunctions::implement`,
+and a link check recognizes its calls with `HostCallSite::calls`, so the three cannot drift.
+
 `VerifiedProgram::host_call_sites` lists every reachable host call with the arguments that are
 constants on every path to it, borrowed as the host would receive them. `bind_checked` binds and
 hands each call site to an embedder check, so a constant argument such as a name is validated

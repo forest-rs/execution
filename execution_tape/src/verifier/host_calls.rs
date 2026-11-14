@@ -19,6 +19,7 @@ use crate::analysis::dataflow;
 use crate::analysis::protection::Protection;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::host::ValueRef;
+use crate::host_binding::HostImport;
 use crate::program::{ConstEntry, ConstId, HostSigId, Program, SpanId};
 use crate::value::{Decimal, FuncId};
 
@@ -255,6 +256,15 @@ impl<'s> HostCallSite<'s> {
         self.program
             .symbol_str(import.symbol)
             .expect("verified host symbol")
+    }
+
+    /// Returns `true` when this calls `import`: the same symbol and complete signature.
+    #[must_use]
+    pub fn calls(&self, import: HostImport) -> bool {
+        let entry = &self.program.host_sigs[self.site.import.0 as usize];
+        self.symbol() == import.symbol()
+            && self.program.host_sig_args(entry).ok() == Some(import.args())
+            && self.program.host_sig_rets(entry).ok() == Some(import.rets())
     }
 
     /// The function containing the call.

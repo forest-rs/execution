@@ -16,6 +16,11 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Declare a host operation once with `host_binding::HostImport`, a `const`-constructible symbol
+  and complete signature. `ProgramBuilder::host_import` adds it to a program's import table,
+  `HostFunctions::implement` registers its callback, `HostCallSite::calls` matches its call sites
+  in a link check, and it converts into a `host_catalog::HostSpec`.
+
 - Pass constants directly as call arguments with `ProgramBuilder::emit_call_with`. Arguments are
   a tuple, such as `(handle, "name", 0.5_f32)`, or a slice of the new `CallArg`; a `u32` is a
   register and integer constants are spelled `CallArg::U32(1)`. Each constant is loaded into a

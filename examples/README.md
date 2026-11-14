@@ -30,6 +30,7 @@ cargo run -p execution_graph_examples --bin transforms
 | Example | What it is for |
 | --- | --- |
 | [`bound_host`](tape/src/bin/bound_host.rs) | Bind complete host signatures before execution, reuse bindings with independent state, and preserve an owned domain error. |
+| [`steel_plate`](tape/src/bin/steel_plate.rs) | Write a material module's build logic against typed host imports, pass constants directly as call arguments, and reject a misspelt parameter name at load with a link check over known call arguments. |
 | [`disasm`](tape/src/bin/disasm.rs) | Assemble a small program and print its decoded instructions and control flow. |
 | [`block_parameters`](tape/src/bin/block_parameters.rs) | Compare explicit register moves with typed block arguments in equivalent loops; inspect prepared execution requirements. |
 | [`nested_contracts`](tape/src/bin/nested_contracts.rs) | Construct and project nested aggregate contracts through assembly, encoding, verification and execution. Optionally write a tape for inspection. |

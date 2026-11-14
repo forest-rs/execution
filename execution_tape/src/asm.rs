@@ -27,6 +27,7 @@ use core::fmt;
 use crate::contract::{Contract, ContractBuildError, ContractId, ContractTableBuilder};
 use crate::format::{write_sleb128_i64, write_sleb128_i128, write_uleb128_u64};
 use crate::host::HostSig;
+use crate::host_binding::HostImport;
 use crate::opcode::Opcode;
 use crate::program::{
     ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
@@ -720,6 +721,16 @@ impl ProgramBuilder {
     pub fn host_sig_for(&mut self, symbol: &str, sig: HostSig) -> HostSigId {
         let sym = self.symbol(symbol);
         self.host_sig(sym, sig)
+    }
+
+    /// Interns the import of a declared host operation and returns its [`HostSigId`].
+    ///
+    /// Equal to [`Self::host_sig_for`] with the import's symbol and signature; the host
+    /// registers the same declaration with [`HostFunctions::implement`].
+    ///
+    /// [`HostFunctions::implement`]: crate::host_binding::HostFunctions::implement
+    pub fn host_import(&mut self, import: HostImport) -> HostSigId {
+        self.host_sig_for(import.symbol(), import.signature())
     }
 
     /// Interns an exact compositional indirect-call signature.

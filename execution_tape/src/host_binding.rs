@@ -18,9 +18,93 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
-use crate::program::{HostSigId, Program, SpanId};
+use crate::program::{HostSigId, Program, SpanId, ValueType};
 use crate::value::{FuncId, Value};
 use crate::verifier::{HostCallSite, VerifiedProgram};
+
+/// A host operation's symbol and complete signature, declared once and shared by the program
+/// that imports it and the host that implements it, so the two cannot drift.
+///
+/// A `const` declares it; [`ProgramBuilder::host_import`] adds it to a program's import table,
+/// [`HostFunctions::implement`] registers its callback, and [`HostCallSite::calls`] recognizes
+/// its calls in a link check.
+///
+/// ```
+/// use execution_tape::asm::{FunctionSig, ProgramBuilder};
+/// use execution_tape::host::{HostContext, HostError, ValueRef};
+/// use execution_tape::host_binding::{HostFunctions, HostImport};
+/// use execution_tape::program::ValueType;
+/// use execution_tape::value::Value;
+///
+/// const LOG: HostImport = HostImport::new("app.log", &[ValueType::Str], &[]);
+///
+/// fn log(lines: &mut Vec<String>, args: &[ValueRef<'_>], _: &mut [Value], _: HostContext<'_, '_>) -> Result<u64, HostError> {
+///     let [ValueRef::Str(line)] = args else { return Err(HostError::Failed) };
+///     lines.push((*line).into());
+///     Ok(0)
+/// }
+/// let mut functions = HostFunctions::new();
+/// functions.implement(LOG, log)?;
+///
+/// let mut pb = ProgramBuilder::new();
+/// let entry = pb.declare_function(FunctionSig { arg_types: vec![], ret_types: vec![] })?;
+/// let mut body = pb.function_asm(entry)?;
+/// let log_import = pb.host_import(LOG);
+/// let [] = pb.emit_call_with(&mut body, log_import, ("hello",))?;
+/// body.ret(0, &[]);
+/// pb.define_function(entry, body)?;
+/// let program = pb.build_verified()?;
+/// functions.bind(&program)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// [`ProgramBuilder::host_import`]: crate::asm::ProgramBuilder::host_import
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HostImport {
+    symbol: &'static str,
+    args: &'static [ValueType],
+    rets: &'static [ValueType],
+}
+
+impl HostImport {
+    /// Declares `symbol` with argument and return types.
+    #[must_use]
+    pub const fn new(
+        symbol: &'static str,
+        args: &'static [ValueType],
+        rets: &'static [ValueType],
+    ) -> Self {
+        Self { symbol, args, rets }
+    }
+
+    /// The host symbol.
+    #[must_use]
+    pub const fn symbol(&self) -> &'static str {
+        self.symbol
+    }
+
+    /// The argument types.
+    #[must_use]
+    pub const fn args(&self) -> &'static [ValueType] {
+        self.args
+    }
+
+    /// The return types.
+    #[must_use]
+    pub const fn rets(&self) -> &'static [ValueType] {
+        self.rets
+    }
+
+    /// The complete signature, as [`HostFunctions::register`] and
+    /// [`ProgramBuilder::host_sig_for`](crate::asm::ProgramBuilder::host_sig_for) take it.
+    #[must_use]
+    pub fn signature(&self) -> HostSig {
+        HostSig {
+            args: self.args.to_vec(),
+            rets: self.rets.to_vec(),
+        }
+    }
+}
 
 /// A host operation with mutable per-instance state and the ordinary host ABI.
 pub type HostCallback<S> =
@@ -74,6 +158,16 @@ impl<S> HostFunctions<S> {
     ) -> Result<(), RegistrationError> {
         let hash = sig_hash(&signature);
         self.insert(symbol.into(), hash, signature, callback)
+    }
+
+    /// Registers the implementation of `import`, as [`Self::register`] does with its symbol and
+    /// signature.
+    pub fn implement(
+        &mut self,
+        import: HostImport,
+        callback: HostCallback<S>,
+    ) -> Result<(), RegistrationError> {
+        self.register(import.symbol, import.signature(), callback)
     }
 
     fn insert(
@@ -669,6 +763,56 @@ mod tests {
             .unwrap();
         let bindings = functions.bind_checked(&p, |_| Ok::<(), &str>(())).unwrap();
         assert_eq!(bindings.import_count(), 2);
+    }
+
+    #[test]
+    fn one_import_declaration_feeds_the_program_the_host_and_link_checks() {
+        const INCREMENT: HostImport =
+            HostImport::new("increment", &[ValueType::I64], &[ValueType::I64]);
+        const OVERLOAD: HostImport =
+            HostImport::new("increment", &[ValueType::Bool], &[ValueType::I64]);
+        assert_eq!(INCREMENT.signature(), signature());
+
+        let mut pb = ProgramBuilder::new();
+        let import = pb.host_import(INCREMENT);
+        assert_eq!(pb.host_import(INCREMENT), import);
+        assert_eq!(pb.host_sig_for("increment", signature()), import);
+        let f = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut a = pb.function_asm(f).unwrap();
+        let [value] = pb
+            .emit_call_with(&mut a, import, (crate::asm::CallArg::I64(41),))
+            .unwrap();
+        a.ret(0, &[value]);
+        pb.define_function(f, a).unwrap();
+        let p = alloc::sync::Arc::new(pb.build_verified().unwrap());
+
+        let mut functions = HostFunctions::new();
+        functions.implement(INCREMENT, increment).unwrap();
+        assert!(matches!(
+            functions.implement(INCREMENT, increment),
+            Err(RegistrationError::DuplicateSignature { .. })
+        ));
+        let bindings = functions
+            .bind_checked(&p, |site| {
+                if site.calls(INCREMENT) && !site.calls(OVERLOAD) {
+                    Ok(())
+                } else {
+                    Err("unexpected call")
+                }
+            })
+            .unwrap();
+        let mut vm = Vm::new(bindings.with_state(0), Limits::default());
+        let unit = vm.install(alloc::sync::Arc::clone(&p)).unwrap();
+        assert_eq!(
+            vm.run(FuncRef::new(unit, FuncId(0)), &[], TraceMask::NONE, None)
+                .unwrap(),
+            [Value::I64(42)]
+        );
     }
 
     #[test]
