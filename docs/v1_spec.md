@@ -56,9 +56,51 @@ values, which a host may supply (for example from a language-owned method table)
 - **Sig hash**: hash of the host call signature (arguments and results).
 
 ## Determinism and portability
-- Numeric: `f64` follows platform IEEE behavior; float nondeterminism is acceptable.
+- Integer and `Decimal` arithmetic is exact or wraps, traps and rounds as each instruction
+  specifies, identically everywhere.
+- Floating point follows the contract below.
 - Portable serialization: canonical little-endian, varint encoding for indices/immediates.
 - No pointer serialization or serialization of external host-object state.
+
+### Floating-point determinism
+This contract is normative. The per-instruction notes later in this document describe which
+result each instruction produces; this section says how far that result can be relied on.
+
+- **Bit-exact everywhere.** Every `f32` and `f64` instruction produces the same bits on every
+  supported platform: Linux, macOS, Windows and WebAssembly, on x86-64, AArch64 and other
+  targets. This covers `add`, `sub`, `mul`, `div` and `sqrt` (correctly rounded: to nearest,
+  ties to even), `rem` (the exact remainder of truncating division), `floor`, `ceil`, `trunc`
+  and `nearest` (exact), `min`, `max`, `min_num` and `max_num`, `neg`, `abs` and `copysign`,
+  the comparisons, and every conversion between `f32`, `f64` and the integer types (a float
+  result rounds once, to nearest with ties to even; an integer result truncates and then traps
+  or saturates as specified). Subnormal inputs and results are honored, never flushed to zero.
+  No instruction converts between `Decimal` and a float.
+- **No contraction.** Each instruction rounds its own result in its own width. A multiply
+  followed by an add is never fused into a multiply-add, and no sequence of instructions is
+  evaluated at another precision.
+- **NaN results.** Whether an arithmetic result is NaN is guaranteed; its sign and payload
+  bits are unspecified. Arithmetic here is every instruction above except `neg`, `abs`,
+  `copysign`, `f32.to_bits`/`f32.from_bits` and `f64_to_bits`/`f64_from_bits`, which only move
+  or change the sign bit. Those, constants, `mov`, `select`, calls and returns, host-call
+  arguments and results, aggregates, `Value`/`ValueRef`/`RecordedValue` round trips, recording
+  and replay, and the wire encoding all preserve every bit, signaling NaNs included. A program
+  that needs particular NaN bits writes them with `from_bits`.
+- **Scope.** The contract assumes IEEE 754 binary arithmetic in the default floating-point
+  environment: round to nearest and no flush-to-zero or denormals-are-zero mode. A host that
+  changes that environment while the VM runs is outside it, as are targets whose Rust float
+  arithmetic is not IEEE 754 (x87-only `i586`). Transcendental functions are host calls, which
+  the contract does not cover.
+- **Implementations.** The interpreter uses native IEEE `add`, `sub`, `mul` and `div` and
+  Rust's `as` conversions, whose rounding and saturation Rust defines exactly. It computes
+  `rem`, `sqrt`, rounding and `min`/`max` in the core itself, without `std` or `libm`, so no
+  platform math library is involved. Any other execution engine, such as a future compiled
+  (for example Cranelift) backend, must honor this same contract: it may use native
+  instructions wherever their results agree, and need not canonicalize NaNs. The interpreter
+  currently quiets a NaN input of the rounding operations, `sqrt`, `rem` and width conversions
+  and keeps its sign and payload; that is not part of the contract.
+- **Enforcement.** `execution_tape_conformance/tests/float_determinism.rs` pins the edge cases
+  (ties, signed zeros, subnormals, saturation, `rem` signs, NaN propagation and preserved NaN
+  bits) to literal bit patterns and runs on every CI platform, including `wasm32-wasip1`.
 
 ## Value model
 
@@ -740,8 +782,9 @@ widths or signedness; conversions are explicit:
   saturate instead, and NaN converts to 0.
 - `f32.to_bits`/`f32.from_bits`: raw IEEE bits to and from `u32`.
 
-Width conversions of a NaN keep its sign and the top of its payload and set the quiet bit;
-`f32.to_bits`, `f32.from_bits`, `neg`, `abs`, `copysign` and `const.f32` never alter NaN bits.
+Width conversions of a NaN produce a NaN; `f32.to_bits`, `f32.from_bits`, `neg`, `abs`,
+`copysign` and `const.f32` never alter NaN bits (see
+[Floating-point determinism](#floating-point-determinism)).
 Decimal has no 32-bit conversions; go through `i64`/`u64`.
 
 #### Integer overflow semantics
@@ -781,7 +824,9 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
 - `f64_min`/`f64_max` propagate NaN: if either input is NaN, the result is NaN.
 - `f64_min_num`/`f64_max_num` are number-favoring: if exactly one input is NaN, the other is returned; if both are NaN, the result is NaN.
 - For `f64_min`/`f64_max`/`f64_min_num`/`f64_max_num`, when both inputs are zero with different signs, `min` returns `-0.0` and `max` returns `+0.0`.
-- `f64_rem` uses Rust's `%` semantics (remainder with a truncated quotient).
+- `f64_rem` is the exact remainder of truncating division (IEEE 754 `fmod`, Rust's `%`): the
+  result has the sign of `a` and a magnitude below `|b|`. `rem(a, ±inf)` is `a` for finite `a`;
+  `rem(±inf, b)` and `rem(a, ±0)` are NaN.
 - `f64_to_bits`/`f64_from_bits` preserve IEEE 754 bit patterns (including NaN payloads).
 - `f64_floor`/`f64_ceil`/`f64_trunc`/`f64_nearest` round to an integral value toward negative
   infinity, toward positive infinity, toward zero, and to the nearest integer with ties to even,
@@ -790,10 +835,9 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
   `f64_nearest(-0.5) = -0.0`); infinities and values with magnitude at least 2^52 are returned unchanged.
 - `f64_sqrt` is the IEEE 754 correctly rounded square root (round to nearest, ties to even), matching
   WebAssembly `f64.sqrt`: `f64_sqrt(-0.0) = -0.0`, `f64_sqrt(+inf) = +inf`, and the square root of any
-  other negative value (including `-inf`) is the canonical quiet NaN `0x7FF8_0000_0000_0000`.
-- For the five operations above, a NaN input produces the same NaN with its quiet bit set (sign and
-  payload preserved). Results are bit-for-bit identical on every platform; the core implements them
-  without `std` or `libm`.
+  other negative value (including `-inf`) is NaN.
+- For the five operations above, a NaN input produces a NaN. Results are bit-for-bit identical on
+  every platform (see [Floating-point determinism](#floating-point-determinism)).
 - `f64_copysign` returns the bits of `a` with the sign bit of `b` (WebAssembly `f64.copysign`). It
   inspects no other bits: NaN payloads (including signaling NaNs) pass through unchanged, and a NaN
   `b` contributes only its sign.

@@ -89,7 +89,7 @@ pub(crate) fn sqrt(x: f32) -> f32 {
 /// Remainder of truncating division, with the sign of `a` (like `f64.rem`).
 #[inline]
 pub(crate) fn rem(a: f32, b: f32) -> f32 {
-    demote(promote(a) % promote(b))
+    demote(float::rem(promote(a), promote(b)))
 }
 
 /// Returns `x` without its sign bit.
@@ -276,5 +276,26 @@ mod tests {
         assert_eq!(to_u32_sat(1e20), u32::MAX);
         assert_eq!(wrap_i32(0x1_8000_0000), i32::MIN);
         assert_eq!(wrap_u32(u64::MAX), u32::MAX);
+    }
+
+    /// The `f64` remainder of two `f32` values is exact and representable, so narrowing it gives
+    /// exactly the `f32` remainder.
+    #[test]
+    fn rem_matches_native_f32_remainder() {
+        let mut state = 0x5EED_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            u32::try_from(state >> 32).expect("high half")
+        };
+        for _ in 0..200_000 {
+            let (a, b) = (f32::from_bits(next()), f32::from_bits(next()));
+            let (got, want) = (rem(a, b), a % b);
+            assert!(
+                (got.is_nan() && want.is_nan()) || got.to_bits() == want.to_bits(),
+                "rem({a:e}, {b:e}) = {got:e}, want {want:e}"
+            );
+        }
     }
 }

@@ -2125,7 +2125,8 @@ impl<H: Host> Vm<H> {
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64Rem { dst, a, b } => {
-                    ctx.write_f64(base, *dst, ctx.read_f64(base, *a) % ctx.read_f64(base, *b));
+                    let out = float::rem(ctx.read_f64(base, *a), ctx.read_f64(base, *b));
+                    ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64ToBits { dst, a } => {

@@ -731,6 +731,8 @@ fn constants_round_trip_with_exact_bits() {
     assert_eq!((z.to_bits(), n.to_bits()), (0x8000_0000, 0x7FA0_0001));
 }
 
+/// Pins the interpreter's NaN propagation through width conversions. The specification only
+/// guarantees that the result is NaN; a future engine may differ here.
 #[test]
 fn float_width_conversions_keep_nan_sign_and_payload() {
     let case = |op| cases().into_iter().find(|c| c.op == op).unwrap();

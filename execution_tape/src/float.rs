@@ -239,6 +239,81 @@ pub(crate) fn sqrt(x: f64) -> f64 {
     f64::from_bits((exp_field << FRAC_BITS) + q + round_up)
 }
 
+/// Returns the remainder of truncating division, `x - trunc(x / y) * y`, computed exactly.
+///
+/// This is IEEE 754 `fmod` (Rust's `%`): the result has the sign of `x` and a magnitude below
+/// `|y|`, and it is always representable, so nothing rounds. `rem(x, ±inf)` is `x` for finite `x`
+/// (including a signed zero); `rem(±inf, y)`, `rem(x, ±0)` and NaN inputs are NaN. A NaN input is
+/// quieted with its payload kept; an invalid operation yields [`f64::NAN`].
+///
+/// Rust's `%` lowers to a call to the platform's `fmod` (the C library, or `compiler-builtins` on
+/// `wasm32` and `no_std` targets). Computing it here keeps the result independent of which
+/// implementation a target links.
+pub(crate) fn rem(x: f64, y: f64) -> f64 {
+    let x_bits = x.to_bits();
+    let y_bits = y.to_bits();
+    let x_mag = x_bits & !SIGN_MASK;
+    let y_mag = y_bits & !SIGN_MASK;
+
+    if x_mag > EXP_MASK {
+        return quiet_nan(x_bits);
+    }
+    if y_mag > EXP_MASK {
+        return quiet_nan(y_bits);
+    }
+    if x_mag == EXP_MASK || y_mag == 0 {
+        return f64::NAN;
+    }
+    // Ordering magnitudes by their bits orders them by value; this also covers `y = ±inf` and
+    // `x = ±0`.
+    if x_mag < y_mag {
+        return x;
+    }
+
+    // Both are finite and non-zero with |x| >= |y|. Write each as `m * 2^(e - 1075)` with an
+    // integer significand `m < 2^53` and `e >= 1` (a subnormal has `e = 1` and no implicit bit),
+    // so `e_x >= e_y`.
+    let (m_x, e_x) = significand(x_mag);
+    let (m_y, e_y) = significand(y_mag);
+    // r = (m_x * 2^(e_x - e_y)) mod m_y, reducing up to 64 exponent steps at a time: r < 2^53,
+    // so `r << 64` fits in `u128`.
+    let m_y = u128::from(m_y);
+    let mut r = u128::from(m_x) % m_y;
+    let mut steps = e_x - e_y;
+    while steps > 0 && r != 0 {
+        let shift = steps.min(64);
+        r = (r << shift) % m_y;
+        steps -= shift;
+    }
+    let sign = x_bits & SIGN_MASK;
+    let r = u64::try_from(r).expect("the remainder is below a 53-bit significand");
+    if r == 0 {
+        return f64::from_bits(sign);
+    }
+
+    // The result is `r * 2^(e_y - 1075)`. Normalize the leading one to bit 52 if the exponent
+    // allows it, otherwise the result is subnormal.
+    let lead = u64::from(r.leading_zeros() - 11);
+    let bits = if e_y > lead {
+        ((e_y - lead) << FRAC_BITS) | ((r << lead) & FRAC_MASK)
+    } else {
+        r << (e_y - 1)
+    };
+    f64::from_bits(sign | bits)
+}
+
+/// Splits a finite, non-zero magnitude into an integer significand and a biased exponent of at
+/// least one, so that the value is `significand * 2^(exponent - 1075)`.
+#[inline]
+fn significand(mag: u64) -> (u64, u64) {
+    let exp = mag >> FRAC_BITS;
+    if exp == 0 {
+        (mag, 1)
+    } else {
+        ((mag & FRAC_MASK) | (1 << FRAC_BITS), exp)
+    }
+}
+
 /// Integer square root of `m * 2^52` for `m` in `[2^52, 2^54)`, returning `(root, remainder)`.
 ///
 /// Classic restoring digit-by-digit square root, consuming two radicand bits per step. The
@@ -274,7 +349,7 @@ fn isqrt_shifted(m: u64) -> (u64, u64) {
 mod tests {
     extern crate std;
 
-    use super::{ceil, copysign, floor, nearest, sqrt, to_i64_sat, to_u64_sat, trunc};
+    use super::{ceil, copysign, floor, nearest, rem, sqrt, to_i64_sat, to_u64_sat, trunc};
     use std::vec::Vec;
 
     /// Bitwise equality, treating any two NaNs as equal.
@@ -700,5 +775,84 @@ mod tests {
                 "copysign({a:e}, {b:e})"
             );
         }
+    }
+
+    #[test]
+    fn rem_matches_std_on_edge_cases() {
+        // Every power of two would make the grid large; a spread of them keeps every exponent
+        // distance class.
+        let mut xs: Vec<f64> = edge_cases()
+            .into_iter()
+            .enumerate()
+            .filter(|&(i, x)| x.to_bits() & super::FRAC_MASK != 0 || i % 23 == 0 || x.abs() < 8.0)
+            .map(|(_, x)| x)
+            .collect();
+        xs.extend([f64::NAN, -f64::NAN, f64::from_bits(0x7FF0_0000_0000_0001)]);
+        xs.sort_by_key(|x| x.to_bits());
+        xs.dedup_by_key(|x| x.to_bits());
+        for &x in &xs {
+            for &y in &xs {
+                let (got, want) = (rem(x, y), x % y);
+                assert!(
+                    same(got, want),
+                    "rem({x:e}, {y:e}) = {got:e} ({:#018x}), want {want:e} ({:#018x})",
+                    got.to_bits(),
+                    want.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rem_matches_std_on_pseudo_random_inputs() {
+        let xs = random_inputs(40_000);
+        let ys = random_inputs(40_001);
+        let mut rng = SplitMix64(0x0F0D);
+        for (&x, &y) in xs.iter().zip(ys.iter().skip(1)) {
+            // Also bring the exponents close, where most of the quotient bits are significant.
+            let near =
+                f64::from_bits((y.to_bits() & !super::EXP_MASK) | (x.to_bits() & super::EXP_MASK));
+            for y in [y, near, f64::from_bits(rng.next())] {
+                let (got, want) = (rem(x, y), x % y);
+                assert!(
+                    same(got, want),
+                    "rem({x:e}, {y:e}) = {got:e} ({:#018x}), want {want:e} ({:#018x})",
+                    got.to_bits(),
+                    want.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rem_values() {
+        let bits = |x: f64| x.to_bits();
+        assert_eq!(rem(5.5, 2.0), 1.5);
+        assert_eq!(rem(-5.5, 2.0), -1.5);
+        assert_eq!(rem(5.5, -2.0), 1.5);
+        assert_eq!(rem(-5.5, -2.0), -1.5);
+        assert_eq!(bits(rem(-4.0, 2.0)), bits(-0.0));
+        assert_eq!(bits(rem(-0.0, 1.0)), bits(-0.0));
+        assert_eq!(bits(rem(-0.0, f64::INFINITY)), bits(-0.0));
+        assert_eq!(rem(3.0, f64::NEG_INFINITY), 3.0);
+        assert_eq!(rem(f64::MAX, 3.0), 2.0);
+        assert_eq!(rem(f64::MAX, f64::from_bits(1)), 0.0);
+        // A subnormal result is exact.
+        assert_eq!(
+            bits(rem(f64::MIN_POSITIVE * 1.5, f64::MIN_POSITIVE)),
+            0x0008_0000_0000_0000
+        );
+        assert_eq!(bits(rem(f64::INFINITY, 1.0)), bits(f64::NAN));
+        assert_eq!(bits(rem(1.0, 0.0)), bits(f64::NAN));
+        assert_eq!(bits(rem(1.0, -0.0)), bits(f64::NAN));
+        // A NaN operand is quieted and kept.
+        assert_eq!(
+            bits(rem(f64::from_bits(0x7FF0_0000_0000_0001), 1.0)),
+            0x7FF8_0000_0000_0001
+        );
+        assert_eq!(
+            bits(rem(1.0, f64::from_bits(0xFFF0_0000_0000_0002))),
+            0xFFF8_0000_0000_0002
+        );
     }
 }

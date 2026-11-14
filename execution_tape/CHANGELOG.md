@@ -406,6 +406,15 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- The specification now states float determinism normatively (`docs/v1_spec.md`, "Floating-point
+  determinism"), replacing the note that float nondeterminism was acceptable: every `f32` and
+  `f64` instruction is bit-exact on every platform, nothing is contracted into a fused
+  multiply-add, and arithmetic guarantees only whether a result is NaN, while moves, bit casts,
+  sign operations, values and recordings keep every bit. `f64_rem` and `f32.rem` are now
+  computed exactly in the core instead of through the platform's `fmod`, so their results no
+  longer depend on the C library or `compiler-builtins`. A conformance test pins the edge cases
+  to literal bits on every CI platform.
+
 - Public enums that grow as the VM gains features are now `#[non_exhaustive]`, so a new variant
   is no longer a breaking change for matches outside this crate. Closed sets an exhaustive
   match should check stay exhaustive: opcodes and operand metadata, value types and values,
