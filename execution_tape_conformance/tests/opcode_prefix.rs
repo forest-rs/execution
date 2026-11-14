@@ -97,7 +97,7 @@ fn unknown_opcodes_are_reported_with_code_and_pc() {
         );
         assert_eq!(
             err.to_string(),
-            format!("function 0 pc=1: unknown opcode {shown}")
+            format!("function #0, pc 1: unknown opcode {shown}")
         );
 
         assert!(matches!(
