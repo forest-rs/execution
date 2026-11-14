@@ -93,6 +93,13 @@ pub(crate) struct Exception {
     ordinal: usize,
 }
 
+impl Exception {
+    /// The checked payload, which an exception reference keeps alive.
+    pub(super) fn payload(&self) -> &[Value] {
+        &self.payload
+    }
+}
+
 impl<H: Host> Vm<H> {
     /// Raises `tag` at `location`, then propagates it.
     ///

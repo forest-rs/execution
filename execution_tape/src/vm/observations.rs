@@ -116,7 +116,7 @@ pub(super) fn emit(
 /// Source-to-bank mapping requested by optional tracing or paused inspection.
 pub(super) fn register_map(program: &Program, func: FuncId) -> Option<Vec<VReg>> {
     let function = program.functions.get(func.0 as usize)?;
-    let mut counts = [0_u32; 16];
+    let mut counts = [0_u32; RegClass::COUNT];
     let mut registers = Vec::with_capacity(function.reg_count as usize);
     for kind in function.register_types(program).ok()?.iter() {
         // `i32`, `u32` and `f32` registers share one 32-bit bank and so one index sequence.

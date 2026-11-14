@@ -502,7 +502,9 @@
 //!
 //! Register mapping and verifier facts are constructed only when requested for a function.
 //! `visit_objects` inventories conservative references in initialized registers, arguments,
-//! pending callback results, outputs and all VM aggregate fields, including retained results and temporary nodes. The
+//! pending callback results, outputs and all VM aggregate fields, including retained results and temporary nodes.
+//! Registers include those of frames held by unresumed continuations, which `frames` does not list, and
+//! an exception reference contributes its payload's objects. The
 //! embedding collector must add its globals, snapshots and other external roots and trace its
 //! own object graph. The VM does not choose collection, identity or relocation policy. Inspection
 //! borrows prevent resumption or host mutation while those views are being read.

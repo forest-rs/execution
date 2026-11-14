@@ -100,6 +100,14 @@ This release has an [MSRV][] of 1.88.
   cover it as ordinary guest control. Migration: handle the new `Opcode` variant in exhaustive
   matches.
 
+- `InvocationInspection::visit_objects` reports the host objects in initialized registers of
+  frames held by unresumed continuations, as `ObjectRootOrigin::Continuation`, so a collector
+  running mid-invocation no longer frees objects a continuation can still use. Frames of
+  unstarted continuations report only their bound arguments. Exception reference registers, in
+  active or held frames, now report the objects in their exception's payload. Inspecting a
+  function that declares a `Cont` register no longer panics. Migration: handle
+  `ObjectRootOrigin::Continuation` in exhaustive matches.
+
 - Recordings and checked replay cover stack switching without new evidence: suspension and
   resumption are deterministic guest control, re-executed on replay, including in invocations
   paused at any instruction boundary inside a continuation. Migration: no caller changes are
