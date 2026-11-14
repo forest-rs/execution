@@ -4357,35 +4357,15 @@ impl<H: Host> Vm<H> {
                 }
                 ExecInstr::F64ToI64 { dst, a } => {
                     let a = ctx.read_f64(base, *a);
-                    if !a.is_finite() {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
-                    }
-                    // The integer maximum rounds up to the exclusive upper bound in f64.
-                    if a < i64::MIN as f64 || a >= i64::MAX as f64 {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
-                    }
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "we implement truncating float-to-int casts after explicit finite/range checks"
-                    )]
-                    let out = a as i64;
+                    let out = float::to_i64(a)
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, float_to_int_trap(e)))?;
                     ctx.write_i64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
                 ExecInstr::F64ToU64 { dst, a } => {
                     let a = ctx.read_f64(base, *a);
-                    if !a.is_finite() {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::FloatToIntInvalid));
-                    }
-                    // The integer maximum rounds up to the exclusive upper bound in f64.
-                    if a < 0.0 || a >= u64::MAX as f64 {
-                        return Err(ctx.trap(func_id, pc, span_id, Trap::IntCastOverflow));
-                    }
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "we implement truncating float-to-int casts after explicit finite/range checks"
-                    )]
-                    let out = a as u64;
+                    let out = float::to_u64(a)
+                        .map_err(|e| ctx.trap(func_id, pc, span_id, float_to_int_trap(e)))?;
                     ctx.write_u64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
@@ -5624,10 +5604,10 @@ fn read_value_ref_at<'a>(
 }
 
 /// Maps a failed trapping float-to-integer conversion to its trap.
-fn float_to_int_trap(e: num32::FloatToIntError) -> Trap {
+fn float_to_int_trap(e: float::FloatToIntError) -> Trap {
     match e {
-        num32::FloatToIntError::Invalid => Trap::FloatToIntInvalid,
-        num32::FloatToIntError::Overflow => Trap::IntCastOverflow,
+        float::FloatToIntError::Invalid => Trap::FloatToIntInvalid,
+        float::FloatToIntError::Overflow => Trap::IntCastOverflow,
     }
 }
 

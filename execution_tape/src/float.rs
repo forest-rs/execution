@@ -101,6 +101,46 @@ pub(crate) fn to_u64_sat(x: f64) -> u64 {
     out
 }
 
+/// Why a trapping float-to-integer conversion failed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FloatToIntError {
+    /// NaN or an infinity.
+    Invalid,
+    /// Finite, but its truncation is outside the target range.
+    Overflow,
+}
+
+/// Truncates toward zero, failing on NaN, infinities and values whose truncation is outside `i64`
+/// (WebAssembly `i64.trunc_f64_s`).
+#[inline]
+pub(crate) fn to_i64(x: f64) -> Result<i64, FloatToIntError> {
+    if !x.is_finite() {
+        return Err(FloatToIntError::Invalid);
+    }
+    // -2^63 is exact and the next `f64` below it is -2^63 - 2048, so `x < -2^63` is exactly
+    // "truncates below `i64::MIN`".
+    if x < -9_223_372_036_854_775_808.0 || x >= 9_223_372_036_854_775_808.0 {
+        return Err(FloatToIntError::Overflow);
+    }
+    Ok(to_i64_sat(x))
+}
+
+/// Truncates toward zero, failing on NaN, infinities and values whose truncation is outside `u64`
+/// (WebAssembly `i64.trunc_f64_u`).
+///
+/// Truncation comes first: `-0.5` truncates to `-0.0` and converts to `0`; only values at or
+/// below `-1.0` are out of range below.
+#[inline]
+pub(crate) fn to_u64(x: f64) -> Result<u64, FloatToIntError> {
+    if !x.is_finite() {
+        return Err(FloatToIntError::Invalid);
+    }
+    if x <= -1.0 || x >= 18_446_744_073_709_551_616.0 {
+        return Err(FloatToIntError::Overflow);
+    }
+    Ok(to_u64_sat(x))
+}
+
 /// Returns the input NaN with its quiet bit set.
 #[inline]
 fn quiet_nan(bits: u64) -> f64 {
@@ -358,7 +398,8 @@ mod tests {
     extern crate std;
 
     use super::{
-        ceil, copysign, floor, nearest, rem, round_half_away, sqrt, to_i64_sat, to_u64_sat, trunc,
+        FloatToIntError, ceil, copysign, floor, nearest, rem, round_half_away, sqrt, to_i64,
+        to_i64_sat, to_u64, to_u64_sat, trunc,
     };
     use std::vec::Vec;
 
@@ -751,6 +792,54 @@ mod tests {
         for x in saturation_inputs() {
             let want = reference_sat(x, 0, i128::from(u64::MAX));
             assert_eq!(i128::from(to_u64_sat(x)), want, "to_u64_sat({x:e})");
+        }
+    }
+
+    /// Truncate first, then range-check: the trapping conversions' reference semantics.
+    fn reference_trapping(x: f64, min: i128, max: i128) -> Result<i128, FloatToIntError> {
+        if !x.is_finite() {
+            return Err(FloatToIntError::Invalid);
+        }
+        if x.abs() >= 2.0_f64.powi(120) {
+            return Err(FloatToIntError::Overflow);
+        }
+        let t = truncated_value(x);
+        if (min..=max).contains(&t) {
+            Ok(t)
+        } else {
+            Err(FloatToIntError::Overflow)
+        }
+    }
+
+    #[test]
+    fn trapping_conversions_truncate_before_range_checking() {
+        let two63 = 9_223_372_036_854_775_808.0_f64;
+        let two64 = 18_446_744_073_709_551_616.0_f64;
+        assert_eq!(to_u64(-0.0), Ok(0));
+        assert_eq!(to_u64(-0.5), Ok(0));
+        assert_eq!(to_u64(-0.9999999999999999), Ok(0));
+        assert_eq!(to_u64(-1.0), Err(FloatToIntError::Overflow));
+        assert_eq!(
+            to_u64(f64::from_bits(two64.to_bits() - 1)),
+            Ok(18_446_744_073_709_549_568)
+        );
+        assert_eq!(to_u64(two64), Err(FloatToIntError::Overflow));
+        assert_eq!(to_u64(f64::NAN), Err(FloatToIntError::Invalid));
+        assert_eq!(to_u64(f64::NEG_INFINITY), Err(FloatToIntError::Invalid));
+        assert_eq!(to_i64(-0.5), Ok(0));
+        assert_eq!(to_i64(-two63), Ok(i64::MIN));
+        assert_eq!(
+            to_i64(-f64::from_bits(two63.to_bits() + 1)),
+            Err(FloatToIntError::Overflow)
+        );
+        assert_eq!(to_i64(two63), Err(FloatToIntError::Overflow));
+        assert_eq!(to_i64(f64::INFINITY), Err(FloatToIntError::Invalid));
+        for x in saturation_inputs() {
+            let i64_range = (i128::from(i64::MIN), i128::from(i64::MAX));
+            let want = reference_trapping(x, i64_range.0, i64_range.1);
+            assert_eq!(to_i64(x).map(i128::from), want, "to_i64({x:e})");
+            let want = reference_trapping(x, 0, i128::from(u64::MAX));
+            assert_eq!(to_u64(x).map(i128::from), want, "to_u64({x:e})");
         }
     }
 

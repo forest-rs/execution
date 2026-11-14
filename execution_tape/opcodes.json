@@ -2253,7 +2253,7 @@
       "byte": "0x73",
       "terminator": false,
       "flags": [],
-      "doc": "`dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range/negative).",
+      "doc": "`dst = trunc(a)` (`f64` to `u64`, traps on NaN/inf/out-of-range; `-0.5` converts to `0`).",
       "operands": [
         {
           "kind": "reg",

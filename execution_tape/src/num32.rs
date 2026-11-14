@@ -18,7 +18,7 @@
 //! NaN conversions are spelled out rather than left to `as`: a NaN keeps its sign and the top of
 //! its payload, and is quieted, matching [`crate::float`].
 
-use crate::float;
+use crate::float::{self, FloatToIntError};
 
 const F32_QUIET: u32 = 1 << 22;
 const F64_SIGN: u64 = 1 << 63;
@@ -157,15 +157,6 @@ pub(crate) fn to_u32_sat(x: f64) -> u32 {
     )]
     let out = x as u32;
     out
-}
-
-/// Why a trapping float-to-integer conversion failed.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FloatToIntError {
-    /// NaN or an infinity.
-    Invalid,
-    /// Finite, but its truncation is outside the target range.
-    Overflow,
 }
 
 /// Truncates toward zero, failing on NaN, infinities and out-of-range values.
