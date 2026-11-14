@@ -8,6 +8,7 @@ use crate::value::{AggHandle, AggType, Decimal, FuncRef, Obj};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt;
 use core::ops::Range;
 
 /// Identity of an aggregate in one recording, independent of VM heap numbering.
@@ -25,7 +26,9 @@ impl AggregateId {
 ///
 /// Byte/string contents are shared across equal payloads. Floating values retain IEEE bits,
 /// including signed zero and NaN payloads. Object and function IDs retain their source domains.
-#[derive(Clone, Debug)]
+///
+/// `Debug` shows a float's value with its bits, as in `F32(0.1 [0x3dcccccd])`.
+#[derive(Clone)]
 pub enum RecordedValue {
     /// Unit.
     Unit,
@@ -62,6 +65,50 @@ pub enum RecordedValue {
         /// Environment in this recording.
         env: AggregateId,
     },
+}
+
+impl fmt::Debug for RecordedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unit => f.write_str("Unit"),
+            Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::I64(value) => f.debug_tuple("I64").field(value).finish(),
+            Self::U64(value) => f.debug_tuple("U64").field(value).finish(),
+            Self::F64(bits) => f.debug_tuple("F64").field(&F64Bits(*bits)).finish(),
+            Self::I32(value) => f.debug_tuple("I32").field(value).finish(),
+            Self::U32(value) => f.debug_tuple("U32").field(value).finish(),
+            Self::F32(bits) => f.debug_tuple("F32").field(&F32Bits(*bits)).finish(),
+            Self::Decimal(value) => f.debug_tuple("Decimal").field(value).finish(),
+            Self::Bytes(value) => f.debug_tuple("Bytes").field(value).finish(),
+            Self::Str(value) => f.debug_tuple("Str").field(value).finish(),
+            Self::Obj(value) => f.debug_tuple("Obj").field(value).finish(),
+            Self::Agg(value) => f.debug_tuple("Agg").field(value).finish(),
+            Self::Func(value) => f.debug_tuple("Func").field(value).finish(),
+            Self::Closure { func, env } => f
+                .debug_struct("Closure")
+                .field("func", func)
+                .field("env", env)
+                .finish(),
+        }
+    }
+}
+
+/// `f32` bits shown as `value [0xbits]`.
+struct F32Bits(u32);
+
+impl fmt::Debug for F32Bits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} [{:#010x}]", f32::from_bits(self.0), self.0)
+    }
+}
+
+/// `f64` bits shown as `value [0xbits]`.
+struct F64Bits(u64);
+
+impl fmt::Debug for F64Bits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} [{:#018x}]", f64::from_bits(self.0), self.0)
+    }
 }
 
 /// One aggregate and its immediate contents, without recursively expanding other nodes.
@@ -319,5 +366,29 @@ impl Builder {
             .map(|(_, &id)| id)
             .collect();
         (self.arena, initial)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecordedValue;
+    use alloc::format;
+
+    #[test]
+    fn debug_shows_float_values_with_their_bits() {
+        let shown = |value: RecordedValue| format!("{value:?}");
+        assert_eq!(
+            shown(RecordedValue::F32(0x3DCC_CCCD)),
+            "F32(0.1 [0x3dcccccd])"
+        );
+        assert_eq!(
+            shown(RecordedValue::F32(0x7FA0_0001)),
+            "F32(NaN [0x7fa00001])"
+        );
+        assert_eq!(
+            shown(RecordedValue::F64((-0.0_f64).to_bits())),
+            "F64(-0.0 [0x8000000000000000])"
+        );
+        assert_eq!(shown(RecordedValue::U32(7)), "U32(7)");
     }
 }
