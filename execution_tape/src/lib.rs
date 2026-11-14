@@ -179,7 +179,7 @@
 //! parameter bindings before their meet; external invocation seeds are separate from CFG edges.
 //! “After” means local source dataflow: calls assume successful callee return, while branches
 //! precede their outgoing edge transfers. These facts are not runtime observations.
-//! Ordinary verification, preparation and execution retain no inspection data.
+//! Ordinary verification, preparation and execution retain none of these facts.
 //!
 //! ## Core Pieces
 //!
@@ -500,7 +500,9 @@
 //! return explicit unavailability when initialization is not established. Source maps resolve
 //! the same exact frame locations used by recording and disassembly.
 //!
-//! Register mapping and verifier facts are constructed only when requested for a function.
+//! Verification keeps, per function, which registers are definitely initialized at each block
+//! entry and call-like instruction, so inspection never reanalyzes a function. A view maps a
+//! function's registers to their banks only when one of its frames is queried.
 //! `visit_objects` inventories conservative references in initialized registers, arguments,
 //! pending callback results, outputs and all VM aggregate fields, including retained results and temporary nodes.
 //! Registers include those of frames held by unresumed continuations, which `frames` does not list, and

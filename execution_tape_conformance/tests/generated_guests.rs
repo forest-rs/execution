@@ -10,7 +10,7 @@ use execution_tape::{
     program::{Program, ValueType},
     trace::TraceMask,
     value::{FuncId, Value},
-    verifier::{VerifyConfig, verify_program_owned},
+    verifier::{ProgramAnalysis, ValueFact, VerifyConfig, verify_program_owned},
     vm::{InvocationOptions, Limits, RunStatus, Vm},
 };
 
@@ -349,4 +349,57 @@ fn shrinker_preserves_failure_and_reaches_a_local_minimum() {
     assert!(minimal.size() < original.size());
     assert!(minimal.shrinks().iter().all(|candidate| !fails(candidate)));
     assert!(matches!(minimal, Expr::Call(inner) if matches!(*inner, Expr::Literal(0))));
+}
+
+#[test]
+fn paused_registers_match_the_function_analysis_at_every_step() {
+    for seed in 0..64 {
+        let (program, _) = compile(&Random(seed).expr(4));
+        let verified = verify_program_owned(program, &VerifyConfig::default()).unwrap();
+        let analysis = ProgramAnalysis::from(&verified);
+        let mut vm = Vm::new(NoHost, Limits::default());
+        let unit = vm.install(verified.clone()).unwrap();
+        let args = [Value::I64(seed as i64)];
+        let mut invocation = vm
+            .start(
+                FuncRef::new(unit, FuncId(0)),
+                &args,
+                InvocationOptions::default(),
+            )
+            .unwrap();
+        loop {
+            let mut inspection = invocation.inspect();
+            let frames: Vec<_> = inspection.frames().collect();
+            for frame in frames {
+                let location = frame.location;
+                let mut reference = analysis.function(location.func).unwrap();
+                let facts = reference.instruction(location.pc).unwrap();
+                let listed: Vec<_> = inspection.registers(&frame.activation).unwrap().collect();
+                assert_eq!(listed.len(), frame.register_count as usize);
+                for value in listed {
+                    let fact = facts.register(value.register).unwrap();
+                    assert_eq!(value.storage_kind, fact.storage_kind);
+                    assert_eq!(
+                        value.value.is_some(),
+                        matches!(fact.before, ValueFact::Contract(_)),
+                        "seed={seed}, {location:?}, r{}",
+                        value.register
+                    );
+                    let single = inspection
+                        .register(&frame.activation, value.register)
+                        .unwrap();
+                    assert_eq!(single.storage_kind, value.storage_kind);
+                    assert_eq!(single.value, value.value);
+                }
+                assert!(
+                    inspection
+                        .register(&frame.activation, frame.register_count)
+                        .is_none()
+                );
+            }
+            if invocation.resume(1).unwrap() != RunStatus::Suspended {
+                break;
+            }
+        }
+    }
 }
