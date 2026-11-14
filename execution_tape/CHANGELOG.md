@@ -90,6 +90,16 @@ This release has an [MSRV][] of 1.88.
   known and otherwise when bound.
   Migration: handle the new `Opcode` and `VerifyError` variants in exhaustive matches.
 
+- Release an abandoned continuation with `cont.drop` (`0xFC 0x0A`), emitted with
+  `Asm::cont_drop`. It consumes a continuation of any type without resuming it, frees its frames
+  from `Limits::max_call_depth` and its slot for reuse, and traps with
+  `Trap::ContinuationConsumed` when the continuation was already consumed or dropped; stale
+  references never name a later continuation in the reused slot. Its activations run no code,
+  so a producer that needs cleanup is unwound with `resume_throw` instead, and continuations
+  held in its registers are not released with it. Recordings and replay
+  cover it as ordinary guest control. Migration: handle the new `Opcode` variant in exhaustive
+  matches.
+
 - Recordings and checked replay cover stack switching without new evidence: suspension and
   resumption are deterministic guest control, re-executed on replay, including in invocations
   paused at any instruction boundary inside a continuation. Migration: no caller changes are

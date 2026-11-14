@@ -965,6 +965,11 @@ pub(crate) fn encode_instr(instr: &Instr, out: &mut Vec<u8>) -> Result<(), Encod
             crate::codec_primitives::write_reg_list(out, args).map_err(|_| EncodeError::OutOfBounds)?;
             Ok(())
         },
+        Instr::ContDrop { cont } => {
+            out.extend_from_slice(&[0xFC, 0x0A]);
+            crate::codec_primitives::write_reg(out, *cont);
+            Ok(())
+        },
         Instr::ConstI32 { dst, imm } => {
             out.extend_from_slice(&[0xFD, 0x00]);
             crate::codec_primitives::write_reg(out, *dst);

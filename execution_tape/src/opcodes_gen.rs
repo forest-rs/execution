@@ -532,6 +532,7 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::ImmU32, OperandRole::Index, OperandEncoding::U32Uleb, None),
     OperandSchema::new(OperandKind::Reg, OperandRole::Src, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::RegList, OperandRole::Args, OperandEncoding::RegListU32UlebCountThenRegs, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Src, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::ImmI32, OperandRole::Imm, OperandEncoding::I32Sleb, None),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
@@ -1006,29 +1007,30 @@ const EXTENDED_OPCODE_INFO: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "suspend", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 381, len: 5 } }, // 0xFC 0x07 Suspend
     OpcodeInfo { mnemonic: "resume_throw", is_terminator: false, flags: OpcodeFlags::CALL_LIKE, operands: OperandLayout { start: 386, len: 7 } }, // 0xFC 0x08 ResumeThrow
     OpcodeInfo { mnemonic: "cont.bind", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 393, len: 5 } }, // 0xFC 0x09 ContBind
+    OpcodeInfo { mnemonic: "cont.drop", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 398, len: 1 } }, // 0xFC 0x0A ContDrop
 ];
 
 /// Metadata for opcodes under [`OpcodePrefix::Numeric32`], indexed by the byte after the prefix.
 const NUMERIC32_OPCODE_INFO: &[OpcodeInfo] = &[
-    OpcodeInfo { mnemonic: "const.i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 398, len: 2 } }, // 0xFD 0x00 ConstI32
-    OpcodeInfo { mnemonic: "i32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 400, len: 3 } }, // 0xFD 0x01 I32Add
-    OpcodeInfo { mnemonic: "i32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 403, len: 3 } }, // 0xFD 0x02 I32Sub
-    OpcodeInfo { mnemonic: "i32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 406, len: 3 } }, // 0xFD 0x03 I32Mul
-    OpcodeInfo { mnemonic: "i32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 409, len: 3 } }, // 0xFD 0x04 I32Div
-    OpcodeInfo { mnemonic: "i32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 412, len: 3 } }, // 0xFD 0x05 I32Rem
-    OpcodeInfo { mnemonic: "i32.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 415, len: 4 } }, // 0xFD 0x06 I32AddOvf
-    OpcodeInfo { mnemonic: "i32.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 419, len: 4 } }, // 0xFD 0x07 I32SubOvf
-    OpcodeInfo { mnemonic: "i32.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 423, len: 4 } }, // 0xFD 0x08 I32MulOvf
-    OpcodeInfo { mnemonic: "i32.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 427, len: 3 } }, // 0xFD 0x09 I32And
-    OpcodeInfo { mnemonic: "i32.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 430, len: 3 } }, // 0xFD 0x0A I32Or
-    OpcodeInfo { mnemonic: "i32.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 433, len: 3 } }, // 0xFD 0x0B I32Xor
-    OpcodeInfo { mnemonic: "i32.shl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 436, len: 3 } }, // 0xFD 0x0C I32Shl
-    OpcodeInfo { mnemonic: "i32.shr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 439, len: 3 } }, // 0xFD 0x0D I32Shr
-    OpcodeInfo { mnemonic: "i32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 442, len: 3 } }, // 0xFD 0x0E I32Eq
-    OpcodeInfo { mnemonic: "i32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 445, len: 3 } }, // 0xFD 0x0F I32Lt
-    OpcodeInfo { mnemonic: "i32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 448, len: 3 } }, // 0xFD 0x10 I32Gt
-    OpcodeInfo { mnemonic: "i32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 451, len: 3 } }, // 0xFD 0x11 I32Le
-    OpcodeInfo { mnemonic: "i32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 454, len: 3 } }, // 0xFD 0x12 I32Ge
+    OpcodeInfo { mnemonic: "const.i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 399, len: 2 } }, // 0xFD 0x00 ConstI32
+    OpcodeInfo { mnemonic: "i32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 401, len: 3 } }, // 0xFD 0x01 I32Add
+    OpcodeInfo { mnemonic: "i32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 404, len: 3 } }, // 0xFD 0x02 I32Sub
+    OpcodeInfo { mnemonic: "i32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 407, len: 3 } }, // 0xFD 0x03 I32Mul
+    OpcodeInfo { mnemonic: "i32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 410, len: 3 } }, // 0xFD 0x04 I32Div
+    OpcodeInfo { mnemonic: "i32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 413, len: 3 } }, // 0xFD 0x05 I32Rem
+    OpcodeInfo { mnemonic: "i32.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 416, len: 4 } }, // 0xFD 0x06 I32AddOvf
+    OpcodeInfo { mnemonic: "i32.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 420, len: 4 } }, // 0xFD 0x07 I32SubOvf
+    OpcodeInfo { mnemonic: "i32.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 424, len: 4 } }, // 0xFD 0x08 I32MulOvf
+    OpcodeInfo { mnemonic: "i32.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 428, len: 3 } }, // 0xFD 0x09 I32And
+    OpcodeInfo { mnemonic: "i32.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 431, len: 3 } }, // 0xFD 0x0A I32Or
+    OpcodeInfo { mnemonic: "i32.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 434, len: 3 } }, // 0xFD 0x0B I32Xor
+    OpcodeInfo { mnemonic: "i32.shl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 437, len: 3 } }, // 0xFD 0x0C I32Shl
+    OpcodeInfo { mnemonic: "i32.shr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 440, len: 3 } }, // 0xFD 0x0D I32Shr
+    OpcodeInfo { mnemonic: "i32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 443, len: 3 } }, // 0xFD 0x0E I32Eq
+    OpcodeInfo { mnemonic: "i32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 446, len: 3 } }, // 0xFD 0x0F I32Lt
+    OpcodeInfo { mnemonic: "i32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 449, len: 3 } }, // 0xFD 0x10 I32Gt
+    OpcodeInfo { mnemonic: "i32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 452, len: 3 } }, // 0xFD 0x11 I32Le
+    OpcodeInfo { mnemonic: "i32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 455, len: 3 } }, // 0xFD 0x12 I32Ge
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x13
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x14
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x15
@@ -1074,30 +1076,30 @@ const NUMERIC32_OPCODE_INFO: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3D
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3E
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x3F
-    OpcodeInfo { mnemonic: "const.u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 457, len: 2 } }, // 0xFD 0x40 ConstU32
-    OpcodeInfo { mnemonic: "u32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 459, len: 3 } }, // 0xFD 0x41 U32Add
-    OpcodeInfo { mnemonic: "u32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 462, len: 3 } }, // 0xFD 0x42 U32Sub
-    OpcodeInfo { mnemonic: "u32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 465, len: 3 } }, // 0xFD 0x43 U32Mul
-    OpcodeInfo { mnemonic: "u32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 468, len: 3 } }, // 0xFD 0x44 U32Div
-    OpcodeInfo { mnemonic: "u32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 471, len: 3 } }, // 0xFD 0x45 U32Rem
-    OpcodeInfo { mnemonic: "u32.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 474, len: 4 } }, // 0xFD 0x46 U32AddOvf
-    OpcodeInfo { mnemonic: "u32.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 478, len: 4 } }, // 0xFD 0x47 U32SubOvf
-    OpcodeInfo { mnemonic: "u32.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 482, len: 4 } }, // 0xFD 0x48 U32MulOvf
-    OpcodeInfo { mnemonic: "u32.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 486, len: 3 } }, // 0xFD 0x49 U32And
-    OpcodeInfo { mnemonic: "u32.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 489, len: 3 } }, // 0xFD 0x4A U32Or
-    OpcodeInfo { mnemonic: "u32.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 492, len: 3 } }, // 0xFD 0x4B U32Xor
-    OpcodeInfo { mnemonic: "u32.shl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 495, len: 3 } }, // 0xFD 0x4C U32Shl
-    OpcodeInfo { mnemonic: "u32.shr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 498, len: 3 } }, // 0xFD 0x4D U32Shr
-    OpcodeInfo { mnemonic: "u32.clz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 501, len: 2 } }, // 0xFD 0x4E U32Clz
-    OpcodeInfo { mnemonic: "u32.ctz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 503, len: 2 } }, // 0xFD 0x4F U32Ctz
-    OpcodeInfo { mnemonic: "u32.popcnt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 505, len: 2 } }, // 0xFD 0x50 U32Popcnt
-    OpcodeInfo { mnemonic: "u32.rotl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 507, len: 3 } }, // 0xFD 0x51 U32Rotl
-    OpcodeInfo { mnemonic: "u32.rotr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 510, len: 3 } }, // 0xFD 0x52 U32Rotr
-    OpcodeInfo { mnemonic: "u32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 513, len: 3 } }, // 0xFD 0x53 U32Eq
-    OpcodeInfo { mnemonic: "u32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 516, len: 3 } }, // 0xFD 0x54 U32Lt
-    OpcodeInfo { mnemonic: "u32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 519, len: 3 } }, // 0xFD 0x55 U32Gt
-    OpcodeInfo { mnemonic: "u32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 522, len: 3 } }, // 0xFD 0x56 U32Le
-    OpcodeInfo { mnemonic: "u32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 525, len: 3 } }, // 0xFD 0x57 U32Ge
+    OpcodeInfo { mnemonic: "const.u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 458, len: 2 } }, // 0xFD 0x40 ConstU32
+    OpcodeInfo { mnemonic: "u32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 460, len: 3 } }, // 0xFD 0x41 U32Add
+    OpcodeInfo { mnemonic: "u32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 463, len: 3 } }, // 0xFD 0x42 U32Sub
+    OpcodeInfo { mnemonic: "u32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 466, len: 3 } }, // 0xFD 0x43 U32Mul
+    OpcodeInfo { mnemonic: "u32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 469, len: 3 } }, // 0xFD 0x44 U32Div
+    OpcodeInfo { mnemonic: "u32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 472, len: 3 } }, // 0xFD 0x45 U32Rem
+    OpcodeInfo { mnemonic: "u32.add_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 475, len: 4 } }, // 0xFD 0x46 U32AddOvf
+    OpcodeInfo { mnemonic: "u32.sub_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 479, len: 4 } }, // 0xFD 0x47 U32SubOvf
+    OpcodeInfo { mnemonic: "u32.mul_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 483, len: 4 } }, // 0xFD 0x48 U32MulOvf
+    OpcodeInfo { mnemonic: "u32.and", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 487, len: 3 } }, // 0xFD 0x49 U32And
+    OpcodeInfo { mnemonic: "u32.or", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 490, len: 3 } }, // 0xFD 0x4A U32Or
+    OpcodeInfo { mnemonic: "u32.xor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 493, len: 3 } }, // 0xFD 0x4B U32Xor
+    OpcodeInfo { mnemonic: "u32.shl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 496, len: 3 } }, // 0xFD 0x4C U32Shl
+    OpcodeInfo { mnemonic: "u32.shr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 499, len: 3 } }, // 0xFD 0x4D U32Shr
+    OpcodeInfo { mnemonic: "u32.clz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 502, len: 2 } }, // 0xFD 0x4E U32Clz
+    OpcodeInfo { mnemonic: "u32.ctz", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 504, len: 2 } }, // 0xFD 0x4F U32Ctz
+    OpcodeInfo { mnemonic: "u32.popcnt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 506, len: 2 } }, // 0xFD 0x50 U32Popcnt
+    OpcodeInfo { mnemonic: "u32.rotl", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 508, len: 3 } }, // 0xFD 0x51 U32Rotl
+    OpcodeInfo { mnemonic: "u32.rotr", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 511, len: 3 } }, // 0xFD 0x52 U32Rotr
+    OpcodeInfo { mnemonic: "u32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 514, len: 3 } }, // 0xFD 0x53 U32Eq
+    OpcodeInfo { mnemonic: "u32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 517, len: 3 } }, // 0xFD 0x54 U32Lt
+    OpcodeInfo { mnemonic: "u32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 520, len: 3 } }, // 0xFD 0x55 U32Gt
+    OpcodeInfo { mnemonic: "u32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 523, len: 3 } }, // 0xFD 0x56 U32Le
+    OpcodeInfo { mnemonic: "u32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 526, len: 3 } }, // 0xFD 0x57 U32Ge
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x58
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x59
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x5A
@@ -1138,30 +1140,30 @@ const NUMERIC32_OPCODE_INFO: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7D
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7E
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x7F
-    OpcodeInfo { mnemonic: "const.f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 528, len: 2 } }, // 0xFD 0x80 ConstF32
-    OpcodeInfo { mnemonic: "f32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 530, len: 3 } }, // 0xFD 0x81 F32Add
-    OpcodeInfo { mnemonic: "f32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 533, len: 3 } }, // 0xFD 0x82 F32Sub
-    OpcodeInfo { mnemonic: "f32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 536, len: 3 } }, // 0xFD 0x83 F32Mul
-    OpcodeInfo { mnemonic: "f32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 539, len: 3 } }, // 0xFD 0x84 F32Div
-    OpcodeInfo { mnemonic: "f32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 542, len: 3 } }, // 0xFD 0x85 F32Rem
-    OpcodeInfo { mnemonic: "f32.neg", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 545, len: 2 } }, // 0xFD 0x86 F32Neg
-    OpcodeInfo { mnemonic: "f32.abs", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 547, len: 2 } }, // 0xFD 0x87 F32Abs
-    OpcodeInfo { mnemonic: "f32.min", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 549, len: 3 } }, // 0xFD 0x88 F32Min
-    OpcodeInfo { mnemonic: "f32.max", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 552, len: 3 } }, // 0xFD 0x89 F32Max
-    OpcodeInfo { mnemonic: "f32.min_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 555, len: 3 } }, // 0xFD 0x8A F32MinNum
-    OpcodeInfo { mnemonic: "f32.max_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 558, len: 3 } }, // 0xFD 0x8B F32MaxNum
-    OpcodeInfo { mnemonic: "f32.copysign", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 561, len: 3 } }, // 0xFD 0x8C F32CopySign
-    OpcodeInfo { mnemonic: "f32.floor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 564, len: 2 } }, // 0xFD 0x8D F32Floor
-    OpcodeInfo { mnemonic: "f32.ceil", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 566, len: 2 } }, // 0xFD 0x8E F32Ceil
-    OpcodeInfo { mnemonic: "f32.trunc", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 568, len: 2 } }, // 0xFD 0x8F F32Trunc
-    OpcodeInfo { mnemonic: "f32.nearest", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 570, len: 2 } }, // 0xFD 0x90 F32Nearest
-    OpcodeInfo { mnemonic: "f32.sqrt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 572, len: 2 } }, // 0xFD 0x91 F32Sqrt
-    OpcodeInfo { mnemonic: "f32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 574, len: 3 } }, // 0xFD 0x92 F32Eq
-    OpcodeInfo { mnemonic: "f32.ne", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 577, len: 3 } }, // 0xFD 0x93 F32Ne
-    OpcodeInfo { mnemonic: "f32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 580, len: 3 } }, // 0xFD 0x94 F32Lt
-    OpcodeInfo { mnemonic: "f32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 583, len: 3 } }, // 0xFD 0x95 F32Gt
-    OpcodeInfo { mnemonic: "f32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 586, len: 3 } }, // 0xFD 0x96 F32Le
-    OpcodeInfo { mnemonic: "f32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 589, len: 3 } }, // 0xFD 0x97 F32Ge
+    OpcodeInfo { mnemonic: "const.f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 529, len: 2 } }, // 0xFD 0x80 ConstF32
+    OpcodeInfo { mnemonic: "f32.add", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 531, len: 3 } }, // 0xFD 0x81 F32Add
+    OpcodeInfo { mnemonic: "f32.sub", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 534, len: 3 } }, // 0xFD 0x82 F32Sub
+    OpcodeInfo { mnemonic: "f32.mul", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 537, len: 3 } }, // 0xFD 0x83 F32Mul
+    OpcodeInfo { mnemonic: "f32.div", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 540, len: 3 } }, // 0xFD 0x84 F32Div
+    OpcodeInfo { mnemonic: "f32.rem", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 543, len: 3 } }, // 0xFD 0x85 F32Rem
+    OpcodeInfo { mnemonic: "f32.neg", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 546, len: 2 } }, // 0xFD 0x86 F32Neg
+    OpcodeInfo { mnemonic: "f32.abs", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 548, len: 2 } }, // 0xFD 0x87 F32Abs
+    OpcodeInfo { mnemonic: "f32.min", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 550, len: 3 } }, // 0xFD 0x88 F32Min
+    OpcodeInfo { mnemonic: "f32.max", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 553, len: 3 } }, // 0xFD 0x89 F32Max
+    OpcodeInfo { mnemonic: "f32.min_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 556, len: 3 } }, // 0xFD 0x8A F32MinNum
+    OpcodeInfo { mnemonic: "f32.max_num", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 559, len: 3 } }, // 0xFD 0x8B F32MaxNum
+    OpcodeInfo { mnemonic: "f32.copysign", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 562, len: 3 } }, // 0xFD 0x8C F32CopySign
+    OpcodeInfo { mnemonic: "f32.floor", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 565, len: 2 } }, // 0xFD 0x8D F32Floor
+    OpcodeInfo { mnemonic: "f32.ceil", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 567, len: 2 } }, // 0xFD 0x8E F32Ceil
+    OpcodeInfo { mnemonic: "f32.trunc", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 569, len: 2 } }, // 0xFD 0x8F F32Trunc
+    OpcodeInfo { mnemonic: "f32.nearest", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 571, len: 2 } }, // 0xFD 0x90 F32Nearest
+    OpcodeInfo { mnemonic: "f32.sqrt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 573, len: 2 } }, // 0xFD 0x91 F32Sqrt
+    OpcodeInfo { mnemonic: "f32.eq", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 575, len: 3 } }, // 0xFD 0x92 F32Eq
+    OpcodeInfo { mnemonic: "f32.ne", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 578, len: 3 } }, // 0xFD 0x93 F32Ne
+    OpcodeInfo { mnemonic: "f32.lt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 581, len: 3 } }, // 0xFD 0x94 F32Lt
+    OpcodeInfo { mnemonic: "f32.gt", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 584, len: 3 } }, // 0xFD 0x95 F32Gt
+    OpcodeInfo { mnemonic: "f32.le", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 587, len: 3 } }, // 0xFD 0x96 F32Le
+    OpcodeInfo { mnemonic: "f32.ge", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 590, len: 3 } }, // 0xFD 0x97 F32Ge
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x98
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x99
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0x9A
@@ -1202,37 +1204,37 @@ const NUMERIC32_OPCODE_INFO: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBD
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBE
     OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xBF
-    OpcodeInfo { mnemonic: "i32.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 592, len: 2 } }, // 0xFD 0xC0 I32ToI64
-    OpcodeInfo { mnemonic: "i64.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 594, len: 2 } }, // 0xFD 0xC1 I64ToI32
-    OpcodeInfo { mnemonic: "i64.to_i32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 596, len: 2 } }, // 0xFD 0xC2 I64ToI32Wrap
-    OpcodeInfo { mnemonic: "u32.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 598, len: 2 } }, // 0xFD 0xC3 U32ToU64
-    OpcodeInfo { mnemonic: "u64.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 600, len: 2 } }, // 0xFD 0xC4 U64ToU32
-    OpcodeInfo { mnemonic: "u64.to_u32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 602, len: 2 } }, // 0xFD 0xC5 U64ToU32Wrap
-    OpcodeInfo { mnemonic: "u32.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 604, len: 2 } }, // 0xFD 0xC6 U32ToI64
-    OpcodeInfo { mnemonic: "i32.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 606, len: 2 } }, // 0xFD 0xC7 I32ToU32
-    OpcodeInfo { mnemonic: "u32.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 608, len: 2 } }, // 0xFD 0xC8 U32ToI32
-    OpcodeInfo { mnemonic: "i32.to_u32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 610, len: 2 } }, // 0xFD 0xC9 I32ToU32Wrap
-    OpcodeInfo { mnemonic: "u32.to_i32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 612, len: 2 } }, // 0xFD 0xCA U32ToI32Wrap
-    OpcodeInfo { mnemonic: "i64.to_u64_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 614, len: 2 } }, // 0xFD 0xCB I64ToU64Wrap
-    OpcodeInfo { mnemonic: "u64.to_i64_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 616, len: 2 } }, // 0xFD 0xCC U64ToI64Wrap
-    OpcodeInfo { mnemonic: "f32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 618, len: 2 } }, // 0xFD 0xCD F32ToF64
-    OpcodeInfo { mnemonic: "f64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 620, len: 2 } }, // 0xFD 0xCE F64ToF32
-    OpcodeInfo { mnemonic: "f32.to_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 622, len: 2 } }, // 0xFD 0xCF F32ToBits
-    OpcodeInfo { mnemonic: "f32.from_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 624, len: 2 } }, // 0xFD 0xD0 F32FromBits
-    OpcodeInfo { mnemonic: "f32.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 626, len: 2 } }, // 0xFD 0xD1 F32ToI32
-    OpcodeInfo { mnemonic: "f32.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 628, len: 2 } }, // 0xFD 0xD2 F32ToU32
-    OpcodeInfo { mnemonic: "f32.to_i32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 630, len: 2 } }, // 0xFD 0xD3 F32ToI32Sat
-    OpcodeInfo { mnemonic: "f32.to_u32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 632, len: 2 } }, // 0xFD 0xD4 F32ToU32Sat
-    OpcodeInfo { mnemonic: "f64.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 634, len: 2 } }, // 0xFD 0xD5 F64ToI32
-    OpcodeInfo { mnemonic: "f64.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 636, len: 2 } }, // 0xFD 0xD6 F64ToU32
-    OpcodeInfo { mnemonic: "f64.to_i32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 638, len: 2 } }, // 0xFD 0xD7 F64ToI32Sat
-    OpcodeInfo { mnemonic: "f64.to_u32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 640, len: 2 } }, // 0xFD 0xD8 F64ToU32Sat
-    OpcodeInfo { mnemonic: "i32.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 642, len: 2 } }, // 0xFD 0xD9 I32ToF32
-    OpcodeInfo { mnemonic: "u32.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 644, len: 2 } }, // 0xFD 0xDA U32ToF32
-    OpcodeInfo { mnemonic: "i64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 646, len: 2 } }, // 0xFD 0xDB I64ToF32
-    OpcodeInfo { mnemonic: "u64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 648, len: 2 } }, // 0xFD 0xDC U64ToF32
-    OpcodeInfo { mnemonic: "i32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 650, len: 2 } }, // 0xFD 0xDD I32ToF64
-    OpcodeInfo { mnemonic: "u32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 652, len: 2 } }, // 0xFD 0xDE U32ToF64
+    OpcodeInfo { mnemonic: "i32.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 593, len: 2 } }, // 0xFD 0xC0 I32ToI64
+    OpcodeInfo { mnemonic: "i64.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 595, len: 2 } }, // 0xFD 0xC1 I64ToI32
+    OpcodeInfo { mnemonic: "i64.to_i32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 597, len: 2 } }, // 0xFD 0xC2 I64ToI32Wrap
+    OpcodeInfo { mnemonic: "u32.to_u64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 599, len: 2 } }, // 0xFD 0xC3 U32ToU64
+    OpcodeInfo { mnemonic: "u64.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 601, len: 2 } }, // 0xFD 0xC4 U64ToU32
+    OpcodeInfo { mnemonic: "u64.to_u32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 603, len: 2 } }, // 0xFD 0xC5 U64ToU32Wrap
+    OpcodeInfo { mnemonic: "u32.to_i64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 605, len: 2 } }, // 0xFD 0xC6 U32ToI64
+    OpcodeInfo { mnemonic: "i32.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 607, len: 2 } }, // 0xFD 0xC7 I32ToU32
+    OpcodeInfo { mnemonic: "u32.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 609, len: 2 } }, // 0xFD 0xC8 U32ToI32
+    OpcodeInfo { mnemonic: "i32.to_u32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 611, len: 2 } }, // 0xFD 0xC9 I32ToU32Wrap
+    OpcodeInfo { mnemonic: "u32.to_i32_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 613, len: 2 } }, // 0xFD 0xCA U32ToI32Wrap
+    OpcodeInfo { mnemonic: "i64.to_u64_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 615, len: 2 } }, // 0xFD 0xCB I64ToU64Wrap
+    OpcodeInfo { mnemonic: "u64.to_i64_wrap", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 617, len: 2 } }, // 0xFD 0xCC U64ToI64Wrap
+    OpcodeInfo { mnemonic: "f32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 619, len: 2 } }, // 0xFD 0xCD F32ToF64
+    OpcodeInfo { mnemonic: "f64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 621, len: 2 } }, // 0xFD 0xCE F64ToF32
+    OpcodeInfo { mnemonic: "f32.to_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 623, len: 2 } }, // 0xFD 0xCF F32ToBits
+    OpcodeInfo { mnemonic: "f32.from_bits", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 625, len: 2 } }, // 0xFD 0xD0 F32FromBits
+    OpcodeInfo { mnemonic: "f32.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 627, len: 2 } }, // 0xFD 0xD1 F32ToI32
+    OpcodeInfo { mnemonic: "f32.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 629, len: 2 } }, // 0xFD 0xD2 F32ToU32
+    OpcodeInfo { mnemonic: "f32.to_i32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 631, len: 2 } }, // 0xFD 0xD3 F32ToI32Sat
+    OpcodeInfo { mnemonic: "f32.to_u32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 633, len: 2 } }, // 0xFD 0xD4 F32ToU32Sat
+    OpcodeInfo { mnemonic: "f64.to_i32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 635, len: 2 } }, // 0xFD 0xD5 F64ToI32
+    OpcodeInfo { mnemonic: "f64.to_u32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 637, len: 2 } }, // 0xFD 0xD6 F64ToU32
+    OpcodeInfo { mnemonic: "f64.to_i32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 639, len: 2 } }, // 0xFD 0xD7 F64ToI32Sat
+    OpcodeInfo { mnemonic: "f64.to_u32_sat", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 641, len: 2 } }, // 0xFD 0xD8 F64ToU32Sat
+    OpcodeInfo { mnemonic: "i32.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 643, len: 2 } }, // 0xFD 0xD9 I32ToF32
+    OpcodeInfo { mnemonic: "u32.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 645, len: 2 } }, // 0xFD 0xDA U32ToF32
+    OpcodeInfo { mnemonic: "i64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 647, len: 2 } }, // 0xFD 0xDB I64ToF32
+    OpcodeInfo { mnemonic: "u64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 649, len: 2 } }, // 0xFD 0xDC U64ToF32
+    OpcodeInfo { mnemonic: "i32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 651, len: 2 } }, // 0xFD 0xDD I32ToF64
+    OpcodeInfo { mnemonic: "u32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 653, len: 2 } }, // 0xFD 0xDE U32ToF64
 ];
 
 /// Lead bytes that introduce a prefixed opcode.
@@ -1548,6 +1550,8 @@ pub enum Opcode {
     ResumeThrow = 0xFC08,
     /// Bind leading inputs of a continuation, producing a continuation of a shorter signature.
     ContBind = 0xFC09,
+    /// Release a continuation without resuming it, freeing its frames.
+    ContDrop = 0xFC0A,
     /// `dst = i32`.
     ConstI32 = 0xFD00,
     /// `dst = a + b` (`i32`, wrapping).
@@ -1902,6 +1906,7 @@ impl Opcode {
             (OpcodePrefix::Extended, 0x07) => Self::Suspend,
             (OpcodePrefix::Extended, 0x08) => Self::ResumeThrow,
             (OpcodePrefix::Extended, 0x09) => Self::ContBind,
+            (OpcodePrefix::Extended, 0x0A) => Self::ContDrop,
             (OpcodePrefix::Numeric32, 0x00) => Self::ConstI32,
             (OpcodePrefix::Numeric32, 0x01) => Self::I32Add,
             (OpcodePrefix::Numeric32, 0x02) => Self::I32Sub,
@@ -2148,6 +2153,7 @@ impl Opcode {
             0xFC07 => Self::Suspend,
             0xFC08 => Self::ResumeThrow,
             0xFC09 => Self::ContBind,
+            0xFC0A => Self::ContDrop,
             0xFD00 => Self::ConstI32,
             0xFD01 => Self::I32Add,
             0xFD02 => Self::I32Sub,

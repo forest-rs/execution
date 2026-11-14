@@ -1,7 +1,7 @@
 // Copyright 2026 the Execution Tape Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Static checks for continuation instructions: `cont.new`, `cont.bind`, `resume`,
+//! Static checks for continuation instructions: `cont.new`, `cont.bind`, `cont.drop`, `resume`,
 //! `resume_throw` and `suspend`.
 //!
 //! A continuation register has the storage kind `Cont` only. Each instruction names the call
@@ -241,6 +241,7 @@ pub(super) fn check_types(
             let (arg_kinds, _) = sig_kinds(*from_sig)?;
             expect_all(args, arg_kinds)?;
         }
+        Instr::ContDrop { cont } => expect(*cont, ValueType::Cont)?,
         _ => {}
     }
     Ok(())
