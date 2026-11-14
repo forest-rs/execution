@@ -84,6 +84,112 @@ Clear the result buffer between runs and call [`Vm::run_with_ctx`](vm::Vm::run_w
 to reuse both allocations. Results append in return-signature order; a trap preserves the
 buffer's original contents. Aggregate results belong to the VM heap and survive context resets.
 
+## Hosts that borrow per-call state
+
+A host that holds a borrow, such as `&mut Context` for one request, cannot live in a VM that
+outlasts the borrow. Rather than building a VM and reinstalling for every call, park the VM
+around a host that owns nothing and use [`Vm::replace_host`](vm::Vm::replace_host) to lend it
+the borrowing host for one call. The swap moves installed units and retained aggregates
+without copying or reinstalling them, so a call costs about what it costs on a VM that owns
+its host; a fresh VM and install per call costs several times more (see the `borrowed_host`
+wind-tunnel bench).
+
+```rust
+use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
+use execution_tape::trace::TraceMask;
+use execution_tape::value::{FuncRef, Value};
+use execution_tape::vm::{ExecutionContext, Limits, TrapInfo, Vm};
+
+/// State the embedding owns and lends for one call.
+struct Request {
+    events: Vec<i64>,
+}
+
+/// Borrows the request while a call runs.
+struct Lent<'r>(&'r mut Request);
+
+impl Host for Lent<'_> {
+    fn call(
+        &mut self,
+        _symbol: &str,
+        _sig_hash: SigHash,
+        args: &[ValueRef<'_>],
+        _rets: &mut [Value],
+        _ctx: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        let [ValueRef::I64(event)] = args else {
+            return Err(HostError::Failed);
+        };
+        self.0.events.push(*event);
+        Ok(0)
+    }
+}
+
+/// Holds the VM between calls; guest code never runs against it.
+struct Parked;
+
+impl Host for Parked {
+    fn call(
+        &mut self,
+        _symbol: &str,
+        _sig_hash: SigHash,
+        _args: &[ValueRef<'_>],
+        _rets: &mut [Value],
+        _ctx: HostContext<'_, '_>,
+    ) -> Result<u64, HostError> {
+        Err(HostError::UnknownSymbol)
+    }
+}
+
+/// A program installed once and run for many requests.
+struct Module {
+    vm: Option<Vm<Parked>>,
+    entry: FuncRef,
+    scratch: ExecutionContext,
+    out: Vec<Value>,
+}
+
+impl Module {
+    fn run(&mut self, request: &mut Request, args: &[Value]) -> Result<(), TrapInfo> {
+        // A panic mid-run leaves `vm` empty; rebuild the module after one.
+        let parked = self.vm.take().expect("the module is not running");
+        let (mut vm, idle) = parked.replace_host(Lent(request));
+        self.out.clear();
+        let result = vm.run_with_ctx(
+            &mut self.scratch,
+            self.entry,
+            args,
+            &mut self.out,
+            TraceMask::NONE,
+            None,
+            None,
+        );
+        self.vm = Some(vm.replace_host(idle).0);
+        result
+    }
+}
+
+let mut vm = Vm::new(Parked, Limits::default());
+let unit = vm.install(program)?;
+let mut module = Module {
+    vm: Some(vm),
+    entry: FuncRef::new(unit, entry),
+    scratch: ExecutionContext::new(),
+    out: Vec::new(),
+};
+for event in [3, 5] {
+    let mut request = Request { events: Vec::new() };
+    module.run(&mut request, &[Value::I64(event)])?;
+    assert_eq!(request.events, [event]);
+}
+```
+
+The VM holds no reference to a host between runs, and an invocation borrows the VM, so the
+host can only change between runs. Object handles belong to the hosts: an
+[`Obj`](value::Obj) that outlives a call, inside a retained aggregate or a value the
+embedding kept, keeps its bits under the next host. Do not let handles that mean something
+for one call only outlive it. Recordings treat handles as opaque and replay without a host.
+
 ## Nested Guest Contracts
 
 `ValueType` remains the storage/ABI kind. Intern shared compositional contracts when guest

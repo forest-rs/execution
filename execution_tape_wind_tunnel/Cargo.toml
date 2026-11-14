@@ -72,3 +72,7 @@ harness = false
 [[bench]]
 name = "host_requests"
 harness = false
+
+[[bench]]
+name = "borrowed_host"
+harness = false
