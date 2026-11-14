@@ -7,6 +7,7 @@ use super::*;
 
 /// An exception tag could not be declared or thrown. The builder and assembler are unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TagBuildError {
     /// Another tag in this builder already uses the name.
     DuplicateName {

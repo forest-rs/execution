@@ -86,6 +86,7 @@ pub enum SignaturePath {
 /// an unconstrained tuple member. No variance/subtyping or program-local ID translation is
 /// inferred. Host object type IDs must keep their embedding-defined ABI meaning across edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SignatureDifference {
     /// The root or a nested callable has a different number of user arguments.
     ArgumentCount {
@@ -136,6 +137,7 @@ pub enum SignatureDifference {
 
 /// Why a proposed publication was rejected. The slot remains unchanged.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum CodeUpdateError {
     /// The proposed target changes the exact exposed contract.
     Signature {

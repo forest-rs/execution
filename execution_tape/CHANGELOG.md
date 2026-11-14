@@ -385,6 +385,23 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
+- Public enums that grow as the VM gains features are now `#[non_exhaustive]`, so a new variant
+  is no longer a breaking change for matches outside this crate. Closed sets an exhaustive
+  match should check stay exhaustive: opcodes and operand metadata, value types and values,
+  wire-tagged clauses, constants and contracts, and small fixed choices. Marked: `vm::{Trap,
+  RunStatus, ObjectRootOrigin, StoreEvent}`; `trace::{TraceOutcome, HostCallOutcome,
+  SuspensionAnswer, ValueEvent}`; `host::HostError`, `host_binding::RegistrationError`,
+  `host_catalog::HostCatalogError`; `recording::{ActivationOutcome, InstructionOutcome,
+  ControlAction, CaptureResource, CaptureFault, StoreRecord, HostOutcome, RecordedAnswer,
+  Divergence, ReplayBoundary, ReplayError}`; `verifier::{VerifyError, VerifyLint,
+  ExceptionPlace, RegionError, RegionRunError, BlockDeclarationError, BlockEdgeError,
+  ValueFact}`; `contract::{ContractPosition, ContractMismatch, ContractBuildError,
+  ContractDefinitionError}`; `asm::{AsmError, BuildError, CallBuildError, ClosureBuildError,
+  TagBuildError}`; `callable::{CallableError, CodeUpdateError, SignatureDifference}`;
+  `codec::{EncodeError, DecodeError}`, `format::DecodeError`, `disasm::DisasmError`,
+  `source::SourceError` and `aggregates::AggError`. Migration: add a wildcard arm to matches on
+  these enums, and an `else` to `let` patterns on `ControlAction`.
+
 - Opcodes are reported by 16-bit code (`Opcode::code`) rather than lead byte, so a prefixed
   instruction is not mistaken for its prefix. `TraceSink::instr` and `InstructionStep::opcode`
   carry a `u16` code; `codec::DecodeError::UnknownOpcode`, `DisasmError::UnknownOpcode`,

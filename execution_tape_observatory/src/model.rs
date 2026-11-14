@@ -144,6 +144,7 @@ impl<'a> View<'a> {
     pub(super) fn callback_return(&self, index: usize) -> Option<&GuestReturn<'a>> {
         match &self.commands[index].action {
             ControlAction::CallGuest { returned, .. } => returned.as_ref(),
+            _ => None,
         }
     }
 
@@ -325,6 +326,7 @@ impl<'a> View<'a> {
             execution_tape::verifier::ValueFact::Contract(id) => {
                 super::describe::contract(facts.contracts(), id)
             }
+            other => format!("{other:?}"),
         };
         for reg in instruction
             .writes()
@@ -372,12 +374,14 @@ impl<'a> View<'a> {
                             | HostOutcome::Threw {
                                 payload: values, ..
                             } => values,
-                            HostOutcome::Failed(_) => &[],
+                            // Failures, and outcomes this view does not know, return no values.
+                            _ => &[],
                         };
                         ("arg", call.args, returns)
                     }
                     Boundary::Command(i) => match &self.commands[i].action {
                         ControlAction::CallGuest { args, .. } => ("arg", *args, &[]),
+                        _ => ("arg", &[], &[]),
                     },
                     Boundary::CallbackReturn(i) => (
                         "ret",

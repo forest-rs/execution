@@ -297,6 +297,7 @@ impl<S> Host for BoundHost<'_, S> {
 
 /// Registration rejected without replacing the previous implementation.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistrationError {
     /// The symbol already has this complete signature.
     DuplicateSignature {

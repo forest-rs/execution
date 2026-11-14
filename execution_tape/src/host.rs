@@ -532,6 +532,7 @@ pub(crate) fn sig_hash_iter<'a>(
 /// can be recovered by downcasting the error source; they need no host-side last-error channel.
 /// [`Self::throw`] is not a failure: it raises a guest exception at the calling instruction.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum HostError {
     /// The symbol is unknown to the host.
     UnknownSymbol,

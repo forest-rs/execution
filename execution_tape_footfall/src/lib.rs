@@ -112,6 +112,9 @@ impl FootfallSink {
                 // profiling records the outcome/location without formatting or copying payloads.
                 footfall::message_with(trap_desc, self.context, "trap", args);
             }
+            // An outcome this adapter does not know yet still ends its event, labeled generically
+            // rather than reported as one of the outcomes above.
+            _ => footfall::message_with(ok_desc, self.context, "other", args),
         }
     }
 

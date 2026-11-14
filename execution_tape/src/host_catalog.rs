@@ -183,6 +183,7 @@ impl HostSigRegistry {
 
 /// Errors when registering a host catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HostCatalogError {
     /// A `(symbol, sig_hash)` appeared more than once in the catalog.
     DuplicateSignature {

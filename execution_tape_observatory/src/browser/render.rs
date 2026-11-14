@@ -276,6 +276,7 @@ fn value_fact(table: &execution_tape::contract::ContractTable, fact: ValueFact) 
                 describe::contract(table, id)
             }
         }
+        other => format!("{other:?}"),
     }
 }
 

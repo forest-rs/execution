@@ -178,6 +178,7 @@ pub struct RegisterValue<'a> {
 
 /// Where a conservatively retained host-object reference occurs.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ObjectRootOrigin {
     /// An initialized register of an active frame.
     ///

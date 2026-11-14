@@ -113,5 +113,6 @@ fn value_fact(fact: ValueFact) -> String {
         ValueFact::Unreachable => "unreachable".into(),
         ValueFact::Uninitialized => "uninitialized".into(),
         ValueFact::Contract(id) => format!("contract:{}", id.0),
+        other => format!("{other:?}"),
     }
 }

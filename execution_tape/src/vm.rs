@@ -159,6 +159,7 @@ impl Default for Limits {
 
 /// A runtime trap.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Trap {
     /// Fuel limit exceeded.
     FuelExceeded,

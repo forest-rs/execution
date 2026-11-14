@@ -18,6 +18,7 @@ pub use suspension::PendingSuspension;
 
 /// Progress after executing an invocation's scheduling quantum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RunStatus {
     /// A safe instruction boundary was reached with the invocation still active.
     Suspended,

@@ -209,6 +209,7 @@ pub struct FunctionDisassembly<'a> {
 
 /// A disassembly error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DisasmError {
     /// The underlying data failed to decode.
     Decode(DecodeError),

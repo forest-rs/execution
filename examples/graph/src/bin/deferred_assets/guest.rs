@@ -140,6 +140,7 @@ impl Guest {
             RunStatus::CallbackReturned => unreachable!("asset loading starts no callbacks"),
             RunStatus::AwaitingHandler => unreachable!("asset loading yields no suspensions"),
             RunStatus::Complete => return Err(SceneError::Expected("asset request before result")),
+            _ => return Err(SceneError::Expected("a run status this loader handles")),
         }
         if self.request.is_none() {
             let request = invocation

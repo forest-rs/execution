@@ -427,6 +427,7 @@ impl<'view, 'vm, H: Host> LiveExplorer<'view, 'vm, H> {
                         ObjectRootOrigin::Aggregate { aggregate, index } => {
                             format!("aggregate @{} field[{index}]", aggregate.0)
                         }
+                        other => format!("{other:?}"),
                     };
                     self.value_targets
                         .push(Some(ValueTarget::Object(root.object)));

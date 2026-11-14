@@ -105,6 +105,7 @@ impl TraceSink for Observe {
                     }
                     HostCallOutcome::Failed(error) => self.host_errors.push(error.clone()),
                     HostCallOutcome::Threw { .. } => panic!("fixture host raises no exceptions"),
+                    other => panic!("unexpected host outcome {other:?}"),
                 }
             }
             ValueEvent::ReturnCandidate {
@@ -115,6 +116,7 @@ impl TraceSink for Observe {
                 self.order.push("candidate");
                 self.candidate = Some((location, values.to_vec(), aggregates.snapshot(values)));
             }
+            _ => panic!("fixture observes only the value events above"),
         }
     }
 
@@ -127,6 +129,7 @@ impl TraceSink for Observe {
             TraceOutcome::Caught { .. } | TraceOutcome::Suspended => {
                 panic!("run outcome cannot be a control transfer")
             }
+            other => panic!("unexpected run outcome {other:?}"),
         });
     }
 }
@@ -487,6 +490,7 @@ fn entry_and_host_arguments_are_borrowed_without_materializing_strings() {
                 ValueEvent::CallbackEnter { .. } | ValueEvent::CallbackReturn { .. } => {
                     panic!("fixture does not request callbacks")
                 }
+                _ => return,
             };
             assert_eq!(pointer, self.expected);
             self.seen += 1;

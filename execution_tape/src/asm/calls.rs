@@ -36,6 +36,7 @@ impl From<HostSigId> for CallTarget {
 
 /// A call could not be emitted. The assembler's bytes and register ledger are unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallBuildError {
     /// The target ID has no declaration in this builder.
     UnknownTarget(CallTarget),

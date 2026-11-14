@@ -337,6 +337,7 @@ fn run(options: &Options) -> Result<Report> {
                     break Err(error);
                 }
             }
+            Ok(status) => unreachable!("the caller yields only host requests, not {status:?}"),
         }
     };
     let remaining_fuel = call.remaining_fuel();

@@ -231,6 +231,7 @@ impl Runtime {
             RunStatus::AwaitingHandler => {
                 return Err("the block runtime yields no suspensions".into());
             }
+            status => return Err(format!("unrecognized run status {status:?}").into()),
         }
         let site = self.site()?;
         let request = self

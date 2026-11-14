@@ -51,6 +51,7 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                     format!("guest return for command {index}")
                 }
                 ReplayBoundary::Completion => "completion".into(),
+                other => format!("{other:?}"),
             };
             let location =
                 location.map_or_else(String::new, |loc| format!(" f{}:{:06}", loc.func.0, loc.pc));
@@ -106,9 +107,11 @@ pub(super) fn replay_error(error: &ReplayError) -> String {
                     actual
                         .map_or_else(|| "a failed definition".into(), |tag| format!("#{}", tag.0))
                 ),
+                other => format!("{other:?}"),
             };
             format!("FAILED · {boundary}{location} · {reason}")
         }
+        other => format!("REPLAY FAILED · {other}"),
     }
 }
 
@@ -185,6 +188,7 @@ fn step_description(
             }
             _ => "completed".into(),
         },
+        other => format!("{other:?}"),
     }
 }
 
@@ -216,6 +220,7 @@ fn title(view: &View<'_>, index: usize) -> String {
                 execution_tape::recording::ControlAction::CallGuest { callee, .. } => {
                     format!("Callback #{i} → {}", describe::value(view.record, callee))
                 }
+                _ => format!("Command #{i} · unrecognized control action"),
             },
             Boundary::CallbackReturn(i) => format!("Callback #{i} returned → embedding"),
         };
@@ -371,7 +376,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
         let returns = match call.outcome {
             HostOutcome::Returned { values, .. } => values.len(),
             HostOutcome::Threw { payload, .. } => payload.len(),
-            HostOutcome::Failed(_) => 0,
+            // Failures, and outcomes this view does not know, return no values.
+            _ => 0,
         };
         call.args
             .len()
@@ -434,6 +440,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, view: &mut View<'_>) {
                 describe::vm_tag(view.record, tag),
                 describe::values(view.record, payload)
             ),
+            ref other => format!("{other:?}"),
         };
         let mut detail = format!(
             "Call #{}: {name}({}) {response}\nSignature: {}",
@@ -769,6 +776,14 @@ fn values(frame: &mut Frame<'_>, view: &View<'_>, area: Rect) {
                         base: 0,
                         empty: "No callback arguments.".into(),
                     },
+                    _ => ValueSection {
+                        title: format!(" COMMAND #{i} "),
+                        note: "Unrecognized control action; no values shown".into(),
+                        label: "Input",
+                        values: &[],
+                        base: 0,
+                        empty: "No values shown for this control action.".into(),
+                    },
                 };
                 value_section(frame, view, area, section);
             }
@@ -822,6 +837,7 @@ fn call_values(
         HostOutcome::Returned { values, .. } => (values, None),
         HostOutcome::Threw { payload, .. } => (payload, None),
         HostOutcome::Failed(error) => (&[][..], Some(host_error(error))),
+        _ => (&[][..], Some("Host outcome not recognized".into())),
     };
     // Empty groups still get a descriptive row, but keyboard selection only visits values.
     let sent_rows = call.args.len().max(1);
@@ -865,7 +881,7 @@ fn call_values(
                 let message = if sent {
                     "No arguments sent"
                 } else {
-                    failure.unwrap_or("Host returned no values")
+                    failure.as_deref().unwrap_or("Host returned no values")
                 };
                 vec![Span::styled(
                     format!("{direction} {message}"),

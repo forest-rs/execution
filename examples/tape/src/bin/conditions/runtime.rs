@@ -554,6 +554,7 @@ impl Runtime {
             RunStatus::AwaitingHost => false,
             RunStatus::CallbackReturned => true,
             RunStatus::AwaitingHandler => return Err(Error::Abi("unexpected yielded suspension")),
+            _ => return Err(Error::Abi("unrecognized run status")),
         };
         let key = self.key()?;
         let mut request = self

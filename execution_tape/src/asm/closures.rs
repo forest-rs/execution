@@ -21,6 +21,7 @@ pub struct ClosureLayout {
 
 /// Closure emission was denied before changing instruction bytes or register declarations.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ClosureBuildError {
     /// The supplied capture list or requested capture array has the wrong length.
     CaptureCount {

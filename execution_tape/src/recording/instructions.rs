@@ -77,6 +77,7 @@ pub enum InstructionStatus {
 
 /// Observed outcome of one attempted instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InstructionOutcome {
     /// The matching completion was not observed.
     Pending,
