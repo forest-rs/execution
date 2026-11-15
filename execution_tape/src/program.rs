@@ -77,6 +77,30 @@ pub struct SpanEntry {
 pub struct SpanId(pub NonZeroU64);
 
 impl SpanId {
+    /// Creates a span id from a non-zero integer, as a constant or literal.
+    ///
+    /// Span ids are non-zero so that `Option<SpanId>` costs nothing over `SpanId`. Use
+    /// [`SpanId::try_from`] for an id that may be zero, such as one read from external input.
+    ///
+    /// ```
+    /// # use execution_tape::program::SpanId;
+    /// const ENTRY: SpanId = SpanId::new(17);
+    /// assert_eq!(ENTRY.get(), 17);
+    /// assert_eq!(SpanId::try_from(17), Ok(ENTRY));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is zero; in a constant, that is a compile-time error.
+    #[must_use]
+    #[track_caller]
+    pub const fn new(id: u64) -> Self {
+        match NonZeroU64::new(id) {
+            Some(id) => Self(id),
+            None => panic!("span ids are non-zero"),
+        }
+    }
+
     /// Returns the underlying integer id.
     #[must_use]
     pub const fn get(self) -> u64 {
@@ -175,6 +199,24 @@ pub struct RegionId(pub u32);
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u32);
+
+impl Reg {
+    /// The effect token register, r0.
+    ///
+    /// Every function declares r0 as `Unit`, initialized at entry. Calls, host calls, `resume`,
+    /// `suspend`, `ret` and `throw` thread it as their effect operands, and the verifier rejects
+    /// any other register there. Name it `Reg::EFFECT` where it means the effect token, and
+    /// `Reg(0)` only where it is just the lowest register index.
+    ///
+    /// ```
+    /// # use execution_tape::asm::{Asm, Reg};
+    /// let mut body = Asm::new();
+    /// body.ret(Reg::EFFECT, &[]);
+    /// assert_eq!(Reg::EFFECT, Reg(0));
+    /// assert_eq!(Reg::EFFECT.to_string(), "r0");
+    /// ```
+    pub const EFFECT: Self = Self(0);
+}
 
 impl From<Reg> for u32 {
     fn from(register: Reg) -> Self {
@@ -1399,6 +1441,31 @@ impl Program {
     /// Returns the host signature entry for `id`.
     pub fn host_sig(&self, id: HostSigId) -> Option<&HostSigEntry> {
         self.host_sigs.get(id.0 as usize)
+    }
+
+    /// Returns the function definition for `func`, or `None` for an unknown id.
+    ///
+    /// The definition holds ranges into this program; [`Function::bytecode`] and
+    /// [`Function::spans`] resolve them. A [`verifier::VerifiedProgram`] offers the same lookup,
+    /// with verified accessors, as [`verifier::VerifiedProgram::function`].
+    ///
+    /// ```
+    /// # use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
+    /// # use execution_tape::value::FuncId;
+    /// let mut builder = ProgramBuilder::new();
+    /// let mut body = Asm::new();
+    /// body.ret(Reg::EFFECT, &[]);
+    /// let sig = FunctionSig { arg_types: vec![], ret_types: vec![] };
+    /// let id = builder.push_function_checked(body, sig).unwrap();
+    /// let program = builder.build();
+    ///
+    /// let function = program.function(id).unwrap();
+    /// assert!(!function.bytecode(&program).unwrap().is_empty());
+    /// assert!(program.function(FuncId(1)).is_none());
+    /// ```
+    #[must_use]
+    pub fn function(&self, func: FuncId) -> Option<&Function> {
+        self.functions.get(func.0 as usize)
     }
 
     /// Returns the call signature entry for `id`.
@@ -3435,7 +3502,54 @@ mod tests {
     use alloc::vec;
 
     fn sid(v: u64) -> SpanId {
-        SpanId::try_from(v).unwrap()
+        SpanId::new(v)
+    }
+
+    #[test]
+    fn span_id_new_agrees_with_try_from() {
+        const LITERAL: SpanId = SpanId::new(17);
+        assert_eq!(LITERAL.get(), 17);
+        assert_eq!(SpanId::try_from(17), Ok(LITERAL));
+        assert_eq!(SpanId::new(u64::MAX).get(), u64::MAX);
+        assert_eq!(SpanId::try_from(0), Err(DecodeError::OutOfBounds));
+    }
+
+    #[test]
+    #[should_panic(expected = "span ids are non-zero")]
+    fn span_id_new_rejects_zero() {
+        let _ = SpanId::new(core::hint::black_box(0));
+    }
+
+    #[test]
+    fn effect_register_is_r0() {
+        assert_eq!(Reg::EFFECT, Reg(0));
+        assert_eq!(u32::from(Reg::EFFECT), 0);
+    }
+
+    #[test]
+    fn function_looks_up_definitions_by_id() {
+        use crate::asm::{Asm, FunctionSig, ProgramBuilder};
+        let sig = || FunctionSig {
+            arg_types: vec![],
+            ret_types: vec![],
+        };
+        let mut builder = ProgramBuilder::new();
+        let mut first = Asm::new();
+        first.ret(Reg::EFFECT, &[]);
+        let first = builder.push_function_checked(first, sig()).unwrap();
+        let mut second = Asm::new();
+        second.span(sid(9)).ret(Reg::EFFECT, &[]);
+        let second = builder.push_function_checked(second, sig()).unwrap();
+        let program = builder.build();
+
+        assert_eq!(program.function(first), Some(&program.functions[0]));
+        assert_eq!(program.function(second), Some(&program.functions[1]));
+        assert_eq!(program.function(FuncId(2)), None);
+        let spans = program.function(second).unwrap().spans(&program).unwrap();
+        assert_eq!(
+            spans.iter().map(|e| e.span_id).collect::<Vec<_>>(),
+            [sid(9)]
+        );
     }
 
     fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> CallSigId {

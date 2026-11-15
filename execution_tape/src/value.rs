@@ -48,6 +48,13 @@ impl core::fmt::Display for FuncId {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub u32);
 
+impl core::fmt::Display for UnitId {
+    /// Displays the bare unit index, like [`FuncId`], so `format!("unit {unit}")` reads `unit 1`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// A function in one installed unit: the store-qualified identity of executable code.
 ///
 /// Calls, function values and closures carry this pair, so a value moving between independently
@@ -284,4 +291,19 @@ pub enum AggType {
         /// The array's shape in its heap.
         shape: ShapeId,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+
+    #[test]
+    fn ids_display_as_bare_indices() {
+        let func = FuncRef::new(UnitId(2), FuncId(7));
+        assert_eq!(
+            format!("unit {}, function #{}", func.unit, func.func),
+            "unit 2, function #7"
+        );
+    }
 }
