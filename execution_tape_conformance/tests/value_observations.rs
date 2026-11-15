@@ -597,7 +597,7 @@ fn return_candidates_preserve_pre_compaction_identity_and_exclude_output_prefix(
 }
 
 #[test]
-fn dangling_host_and_root_values_remain_observable_before_the_commit_trap() {
+fn dangling_host_values_remain_observable_before_their_admission_trap() {
     let program = host_program(&[], ValueType::Agg);
     let mut vm = Vm::new(
         ReturnHost {
@@ -622,18 +622,15 @@ fn dangling_host_and_root_values_remain_observable_before_the_commit_trap() {
         )
         .unwrap_err();
     assert!(
-        matches!(error.trap, Trap::AggError(AggError::UnresolvedStagedHandle)),
+        matches!(error.trap, Trap::AggError(AggError::BadHandle)),
         "{error:?}"
     );
     assert_eq!(outputs, [Value::I64(99)]);
-    assert_eq!(
-        sink.order,
-        ["run_start", "entry", "host", "candidate", "run_end"]
-    );
+    // The raw outcome is observed; admission then rejects the handle before any register holds
+    // it, so no return candidate follows.
+    assert_eq!(sink.order, ["run_start", "entry", "host", "run_end"]);
     assert!(matches!(sink.host_returns[0].4, Err(AggError::BadHandle)));
-    let (_, raw, retained) = sink.candidate.unwrap();
-    assert_eq!(raw, [Value::Agg(AggHandle(u32::MAX))]);
-    assert!(matches!(retained, Err(AggError::BadHandle)));
+    assert!(sink.candidate.is_none());
     assert!(sink.outcome.unwrap().is_err());
 }
 

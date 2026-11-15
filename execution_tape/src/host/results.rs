@@ -158,11 +158,11 @@ impl HostResults {
     }
 
     pub(crate) fn promote(&mut self, heap: &mut AggHeap) -> Result<Range<u32>, AggError> {
-        let start = heap.len_u32();
+        let start = heap.handle_end();
         if let Some(delta) = self.delta.take() {
             delta.promote_all(heap)?;
         }
-        Ok(start..heap.len_u32())
+        Ok(start..heap.handle_end())
     }
 }
 
@@ -176,10 +176,10 @@ fn adopt_delta(
     if !returned {
         return Ok(0..0);
     }
-    let start = heap.len_u32();
+    let start = heap.handle_end();
     let remap = delta.merge_into(heap, values)?;
     remap.remap_values_in_place(values)?;
-    Ok(start..heap.len_u32())
+    Ok(start..heap.handle_end())
 }
 
 impl HostContext<'_, '_> {

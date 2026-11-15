@@ -387,6 +387,7 @@ impl<H: Host> Vm<H> {
         let mut bytes = 0_usize;
         for (value, &kind) in values.iter().zip(kinds) {
             value.check_type(kind)?;
+            check_handle(self.memory.aggs(), value)?;
             bytes = bytes
                 .checked_add(match value {
                     Value::Bytes(bytes) => bytes.len(),

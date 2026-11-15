@@ -39,6 +39,8 @@ use crate::verifier::VerifiedProgram;
 #[cfg(test)]
 mod aggregate_tests;
 mod budget;
+mod collection;
+pub use collection::{CollectError, CollectionReport, HeapStats, Retention};
 mod continuation;
 mod continuations;
 use budget::Budget;
@@ -55,6 +57,8 @@ pub use inspection::{
 };
 mod observations;
 mod ownership;
+mod roots;
+pub use roots::{RootError, RootedValues};
 mod units;
 mod work;
 pub use invocation::{
@@ -700,6 +704,9 @@ pub struct Vm<H: Host> {
 
     /// Retained aggregates and temporary allocations from the active run.
     memory: ProgramMemory,
+
+    /// Value groups the embedding registered as collection roots.
+    roots: roots::RootTable,
 }
 
 impl<H: Host> fmt::Debug for Vm<H> {
@@ -1268,6 +1275,7 @@ impl<H: Host> Vm<H> {
             limits,
             units: UnitTable::default(),
             memory: ProgramMemory::new(),
+            roots: roots::RootTable::default(),
         }
     }
 
@@ -1289,7 +1297,8 @@ impl<H: Host> Vm<H> {
     /// [`Trap::UnknownUnit`] before any observation.
     ///
     /// Only new aggregates reachable from returned values survive a successful run. Traps
-    /// discard all aggregates allocated during the run. Previously retained values stay valid.
+    /// discard all aggregates allocated during the run. Previously retained values stay valid
+    /// until an explicit [`Self::collect`]; register them with [`Self::root`] to keep them.
     /// Host argument handles are borrowed for the call; use [`HostContext::retain`] for durable
     /// host state. A returned dangling aggregate or closure environment traps at `ret`.
     pub fn run(
@@ -3925,6 +3934,7 @@ impl<H: Host> Vm<H> {
                             signature: hs.sig_hash,
                             expected: ret_types,
                             destinations: vf.vregs(*rets),
+                            aggregates: self.memory.aggs(),
                         },
                         ret_slots,
                         host_result,
@@ -5129,6 +5139,7 @@ impl<H: Host> Vm<H> {
             limits,
             units,
             memory,
+            roots,
         } = self;
         (
             Vm {
@@ -5136,6 +5147,7 @@ impl<H: Host> Vm<H> {
                 limits,
                 units,
                 memory,
+                roots,
             },
             previous,
         )
@@ -5151,6 +5163,11 @@ impl<H: Host> Vm<H> {
     /// The heap also holds the shapes that installed units use. Use [`AggHeap::clear`] or
     /// [`AggHeap::take_nodes`] to release nodes; replacing the whole heap discards those shapes,
     /// after which installed units can no longer build or check structs and arrays.
+    ///
+    /// Releasing nodes this way bypasses registered groups ([`Self::root`]): their handles are
+    /// left dangling, and [`Self::collect`] then refuses with
+    /// [`CollectError::DanglingHandle`]. Reclaim through [`Self::collect`] instead when groups are
+    /// registered.
     pub fn aggregates_mut(&mut self) -> &mut AggHeap {
         self.memory.aggs_mut()
     }
@@ -5752,6 +5769,19 @@ impl Value {
             return Err(Trap::TypeMismatch { expected, actual });
         }
         Ok(())
+    }
+}
+
+/// Rejects an aggregate handle or closure environment that names no node of `heap`.
+///
+/// Host results and suspension answers are checked here, so a handle the embedding copied out
+/// before a collection, which names no node afterwards, traps where it is delivered rather than
+/// where the guest first reads it.
+#[inline]
+pub(crate) fn check_handle(heap: &AggHeap, value: &Value) -> Result<(), Trap> {
+    match crate::aggregates::aggregate_handle(value) {
+        Some(handle) => heap.agg_type(handle).map(|_| ()).map_err(Trap::AggError),
+        None => Ok(()),
     }
 }
 

@@ -655,6 +655,37 @@ embedding collector must add its globals, snapshots and other external roots and
 own object graph. The VM does not choose collection, identity or relocation policy. Inspection
 borrows prevent resumption or host mutation while those views are being read.
 
+## Registered roots and explicit collection
+
+Runs only append to the aggregate heap and keep what their outputs reach, so a long-lived VM
+accumulates results nobody needs any more. Register the values worth keeping with
+[`Vm::root`](vm::Vm::root), which returns a [`RootedValues`](vm::RootedValues) handle, and
+reclaim everything else with [`Vm::collect`](vm::Vm::collect). Collection never happens
+implicitly; [`Vm::heap_stats`](vm::Vm::heap_stats) reports growth without walking the heap.
+
+Collection moves the aggregates that survive into a fresh handle window, so a raw handle
+copied out of the VM before it names nothing afterwards: using it fails with
+`AggError::BadHandle` rather than reading a survivor. Registered values are updated in
+place; read them back with
+[`Vm::resolve`](vm::Vm::resolve). Dropping a handle unregisters its values at the next
+collection, and [`Vm::release`](vm::Vm::release) unregisters them at once.
+
+```rust
+use execution_tape::value::Value;
+use execution_tape::vm::{Limits, Vm};
+
+let mut vm = Vm::new(NoHost, Limits::default());
+let heap = vm.aggregates_mut();
+heap.tuple_new(vec![])?; // Nothing will keep this one.
+let kept = heap.tuple_new(vec![Value::I64(42)])?;
+let root = vm.root(vec![Value::Agg(kept)])?;
+
+let report = vm.collect()?;
+assert_eq!((report.aggregates.live, report.aggregates.reclaimed), (1, 1));
+let [Value::Agg(kept)] = vm.resolve(&root)? else { unreachable!() };
+assert_eq!(vm.aggregates().tuple_get(*kept, 0)?, Value::I64(42));
+```
+
 ## Design Docs
 
 The repository-level design notes live outside the packaged crate:

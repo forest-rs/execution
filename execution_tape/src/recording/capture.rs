@@ -356,7 +356,7 @@ impl Recorder {
                 if self.entry.is_some() || self.end.is_some() {
                     return Err(CaptureFault::MultipleRuns);
                 }
-                self.builder.initial_count = aggregates.len_u32();
+                self.builder.initial_count = aggregates.handle_end();
                 let args = self
                     .builder
                     .roots(args.iter().map(ValueRef::from_value), aggregates)?;
