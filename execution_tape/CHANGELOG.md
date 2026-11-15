@@ -123,7 +123,9 @@ This release has an [MSRV][] of 1.88.
   in a link check, and it converts into a `host_catalog::HostSpec`. The constants are also
   patterns: `HostContext::import_in(&SURFACE)` and `HostCallSite::import_in(&SURFACE)` return
   the import a call is to, matched by symbol and complete signature, so a host that dispatches
-  with `match` needs no separate symbol strings.
+  with `match` needs no separate symbol strings. Each installed unit remembers where in the
+  surface it found each import, so after an import's first call `HostContext::import_in` is an
+  index and a pointer comparison, with the same cost for a surface of 1 or 128 imports.
 
 - Pass constants directly as call arguments with `ProgramBuilder::emit_call_with`. Arguments are
   a tuple, such as `(handle, "name", 0.5_f32)`, or a slice of the new `CallArg`. A register in

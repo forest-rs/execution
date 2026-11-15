@@ -256,7 +256,8 @@ adds it with `ProgramBuilder::host_import`, the host registers it with `HostFunc
 and a link check recognizes its calls with `HostCallSite::calls`, so the three cannot drift. The
 constants are also patterns: a host that dispatches with `match` resolves a call with
 `HostContext::import_in(&SURFACE)` and matches the result against them, so symbols are written
-once.
+once. Each unit remembers where it found an import, so the lookup costs the same for any size of
+surface after the import's first call.
 
 `VerifiedProgram::host_call_sites` lists every reachable host call with the arguments that are
 constants on every path to it, borrowed as the host would receive them. `bind_checked` binds and

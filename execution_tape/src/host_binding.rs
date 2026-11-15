@@ -20,6 +20,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
 use crate::program::{HostSigId, Pc, Program, SpanId, ValueType};
@@ -119,10 +120,29 @@ impl HostImport {
 
     /// Returns the import in `surface` that `program` declares as its import `id`.
     pub(crate) fn find(surface: &[Self], program: &Program, id: HostSigId) -> Option<Self> {
+        Self::position(surface, program, id).map(|index| surface[index])
+    }
+
+    /// Returns the index in `surface` of the import `program` declares as its import `id`.
+    fn position(surface: &[Self], program: &Program, id: HostSigId) -> Option<usize> {
         surface
             .iter()
-            .find(|import| import.is_declared_as(program, id))
-            .copied()
+            .position(|import| import.is_declared_as(program, id))
+    }
+
+    /// The addresses and lengths of the symbol, arguments and returns.
+    ///
+    /// They are `'static` shared data, which is never freed or changed, so two imports with the
+    /// same identity have the same contents. Equal contents can still differ in identity.
+    fn identity(&self) -> [usize; 6] {
+        [
+            self.symbol.as_ptr().addr(),
+            self.symbol.len(),
+            self.args.as_ptr().addr(),
+            self.args.len(),
+            self.rets.as_ptr().addr(),
+            self.rets.len(),
+        ]
     }
 
     /// The complete signature, as [`HostFunctions::register`] and
@@ -133,6 +153,60 @@ impl HostImport {
             args: self.args.to_vec(),
             rets: self.rets.to_vec(),
         }
+    }
+}
+
+/// Where one import of an installed unit was last found in a host's surface.
+///
+/// [`HostContext::import_in`] scans the surface the first time the unit calls the import, then
+/// confirms the entry at the remembered index by its identity, with no scan and no string
+/// comparison. An entry that is not the one remembered (another surface, another order, or
+/// equal imports stored elsewhere) is looked up by scanning again, and the result remembered.
+///
+/// Every word is written only from an entry already compared in full with the declaration, so
+/// even interleaved updates can confirm only an entry with that symbol and signature.
+#[derive(Debug)]
+pub(crate) struct ImportHint {
+    /// Index of the entry in the surface it was found in; `usize::MAX` before the first call.
+    index: AtomicUsize,
+    /// [`HostImport::identity`] of the entry; zero, which no symbol address is, before then.
+    identity: [AtomicUsize; 6],
+}
+
+impl Default for ImportHint {
+    fn default() -> Self {
+        Self {
+            index: AtomicUsize::new(usize::MAX),
+            identity: Default::default(),
+        }
+    }
+}
+
+impl ImportHint {
+    /// Returns the import in `surface` that `program` declares as its import `id`, the program
+    /// whose unit owns this hint.
+    pub(crate) fn resolve(
+        &self,
+        surface: &[HostImport],
+        program: &Program,
+        id: HostSigId,
+    ) -> Option<HostImport> {
+        if let Some(entry) = surface.get(self.index.load(Ordering::Relaxed))
+            && self
+                .identity
+                .iter()
+                .zip(entry.identity())
+                .all(|(word, value)| word.load(Ordering::Relaxed) == value)
+        {
+            return Some(*entry);
+        }
+        let index = HostImport::position(surface, program, id)?;
+        let entry = surface[index];
+        self.index.store(index, Ordering::Relaxed);
+        for (word, value) in self.identity.iter().zip(entry.identity()) {
+            word.store(value, Ordering::Relaxed);
+        }
+        Some(entry)
     }
 }
 
@@ -1198,6 +1272,169 @@ mod tests {
         assert_eq!(outputs, [Value::I64(51)]);
         assert_eq!(reads.0, 1);
         assert_eq!(*b.host().state(), 101);
+    }
+
+    const A: HostImport = HostImport::new("a", &[ValueType::I64], &[ValueType::I64]);
+    const B: HostImport = HostImport::new("b", &[ValueType::I64], &[ValueType::I64]);
+    /// `a` with another signature.
+    const A_BOOL: HostImport = HostImport::new("a", &[ValueType::Bool], &[ValueType::I64]);
+    const OTHER: HostImport = HostImport::new("other", &[ValueType::I64], &[ValueType::I64]);
+
+    /// Resolves every call in `surface`, recording the result, and returns its argument.
+    struct Resolver {
+        surface: &'static [HostImport],
+        seen: Vec<Option<HostImport>>,
+    }
+
+    impl Resolver {
+        fn new(surface: &'static [HostImport]) -> Self {
+            Self {
+                surface,
+                seen: Vec::new(),
+            }
+        }
+    }
+
+    impl Host for Resolver {
+        fn call(
+            &mut self,
+            _: &str,
+            _: SigHash,
+            args: &[ValueRef<'_>],
+            rets: &mut [Value],
+            ctx: HostContext<'_, '_>,
+        ) -> Result<u64, HostError> {
+            self.seen.push(ctx.import_in(self.surface));
+            let [ValueRef::I64(value)] = args else {
+                return Err(HostError::Failed);
+            };
+            rets[0] = Value::I64(*value);
+            Ok(0)
+        }
+    }
+
+    /// Declares `imports` in order and calls each once, in order, from `(i64) -> i64`.
+    fn calling(imports: &[HostImport]) -> Arc<VerifiedProgram> {
+        let mut pb = ProgramBuilder::new();
+        let ids: Vec<HostSigId> = imports.iter().map(|&i| pb.host_import(i)).collect();
+        let f = pb
+            .declare_function(FunctionSig {
+                arg_types: vec![ValueType::I64],
+                ret_types: vec![ValueType::I64],
+            })
+            .unwrap();
+        let mut a = pb.function_asm(f).unwrap();
+        let mut value = pb.argument(f, 0).unwrap();
+        for id in ids {
+            [value] = pb.emit_call(&mut a, id, &[value]).unwrap();
+        }
+        a.ret(Reg::EFFECT, &[value]);
+        pb.define_function(f, a).unwrap();
+        Arc::new(pb.build_verified().unwrap())
+    }
+
+    /// Runs `unit`'s function with `surface` and returns what each call resolved to.
+    fn resolve(
+        vm: &mut Vm<Resolver>,
+        unit: crate::value::UnitId,
+        surface: &'static [HostImport],
+    ) -> Vec<Option<HostImport>> {
+        vm.host_mut().surface = surface;
+        vm.run(
+            FuncRef::new(unit, FuncId(0)),
+            &[Value::I64(1)],
+            TraceMask::NONE,
+            None,
+        )
+        .unwrap();
+        core::mem::take(&mut vm.host_mut().seen)
+    }
+
+    /// An import equal to `import`, with its symbol and signature stored elsewhere.
+    fn copy(import: HostImport) -> HostImport {
+        HostImport::new(
+            alloc::string::String::from(import.symbol()).leak(),
+            import.args().to_vec().leak(),
+            import.rets().to_vec().leak(),
+        )
+    }
+
+    #[test]
+    fn import_in_finds_the_matching_entry_of_whatever_surface_it_is_given() {
+        let program = calling(&[A, B]);
+        let mut vm = Vm::new(Resolver::new(&[]), Limits::default());
+        let unit = vm.install(Arc::clone(&program)).unwrap();
+        let both = [Some(A), Some(B)];
+
+        // The first call scans; the second confirms the remembered entry.
+        assert_eq!(resolve(&mut vm, unit, &[OTHER, A, B]), both);
+        assert_eq!(resolve(&mut vm, unit, &[OTHER, A, B]), both);
+        // Another order, and a surface without `b`.
+        assert_eq!(resolve(&mut vm, unit, &[B, A]), both);
+        assert_eq!(resolve(&mut vm, unit, &[A]), [Some(A), None]);
+        assert_eq!(resolve(&mut vm, unit, &[]), [None, None]);
+        // Where `a` was found, `a` with another signature.
+        assert_eq!(resolve(&mut vm, unit, &[A, B]), both);
+        assert_eq!(resolve(&mut vm, unit, &[A_BOOL, A, B]), both);
+        assert_eq!(resolve(&mut vm, unit, &[A_BOOL, OTHER]), [None, None]);
+
+        // Equal imports stored elsewhere match, and the entry returned is the surface's own.
+        let copies: &'static [HostImport] = vec![copy(A), copy(B)].leak();
+        assert!(!core::ptr::eq(copies[0].symbol(), A.symbol()));
+        for _ in 0..2 {
+            let found = resolve(&mut vm, unit, copies);
+            assert_eq!(found, both);
+            for (found, copy) in found.iter().zip(copies) {
+                assert!(core::ptr::eq(found.unwrap().symbol(), copy.symbol()));
+            }
+        }
+        assert_eq!(resolve(&mut vm, unit, &[B, A]), both);
+    }
+
+    #[test]
+    fn import_in_resolves_each_unit_and_vm_on_its_own() {
+        // The same import IDs name different imports in the two programs.
+        let a_first = calling(&[A, B]);
+        let b_first = calling(&[B, A]);
+        let mut vm = Vm::new(Resolver::new(&[]), Limits::default());
+        let [a_first_unit, b_first_unit, a_first_again] =
+            [&a_first, &b_first, &a_first].map(|program| vm.install(Arc::clone(program)).unwrap());
+        let mut other = Vm::new(Resolver::new(&[]), Limits::default());
+        let a_first_other = other.install(Arc::clone(&a_first)).unwrap();
+        for _ in 0..2 {
+            assert_eq!(resolve(&mut vm, a_first_unit, &[A, B]), [Some(A), Some(B)]);
+            assert_eq!(resolve(&mut vm, b_first_unit, &[A, B]), [Some(B), Some(A)]);
+            assert_eq!(resolve(&mut vm, a_first_again, &[B, A]), [Some(A), Some(B)]);
+            assert_eq!(resolve(&mut other, a_first_other, &[B]), [None, Some(B)]);
+        }
+    }
+
+    #[test]
+    fn import_in_resolves_yielded_host_calls_in_their_unit() {
+        let program = calling(&[A, B]);
+        let surface: &'static [HostImport] = &[B, OTHER, A];
+        let mut vm = Vm::new(Resolver::new(surface), Limits::default());
+        let unit = vm.install(Arc::clone(&program)).unwrap();
+        // Remember both imports from ordinary calls first.
+        assert_eq!(resolve(&mut vm, unit, surface), [Some(A), Some(B)]);
+
+        let mut invocation = vm
+            .start(
+                FuncRef::new(unit, FuncId(0)),
+                &[Value::I64(1)],
+                crate::vm::InvocationOptions::default().yield_host_calls(),
+            )
+            .unwrap();
+        for expected in [A, B] {
+            assert_eq!(
+                invocation.resume(100).unwrap(),
+                crate::vm::RunStatus::AwaitingHost
+            );
+            let mut request = invocation.pending_host_call().unwrap();
+            assert_eq!(request.context().import_in(surface), Some(expected));
+            assert_eq!(request.context().import_in(&[A_BOOL]), None);
+            request.complete(&mut [Value::I64(1)], Ok(0)).unwrap();
+        }
     }
 
     #[test]

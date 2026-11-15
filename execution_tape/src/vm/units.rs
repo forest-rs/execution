@@ -20,7 +20,8 @@
 use super::*;
 use crate::aggregates::AggShape;
 use crate::contract::{ContractId, ContractTableBuilder};
-use crate::program::{CallSigId, ElemTypeId, LinkId, StructTypeDef, TagId, TypeId};
+use crate::host_binding::ImportHint;
+use crate::program::{CallSigId, ElemTypeId, HostSigId, LinkId, StructTypeDef, TagId, TypeId};
 use crate::value::{ShapeId, TagRef};
 use alloc::collections::BTreeMap;
 
@@ -107,6 +108,8 @@ pub(crate) struct Unit {
     link_sigs: Box<[SigId]>,
     /// Current target of each program [`LinkId`], which [`Vm::relink`] repoints.
     links: Box<[FuncRef]>,
+    /// Where each program [`HostSigId`] was last found by [`crate::host::HostContext::import_in`].
+    imports: Box<[ImportHint]>,
 }
 
 impl Unit {
@@ -143,6 +146,12 @@ impl Unit {
     #[inline]
     pub(crate) fn link(&self, link: LinkId) -> FuncRef {
         self.links[link.0 as usize]
+    }
+
+    /// Where the host last found an import of this unit's program in its surface.
+    #[inline]
+    pub(crate) fn import_hint(&self, import: HostSigId) -> Option<&ImportHint> {
+        self.imports.get(import.0 as usize)
     }
 
     /// The store-canonical identity of a verified contract of this unit's program.
@@ -186,6 +195,7 @@ impl Unit {
             + size_of_val(&*self.tags)
             + size_of_val(&*self.link_sigs)
             + size_of_val(&*self.links)
+            + size_of_val(&*self.imports)
     }
 
     /// Interns `program`'s struct and array types in `heap`, and its contracts and signatures
@@ -270,6 +280,11 @@ impl Unit {
             .iter()
             .map(|link| call_sigs[link.call_sig.0 as usize])
             .collect();
+        let imports = source
+            .host_sigs
+            .iter()
+            .map(|_| ImportHint::default())
+            .collect();
         Ok(Self {
             program,
             structs,
@@ -282,6 +297,7 @@ impl Unit {
             tags: Box::default(),
             link_sigs,
             links: Box::default(),
+            imports,
         })
     }
 }
