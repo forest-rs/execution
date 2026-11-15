@@ -6,7 +6,7 @@
 use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::contract::{Contract, ContractId, ContractMismatch, ContractPosition};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::{Program, ValueType};
+use execution_tape::program::{Program, SpanId, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
 use execution_tape::value::UnitId;
@@ -526,7 +526,7 @@ fn successful_proofs_do_not_survive_reset_and_numeric_handle_reuse() {
 #[test]
 fn even_unused_nominal_refinements_must_match_the_schema() {
     use execution_tape::contract::ContractDefinitionError;
-    use execution_tape::program::{ElemTypeId, StructTypeDef, TypeId};
+    use execution_tape::program::{StructTypeDef, TypeId};
     for mode in 0..4 {
         let mut builder = ProgramBuilder::new();
         let integer = integer(&mut builder);
@@ -550,7 +550,7 @@ fn even_unused_nominal_refinements_must_match_the_schema() {
                 fields: &[boolean],
             },
             _ => Contract::Array {
-                elem_type_id: ElemTypeId(array.0),
+                elem_type_id: array,
                 element: boolean,
             },
         };
@@ -649,7 +649,7 @@ fn opaque_results_fail_at_the_callee_return_for_all_call_forms() {
             kind: ScopeKind,
             _: usize,
             _location: TraceLocation,
-            _: Option<u64>,
+            _: Option<SpanId>,
             outcome: TraceOutcome<'_>,
         ) {
             if matches!(kind, ScopeKind::CallFrame { .. }) {
@@ -1196,7 +1196,7 @@ fn opaque_calls_erase_previous_projection_facts() {
             )
             .unwrap();
         assert!(
-            matches!(b.build_verified(),Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(rejected.error, VerifyError::UnknownAggregateShape{func,pc,reg:Reg(2)} if func==entry.0&&pc==projection))
+            matches!(b.build_verified(),Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(rejected.error, VerifyError::UnknownAggregateShape{func,pc,reg:Reg(2)} if func==entry&&pc==projection))
         );
     }
 }
@@ -1223,7 +1223,7 @@ fn aliased_opaque_member_does_not_inherit_its_containers_shape() {
         b.build_verified(),
         Err(execution_tape::asm::BuildError::Verify(rejected)) if matches!(
             rejected.error,
-            VerifyError::UnknownAggregateShape { func, pc, reg: Reg(1) } if func == entry.0 && pc == projection
+            VerifyError::UnknownAggregateShape { func, pc, reg: Reg(1) } if func == entry && pc == projection
         )
     ));
 }

@@ -490,6 +490,7 @@ fn compile_story(story: &str, non_local: bool) -> Result<Fixture> {
 mod tests {
     use super::*;
     use crate::runtime::{Runtime, Status, decode_outputs};
+    use execution_tape::program::Pc;
     use execution_tape::recording::ReplayOutcome;
 
     #[test]
@@ -502,7 +503,7 @@ mod tests {
                 let first = sources
                     .lookup(execution_tape::trace::CodeLocation {
                         func: fixture.entry,
-                        pc: 0,
+                        pc: Pc(0),
                     })
                     .unwrap();
                 let expected = if non_local {

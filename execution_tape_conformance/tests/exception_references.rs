@@ -9,7 +9,9 @@ use execution_tape::{
     asm::{Asm, Catch, FunctionSig, ProgramBuilder, Reg},
     disasm::disassemble,
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{FunctionDef, Program, TagId, TypeTableDef, ValueType},
+    program::{
+        FunctionDef, HostSigId, Pc, Program, RegionId, TagId, TypeId, TypeTableDef, ValueType,
+    },
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{TraceLocation, TraceMask, TraceSink},
     value::{FuncId, Value},
@@ -51,11 +53,11 @@ struct Fixture {
     protected: FuncId,
     outer: FuncId,
     /// `throw` in `body`.
-    throw_pc: u32,
+    throw_pc: Pc,
     /// `throw` in `cleanup`.
-    cleanup_pc: u32,
+    cleanup_pc: Pc,
     /// `throw_ref` in `rethrow`.
-    rethrow_pc: u32,
+    rethrow_pc: Pc,
 }
 
 /// `protected(code, fail)` calls `body(code)`, which throws `failed(code)`. Its `catch_all_ref`
@@ -348,7 +350,9 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
     assert_eq!(
         error,
         VerifyError::ExceptionReference {
-            place: ExceptionPlace::HostSig { host_sig: 0 }
+            place: ExceptionPlace::HostSig {
+                host_sig: HostSigId(0)
+            }
         }
     );
     // Tag payloads.
@@ -359,7 +363,7 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
     assert_eq!(
         error,
         VerifyError::ExceptionReference {
-            place: ExceptionPlace::TagPayload { tag: 0 }
+            place: ExceptionPlace::TagPayload { tag: TagId(0) }
         }
     );
     // Tuples.
@@ -376,7 +380,7 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
             error,
             VerifyError::ExceptionReference {
                 place: ExceptionPlace::Aggregate {
-                    func: 0,
+                    func: FuncId(0),
                     reg: Reg(1),
                     ..
                 }
@@ -412,7 +416,7 @@ fn verifier_keeps_exception_references_inside_guest_registers() {
         verify_program(&program, &VerifyConfig::default()),
         Err(VerifyError::ExceptionReference {
             place: ExceptionPlace::StructField {
-                type_id: 0,
+                type_id: TypeId(0),
                 field: 0
             }
         })
@@ -438,8 +442,8 @@ fn reference_clauses_need_a_final_exn_parameter_and_throw_ref_an_exn_register() 
     assert_eq!(
         error,
         VerifyError::InvalidRegion {
-            func: 0,
-            region: 0,
+            func: FuncId(0),
+            region: RegionId(0),
             error: RegionError::ClauseException {
                 clause: 0,
                 actual: ValueType::I64

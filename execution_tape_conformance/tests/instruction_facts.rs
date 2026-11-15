@@ -5,7 +5,7 @@
 
 use execution_tape::asm::{Asm, FunctionAbi, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::contract::{Contract, ContractId, ContractTable};
-use execution_tape::program::{Program, ValueType};
+use execution_tape::program::{Pc, Program, ValueType};
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{FactOrigin, ProgramAnalysis, ValueFact, VerifyConfig};
 
@@ -40,7 +40,7 @@ fn kind(table: &ContractTable, fact: ValueFact, expected: ValueType) {
     );
 }
 
-fn nested() -> (Program, FuncId, Vec<u32>) {
+fn nested() -> (Program, FuncId, Vec<Pc>) {
     let mut b = ProgramBuilder::new();
     let integer = b.contract(Contract::Kind(ValueType::I64)).unwrap();
     let boolean = b.contract(Contract::Kind(ValueType::Bool)).unwrap();
@@ -89,7 +89,7 @@ fn nested_calls_and_aliased_projections_have_exact_before_and_after_facts() {
     let (program, entry, pcs) = nested();
     let source = execution_tape::disasm::disassemble_function(&program, entry).unwrap();
     assert_eq!(source.instruction(pcs[1]).unwrap().pc(), pcs[1]);
-    assert!(source.instruction(pcs[0] + 1).is_none());
+    assert!(source.instruction(Pc(pcs[0].0 + 1)).is_none());
     let proof = ProgramAnalysis::new(&program, &VerifyConfig::default()).unwrap();
     assert!(proof.function(FuncId(u32::MAX)).is_none());
     let mut function = proof.function(entry).unwrap();
@@ -151,8 +151,8 @@ fn nested_calls_and_aliased_projections_have_exact_before_and_after_facts() {
             );
         }
     }
-    assert!(function.instruction(pcs[0] + 1).is_none());
-    assert!(function.instruction(u32::MAX).is_none());
+    assert!(function.instruction(Pc(pcs[0].0 + 1)).is_none());
+    assert!(function.instruction(Pc(u32::MAX)).is_none());
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn unreachable_and_uninitialized_are_distinct_from_declared_kinds() {
         .function(entry)
         .unwrap();
     {
-        let live = f.instruction(0).unwrap();
+        let live = f.instruction(Pc(0)).unwrap();
         assert_eq!(
             live.register(Reg(1)).unwrap().before,
             ValueFact::Uninitialized
@@ -225,7 +225,7 @@ fn arguments_start_initialized_but_unused_registers_do_not() {
         .unwrap()
         .function(entry)
         .unwrap();
-    let view = f.instruction(0).unwrap();
+    let view = f.instruction(Pc(0)).unwrap();
     let arg = view.register(Reg(1)).unwrap();
     assert_eq!(arg.origin_before, Some(FactOrigin::Argument { index: 0 }));
     kind(
@@ -410,7 +410,7 @@ fn loop_queries_preserve_parallel_swaps_and_share_deep_contract_graphs() {
         kind(view.contracts(), fact, ValueType::I64);
         let back = view
             .incoming_edges()
-            .find(|edge| edge.arm() == 0 && edge.source_pc() != 0)
+            .find(|edge| edge.arm() == 0 && edge.source_pc() != Pc(0))
             .unwrap();
         let bindings: Vec<_> = back.bindings().collect();
         assert_eq!(bindings[0].argument, Reg(2));
@@ -588,10 +588,10 @@ fn block_zero_meets_invocation_seeds_with_backedges_without_fabricating_a_cfg_ed
         .unwrap()
         .function(entry)
         .unwrap();
-    let view = f.instruction(0).unwrap();
+    let view = f.instruction(Pc(0)).unwrap();
     let r1 = view.register(Reg(1)).unwrap();
     kind(view.contracts(), r1.before, ValueType::Agg);
-    assert_eq!(r1.origin_before, Some(FactOrigin::BlockEntry { pc: 0 }));
+    assert_eq!(r1.origin_before, Some(FactOrigin::BlockEntry { pc: Pc(0) }));
     // There is one real backedge; the external invocation is an additional analysis seed.
     assert_eq!(view.incoming_edges().len(), 1);
 }

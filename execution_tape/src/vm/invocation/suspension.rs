@@ -319,7 +319,8 @@ impl<H: Host> Running<'_, '_, H> {
             }
         });
         let ctx = &mut continuation.ctx;
-        let fail = |ctx: &Registers, trap| ctx.trap(location.func, location.pc, pending.span, trap);
+        let fail =
+            |ctx: &Registers, trap| ctx.trap(location.func, location.pc.0, pending.span, trap);
         match answer {
             Answer::Discard => Err(fail(ctx, Trap::UnhandledSuspension { tag })),
             Answer::Resume(values) => {

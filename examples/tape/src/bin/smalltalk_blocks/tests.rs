@@ -145,7 +145,7 @@ fn cleanup_waits_after_the_return_has_unwound_the_block() {
         fixture
             .program
             .program()
-            .function_name(frame.location.func.0)
+            .function_name(frame.location.func)
             .unwrap_or_default()
     };
     assert!(

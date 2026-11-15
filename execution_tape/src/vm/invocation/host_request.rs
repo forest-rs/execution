@@ -557,7 +557,7 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         let span =
             self.continuation
                 .ctx
-                .span_at(program, pending.location.func, pending.location.pc);
+                .span_at(program, pending.location.func, pending.location.pc.0);
         let continuation = &mut *self.continuation;
         if continuation.trace.active() {
             self.vm.raise_host::<WithTracePolicy>(
@@ -599,12 +599,12 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
         let span = self.continuation.ctx.span_at(
             self.vm.units.unit(location.unit).program.program(),
             location.func,
-            location.pc,
+            location.pc.0,
         );
         let error =
             self.continuation
                 .ctx
-                .trap(location.func, location.pc, span, Trap::HostCallAbandoned);
+                .trap(location.func, location.pc.0, span, Trap::HostCallAbandoned);
         self.vm.memory.rollback(self.checkpoint);
         self.budget.frames -= self.continuation.ctx.held_frames();
         self.budget.contract_scratch.clear_proofs();
@@ -666,7 +666,7 @@ fn finish_pending<P: TracePolicy>(
     created.map_err(|error| {
         ctx.trap(
             location.func,
-            location.pc,
+            location.pc.0,
             request.span,
             Trap::AggError(error),
         )
@@ -716,7 +716,7 @@ fn finish_pending<P: TracePolicy>(
         ctx.frames.last().map(|frame| TraceLocation {
             unit: frame.unit,
             func: frame.func,
-            pc: frame.pc,
+            pc: Pc(frame.pc),
         }),
     );
     Ok(None)

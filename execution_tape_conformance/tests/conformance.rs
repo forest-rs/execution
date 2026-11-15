@@ -7,6 +7,7 @@ use execution_tape::aggregates::AggError;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
+use execution_tape::program::Pc;
 use execution_tape::program::{
     ByteRange, CallSigEntry, Const, FunctionDef, HostSymbol, Program, StructTypeDef, TypeTableDef,
     ValueType,
@@ -217,7 +218,7 @@ fn both_instruction_decoders_reject_impossible_register_lists() {
     );
     assert!(matches!(
         verify_program(&program, &VerifyConfig::default()),
-        Err(VerifyError::BytecodeDecode { func: 0 })
+        Err(VerifyError::BytecodeDecode { func: FuncId(0) })
     ));
 }
 
@@ -1987,8 +1988,8 @@ fn verifier_rejects_unknown_opcode() {
     assert_eq!(
         err,
         VerifyError::UnknownOpcode {
-            func: 0,
-            pc: 0,
+            func: FuncId(0),
+            pc: Pc(0),
             opcode: 0xFF
         }
     );

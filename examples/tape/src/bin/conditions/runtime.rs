@@ -350,7 +350,7 @@ impl Runtime {
                 .run
                 .program()
                 .program()
-                .function_name(frame.location.func.0)
+                .function_name(frame.location.func)
                 .unwrap_or("unnamed");
             text.push_str(&format!(
                 "  activation #{} {name}:{:06}{}\n",

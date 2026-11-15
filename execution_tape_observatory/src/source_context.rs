@@ -82,7 +82,7 @@ mod tests {
     use super::*;
     use execution_tape::{
         asm::{FunctionSig, ProgramBuilder, Reg},
-        program::ValueType,
+        program::{Pc, ValueType},
         source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     };
 
@@ -102,7 +102,7 @@ mod tests {
         let program = builder.build_verified().unwrap();
         let location = CodeLocation {
             func: function,
-            pc: 0,
+            pc: Pc(0),
         };
         let map = SourceMap::new(
             program.program(),
@@ -130,7 +130,7 @@ mod tests {
             );
         }
         let missing = CodeLocation {
-            pc: u32::MAX,
+            pc: Pc(u32::MAX),
             ..location
         };
         assert!(context_lines(bound, missing, 1, 80)[0].contains("no frontend mapping"));

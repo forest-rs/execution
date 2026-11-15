@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use execution_tape::program::Pc;
 impl<H: Host> LiveExplorer<'_, '_, H> {
     pub(super) fn draw_view(&mut self, frame: &mut Frame<'_>) {
         self.refresh_object();
@@ -207,7 +208,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
     fn draw_code(&self, frame: &mut Frame<'_>, area: Rect) {
         let height = usize::from(area.height.saturating_sub(2));
         let start = self.code_selected.saturating_sub(height / 2);
-        let first = self.code.get(start).map_or(0, |i| i.0);
+        let first = self.code.get(start).map_or(Pc(0), |i| i.0);
         let last = self
             .code
             .iter()
@@ -244,7 +245,7 @@ impl<H: Host> LiveExplorer<'_, '_, H> {
                 let point = !self.showing_origin
                     && self
                         .code_func
-                        .is_some_and(|(u, f)| self.breakpoints.contains(&(u.0, f.0, *pc)));
+                        .is_some_and(|(u, f)| self.breakpoints.contains(&(u.0, f.0, pc.0)));
                 let mut spans = vec![Span::styled(
                     format!(
                         "{}{} {:06} ",

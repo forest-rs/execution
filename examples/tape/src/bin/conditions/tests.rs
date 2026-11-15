@@ -269,7 +269,7 @@ fn cleanup_runs_after_the_exit_unwinds_the_signaling_frames() {
         fixture
             .program
             .program()
-            .function_name(leaf.location.func.0)
+            .function_name(leaf.location.func)
             .unwrap()
             .starts_with("cleanup")
     );

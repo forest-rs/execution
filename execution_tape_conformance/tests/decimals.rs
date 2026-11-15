@@ -9,7 +9,7 @@ use execution_tape::disasm::{ConstValue, InputIndex};
 use execution_tape::format::DecodeError;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::Opcode;
-use execution_tape::program::{ByteRange, Const, ConstEntry, ConstId, Program, ValueType};
+use execution_tape::program::{ByteRange, Const, ConstEntry, ConstId, Pc, Program, ValueType};
 use execution_tape::trace::TraceMask;
 use execution_tape::value::FuncRef;
 use execution_tape::value::{Decimal, DecimalRounding, FuncId, Value};
@@ -370,7 +370,7 @@ fn division_charges_fuel_for_each_long_division_step() {
     let (status, fuel, _) = run_with(167, dec(ten_30, 0), dec(ten_30, 0), 20);
     let error = status.unwrap_err();
     assert!(matches!(error.trap, Trap::FuelExceeded));
-    assert_eq!(error.pc, 0, "the division traps, not the return");
+    assert_eq!(error.pc, Pc(0), "the division traps, not the return");
     assert_eq!(fuel, 1, "a refused charge is not debited");
 }
 
@@ -526,8 +526,8 @@ fn verifier_rejects_unknown_rounding_modes_and_mistyped_scales() {
     assert_eq!(
         error,
         VerifyError::InvalidDecimalRounding {
-            func: 0,
-            pc: 0,
+            func: FuncId(0),
+            pc: Pc(0),
             rounding: 5
         }
     );

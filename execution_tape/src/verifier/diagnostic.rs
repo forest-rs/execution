@@ -3,7 +3,7 @@
 
 use super::{BlockDeclarationError, BlockEdgeError, ExceptionPlace, VerifyError};
 use crate::disasm::disassemble_function;
-use crate::program::{Program, Reg};
+use crate::program::{Pc, Program, Reg, SpanId};
 use crate::value::FuncId;
 use alloc::string::ToString;
 use core::fmt;
@@ -75,13 +75,13 @@ impl VerifyError {
             | Self::MissingTerminator { func, .. }
             | Self::InternalBlockInconsistent { func, .. }
             | Self::BytecodeDecode { func, .. }
-            | Self::UnknownOpcode { func, .. } => Some(FuncId(*func)),
+            | Self::UnknownOpcode { func, .. } => Some(*func),
             Self::ExceptionReference {
                 place: ExceptionPlace::Aggregate { func, .. },
             }
             | Self::ContinuationReference {
                 place: ExceptionPlace::Aggregate { func, .. },
-            } => Some(FuncId(*func)),
+            } => Some(*func),
             Self::ExceptionReference { .. } | Self::ContinuationReference { .. } => None,
             Self::InvalidContract { .. }
             | Self::InvalidMetadata { .. }
@@ -98,7 +98,7 @@ impl VerifyError {
     /// Function-level and program-wide errors have no instruction offset. An offset may
     /// identify a typed block header or malformed instruction, so it need not be executable.
     #[must_use]
-    pub fn pc(&self) -> Option<u32> {
+    pub fn pc(&self) -> Option<Pc> {
         match self {
             Self::BlockDeclaration { pc, .. }
             | Self::BlockEdge { pc, .. }
@@ -243,7 +243,7 @@ struct InProgram<'a> {
 impl fmt::Display for InProgram<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { error, program } = *self;
-        let Some(FuncId(func)) = error.function() else {
+        let Some(func) = error.function() else {
             return error.fmt_message(f);
         };
         write_location(f, program, func, error.pc())?;
@@ -267,8 +267,8 @@ impl fmt::Display for InProgram<'_> {
 pub(crate) fn write_location(
     f: &mut fmt::Formatter<'_>,
     program: &Program,
-    func: u32,
-    pc: Option<u32>,
+    func: FuncId,
+    pc: Option<Pc>,
 ) -> fmt::Result {
     write!(f, "function #{func}")?;
     if let Some(name) = program.function_name(func) {
@@ -280,7 +280,7 @@ pub(crate) fn write_location(
     write!(f, ", pc {pc}")?;
     let mut details = Details::new(f);
     if let Some((label_pc, name)) = label_before(program, func, pc) {
-        match pc - label_pc {
+        match pc.0 - label_pc.0 {
             0 => details.item(format_args!("label {name:?}"))?,
             offset => details.item(format_args!("label {name:?} + {offset}"))?,
         }
@@ -288,7 +288,7 @@ pub(crate) fn write_location(
     if let Some(span) = span_at(program, func, pc) {
         details.item(format_args!("span {span}"))?;
     }
-    if let Ok(disassembly) = disassemble_function(program, FuncId(func))
+    if let Ok(disassembly) = disassemble_function(program, func)
         && let Some(instr) = disassembly.instrs().find(|instr| instr.pc() == pc)
     {
         // The disassembler prefixes each line with its pc, which is already shown.
@@ -327,7 +327,7 @@ impl<'a, 'f> Details<'a, 'f> {
 }
 
 /// The nearest named label of `func` at or before `pc`.
-fn label_before(program: &Program, func: u32, pc: u32) -> Option<(u32, &str)> {
+fn label_before(program: &Program, func: FuncId, pc: Pc) -> Option<(Pc, &str)> {
     let entry = program
         .labels
         .iter()
@@ -337,16 +337,20 @@ fn label_before(program: &Program, func: u32, pc: u32) -> Option<(u32, &str)> {
 }
 
 /// The span covering `pc` in `func`'s span table, as the VM reports it for traps.
-fn span_at(program: &Program, func: u32, pc: u32) -> Option<u64> {
-    let spans = program.functions.get(func as usize)?.spans(program).ok()?;
+fn span_at(program: &Program, func: FuncId, pc: Pc) -> Option<SpanId> {
+    let spans = program
+        .functions
+        .get(func.0 as usize)?
+        .spans(program)
+        .ok()?;
     let mut at = 0_u64;
     let mut span = None;
     for entry in spans {
         at = at.saturating_add(entry.pc_delta);
-        if at > u64::from(pc) {
+        if at > u64::from(pc.0) {
             break;
         }
-        span = Some(entry.span_id.get());
+        span = Some(entry.span_id);
     }
     span
 }
@@ -355,7 +359,7 @@ fn span_at(program: &Program, func: u32, pc: u32) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::bytecode::{Instr, encode_instructions};
-    use crate::program::{FunctionDef, Program, TypeTableDef, ValueType};
+    use crate::program::{FunctionDef, HostSigId, Program, TypeTableDef, ValueType};
     use crate::verifier::{VerifyConfig, verify_program};
     use alloc::string::ToString;
     use alloc::vec;
@@ -382,7 +386,7 @@ mod tests {
         let error = verify_program(&program, &VerifyConfig::default()).unwrap_err();
         assert!(matches!(error, VerifyError::UninitializedRead { .. }));
         assert_eq!(error.function(), Some(FuncId(0)));
-        assert_eq!(error.pc(), Some(0));
+        assert_eq!(error.pc(), Some(Pc(0)));
 
         program.functions[0].arg_count = 1;
         // Reuse the return kind arena for this deliberately inconsistent argument declaration.
@@ -404,13 +408,13 @@ mod tests {
     #[test]
     fn display_prints_a_present_pc_and_omits_an_absent_one() {
         let at = VerifyError::UninitializedRead {
-            func: 1,
-            pc: 0,
+            func: FuncId(1),
+            pc: Pc(0),
             reg: Reg(3),
         };
         assert_eq!(at.to_string(), "function #1, pc 0: uninitialized read: r3");
         let signature = VerifyError::RegisterTypeMismatch {
-            func: 0,
+            func: FuncId(0),
             pc: None,
             reg: Reg(1),
             declared: ValueType::U32,
@@ -420,7 +424,9 @@ mod tests {
             signature.to_string(),
             "function #0: r1 declared U32, required F32"
         );
-        let program_wide = VerifyError::HostSigMalformed { host_sig: 2 };
+        let program_wide = VerifyError::HostSigMalformed {
+            host_sig: HostSigId(2),
+        };
         assert_eq!(program_wide.to_string(), "host_sig 2 malformed");
     }
 
@@ -473,7 +479,7 @@ mod tests {
         let mut program = mistyped_program();
         program.function_names.clear();
         program.labels.clear();
-        program.value_name_ids.iter_mut().for_each(|id| *id = 0);
+        program.value_name_ids.iter_mut().for_each(|id| *id = None);
         let error = verify_program(&program, &VerifyConfig::default()).unwrap_err();
         let shown = error.display_in(&program).to_string();
         assert!(
@@ -481,7 +487,9 @@ mod tests {
             "{shown}"
         );
         assert!(!shown.contains("input"), "{shown}");
-        let program_wide = VerifyError::HostSigMalformed { host_sig: 2 };
+        let program_wide = VerifyError::HostSigMalformed {
+            host_sig: HostSigId(2),
+        };
         assert_eq!(
             program_wide.display_in(&program).to_string(),
             "host_sig 2 malformed"

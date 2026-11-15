@@ -37,12 +37,12 @@ pub(super) fn verification(
     };
     let (subject, root, label, contract) = match *position {
         ContractPosition::Result { index } => (
-            function(program, FuncId(*func)),
+            function(program, *func),
             format!("result[{index}]"),
             format!("Return value {}", u64::from(index) + 1),
             program
                 .functions
-                .get(*func as usize)
+                .get(func.0 as usize)
                 .and_then(|function| function.ret_contracts(program).ok())
                 .and_then(|ids| ids.get(index as usize))
                 .copied(),
@@ -170,7 +170,7 @@ pub(super) fn preview(text: &str, limit: usize) -> String {
 
 pub(super) fn function(program: &Program, id: FuncId) -> String {
     program
-        .function_name(id.0)
+        .function_name(id)
         .map_or_else(|| format!("function #{}", id.0), |name| preview(name, 28))
 }
 

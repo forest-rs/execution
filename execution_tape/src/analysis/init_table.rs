@@ -163,7 +163,7 @@ mod tests {
     use crate::asm::{Catch, FunctionSig, ProgramBuilder, Reg};
     use crate::host::HostSig;
     use crate::opcode::Opcode;
-    use crate::program::ValueType;
+    use crate::program::{Pc, ValueType};
     use crate::value::FuncId;
     use crate::verifier::{ProgramAnalysis, ValueFact, VerifiedProgram};
     use alloc::vec;
@@ -188,7 +188,7 @@ mod tests {
             let bytecode = definition.bytecode(program).unwrap();
             let registers = definition.reg_count;
             for pc in 0..=u32::try_from(bytecode.len()).unwrap() {
-                let expected: Option<Vec<bool>> = reference.instruction(pc).map(|facts| {
+                let expected: Option<Vec<bool>> = reference.instruction(Pc(pc)).map(|facts| {
                     (0..registers)
                         .map(|r| {
                             matches!(
@@ -360,7 +360,7 @@ mod tests {
         b.define_function(entry, a).unwrap();
         let verified = b.build_verified().unwrap();
         let table = verified.init_table(entry).unwrap();
-        assert_eq!(&*table.pcs, &[0, call]);
+        assert_eq!(&*table.pcs, &[0, call.0]);
         assert_eq!(table.bytes(), 2 * 4 + 2 * 8);
     }
 }

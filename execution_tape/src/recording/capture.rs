@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::host::ValueRef;
-use crate::program::Program;
+use crate::program::{Pc, Program, SpanId};
 use crate::recording::{
     Answer, Call, CallOutcome, CaptureFault, CaptureResource, Caught, End, Entry,
     InstructionCapture, InstructionOutcome, InstructionStatus, Propagation, RecordLimits,
@@ -717,8 +717,8 @@ impl TraceSink for Recorder {
         &mut self,
         program: &Program,
         location: TraceLocation,
-        _: u32,
-        _: Option<u64>,
+        _: Pc,
+        _: Option<SpanId>,
         opcode: u16,
     ) {
         if !self.check_at(program, location.unit) {
@@ -800,7 +800,7 @@ impl TraceSink for Recorder {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         let ScopeKind::CallFrame {
             func: callee,
@@ -867,7 +867,7 @@ impl TraceSink for Recorder {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         let ScopeKind::CallFrame {

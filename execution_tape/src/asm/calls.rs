@@ -317,10 +317,10 @@ impl ProgramBuilder {
         let declaration = self
             .functions
             .get(function.0 as usize)
-            .ok_or(BuildError::BadFuncId { func: function.0 })?;
+            .ok_or(BuildError::BadFuncId { func: function })?;
         if index as usize >= declaration.args.len() {
             return Err(BuildError::BadArgIndex {
-                func: function.0,
+                func: function,
                 arg: index,
                 arg_count: u32::try_from(declaration.args.len()).unwrap_or(u32::MAX),
             });

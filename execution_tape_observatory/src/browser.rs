@@ -11,7 +11,7 @@ use super::{Screen, describe, flow::Flow};
 use execution_tape::disasm::{
     CallTarget, DisasmError, FunctionDisassembly, Operands, disassemble_function,
 };
-use execution_tape::program::{HostSigId, Program, SpanId};
+use execution_tape::program::{HostSigId, Pc, Program, SpanId};
 use execution_tape::source::BoundSources;
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{FunctionAnalysis, ProgramAnalysis, VerifyConfig, VerifyError};
@@ -56,7 +56,7 @@ pub(super) struct Browser<'a> {
     error: Option<VerifyError>,
     analysis: Option<ProgramAnalysis<'a>>,
     function_facts: Option<FunctionAnalysis<'a>>,
-    facts_pc: Option<u32>,
+    facts_pc: Option<Pc>,
     fact_lines: Vec<String>,
     source_lines: Vec<String>,
     rejection: Option<describe::VerificationDiagnostic>,
@@ -89,7 +89,7 @@ impl<'a> Browser<'a> {
     pub(super) fn with_sources(program: &'a Program, source_map: Option<BoundSources<'a>>) -> Self {
         let mut names = vec![None; program.functions.len()];
         for entry in &program.function_names {
-            if let Some(slot) = names.get_mut(entry.func as usize)
+            if let Some(slot) = names.get_mut(entry.func.0 as usize)
                 && slot.is_none()
             {
                 *slot = program.symbol_str(entry.name).ok();
@@ -208,10 +208,10 @@ impl<'a> Browser<'a> {
         self.load(function, instruction);
     }
 
-    fn span(&self, pc: u32) -> Option<SpanId> {
+    fn span(&self, pc: Pc) -> Option<SpanId> {
         let index = self
             .spans
-            .partition_point(|&(start, _)| start <= u64::from(pc));
+            .partition_point(|&(start, _)| start <= u64::from(pc.0));
         self.spans.get(index.checked_sub(1)?).map(|&(_, id)| id)
     }
 

@@ -251,7 +251,7 @@ impl Runtime {
                     .run
                     .program()
                     .program()
-                    .function_name(site.location.func.0)
+                    .function_name(site.location.func)
                     .unwrap_or("unnamed")
                     .to_string();
                 self.event(

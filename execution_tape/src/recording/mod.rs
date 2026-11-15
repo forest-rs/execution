@@ -142,7 +142,7 @@ mod values;
 use crate::host::HostError;
 use crate::program::{HostSigId, RegionId, ValueType};
 use crate::trace::TraceLocation;
-use crate::value::{FuncRef, TagRef, UnitId};
+use crate::value::{AggHandle, FuncRef, TagRef, UnitId};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{Limits, TrapInfo};
 use alloc::boxed::Box;
@@ -242,7 +242,7 @@ pub enum CaptureFault {
     /// An observed aggregate reference could not be retained.
     InvalidAggregate {
         /// Raw source handle, valid only in the observed invocation's heap domain.
-        handle: u32,
+        handle: AggHandle,
     },
     /// Boundary callbacks were missing or out of order.
     InvalidSequence,

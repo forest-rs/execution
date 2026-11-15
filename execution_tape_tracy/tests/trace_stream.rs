@@ -18,6 +18,7 @@ use execution_tape::value::{FuncId, Value};
 use execution_tape::verifier::VerifiedProgram;
 use execution_tape::vm::{Limits, Vm};
 
+use execution_tape::program::SpanId;
 use execution_tape_tracy::{LabelResolver, ProfilingTraceSink};
 
 #[derive(Clone)]
@@ -176,7 +177,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
             kind: ScopeKind,
             depth: usize,
             location: TraceLocation,
-            span: Option<u64>,
+            span: Option<SpanId>,
         ) {
             let (func, pc) = (location.func, location.pc);
             let source = self
@@ -193,7 +194,7 @@ fn real_guest_and_host_scopes_resolve_the_callback_function_and_pc() {
             kind: ScopeKind,
             depth: usize,
             location: TraceLocation,
-            span: Option<u64>,
+            span: Option<SpanId>,
             outcome: TraceOutcome<'_>,
         ) {
             self.sink

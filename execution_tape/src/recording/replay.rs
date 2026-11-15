@@ -3,7 +3,7 @@
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use crate::program::{HostSigId, Program};
+use crate::program::{HostSigId, Pc, Program, SpanId};
 use crate::recording::control::Action;
 use crate::recording::{
     AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedValue, Recording, Store,
@@ -870,7 +870,7 @@ impl TraceSink for Check<'_> {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         let ScopeKind::CallFrame {
             func: callee,
@@ -903,7 +903,7 @@ impl TraceSink for Check<'_> {
         kind: ScopeKind,
         _: usize,
         _: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         if !matches!(kind, ScopeKind::CallFrame { .. }) {
@@ -921,7 +921,14 @@ impl TraceSink for Check<'_> {
             .and_then(|top| self.record.frames[top.index()].parent);
     }
 
-    fn instr(&mut self, _: &Program, location: TraceLocation, _: u32, _: Option<u64>, opcode: u16) {
+    fn instr(
+        &mut self,
+        _: &Program,
+        location: TraceLocation,
+        _: Pc,
+        _: Option<SpanId>,
+        opcode: u16,
+    ) {
         let mut state = self.state.borrow_mut();
         state.location = Some(location);
         let index = state.instructions;
@@ -1924,7 +1931,7 @@ mod tests {
             let mut record = callback_recording();
             match change {
                 0 => record.commands[0].sequence += 1,
-                1 => record.commands[0].location.pc += 1,
+                1 => record.commands[0].location.pc.0 += 1,
                 2 => {
                     let Action::CallGuest { callee, .. } = record.commands[0].action;
                     record.arena.values[callee] =
@@ -2079,7 +2086,7 @@ mod tests {
 
         let mut changed = record(true, false);
         let actual = changed.calls[0].location;
-        changed.calls[0].location.pc += 1;
+        changed.calls[0].location.pc.0 += 1;
         assert_eq!(
             reason(&changed),
             Divergence::Location {

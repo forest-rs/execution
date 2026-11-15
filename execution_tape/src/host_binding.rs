@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash};
-use crate::program::{HostSigId, Program, SpanId, ValueType};
+use crate::program::{HostSigId, Pc, Program, SpanId, ValueType};
 use crate::value::{FuncId, Value};
 use crate::verifier::{HostCallSite, VerifiedProgram, write_location};
 
@@ -696,8 +696,8 @@ pub struct CallError {
     pub symbol: Box<str>,
     /// Function containing the call.
     pub function: FuncId,
-    /// Bytecode offset of the call within its function.
-    pub pc: u32,
+    /// Call instruction within its function.
+    pub pc: Pc,
     /// Source span of the call, if the program records one.
     pub span: Option<SpanId>,
     /// Why the check rejected the call.
@@ -747,7 +747,7 @@ struct CallInProgram<'a> {
 impl fmt::Display for CallInProgram<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { error, program } = *self;
-        write_location(f, program, error.function.0, Some(error.pc))?;
+        write_location(f, program, error.function, Some(error.pc))?;
         error.fmt_call(f)
     }
 }

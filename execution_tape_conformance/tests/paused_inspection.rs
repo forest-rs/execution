@@ -9,7 +9,7 @@ use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{HostTypeId, ValueType},
+    program::{HostTypeId, Pc, ValueType},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     trace::TraceLocation,
     value::{FuncId, Obj, ObjHandle, Value},
@@ -38,7 +38,7 @@ impl Host for NoHost {
     }
 }
 
-fn calls() -> (VerifiedProgram, FuncId, u32, u32) {
+fn calls() -> (VerifiedProgram, FuncId, Pc, Pc) {
     let mut b = ProgramBuilder::new();
     let child = b
         .declare_function(FunctionSig {

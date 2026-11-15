@@ -20,7 +20,7 @@ use crate::format::{
     DecodeError as FormatDecodeError, Reader, write_sleb128_i64, write_uleb128_u64,
 };
 use crate::opcode::{CodeBytes, Opcode, OperandEncoding, OperandKind};
-use crate::program::{ConstId, ElemTypeId, HostSigId, Reg, TypeId};
+use crate::program::{ConstId, ElemTypeId, HostSigId, Pc, Reg, TypeId};
 use crate::value::{Decimal, FuncId};
 
 /// An operand value for encoding an instruction.
@@ -30,8 +30,8 @@ pub enum Operand<'a> {
     Reg(Reg),
     /// A list of virtual registers.
     RegList(&'a [Reg]),
-    /// A bytecode PC (byte offset).
-    Pc(u32),
+    /// A bytecode position.
+    Pc(Pc),
 
     /// An immediate `bool`.
     ImmBool(bool),
@@ -91,8 +91,8 @@ pub enum DecodedOperand {
     Reg(Reg),
     /// A list of virtual registers.
     RegList(Vec<Reg>),
-    /// A bytecode PC (byte offset).
-    Pc(u32),
+    /// A bytecode position.
+    Pc(Pc),
 
     /// An immediate `bool`.
     ImmBool(bool),
@@ -324,9 +324,9 @@ pub fn encode_instruction(
                     write_uleb128_u64(out, u64::from(r.0));
                 }
             }
-            (Operand::Pc(pc), OperandKind::Pc, OperandEncoding::U32Uleb)
-            | (Operand::ImmU32(pc), OperandKind::ImmU32, OperandEncoding::U32Uleb) => {
-                write_uleb128_u64(out, u64::from(pc));
+            (Operand::Pc(Pc(value)), OperandKind::Pc, OperandEncoding::U32Uleb)
+            | (Operand::ImmU32(value), OperandKind::ImmU32, OperandEncoding::U32Uleb) => {
+                write_uleb128_u64(out, u64::from(value));
             }
             (Operand::ImmBool(b), OperandKind::ImmBool, OperandEncoding::BoolU8) => {
                 out.push(u8::from(b));
@@ -408,7 +408,7 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
                 )
             }
             (OperandKind::Pc, OperandEncoding::U32Uleb) => {
-                DecodedOperand::Pc(read_u32_uleb(&mut r)?)
+                DecodedOperand::Pc(Pc(read_u32_uleb(&mut r)?))
             }
             (OperandKind::ImmBool, OperandEncoding::BoolU8) => {
                 DecodedOperand::ImmBool(r.read_u8()? != 0)

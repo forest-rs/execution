@@ -4,6 +4,7 @@
 //! Live UI policy over the VM's borrow-scoped scheduling and inspection contract.
 
 use super::{Screen, describe, flow::Flow, palette::*, render, source_context, syntax};
+use execution_tape::program::Pc;
 use execution_tape::{
     disasm::disassemble_function,
     host::{Host, ValueRef},
@@ -94,7 +95,7 @@ pub struct LiveExplorer<'view, 'vm, H: Host> {
     frames: Vec<PausedFrame>,
     selected_frame: usize,
     focus: Focus,
-    code: Vec<(u32, String)>,
+    code: Vec<(Pc, String)>,
     /// Unit and function whose disassembly [`Self::code`] holds.
     code_func: Option<(UnitId, execution_tape::value::FuncId)>,
     code_selected: usize,
@@ -825,5 +826,5 @@ mod tests;
 
 /// A breakpoint key: unit, function and pc.
 fn breakpoint(location: TraceLocation) -> (u32, u32, u32) {
-    (location.unit.0, location.func.0, location.pc)
+    (location.unit.0, location.func.0, location.pc.0)
 }

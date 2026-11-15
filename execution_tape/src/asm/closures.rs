@@ -76,7 +76,7 @@ impl ClosureLayout {
     pub fn argument(&self, index: u32) -> Result<Reg, BuildError> {
         if index as usize >= self.arguments {
             return Err(BuildError::BadArgIndex {
-                func: self.function.0,
+                func: self.function,
                 arg: index,
                 arg_count: u32::try_from(self.arguments).unwrap_or(u32::MAX),
             });

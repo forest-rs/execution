@@ -601,19 +601,19 @@ impl<H: Host> Running<'_, '_, H> {
                     TraceLocation {
                         unit: frame.unit,
                         func: frame.func,
-                        pc,
+                        pc: Pc(pc),
                     }
                 })
             })
             .unwrap_or(TraceLocation {
                 unit: self.continuation.unit,
                 func: self.continuation.entry,
-                pc: 0,
+                pc: Pc(0),
             });
         let span = self.continuation.ctx.span_at(
             self.vm.units.unit(location.unit).program.program(),
             location.func,
-            location.pc,
+            location.pc.0,
         );
         self.vm.memory.rollback(self.checkpoint);
         self.budget.frames -= self.continuation.ctx.held_frames();
@@ -714,7 +714,7 @@ impl Callable {
             return Err(TrapInfo {
                 unit,
                 func: entry,
-                pc: 0,
+                pc: Pc(0),
                 span_id: None,
                 trap: Trap::UnitProgramMismatch { unit },
             });
@@ -726,7 +726,7 @@ impl Callable {
         let trap = |trap| TrapInfo {
             unit,
             func: entry,
-            pc: 0,
+            pc: Pc(0),
             span_id: None,
             trap,
         };

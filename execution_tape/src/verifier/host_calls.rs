@@ -20,7 +20,7 @@ use crate::analysis::protection::Protection;
 use crate::bytecode::{DecodedInstr, Instr, decode_instructions};
 use crate::host::ValueRef;
 use crate::host_binding::HostImport;
-use crate::program::{ConstEntry, ConstId, HostSigId, Program, SpanId};
+use crate::program::{ConstEntry, ConstId, HostSigId, Pc, Program, SpanId};
 use crate::value::{Decimal, FuncId};
 
 /// A constant a register is known to hold. Strings and bytes stay in the program's pool.
@@ -134,7 +134,7 @@ impl Constants {
 
 struct Site {
     function: FuncId,
-    pc: u32,
+    pc: Pc,
     import: HostSigId,
     span: Option<SpanId>,
     args: Range<usize>,
@@ -281,7 +281,7 @@ impl<'s> HostCallSite<'s> {
 
     /// The call instruction's bytecode offset within its function.
     #[must_use]
-    pub fn pc(&self) -> u32 {
+    pub fn pc(&self) -> Pc {
         self.site.pc
     }
 
@@ -362,7 +362,7 @@ impl VerifiedProgram {
                             .and_then(|ix| executable.span_at_ix(ix));
                         sites.sites.push(Site {
                             function,
-                            pc: di.offset,
+                            pc: Pc(di.offset),
                             import: *host_sig,
                             span,
                             args: start..sites.args.len(),
@@ -413,7 +413,7 @@ fn solve(
                 }
                 edge.forget_writes(&decoded[raise.first..block.instr_end]);
                 let target = raise.handler.catch.target();
-                for &param in blocks::declaration(decoded, target).unwrap_or(&[]) {
+                for &param in blocks::declaration(decoded, target.0).unwrap_or(&[]) {
                     edge.set(param, None);
                 }
                 &edge

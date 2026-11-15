@@ -10,7 +10,7 @@
 use execution_tape::{
     asm::{Asm, Catch, FunctionSig, Label, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{CallSigId, HostSigId, HostTypeId, TagId, ValueType},
+    program::{CallSigId, HostSigId, HostTypeId, Pc, TagId, ValueType},
     value::{FuncId, FuncRef, Obj, ObjHandle, Value},
     verifier::VerifiedProgram,
     vm::{
@@ -189,7 +189,7 @@ fn drive(program: &Arc<VerifiedProgram>, entry: FuncId) -> Collector {
 struct Fixture {
     program: Arc<VerifiedProgram>,
     holder: FuncId,
-    holder_suspend: u32,
+    holder_suspend: Pc,
     taker: FuncId,
     asker: FuncId,
     suspended: FuncId,

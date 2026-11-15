@@ -10,7 +10,7 @@ use execution_tape::{
     asm::{BuildError, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
     opcode::Opcode,
-    program::{Const, Program, ValueType},
+    program::{Const, Pc, Program, SpanId, ValueType},
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{RegisterEvent, RegisterPhase, TraceMask, TraceSink},
     value::{FuncId, Value},
@@ -49,7 +49,7 @@ impl Host for UnitHost {
 
 #[derive(Default)]
 struct Observe {
-    instructions: Vec<(u32, u16)>,
+    instructions: Vec<(Pc, u16)>,
     writes: Vec<(Reg, Value)>,
 }
 impl TraceSink for Observe {
@@ -57,8 +57,8 @@ impl TraceSink for Observe {
         &mut self,
         _: &Program,
         location: execution_tape::trace::TraceLocation,
-        _: u32,
-        _: Option<u64>,
+        _: Pc,
+        _: Option<SpanId>,
         opcode: u16,
     ) {
         let (_, pc) = (location.func, location.pc);

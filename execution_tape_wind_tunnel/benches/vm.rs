@@ -9,6 +9,7 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, SigHash, ValueRef, sig_hash as sig_hash_fn,
 };
+use execution_tape::program::Pc;
 use execution_tape::program::Program;
 use execution_tape::program::{Const, SpanId, ValueType};
 use execution_tape::trace::{ScopeKind, TraceMask, TraceOutcome, TraceSink};
@@ -1196,7 +1197,7 @@ impl TraceSink for CountingHostScopes {
         _kind: ScopeKind,
         _depth: usize,
         _location: execution_tape::trace::TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
     ) {
         self._count = self._count.wrapping_add(1);
     }
@@ -1207,7 +1208,7 @@ impl TraceSink for CountingHostScopes {
         _kind: ScopeKind,
         _depth: usize,
         _location: execution_tape::trace::TraceLocation,
-        _span_id: Option<u64>,
+        _span_id: Option<SpanId>,
         _outcome: execution_tape::trace::TraceOutcome<'_>,
     ) {
         self._count = self._count.wrapping_add(1);
@@ -1228,8 +1229,8 @@ impl TraceSink for CountingInstr {
         &mut self,
         _program: &Program,
         _location: execution_tape::trace::TraceLocation,
-        _next_pc: u32,
-        _span_id: Option<u64>,
+        _next_pc: Pc,
+        _span_id: Option<SpanId>,
         _opcode: u16,
     ) {
         self._count = self._count.wrapping_add(1);

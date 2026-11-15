@@ -71,13 +71,13 @@ pub enum FactOrigin {
     /// The last defining instruction within the current basic block.
     Instruction {
         /// Source bytecode offset.
-        pc: u32,
+        pc: Pc,
     },
     /// A fact admitted through incoming control flow. Inspect incoming edges for evidence.
     /// Block zero also meets the invocation's argument/effect seeds, which are not CFG edges.
     BlockEntry {
         /// Source offset of the current block's first instruction.
-        pc: u32,
+        pc: Pc,
     },
 }
 
@@ -199,7 +199,7 @@ impl<'a> FunctionAnalysis<'a> {
         )
         .expect("verified initialization");
         let (mut arena, inputs, outputs) =
-            solve_flow(program, function.0, &blocks, &reachable, types, &decoded);
+            solve_flow(program, function, &blocks, &reachable, types, &decoded);
         let mut raw_changes = Vec::new();
         let mut change_offsets = Vec::with_capacity(decoded.len() + 1);
         for (b, block) in blocks.iter().enumerate() {
@@ -311,10 +311,10 @@ impl<'a> FunctionAnalysis<'a> {
     /// execution: call outputs assume successful callee return, while branch outputs precede
     /// outgoing edge bindings. This differs from trace instruction-completion timing.
     /// Incoming block parameters are already admitted before the declaration itself.
-    pub fn instruction(&mut self, pc: u32) -> Option<InstructionFacts<'_>> {
+    pub fn instruction(&mut self, pc: Pc) -> Option<InstructionFacts<'_>> {
         let index = self
             .decoded
-            .binary_search_by_key(&pc, |di| di.offset)
+            .binary_search_by_key(&pc, |di| Pc(di.offset))
             .ok()?;
         let block = self
             .blocks
@@ -397,8 +397,8 @@ impl<'a> InstructionFacts<'a> {
     }
     /// Source bytecode offset.
     #[must_use]
-    pub fn pc(&self) -> u32 {
-        self.analysis.decoded[self.index].offset
+    pub fn pc(&self) -> Pc {
+        Pc(self.analysis.decoded[self.index].offset)
     }
     /// Source opcode, including block declarations.
     #[must_use]
@@ -451,7 +451,7 @@ impl<'a> InstructionFacts<'a> {
         };
         let origin_before = matches!(before, ValueFact::Contract(_)).then(|| {
             if let Some(&pc) = a.cursor.definitions.get(&register.0) {
-                FactOrigin::Instruction { pc }
+                FactOrigin::Instruction { pc: Pc(pc) }
             } else if self.block == 0 && a.incoming_ranges[0].is_empty() {
                 if register == Reg(0) {
                     FactOrigin::Effect
@@ -462,7 +462,7 @@ impl<'a> InstructionFacts<'a> {
                 }
             } else {
                 FactOrigin::BlockEntry {
-                    pc: a.blocks[self.block].start_pc,
+                    pc: Pc(a.blocks[self.block].start_pc),
                 }
             }
         });
@@ -519,8 +519,8 @@ pub struct EdgeBinding {
 impl IncomingEdge<'_> {
     /// Source terminator's bytecode offset.
     #[must_use]
-    pub fn source_pc(&self) -> u32 {
-        self.instruction().offset
+    pub fn source_pc(&self) -> Pc {
+        Pc(self.instruction().offset)
     }
     /// Source arm: 0 is jump/true, 1 is false.
     #[must_use]
@@ -529,8 +529,8 @@ impl IncomingEdge<'_> {
     }
     /// Destination block header PC.
     #[must_use]
-    pub fn target_pc(&self) -> u32 {
-        self.analysis.blocks[self.source.target].start_pc
+    pub fn target_pc(&self) -> Pc {
+        Pc(self.analysis.blocks[self.source.target].start_pc)
     }
     fn instruction(&self) -> &DecodedInstr {
         &self.analysis.decoded[self.analysis.blocks[self.source.source].instr_end - 1]

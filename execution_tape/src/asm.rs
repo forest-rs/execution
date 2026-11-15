@@ -33,7 +33,7 @@ use crate::host_binding::HostImport;
 use crate::opcode::Opcode;
 use crate::program::{
     ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
-    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Program, RegionDef,
+    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Pc, Program, RegionDef,
     RegionId, RegionRun, SpanEntry, SpanId, StructTypeDef, SymbolId, TagEntry, TagId, TypeId,
     TypeTableDef, ValueType,
 };
@@ -153,8 +153,8 @@ pub struct AsmParts {
 /// A named label placed within a function.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NamedLabel {
-    /// Bytecode pc (byte offset within the function).
-    pub pc: u32,
+    /// Labelled instruction boundary.
+    pub pc: Pc,
     /// Label name.
     pub name: String,
 }
@@ -186,12 +186,12 @@ pub enum BuildError {
     /// A function id was out of range for the builder.
     BadFuncId {
         /// The invalid function id.
-        func: u32,
+        func: FuncId,
     },
     /// An argument index was out of range for the function signature.
     BadArgIndex {
         /// The function id.
-        func: u32,
+        func: FuncId,
         /// The invalid argument index.
         arg: u32,
         /// The number of arguments in the function signature.
@@ -200,7 +200,7 @@ pub enum BuildError {
     /// A return index was out of range for the function signature.
     BadRetIndex {
         /// The function id.
-        func: u32,
+        func: FuncId,
         /// The invalid return index.
         ret: u32,
         /// The number of returns in the function signature.
@@ -209,7 +209,7 @@ pub enum BuildError {
     /// A function was declared but never defined.
     MissingFunctionBody {
         /// The function id that is missing a body.
-        func: u32,
+        func: FuncId,
     },
     /// The produced program failed verification.
     ///
@@ -483,14 +483,14 @@ pub struct ProgramBuilder {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct FunctionInputNameDef {
-    func: u32,
+    func: FuncId,
     arg: u32,
     name: SymbolId,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct FunctionOutputNameDef {
-    func: u32,
+    func: FuncId,
     ret: u32,
     name: SymbolId,
 }
@@ -545,16 +545,14 @@ impl ProgramBuilder {
     /// Sets a human-readable function name (stored as a symbol id).
     pub fn set_function_name(&mut self, func: FuncId, name: &str) -> Result<SymbolId, BuildError> {
         if self.functions.get(func.0 as usize).is_none() {
-            return Err(BuildError::BadFuncId { func: func.0 });
+            return Err(BuildError::BadFuncId { func });
         }
         let sym = self.symbol(name);
-        if let Some(entry) = self.function_names.iter_mut().find(|e| e.func == func.0) {
+        if let Some(entry) = self.function_names.iter_mut().find(|e| e.func == func) {
             entry.name = sym;
         } else {
-            self.function_names.push(FunctionNameEntry {
-                func: func.0,
-                name: sym,
-            });
+            self.function_names
+                .push(FunctionNameEntry { func, name: sym });
         }
         Ok(sym)
     }
@@ -567,12 +565,12 @@ impl ProgramBuilder {
         name: &str,
     ) -> Result<SymbolId, BuildError> {
         let Some(def) = self.functions.get(func.0 as usize) else {
-            return Err(BuildError::BadFuncId { func: func.0 });
+            return Err(BuildError::BadFuncId { func });
         };
         if (arg as usize) >= def.args.len() {
             let arg_count = u32::try_from(def.args.len()).unwrap_or(u32::MAX);
             return Err(BuildError::BadArgIndex {
-                func: func.0,
+                func,
                 arg,
                 arg_count,
             });
@@ -582,12 +580,12 @@ impl ProgramBuilder {
         if let Some(entry) = self
             .function_input_names
             .iter_mut()
-            .find(|e| e.func == func.0 && e.arg == arg)
+            .find(|e| e.func == func && e.arg == arg)
         {
             entry.name = sym;
         } else {
             self.function_input_names.push(FunctionInputNameDef {
-                func: func.0,
+                func,
                 arg,
                 name: sym,
             });
@@ -603,12 +601,12 @@ impl ProgramBuilder {
         name: &str,
     ) -> Result<SymbolId, BuildError> {
         let Some(def) = self.functions.get(func.0 as usize) else {
-            return Err(BuildError::BadFuncId { func: func.0 });
+            return Err(BuildError::BadFuncId { func });
         };
         if (ret as usize) >= def.rets.len() {
             let ret_count = u32::try_from(def.rets.len()).unwrap_or(u32::MAX);
             return Err(BuildError::BadRetIndex {
-                func: func.0,
+                func,
                 ret,
                 ret_count,
             });
@@ -618,12 +616,12 @@ impl ProgramBuilder {
         if let Some(entry) = self
             .function_output_names
             .iter_mut()
-            .find(|e| e.func == func.0 && e.ret == ret)
+            .find(|e| e.func == func && e.ret == ret)
         {
             entry.name = sym;
         } else {
             self.function_output_names.push(FunctionOutputNameDef {
-                func: func.0,
+                func,
                 ret,
                 name: sym,
             });
@@ -635,22 +633,22 @@ impl ProgramBuilder {
     pub fn set_label_name_pc(
         &mut self,
         func: FuncId,
-        pc: u32,
+        pc: Pc,
         name: &str,
     ) -> Result<SymbolId, BuildError> {
         if self.functions.get(func.0 as usize).is_none() {
-            return Err(BuildError::BadFuncId { func: func.0 });
+            return Err(BuildError::BadFuncId { func });
         }
         let sym = self.symbol(name);
         if let Some(entry) = self
             .labels
             .iter_mut()
-            .find(|e| e.func == func.0 && e.pc == pc)
+            .find(|e| e.func == func && e.pc == pc)
         {
             entry.name = sym;
         } else {
             self.labels.push(LabelNameEntry {
-                func: func.0,
+                func,
                 pc,
                 name: sym,
             });
@@ -817,7 +815,7 @@ impl ProgramBuilder {
         let function = self
             .functions
             .get(func.0 as usize)
-            .ok_or(BuildError::BadFuncId { func: func.0 })?;
+            .ok_or(BuildError::BadFuncId { func })?;
         let mut types = Vec::with_capacity(function.args.len() + 1);
         types.push(ValueType::Unit);
         types.extend(function.args.iter().map(|id| {
@@ -835,7 +833,7 @@ impl ProgramBuilder {
     pub fn define_function(&mut self, func: FuncId, a: Asm) -> Result<(), BuildError> {
         let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
-            return Err(BuildError::BadFuncId { func: func.0 });
+            return Err(BuildError::BadFuncId { func });
         };
         slot.register_types = parts.register_types;
         slot.bytecode = parts.bytecode;
@@ -845,7 +843,7 @@ impl ProgramBuilder {
         for l in parts.labels {
             let sym = self.symbol(&l.name);
             self.labels.push(LabelNameEntry {
-                func: func.0,
+                func,
                 pc: l.pc,
                 name: sym,
             });
@@ -862,7 +860,7 @@ impl ProgramBuilder {
     ) -> Result<(), BuildError> {
         let parts = a.finish_parts()?;
         let Some(slot) = self.functions.get_mut(func.0 as usize) else {
-            return Err(BuildError::BadFuncId { func: func.0 });
+            return Err(BuildError::BadFuncId { func });
         };
         slot.register_types = parts.register_types;
         slot.bytecode = parts.bytecode;
@@ -872,7 +870,7 @@ impl ProgramBuilder {
         for l in parts.labels {
             let sym = self.symbol(&l.name);
             self.labels.push(LabelNameEntry {
-                func: func.0,
+                func,
                 pc: l.pc,
                 name: sym,
             });
@@ -904,7 +902,7 @@ impl ProgramBuilder {
         for l in parts.labels {
             let sym = self.symbol(&l.name);
             self.labels.push(LabelNameEntry {
-                func: id.0,
+                func: id,
                 pc: l.pc,
                 name: sym,
             });
@@ -984,12 +982,12 @@ impl ProgramBuilder {
         let mut has_arg_names = vec![false; func_count];
         let mut has_ret_names = vec![false; func_count];
         for e in &self.function_input_names {
-            if let Some(slot) = has_arg_names.get_mut(e.func as usize) {
+            if let Some(slot) = has_arg_names.get_mut(e.func.0 as usize) {
                 *slot = true;
             }
         }
         for e in &self.function_output_names {
-            if let Some(slot) = has_ret_names.get_mut(e.func as usize) {
+            if let Some(slot) = has_ret_names.get_mut(e.func.0 as usize) {
                 *slot = true;
             }
         }
@@ -999,20 +997,20 @@ impl ProgramBuilder {
                 let offset = u32::try_from(p.value_name_ids.len()).unwrap_or(u32::MAX);
                 let len = f.arg_count;
                 p.value_name_ids
-                    .resize(p.value_name_ids.len() + len as usize, 0);
+                    .resize(p.value_name_ids.len() + len as usize, None);
                 f.arg_name_ids = ByteRange { offset, len };
             }
             if has_ret_names[i] {
                 let offset = u32::try_from(p.value_name_ids.len()).unwrap_or(u32::MAX);
                 let len = f.ret_count;
                 p.value_name_ids
-                    .resize(p.value_name_ids.len() + len as usize, 0);
+                    .resize(p.value_name_ids.len() + len as usize, None);
                 f.ret_name_ids = ByteRange { offset, len };
             }
         }
 
         for e in &self.function_input_names {
-            let Some(f) = p.functions.get(e.func as usize) else {
+            let Some(f) = p.functions.get(e.func.0 as usize) else {
                 continue;
             };
             if e.arg >= f.arg_count {
@@ -1023,11 +1021,11 @@ impl ProgramBuilder {
             }
             let base = f.arg_name_ids.offset as usize;
             if let Some(slot) = p.value_name_ids.get_mut(base + e.arg as usize) {
-                *slot = e.name.index();
+                *slot = Some(e.name);
             }
         }
         for e in &self.function_output_names {
-            let Some(f) = p.functions.get(e.func as usize) else {
+            let Some(f) = p.functions.get(e.func.0 as usize) else {
                 continue;
             };
             if e.ret >= f.ret_count {
@@ -1038,7 +1036,7 @@ impl ProgramBuilder {
             }
             let base = f.ret_name_ids.offset as usize;
             if let Some(slot) = p.value_name_ids.get_mut(base + e.ret as usize) {
-                *slot = e.name.index();
+                *slot = Some(e.name);
             }
         }
 
@@ -1055,7 +1053,7 @@ impl ProgramBuilder {
         for (i, f) in self.functions.iter().enumerate() {
             if f.bytecode.is_empty() {
                 return Err(BuildError::MissingFunctionBody {
-                    func: u32::try_from(i).unwrap_or(u32::MAX),
+                    func: FuncId(u32::try_from(i).unwrap_or(u32::MAX)),
                 });
             }
         }
@@ -1076,7 +1074,7 @@ impl ProgramBuilder {
         for (i, f) in self.functions.iter().enumerate() {
             if f.bytecode.is_empty() {
                 return Err(BuildError::MissingFunctionBody {
-                    func: u32::try_from(i).unwrap_or(u32::MAX),
+                    func: FuncId(u32::try_from(i).unwrap_or(u32::MAX)),
                 });
             }
         }
@@ -1119,10 +1117,10 @@ impl Asm {
         Self::default()
     }
 
-    /// Returns the current byte offset ("pc") in the output.
+    /// Returns the position of the next emitted instruction.
     #[must_use]
-    pub fn pc(&self) -> u32 {
-        u32::try_from(self.bytes.len()).unwrap_or(u32::MAX)
+    pub fn pc(&self) -> Pc {
+        Pc(u32::try_from(self.bytes.len()).unwrap_or(u32::MAX))
     }
 
     /// Takes ownership of the complete register kind ledger, replacing previous declarations.
@@ -1221,7 +1219,7 @@ impl Asm {
             .labels
             .get_mut(label.0 as usize)
             .ok_or(UnresolvedLabel)?;
-        *slot = Some(pc);
+        *slot = Some(pc.0);
         if let Some(params) = self.block_params[label.0 as usize].take() {
             self.opcode(Opcode::Block);
             self.uleb(u32::try_from(params.len()).unwrap_or(u32::MAX));
@@ -1248,12 +1246,12 @@ impl Asm {
     pub fn span(&mut self, span_id: SpanId) -> &mut Self {
         let pc = self.pc();
         if let Some((last_pc, last_span)) = self.span_marks.last_mut()
-            && *last_pc == pc
+            && *last_pc == pc.0
         {
             *last_span = span_id;
             return self;
         }
-        self.span_marks.push((pc, span_id));
+        self.span_marks.push((pc.0, span_id));
         self
     }
 
@@ -1294,7 +1292,7 @@ impl Asm {
             let Some(pc) = self.labels.get(i).and_then(|x| *x) else {
                 return Err(UnresolvedLabel);
             };
-            labels_out.push(NamedLabel { pc, name });
+            labels_out.push(NamedLabel { pc: Pc(pc), name });
         }
 
         let (regions, region_runs) = self.regions.finish(&self.labels, self.bytes.len())?;
@@ -3816,7 +3814,7 @@ impl Asm {
     }
 
     fn opcode(&mut self, opcode: Opcode) {
-        self.sources.instruction(self.pc());
+        self.sources.instruction(self.pc().0);
         opcode.encode(&mut self.bytes);
     }
 
@@ -3905,7 +3903,7 @@ mod tests {
         let builder = ProgramBuilder::new();
         assert!(matches!(
             builder.function_asm(FuncId(7)),
-            Err(BuildError::BadFuncId { func: 7 })
+            Err(BuildError::BadFuncId { func: FuncId(7) })
         ));
         assert!(builder.functions.is_empty());
     }

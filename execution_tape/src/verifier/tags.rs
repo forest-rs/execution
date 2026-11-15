@@ -13,7 +13,8 @@ use alloc::collections::BTreeMap;
 use super::VerifyError;
 use super::metadata::MetadataTable;
 use crate::format::DecodeError;
-use crate::program::{Program, Reg, RegisterTypes, TagId};
+use crate::program::{Pc, Program, Reg, RegisterTypes, TagId};
+use crate::value::FuncId;
 
 fn malformed(tag: usize, error: DecodeError) -> VerifyError {
     VerifyError::InvalidMetadata {
@@ -46,8 +47,8 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         }
         if let Some(&first) = names.get(name) {
             return Err(VerifyError::DuplicateTagName {
-                tag,
-                first,
+                tag: TagId(tag),
+                first: TagId(first),
                 name: name.into(),
             });
         }
@@ -75,7 +76,7 @@ fn name(program: &Program, tag: TagId) -> Box<str> {
 /// Checks the payload count of a `throw` whose tag is already known to exist.
 pub(super) fn check_throw_arity(
     program: &Program,
-    func: u32,
+    func: FuncId,
     pc: u32,
     tag: TagId,
     supplied: usize,
@@ -87,8 +88,8 @@ pub(super) fn check_throw_arity(
     if u32::try_from(supplied).ok() != Some(expected) {
         return Err(VerifyError::ThrowArityMismatch {
             func,
-            pc,
-            tag: tag.0,
+            pc: Pc(pc),
+            tag,
             name: name(program, tag),
             expected,
             actual: u32::try_from(supplied).unwrap_or(u32::MAX),
@@ -100,7 +101,7 @@ pub(super) fn check_throw_arity(
 /// Checks that each payload register declares its tag's payload storage kind.
 pub(super) fn check_throw_payload(
     program: &Program,
-    func: u32,
+    func: FuncId,
     pc: u32,
     tag: TagId,
     args: &[u32],
@@ -114,14 +115,14 @@ pub(super) fn check_throw_payload(
     for (index, (&reg, &expected)) in args.iter().zip(payload.iter()).enumerate() {
         let actual = types.get(Reg(reg)).ok_or(VerifyError::RegOutOfBounds {
             func,
-            pc,
+            pc: Pc(pc),
             reg: Reg(reg),
         })?;
         if actual != expected {
             return Err(VerifyError::ThrowPayloadMismatch {
                 func,
-                pc,
-                tag: tag.0,
+                pc: Pc(pc),
+                tag,
                 name: name(program, tag),
                 index: u32::try_from(index).expect("verified payload arity"),
                 reg: Reg(reg),

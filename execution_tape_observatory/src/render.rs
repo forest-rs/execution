@@ -8,6 +8,7 @@ use super::{
     model::{Boundary, Focus, View},
 };
 use super::{palette::*, syntax};
+use execution_tape::program::Pc;
 use execution_tape::recording::{
     Divergence, HostOutcome, Outcome, RecordedValue, ReplayBoundary, ReplayError,
 };
@@ -964,7 +965,7 @@ fn source(frame: &mut Frame<'_>, view: &View<'_>, mut area: Rect) {
     let first = source
         .instrs()
         .nth(start)
-        .map_or(0, |instruction| instruction.pc());
+        .map_or(Pc(0), |instruction| instruction.pc());
     let last = source
         .instrs()
         .skip(start)

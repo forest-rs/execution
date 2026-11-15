@@ -59,7 +59,7 @@ pub(super) fn emit(
         }
         Entry::Occupied(entry) => entry.into_mut(),
     };
-    let Ok(index) = map.instructions.binary_search_by_key(&pc, |i| i.offset) else {
+    let Ok(index) = map.instructions.binary_search_by_key(&pc, |i| Pc(i.offset)) else {
         return;
     };
     let instruction = &map.instructions[index].instr;

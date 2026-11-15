@@ -197,7 +197,7 @@ impl Builder {
             cursor += 1;
             let id = self.handles[&handle];
             let handle = AggHandle(handle);
-            let invalid = || CaptureFault::InvalidAggregate { handle: handle.0 };
+            let invalid = || CaptureFault::InvalidAggregate { handle };
             let kind = heap.agg_type(handle).map_err(|_| invalid())?;
             // Record the structural shape, so the recording keeps its meaning without the heap.
             let recorded = match kind {
@@ -216,7 +216,7 @@ impl Builder {
                 AggType::Struct { .. } => heap.struct_field_count(handle),
                 AggType::Array { .. } => heap.array_len(handle),
             }
-            .map_err(|_| CaptureFault::InvalidAggregate { handle: handle.0 })?;
+            .map_err(|_| CaptureFault::InvalidAggregate { handle })?;
             let start = self.arena.values.len();
             for index in 0..count {
                 let value = match kind {
@@ -224,7 +224,7 @@ impl Builder {
                     AggType::Struct { .. } => heap.struct_get_ref(handle, index),
                     AggType::Array { .. } => heap.array_get_ref(handle, index),
                 }
-                .map_err(|_| CaptureFault::InvalidAggregate { handle: handle.0 })?;
+                .map_err(|_| CaptureFault::InvalidAggregate { handle })?;
                 let value = self.value(ValueRef::from_value(value), heap)?;
                 self.push(value)?;
             }
@@ -325,7 +325,7 @@ impl Builder {
             });
         }
         heap.agg_type(handle)
-            .map_err(|_| CaptureFault::InvalidAggregate { handle: handle.0 })?;
+            .map_err(|_| CaptureFault::InvalidAggregate { handle })?;
         let id = AggregateId(u32::try_from(self.arena.nodes.len()).map_err(|_| {
             CaptureFault::Budget {
                 resource: CaptureResource::Aggregates,
@@ -354,7 +354,9 @@ impl Builder {
                 self.handles
                     .get(&handle)
                     .copied()
-                    .ok_or(CaptureFault::InvalidAggregate { handle })
+                    .ok_or(CaptureFault::InvalidAggregate {
+                        handle: AggHandle(handle),
+                    })
             })
             .collect()
     }

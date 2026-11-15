@@ -46,8 +46,8 @@ use crate::host::sig_hash_slices;
 use crate::instr_operands;
 use crate::opcode::CodeBytes;
 use crate::program::{
-    CallSigId, ConstEntry, ElemTypeId, Function, Program, Reg, RegisterTypes, SpanEntry, SpanId,
-    SymbolId, TagId, TypeId, ValueType,
+    CallSigId, ConstEntry, ConstId, ElemTypeId, Function, HostSigId, Pc, Program, Reg, RegionId,
+    RegisterTypes, SpanEntry, SpanId, SymbolId, TagId, TypeId, ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, ContReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
@@ -88,25 +88,25 @@ pub enum VerifyLint {
     /// A basic block is unreachable from function entry.
     UnreachableBlock {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the basic block start.
-        pc: u32,
+        pc: Pc,
     },
     /// An instruction writes a register whose value is never read.
     DeadStore {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Written register.
         reg: Reg,
     },
     /// A `mov` is redundant (e.g. `mov rX, rX`).
     RedundantMove {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Destination register.
         dst: Reg,
         /// Source register.
@@ -115,9 +115,9 @@ pub enum VerifyLint {
     /// A `call`/`host_call` return register is never read.
     UnusedCallReturn {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Return register.
         reg: Reg,
     },
@@ -186,11 +186,11 @@ pub enum VerifyError {
     /// the continuation `cont.new` creates.
     CallIndirectContractMismatch {
         /// Containing function.
-        func: u32,
+        func: FuncId,
         /// Call instruction byte offset.
-        pc: u32,
+        pc: Pc,
         /// Required indirect signature.
-        call_sig: u32,
+        call_sig: CallSigId,
     },
     /// A compositional contract contradicts its nominal schema, even if it is unused.
     InvalidContract {
@@ -203,9 +203,9 @@ pub enum VerifyError {
     /// A statically known argument or result contradicts its compositional contract.
     ContractMismatch {
         /// Function containing the call or return instruction.
-        func: u32,
+        func: FuncId,
         /// Source instruction byte offset.
-        pc: u32,
+        pc: Pc,
         /// Argument/result obligation.
         position: ContractPosition,
         /// Nested disagreement with the originating program's contract.
@@ -215,22 +215,22 @@ pub enum VerifyError {
     /// A typed block declaration is invalid.
     BlockDeclaration {
         /// Function index.
-        func: u32,
+        func: FuncId,
         /// Header byte offset.
-        pc: u32,
+        pc: Pc,
         /// Invalid declaration component.
         error: BlockDeclarationError,
     },
     /// A source edge does not satisfy its target's block contract.
     BlockEdge {
         /// Function index.
-        func: u32,
+        func: FuncId,
         /// Source branch byte offset.
-        pc: u32,
+        pc: Pc,
         /// Zero for jump/true; one for false.
         arm: usize,
         /// Source target header byte offset.
-        target: u32,
+        target: Pc,
         /// Failed contract component.
         error: BlockEdgeError,
     },
@@ -251,106 +251,106 @@ pub enum VerifyError {
     /// opcode metadata and the bytecode decoder.
     InternalOpcodeSchemaMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Opcode code (see [`Opcode::code`](crate::opcode::Opcode::code)).
         opcode: u16,
     },
     /// A decoded opcode is recognized but not yet supported by verifier lowering.
     UnsupportedInstruction {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Opcode code (see [`Opcode::code`](crate::opcode::Opcode::code)).
         opcode: u16,
     },
     /// A function references an out-of-bounds byte range.
     FunctionBytecodeOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A function references an out-of-bounds span range.
     FunctionSpansOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A function references an out-of-bounds argument type range.
     FunctionArgTypesOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A function references an out-of-bounds return type range.
     FunctionRetTypesOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A function signature does not match its declared counts.
     FunctionSigCountMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A function uses a value type not yet supported by the verifier/runtime register model.
     UnsupportedValueType {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Unsupported value type.
         value_type: ValueType,
     },
     /// A function input-name entry references an invalid argument index.
     FunctionInputNameArgOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Argument index within the function signature.
         arg: u32,
     },
     /// A function input name is empty.
     FunctionInputNameEmpty {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Argument index within the function signature.
         arg: u32,
     },
     /// A function input name is duplicated within the same function signature.
     FunctionInputNameDuplicate {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Symbol id naming the duplicated input.
         name: SymbolId,
     },
     /// A function declares multiple names for the same argument index.
     FunctionInputNameDuplicateArgIndex {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Argument index within the function signature.
         arg: u32,
     },
     /// A function output-name entry references an invalid return index.
     FunctionOutputNameRetOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Return index within the function signature.
         ret: u32,
     },
     /// A function output name is empty.
     FunctionOutputNameEmpty {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Return index within the function signature.
         ret: u32,
     },
     /// A function output name is duplicated within the same function signature.
     FunctionOutputNameDuplicate {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Symbol id naming the duplicated output.
         name: SymbolId,
     },
     /// A function declares multiple names for the same return index.
     FunctionOutputNameDuplicateRetIndex {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Return index within the function signature.
         ret: u32,
     },
@@ -360,140 +360,140 @@ pub enum VerifyError {
     /// and for the cumulative pc to stay within the function bytecode length.
     BadSpanDeltas {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A function declares an absurd register count (implementation-defined upper bound).
     RegCountTooLarge {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Declared total register count.
         reg_count: u32,
     },
     /// A function declares more value arguments than it has registers for.
     ArgCountExceedsRegs {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// A bytecode jump target is invalid.
     InvalidJumpTarget {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the jump instruction.
-        pc: u32,
+        pc: Pc,
         /// Byte offset target.
-        target: u32,
+        target: Pc,
         /// Why the jump target is invalid.
         reason: InvalidJumpTargetReason,
     },
     /// An effect-token input register was not `r0`.
     EffectInNotR0 {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// The offending register.
         reg: Reg,
     },
     /// An effect-token output register was not `r0`.
     EffectOutNotR0 {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// The offending register.
         reg: Reg,
     },
     /// A register index is out of bounds for the function's `reg_count`.
     RegOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Register index.
         reg: Reg,
     },
     /// A register was read before being initialized along some reachable path.
     UninitializedRead {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Register index.
         reg: Reg,
     },
     /// A `call` instruction does not match the callee function's signature counts.
     CallArityMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
     },
     /// A `ret` instruction does not match the function's return type count.
     ReturnArityMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
     },
     /// A `host_call` instruction does not match the host signature's counts.
     HostCallArityMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
     },
     /// An instruction references an out-of-bounds function id.
     ///
     /// This applies to any instruction carrying a `FuncId` immediate (e.g. `call`, `const.func`).
     FuncIdOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Referenced function id.
-        func_id: u32,
+        func_id: FuncId,
     },
     /// A `struct_new` references an unknown struct `type_id`.
     StructTypeOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Struct type id.
-        type_id: u32,
+        type_id: TypeId,
     },
     /// A `struct_new` value count does not match the struct field count.
     StructArityMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Struct type id.
-        type_id: u32,
+        type_id: TypeId,
     },
     /// An `array_new` references an unknown `elem_type_id`.
     ArrayElemTypeOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Element type id.
-        elem_type_id: u32,
+        elem_type_id: ElemTypeId,
     },
     /// An `array_new` length does not match the provided values.
     ArrayLenMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
     },
     /// A projection opcode referenced an aggregate of the wrong kind (when the verifier can
     /// statically determine the aggregate kind).
     AggKindMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Expected aggregate kind.
         expected: AggKind,
         /// Actual aggregate kind.
@@ -502,9 +502,9 @@ pub enum VerifyError {
     /// A `tuple_get` index is out of bounds (when the verifier can statically determine arity).
     TupleIndexOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Tuple arity.
         arity: u32,
         /// Index immediate.
@@ -513,89 +513,89 @@ pub enum VerifyError {
     /// A `dec.rescale` or `dec.div` rounding-mode immediate names no [`DecimalRounding`] mode.
     InvalidDecimalRounding {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Rounding-mode immediate.
         rounding: u8,
     },
     /// A `struct_get` field index is out of bounds (when the verifier can statically determine the struct type).
     StructFieldIndexOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Struct type id.
-        type_id: u32,
+        type_id: TypeId,
         /// Field index immediate.
         field_index: u32,
     },
     /// A `host_call` references an out-of-bounds host signature id.
     HostSigOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Host signature id.
-        host_sig: u32,
+        host_sig: HostSigId,
     },
     /// A `call.indirect` references an out-of-bounds call signature id.
     CallSigOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Call signature id.
-        call_sig: u32,
+        call_sig: CallSigId,
     },
     /// A `const_pool` instruction references an out-of-bounds constant.
     ConstOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Constant id.
-        const_id: u32,
+        const_id: ConstId,
     },
     /// A host signature table entry is malformed.
     HostSigMalformed {
         /// Host signature id.
-        host_sig: u32,
+        host_sig: HostSigId,
     },
     /// A call signature table entry is malformed.
     CallSigMalformed {
         /// Call signature id.
-        call_sig: u32,
+        call_sig: CallSigId,
     },
     /// A `host_call` referenced a host signature, but that entry was malformed.
     HostCallSigMalformed {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Host signature id.
-        host_sig: u32,
+        host_sig: HostSigId,
     },
     /// A `call.indirect` referenced a call signature, but that entry was malformed.
     CallIndirectSigMalformed {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Call signature id.
-        call_sig: u32,
+        call_sig: CallSigId,
     },
     /// The program's host signature hash does not match the canonical hash for its types.
     HostSigHashMismatch {
         /// Host signature id.
-        host_sig: u32,
+        host_sig: HostSigId,
     },
     /// Two exception tags share a name. Names identify tags in diagnostics and tooling.
     DuplicateTagName {
         /// Later tag with the repeated name.
-        tag: u32,
+        tag: TagId,
         /// Earlier tag that already uses the name.
-        first: u32,
+        first: TagId,
         /// The repeated name.
         name: Box<str>,
     },
@@ -618,27 +618,27 @@ pub enum VerifyError {
     /// values, with identical contracts, and both must declare identical results.
     ContBindSignature {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Signature of the continuation being bound.
-        from_sig: u32,
+        from_sig: CallSigId,
         /// Signature of the bound continuation.
-        to_sig: u32,
+        to_sig: CallSigId,
     },
     /// A protected region or one of its catch clauses is invalid.
     InvalidRegion {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Function-local region.
-        region: u32,
+        region: RegionId,
         /// What is wrong with the region or which clause is wrong.
         error: RegionError,
     },
     /// A region run is invalid.
     InvalidRegionRun {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Index of the run within the function's sorted run table.
         run: u32,
         /// What is wrong with the run.
@@ -647,20 +647,20 @@ pub enum VerifyError {
     /// A `throw` references an exception tag outside the program's tag table.
     TagOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Requested tag id.
-        tag: u32,
+        tag: TagId,
     },
     /// A `throw` supplies a different number of payload values than its tag declares.
     ThrowArityMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Thrown tag id.
-        tag: u32,
+        tag: TagId,
         /// Thrown tag name.
         name: Box<str>,
         /// Declared payload arity.
@@ -671,11 +671,11 @@ pub enum VerifyError {
     /// A `throw` payload register's declared kind differs from its tag's payload kind.
     ThrowPayloadMismatch {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Thrown tag id.
-        tag: u32,
+        tag: TagId,
         /// Thrown tag name.
         name: Box<str>,
         /// Zero-based payload position.
@@ -690,14 +690,14 @@ pub enum VerifyError {
     /// A function has no register declarations, including the required r0 effect token.
     MissingRegisterTypes {
         /// Function index.
-        func: u32,
+        func: FuncId,
     },
     /// A register declaration disagrees with a signature or instruction requirement.
     RegisterTypeMismatch {
         /// Function index.
-        func: u32,
+        func: FuncId,
         /// Instruction PC; `None` for the effect/argument prefix contract.
-        pc: Option<u32>,
+        pc: Option<Pc>,
         /// Virtual register.
         reg: Reg,
         /// Declared kind.
@@ -708,45 +708,45 @@ pub enum VerifyError {
     /// A projection has no proven element kind. A destination declaration is not a shape proof.
     UnknownAggregateShape {
         /// Function index.
-        func: u32,
+        func: FuncId,
         /// Projection PC.
-        pc: u32,
+        pc: Pc,
         /// Aggregate source register.
         reg: Reg,
     },
     /// A `call` referenced a callee arg type slice that was out of bounds.
     CallCalleeArgTypesOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Callee function id.
-        callee: u32,
+        callee: FuncId,
     },
     /// A `call` referenced a callee ret type slice that was out of bounds.
     CallCalleeRetTypesOutOfBounds {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the instruction.
-        pc: u32,
+        pc: Pc,
         /// Callee function id.
-        callee: u32,
+        callee: FuncId,
     },
     /// A basic block can fall through to the next block without an explicit terminator.
     MissingTerminator {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the last instruction in the block, or zero for an empty function.
-        pc: u32,
+        pc: Pc,
     },
     /// Internal inconsistency between decoded instructions and verifier-computed basic blocks.
     ///
     /// This should be impossible for well-formed verifier code; treat as a verifier bug.
     InternalBlockInconsistent {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the inconsistent block start.
-        pc: u32,
+        pc: Pc,
         /// Instruction index range start.
         instr_start: usize,
         /// Instruction index range end.
@@ -755,15 +755,15 @@ pub enum VerifyError {
     /// Bytecode decoding failed.
     BytecodeDecode {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
     },
     /// An instruction starts with an unassigned opcode: an unknown byte, or an assigned prefix
     /// followed by an unknown byte.
     UnknownOpcode {
         /// Function index within the program.
-        func: u32,
+        func: FuncId,
         /// Byte offset of the opcode.
-        pc: u32,
+        pc: Pc,
         /// The unassigned code: the lone byte, or `prefix << 8 | byte` (see [`Opcode::code`](crate::opcode::Opcode::code)).
         opcode: u16,
     },
@@ -1063,31 +1063,31 @@ pub enum ExceptionPlace {
     /// A host signature argument or result.
     HostSig {
         /// Host signature id.
-        host_sig: u32,
+        host_sig: HostSigId,
     },
     /// An exception tag's payload.
     TagPayload {
         /// Tag id.
-        tag: u32,
+        tag: TagId,
     },
     /// A nominal struct field.
     StructField {
         /// Struct type id.
-        type_id: u32,
+        type_id: TypeId,
         /// Field index.
         field: u32,
     },
     /// A nominal array element type.
     ArrayElement {
         /// Array element type id.
-        elem_type_id: u32,
+        elem_type_id: ElemTypeId,
     },
     /// A value stored into a tuple.
     Aggregate {
         /// Function index.
-        func: u32,
+        func: FuncId,
         /// Instruction offset.
-        pc: u32,
+        pc: Pc,
         /// Stored register.
         reg: Reg,
     },
@@ -1136,7 +1136,7 @@ fn verify_guest_only_places(
             .flatten();
         if kinds.into_iter().any(|&kind| kind == guest_only) {
             return reject(ExceptionPlace::HostSig {
-                host_sig: u32::try_from(index).unwrap_or(u32::MAX),
+                host_sig: HostSigId(u32::try_from(index).unwrap_or(u32::MAX)),
             });
         }
     }
@@ -1148,7 +1148,7 @@ fn verify_guest_only_places(
             .any(|kinds| kinds.iter().any(|&kind| kind == guest_only))
         {
             return reject(ExceptionPlace::TagPayload {
-                tag: u32::try_from(index).unwrap_or(u32::MAX),
+                tag: TagId(u32::try_from(index).unwrap_or(u32::MAX)),
             });
         }
     }
@@ -1157,7 +1157,7 @@ fn verify_guest_only_places(
             && let Some(field) = fields.iter().position(|&kind| kind == guest_only)
         {
             return reject(ExceptionPlace::StructField {
-                type_id: u32::try_from(index).unwrap_or(u32::MAX),
+                type_id: TypeId(u32::try_from(index).unwrap_or(u32::MAX)),
                 field: u32::try_from(field).unwrap_or(u32::MAX),
             });
         }
@@ -1165,7 +1165,7 @@ fn verify_guest_only_places(
     for (index, &kind) in program.types.array_elems.iter().enumerate() {
         if kind == guest_only {
             return reject(ExceptionPlace::ArrayElement {
-                elem_type_id: u32::try_from(index).unwrap_or(u32::MAX),
+                elem_type_id: ElemTypeId(u32::try_from(index).unwrap_or(u32::MAX)),
             });
         }
     }
@@ -1199,7 +1199,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
     verify_function_value_names(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let func_id = FuncId(u32::try_from(i).unwrap_or(u32::MAX));
         let _ = verify_function_container(program, func_id, func, cfg, false)?.exec;
     }
     Ok(())
@@ -1219,7 +1219,7 @@ pub fn verify_program_with_lints(
 
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let func_id = FuncId(u32::try_from(i).unwrap_or(u32::MAX));
         let out = verify_function_container(program, func_id, func, cfg, true)?;
         lints.extend(out.lints);
     }
@@ -1297,7 +1297,7 @@ fn verify_functions(
     let mut init_tables = Vec::with_capacity(program.functions.len());
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(i).unwrap_or(u32::MAX);
+        let func_id = FuncId(u32::try_from(i).unwrap_or(u32::MAX));
         let out = verify_function_container(program, func_id, func, cfg, collect_lints)?;
         verified_functions.push(out.exec);
         init_tables.push(out.init);
@@ -1353,14 +1353,14 @@ impl From<RejectedProgram> for VerifyError {
 fn verify_signature_ranges(program: &Program) -> Result<(), VerifyError> {
     for (i, entry) in program.call_sigs.iter().enumerate() {
         let error = |_| VerifyError::CallSigMalformed {
-            call_sig: u32::try_from(i).expect("verified function/signature count"),
+            call_sig: CallSigId(u32::try_from(i).expect("verified function/signature count")),
         };
         program.call_sig_arg_contracts(entry).map_err(error)?;
         program.call_sig_ret_contracts(entry).map_err(error)?;
         program.call_sig_hash(entry).map_err(error)?;
     }
     for (i, function) in program.functions.iter().enumerate() {
-        let func = u32::try_from(i).expect("verified function/signature count");
+        let func = FuncId(u32::try_from(i).expect("verified function/signature count"));
         function
             .arg_contracts(program)
             .map_err(|_| VerifyError::FunctionArgTypesOutOfBounds { func })?;
@@ -1379,37 +1379,30 @@ struct ExecFuncContainer {
 
 fn verify_function_value_names(program: &Program) -> Result<(), VerifyError> {
     for (func_id, func) in program.functions.iter().enumerate() {
-        let func_id = u32::try_from(func_id).unwrap_or(u32::MAX);
+        let func_id = FuncId(u32::try_from(func_id).unwrap_or(u32::MAX));
 
         let arg_names = program
             .function_arg_name_ids(func)
             .map_err(VerifyError::Decode)?;
         for (arg, &name_id) in arg_names.iter().enumerate() {
             let arg = u32::try_from(arg).unwrap_or(u32::MAX);
-            if name_id == 0 {
+            let Some(sym) = name_id else {
                 continue;
-            }
-            let sym = SymbolId(
-                core::num::NonZeroU32::new(name_id)
-                    .ok_or(VerifyError::Decode(DecodeError::OutOfBounds))?,
-            );
+            };
             let name = program.symbol_str(sym).map_err(VerifyError::Decode)?;
             if name.is_empty() {
                 return Err(VerifyError::FunctionInputNameEmpty { func: func_id, arg });
             }
         }
         for (i, &a) in arg_names.iter().enumerate() {
-            if a == 0 {
+            let Some(name) = a else {
                 continue;
-            }
+            };
             for &b in &arg_names[..i] {
                 if b == a {
                     return Err(VerifyError::FunctionInputNameDuplicate {
                         func: func_id,
-                        name: SymbolId(
-                            core::num::NonZeroU32::new(a)
-                                .ok_or(VerifyError::Decode(DecodeError::OutOfBounds))?,
-                        ),
+                        name,
                     });
                 }
             }
@@ -1420,30 +1413,23 @@ fn verify_function_value_names(program: &Program) -> Result<(), VerifyError> {
             .map_err(VerifyError::Decode)?;
         for (ret, &name_id) in ret_names.iter().enumerate() {
             let ret = u32::try_from(ret).unwrap_or(u32::MAX);
-            if name_id == 0 {
+            let Some(sym) = name_id else {
                 continue;
-            }
-            let sym = SymbolId(
-                core::num::NonZeroU32::new(name_id)
-                    .ok_or(VerifyError::Decode(DecodeError::OutOfBounds))?,
-            );
+            };
             let name = program.symbol_str(sym).map_err(VerifyError::Decode)?;
             if name.is_empty() {
                 return Err(VerifyError::FunctionOutputNameEmpty { func: func_id, ret });
             }
         }
         for (i, &a) in ret_names.iter().enumerate() {
-            if a == 0 {
+            let Some(name) = a else {
                 continue;
-            }
+            };
             for &b in &ret_names[..i] {
                 if b == a {
                     return Err(VerifyError::FunctionOutputNameDuplicate {
                         func: func_id,
-                        name: SymbolId(
-                            core::num::NonZeroU32::new(a)
-                                .ok_or(VerifyError::Decode(DecodeError::OutOfBounds))?,
-                        ),
+                        name,
                     });
                 }
             }
@@ -1457,16 +1443,24 @@ fn verify_host_sigs(program: &Program) -> Result<(), VerifyError> {
     for (i, hs) in program.host_sigs.iter().enumerate() {
         let host_sig = u32::try_from(i).unwrap_or(u32::MAX);
         if (hs.symbol.index() as usize) >= program.symbols.len() {
-            return Err(VerifyError::HostSigMalformed { host_sig });
+            return Err(VerifyError::HostSigMalformed {
+                host_sig: HostSigId(host_sig),
+            });
         }
         let args = program
             .host_sig_args(hs)
-            .map_err(|_| VerifyError::HostSigMalformed { host_sig })?;
+            .map_err(|_| VerifyError::HostSigMalformed {
+                host_sig: HostSigId(host_sig),
+            })?;
         let rets = program
             .host_sig_rets(hs)
-            .map_err(|_| VerifyError::HostSigMalformed { host_sig })?;
+            .map_err(|_| VerifyError::HostSigMalformed {
+                host_sig: HostSigId(host_sig),
+            })?;
         if hs.sig_hash != sig_hash_slices(args, rets) {
-            return Err(VerifyError::HostSigHashMismatch { host_sig });
+            return Err(VerifyError::HostSigHashMismatch {
+                host_sig: HostSigId(host_sig),
+            });
         }
     }
     Ok(())
@@ -1477,17 +1471,21 @@ fn verify_call_sigs(program: &Program) -> Result<(), VerifyError> {
         let call_sig = u32::try_from(i).unwrap_or(u32::MAX);
         let _ = program
             .call_sig_args(cs)
-            .map_err(|_| VerifyError::CallSigMalformed { call_sig })?;
+            .map_err(|_| VerifyError::CallSigMalformed {
+                call_sig: CallSigId(call_sig),
+            })?;
         let _ = program
             .call_sig_rets(cs)
-            .map_err(|_| VerifyError::CallSigMalformed { call_sig })?;
+            .map_err(|_| VerifyError::CallSigMalformed {
+                call_sig: CallSigId(call_sig),
+            })?;
     }
     Ok(())
 }
 
 fn verify_function_container(
     program: &Program,
-    func_id: u32,
+    func_id: FuncId,
     func: &Function,
     cfg: &VerifyConfig,
     collect_lints: bool,
@@ -1550,7 +1548,7 @@ fn verify_function_container(
     let decoded = decode_instructions(bytecode).map_err(|e| match e {
         BytecodeError::UnknownOpcode { offset, opcode } => VerifyError::UnknownOpcode {
             func: func_id,
-            pc: offset,
+            pc: Pc(offset),
             opcode,
         },
         BytecodeError::Decode(_) => VerifyError::BytecodeDecode { func: func_id },
@@ -1574,7 +1572,7 @@ fn verify_function_container(
         if !ok {
             return Err(VerifyError::InternalOpcodeSchemaMismatch {
                 func: func_id,
-                pc: di.offset,
+                pc: Pc(di.offset),
                 opcode: di.opcode.code(),
             });
         }
@@ -1595,7 +1593,7 @@ fn verify_function_container(
 
 fn verify_id_operands_in_bounds(
     program: &Program,
-    func: u32,
+    func: FuncId,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
     for di in decoded {
@@ -1610,8 +1608,8 @@ fn verify_id_operands_in_bounds(
             if program.const_pool.get(id.0 as usize).is_none() {
                 err = Some(VerifyError::ConstOutOfBounds {
                     func,
-                    pc,
-                    const_id: id.0,
+                    pc: Pc(pc),
+                    const_id: id,
                 });
             }
         });
@@ -1623,8 +1621,8 @@ fn verify_id_operands_in_bounds(
             if program.host_sig(id).is_none() {
                 err = Some(VerifyError::HostSigOutOfBounds {
                     func,
-                    pc,
-                    host_sig: id.0,
+                    pc: Pc(pc),
+                    host_sig: id,
                 });
             }
         });
@@ -1636,8 +1634,8 @@ fn verify_id_operands_in_bounds(
             if program.types.structs.get(id.0 as usize).is_none() {
                 err = Some(VerifyError::StructTypeOutOfBounds {
                     func,
-                    pc,
-                    type_id: id.0,
+                    pc: Pc(pc),
+                    type_id: id,
                 });
             }
         });
@@ -1649,8 +1647,8 @@ fn verify_id_operands_in_bounds(
             if program.types.array_elems.get(id.0 as usize).is_none() {
                 err = Some(VerifyError::ArrayElemTypeOutOfBounds {
                     func,
-                    pc,
-                    elem_type_id: id.0,
+                    pc: Pc(pc),
+                    elem_type_id: id,
                 });
             }
         });
@@ -1662,8 +1660,8 @@ fn verify_id_operands_in_bounds(
             if program.functions.get(id.0 as usize).is_none() {
                 err = Some(VerifyError::FuncIdOutOfBounds {
                     func,
-                    pc,
-                    func_id: id.0,
+                    pc: Pc(pc),
+                    func_id: id,
                 });
             }
         });
@@ -1673,8 +1671,8 @@ fn verify_id_operands_in_bounds(
         {
             err = Some(VerifyError::CallSigOutOfBounds {
                 func,
-                pc,
-                call_sig: *call_sig,
+                pc: Pc(pc),
+                call_sig: CallSigId(*call_sig),
             });
         }
 
@@ -1683,8 +1681,8 @@ fn verify_id_operands_in_bounds(
         {
             err = Some(VerifyError::TagOutOfBounds {
                 func,
-                pc,
-                tag: *tag,
+                pc: Pc(pc),
+                tag: TagId(*tag),
             });
         }
         if err.is_none() {
@@ -1744,7 +1742,7 @@ fn build_span_by_instr_ix(
 
 fn verify_function_bytecode(
     program: &Program,
-    func_id: u32,
+    func_id: FuncId,
     func: &Function,
     bytecode: &[u8],
     spans: &[SpanEntry],
@@ -1765,7 +1763,7 @@ fn verify_function_bytecode(
     if decoded.is_empty() {
         return Err(VerifyError::MissingTerminator {
             func: func_id,
-            pc: 0,
+            pc: Pc(0),
         });
     }
     blocks::validate_structure(func_id, func.reg_count, decoded)?;
@@ -1788,8 +1786,8 @@ fn verify_function_bytecode(
             };
             VerifyError::InvalidJumpTarget {
                 func: func_id,
-                pc: e.src_pc,
-                target: e.target_pc,
+                pc: Pc(e.src_pc),
+                target: Pc(e.target_pc),
                 reason,
             }
         })?;
@@ -1801,7 +1799,7 @@ fn verify_function_bytecode(
         if block.instr_end == 0 || block.instr_end <= block.instr_start {
             return Err(VerifyError::InternalBlockInconsistent {
                 func: func_id,
-                pc: block.start_pc,
+                pc: Pc(block.start_pc),
                 instr_start: block.instr_start,
                 instr_end: block.instr_end,
             });
@@ -1809,7 +1807,7 @@ fn verify_function_bytecode(
         let Some(last) = decoded.get(block.instr_end - 1) else {
             return Err(VerifyError::InternalBlockInconsistent {
                 func: func_id,
-                pc: block.start_pc,
+                pc: Pc(block.start_pc),
                 instr_start: block.instr_start,
                 instr_end: block.instr_end,
             });
@@ -1818,7 +1816,7 @@ fn verify_function_bytecode(
         if !is_terminator {
             return Err(VerifyError::MissingTerminator {
                 func: func_id,
-                pc: last.offset,
+                pc: Pc(last.offset),
             });
         }
     }
@@ -1998,8 +1996,8 @@ fn verify_function_bytecode(
                 };
                 VerifyError::InvalidJumpTarget {
                     func: func_id,
-                    pc: src_pc,
-                    target: target_pc,
+                    pc: Pc(src_pc),
+                    target: Pc(target_pc),
                     reason,
                 }
             })?;
@@ -2035,13 +2033,13 @@ fn verify_function_bytecode(
                 .copied()
                 .ok_or(VerifyError::RegOutOfBounds {
                     func: func_id,
-                    pc,
+                    pc: Pc(pc),
                     reg: Reg(reg),
                 })
         };
         let mismatch = |reg: u32, required: ValueType| VerifyError::RegisterTypeMismatch {
             func: func_id,
-            pc: Some(pc),
+            pc: Some(Pc(pc)),
             reg: Reg(reg),
             declared: register_types
                 .get(Reg(reg))
@@ -2352,8 +2350,8 @@ fn verify_function_bytecode(
                     _ => {
                         return Err(VerifyError::ConstOutOfBounds {
                             func: func_id,
-                            pc: di.offset,
-                            const_id: idx.0,
+                            pc: Pc(di.offset),
+                            const_id: *idx,
                         });
                     }
                 }
@@ -3860,7 +3858,7 @@ fn prepare_protection(
     for region in regions {
         let start = u32::try_from(clauses.len()).expect("verified clause count");
         for &catch in program.region_clauses(region).expect("verified clauses") {
-            let params = blocks::declaration(decoded, catch.target()).unwrap_or(&[]);
+            let params = blocks::declaration(decoded, catch.target().0).unwrap_or(&[]);
             let slice = VRegSlice {
                 start: operands.len(),
                 len: params.len(),
@@ -3870,7 +3868,7 @@ fn prepare_protection(
                 tag: catch.tag(),
                 binds_exception: catch.binds_exception(),
                 suspension: catch.handles_suspension(),
-                target_ix: exec_ix(catch.target()),
+                target_ix: exec_ix(catch.target().0),
                 params: slice,
             });
         }
@@ -3880,7 +3878,7 @@ fn prepare_protection(
     Some(Box::new(ExecProtection {
         runs: runs
             .iter()
-            .map(|run| (exec_ix(run.start_pc), exec_ix(run.end_pc), run.region))
+            .map(|run| (exec_ix(run.start_pc.0), exec_ix(run.end_pc.0), run.region))
             .collect(),
         regions: prepared,
         clauses,
@@ -3888,7 +3886,7 @@ fn prepare_protection(
 }
 
 fn lint_function_bytecode(
-    func_id: u32,
+    func_id: FuncId,
     func: &Function,
     decoded: &[DecodedInstr],
     blocks: &[BasicBlock],
@@ -3904,7 +3902,7 @@ fn lint_function_bytecode(
         if !reachable.get(b_idx).copied().unwrap_or(false) {
             lints.push(VerifyLint::UnreachableBlock {
                 func: func_id,
-                pc: b.start_pc,
+                pc: Pc(b.start_pc),
             });
         }
     }
@@ -3925,7 +3923,7 @@ fn lint_function_bytecode(
             {
                 lints.push(VerifyLint::RedundantMove {
                     func: func_id,
-                    pc: di.offset,
+                    pc: Pc(di.offset),
                     dst: Reg(dst),
                     src: Reg(src),
                 });
@@ -3951,13 +3949,13 @@ fn lint_function_bytecode(
                     {
                         lints.push(VerifyLint::UnusedCallReturn {
                             func: func_id,
-                            pc: di.offset,
+                            pc: Pc(di.offset),
                             reg: Reg(w),
                         });
                     } else {
                         lints.push(VerifyLint::DeadStore {
                             func: func_id,
-                            pc: di.offset,
+                            pc: Pc(di.offset),
                             reg: Reg(w),
                         });
                     }
@@ -3980,7 +3978,7 @@ fn lint_function_bytecode(
 
 fn validate_instr_reads_writes(
     program: &Program,
-    func_id: u32,
+    func_id: FuncId,
     pc: u32,
     instr: &Instr,
     state: &mut BitSet,
@@ -3991,7 +3989,7 @@ fn validate_instr_reads_writes(
         if reg >= reg_limit {
             Err(VerifyError::RegOutOfBounds {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(reg),
             })
         } else {
@@ -4003,7 +4001,7 @@ fn validate_instr_reads_writes(
         if !state.get(reg as usize) {
             Err(VerifyError::UninitializedRead {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(reg),
             })
         } else {
@@ -4019,7 +4017,7 @@ fn validate_instr_reads_writes(
         if reg != 0 {
             return Err(VerifyError::EffectInNotR0 {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(reg),
             });
         }
@@ -4029,7 +4027,7 @@ fn validate_instr_reads_writes(
         if reg != 0 {
             return Err(VerifyError::EffectOutNotR0 {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(reg),
             });
         }
@@ -4053,13 +4051,19 @@ fn validate_instr_reads_writes(
             if u32::try_from(args.len()).ok() != Some(callee.arg_count)
                 || u32::try_from(rets.len()).ok() != Some(callee.ret_count)
             {
-                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+                return Err(VerifyError::CallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
         }
         Instr::Ret { eff_in, rets } => {
             require_eff_in_r0(*eff_in)?;
             if u32::try_from(rets.len()).ok() != Some(func.ret_count) {
-                return Err(VerifyError::ReturnArityMismatch { func: func_id, pc });
+                return Err(VerifyError::ReturnArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
         }
         Instr::Throw { eff_in, tag, args } => {
@@ -4087,19 +4091,22 @@ fn validate_instr_reads_writes(
                     .host_sig_args(hs)
                     .map_err(|_| VerifyError::HostCallSigMalformed {
                         func: func_id,
-                        pc,
-                        host_sig: host_sig.0,
+                        pc: Pc(pc),
+                        host_sig: *host_sig,
                     })?;
             let hs_rets =
                 program
                     .host_sig_rets(hs)
                     .map_err(|_| VerifyError::HostCallSigMalformed {
                         func: func_id,
-                        pc,
-                        host_sig: host_sig.0,
+                        pc: Pc(pc),
+                        host_sig: *host_sig,
                     })?;
             if args.len() != hs_args.len() || rets.len() != hs_rets.len() {
-                return Err(VerifyError::HostCallArityMismatch { func: func_id, pc });
+                return Err(VerifyError::HostCallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
         }
         Instr::CallIndirect {
@@ -4121,19 +4128,22 @@ fn validate_instr_reads_writes(
                     .call_sig_args(cs)
                     .map_err(|_| VerifyError::CallIndirectSigMalformed {
                         func: func_id,
-                        pc,
-                        call_sig: *call_sig,
+                        pc: Pc(pc),
+                        call_sig: CallSigId(*call_sig),
                     })?;
             let cs_rets =
                 program
                     .call_sig_rets(cs)
                     .map_err(|_| VerifyError::CallIndirectSigMalformed {
                         func: func_id,
-                        pc,
-                        call_sig: *call_sig,
+                        pc: Pc(pc),
+                        call_sig: CallSigId(*call_sig),
                     })?;
             if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
-                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+                return Err(VerifyError::CallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
         }
         Instr::ContNew { .. }
@@ -4185,16 +4195,16 @@ fn const_value_type(c: &ConstEntry) -> ValueType {
 }
 
 /// Decodes a rounding-mode immediate, rejecting bytes that name no mode.
-fn decimal_rounding(func: u32, pc: u32, rounding: u8) -> Result<DecimalRounding, VerifyError> {
+fn decimal_rounding(func: FuncId, pc: u32, rounding: u8) -> Result<DecimalRounding, VerifyError> {
     DecimalRounding::from_byte(rounding).ok_or(VerifyError::InvalidDecimalRounding {
         func,
-        pc,
+        pc: Pc(pc),
         rounding,
     })
 }
 
 fn check_expected(
-    func: u32,
+    func: FuncId,
     pc: u32,
     reg: u32,
     actual: Option<ValueType>,
@@ -4202,13 +4212,13 @@ fn check_expected(
 ) -> Result<(), VerifyError> {
     let declared = actual.ok_or(VerifyError::RegOutOfBounds {
         func,
-        pc,
+        pc: Pc(pc),
         reg: Reg(reg),
     })?;
     if declared != required {
         return Err(VerifyError::RegisterTypeMismatch {
             func,
-            pc: Some(pc),
+            pc: Some(Pc(pc)),
             reg: Reg(reg),
             declared,
             required,
@@ -4219,7 +4229,7 @@ fn check_expected(
 
 fn validate_instr_types(
     program: &Program,
-    func_id: u32,
+    func_id: FuncId,
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
@@ -4250,7 +4260,7 @@ fn validate_instr_types(
         Instr::Mov { dst, src } => {
             let required = t(*src).ok_or(VerifyError::RegOutOfBounds {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(*src),
             })?;
             check_expected(func_id, pc, *dst, t(*dst), required)?;
@@ -4821,7 +4831,7 @@ fn validate_instr_types(
             check_expected(func_id, pc, *cond, t(*cond), ValueType::Bool)?;
             let required = t(*a).ok_or(VerifyError::RegOutOfBounds {
                 func: func_id,
-                pc,
+                pc: Pc(pc),
                 reg: Reg(*a),
             })?;
             check_expected(func_id, pc, *b, t(*b), required)?;
@@ -4836,26 +4846,33 @@ fn validate_instr_types(
             rets,
             ..
         } => {
-            let callee_fn = program
-                .functions
-                .get(callee.0 as usize)
-                .ok_or(VerifyError::CallArityMismatch { func: func_id, pc })?;
+            let callee_fn =
+                program
+                    .functions
+                    .get(callee.0 as usize)
+                    .ok_or(VerifyError::CallArityMismatch {
+                        func: func_id,
+                        pc: Pc(pc),
+                    })?;
             let callee_args = callee_fn.arg_types(program).map_err(|_| {
                 VerifyError::CallCalleeArgTypesOutOfBounds {
                     func: func_id,
-                    pc,
-                    callee: callee.0,
+                    pc: Pc(pc),
+                    callee: *callee,
                 }
             })?;
             let callee_rets = callee_fn.ret_types(program).map_err(|_| {
                 VerifyError::CallCalleeRetTypesOutOfBounds {
                     func: func_id,
-                    pc,
-                    callee: callee.0,
+                    pc: Pc(pc),
+                    callee: *callee,
                 }
             })?;
             if args.len() != callee_args.len() || rets.len() != callee_rets.len() {
-                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+                return Err(VerifyError::CallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
             for (&r, &expected) in args.iter().zip(callee_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
@@ -4867,7 +4884,10 @@ fn validate_instr_types(
         }
         Instr::Ret { rets, .. } => {
             if rets.len() != func_ret_types.len() {
-                return Err(VerifyError::ReturnArityMismatch { func: func_id, pc });
+                return Err(VerifyError::ReturnArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
             for (&r, &expected) in rets.iter().zip(func_ret_types.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
@@ -4887,19 +4907,22 @@ fn validate_instr_types(
                     .host_sig_args(hs)
                     .map_err(|_| VerifyError::HostCallSigMalformed {
                         func: func_id,
-                        pc,
-                        host_sig: host_sig.0,
+                        pc: Pc(pc),
+                        host_sig: *host_sig,
                     })?;
             let hs_rets =
                 program
                     .host_sig_rets(hs)
                     .map_err(|_| VerifyError::HostCallSigMalformed {
                         func: func_id,
-                        pc,
-                        host_sig: host_sig.0,
+                        pc: Pc(pc),
+                        host_sig: *host_sig,
                     })?;
             if args.len() != hs_args.len() || rets.len() != hs_rets.len() {
-                return Err(VerifyError::HostCallArityMismatch { func: func_id, pc });
+                return Err(VerifyError::HostCallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
             for (&r, &expected) in args.iter().zip(hs_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
@@ -4923,19 +4946,22 @@ fn validate_instr_types(
                     .call_sig_args(cs)
                     .map_err(|_| VerifyError::CallIndirectSigMalformed {
                         func: func_id,
-                        pc,
-                        call_sig: *call_sig,
+                        pc: Pc(pc),
+                        call_sig: CallSigId(*call_sig),
                     })?;
             let cs_rets =
                 program
                     .call_sig_rets(cs)
                     .map_err(|_| VerifyError::CallIndirectSigMalformed {
                         func: func_id,
-                        pc,
-                        call_sig: *call_sig,
+                        pc: Pc(pc),
+                        call_sig: CallSigId(*call_sig),
                     })?;
             if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
-                return Err(VerifyError::CallArityMismatch { func: func_id, pc });
+                return Err(VerifyError::CallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
 
             if !matches!(t(*callee), Some(ValueType::Func | ValueType::Closure)) {
@@ -4956,7 +4982,7 @@ fn validate_instr_types(
             for &reg in values {
                 let place = ExceptionPlace::Aggregate {
                     func: func_id,
-                    pc,
+                    pc: Pc(pc),
                     reg: Reg(reg),
                 };
                 match t(reg) {
@@ -4980,22 +5006,22 @@ fn validate_instr_types(
             let st = program.types.structs.get(type_id.0 as usize).ok_or(
                 VerifyError::StructTypeOutOfBounds {
                     func: func_id,
-                    pc,
-                    type_id: type_id.0,
+                    pc: Pc(pc),
+                    type_id: *type_id,
                 },
             )?;
             let field_types = program.types.struct_field_types(st).map_err(|_| {
                 VerifyError::StructTypeOutOfBounds {
                     func: func_id,
-                    pc,
-                    type_id: type_id.0,
+                    pc: Pc(pc),
+                    type_id: *type_id,
                 }
             })?;
             if values.len() != field_types.len() {
                 return Err(VerifyError::StructArityMismatch {
                     func: func_id,
-                    pc,
-                    type_id: type_id.0,
+                    pc: Pc(pc),
+                    type_id: *type_id,
                 });
             }
             for (&r, &expected) in values.iter().zip(field_types.iter()) {
@@ -5015,7 +5041,10 @@ fn validate_instr_types(
             ..
         } => {
             if *len as usize != values.len() {
-                return Err(VerifyError::ArrayLenMismatch { func: func_id, pc });
+                return Err(VerifyError::ArrayLenMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
             }
             let elem = *program
                 .types
@@ -5476,8 +5505,8 @@ mod tests {
         assert!(matches!(
             err,
             VerifyError::RegisterTypeMismatch {
-                func: 0,
-                pc: Some(0),
+                func: FuncId(0),
+                pc: Some(Pc(0)),
                 required: ValueType::Func,
                 declared: ValueType::I64,
                 ..
@@ -5522,8 +5551,8 @@ mod tests {
         assert!(matches!(
             err,
             VerifyError::RegisterTypeMismatch {
-                func: 0,
-                pc: Some(0),
+                func: FuncId(0),
+                pc: Some(Pc(0)),
                 required: ValueType::Agg,
                 declared: ValueType::I64,
                 ..
@@ -5568,8 +5597,8 @@ mod tests {
         assert!(matches!(
             err,
             VerifyError::RegisterTypeMismatch {
-                func: 0,
-                pc: Some(0),
+                func: FuncId(0),
+                pc: Some(Pc(0)),
                 reg: Reg(3),
                 declared: ValueType::I64,
                 required: ValueType::Closure,
@@ -5731,9 +5760,9 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::CallSigOutOfBounds {
-                func: 0,
-                pc: 0,
-                call_sig: 7,
+                func: FuncId(0),
+                pc: Pc(0),
+                call_sig: CallSigId(7),
             })
         );
     }
@@ -5771,7 +5800,10 @@ mod tests {
         assert_eq!(add_call_sig(&mut p, &[ValueType::I64], &[]), 0);
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::CallArityMismatch { func: 0, pc: 0 })
+            Err(VerifyError::CallArityMismatch {
+                func: FuncId(0),
+                pc: Pc(0)
+            })
         );
     }
 
@@ -5811,8 +5843,8 @@ mod tests {
         assert!(matches!(
             err,
             VerifyError::RegisterTypeMismatch {
-                func: 0,
-                pc: Some(0),
+                func: FuncId(0),
+                pc: Some(Pc(0)),
                 required: ValueType::I64,
                 declared: ValueType::Bool,
                 ..
@@ -5846,7 +5878,7 @@ mod tests {
         assert!(matches!(
             err,
             BuildError::Verify(rejected)
-                if matches!(rejected.error, VerifyError::FunctionOutputNameDuplicate { func: 0, .. })
+                if matches!(rejected.error, VerifyError::FunctionOutputNameDuplicate { func: FuncId(0), .. })
         ));
     }
 
@@ -5874,7 +5906,7 @@ mod tests {
         assert!(matches!(
             err,
             BuildError::Verify(rejected)
-                if matches!(rejected.error, VerifyError::FunctionInputNameDuplicate { func: 0, .. })
+                if matches!(rejected.error, VerifyError::FunctionInputNameDuplicate { func: FuncId(0), .. })
         ));
     }
 
@@ -5896,7 +5928,10 @@ mod tests {
         );
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::MissingTerminator { func: 0, pc: 0 })
+            Err(VerifyError::MissingTerminator {
+                func: FuncId(0),
+                pc: Pc(0)
+            })
         );
     }
 
@@ -5933,7 +5968,7 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::MissingTerminator {
-                func: 0,
+                func: FuncId(0),
                 pc: pc_l1_last
             })
         );
@@ -5986,7 +6021,7 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::MissingTerminator {
-                func: 0,
+                func: FuncId(0),
                 pc: pc_bad_last
             })
         );
@@ -6012,7 +6047,7 @@ mod tests {
         );
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::BadSpanDeltas { func: 0 })
+            Err(VerifyError::BadSpanDeltas { func: FuncId(0) })
         );
     }
 
@@ -6047,7 +6082,7 @@ mod tests {
         assert_eq!(
             verify_program(&p, &cfg),
             Err(VerifyError::RegCountTooLarge {
-                func: 0,
+                func: FuncId(0),
                 reg_count: 9
             })
         );
@@ -6078,8 +6113,8 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::UninitializedRead {
-                func: 0,
-                pc: 0,
+                func: FuncId(0),
+                pc: Pc(0),
                 reg: Reg(1)
             })
         );
@@ -6112,9 +6147,9 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::InvalidJumpTarget {
-                func: 0,
-                pc: 2,
-                target: 1,
+                func: FuncId(0),
+                pc: Pc(2),
+                target: Pc(1),
                 reason: InvalidJumpTargetReason::NotInstructionBoundary,
             })
         );
@@ -6146,9 +6181,9 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::InvalidJumpTarget {
-                func: 0,
-                pc: 2,
-                target: 255,
+                func: FuncId(0),
+                pc: Pc(2),
+                target: Pc(255),
                 reason: InvalidJumpTargetReason::OutOfRange,
             })
         );
@@ -6192,8 +6227,8 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::EffectInNotR0 {
-                func: 1,
-                pc: 0,
+                func: FuncId(1),
+                pc: Pc(0),
                 reg: Reg(1)
             })
         );
@@ -6231,7 +6266,10 @@ mod tests {
         );
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
-            Err(VerifyError::CallArityMismatch { func: 0, pc: 0 })
+            Err(VerifyError::CallArityMismatch {
+                func: FuncId(0),
+                pc: Pc(0)
+            })
         );
     }
 
@@ -6267,9 +6305,9 @@ mod tests {
         assert_eq!(
             verify_program(&p, &VerifyConfig::default()),
             Err(VerifyError::FuncIdOutOfBounds {
-                func: 0,
-                pc: 0,
-                func_id: 99
+                func: FuncId(0),
+                pc: Pc(0),
+                func_id: FuncId(99)
             })
         );
     }
@@ -6491,7 +6529,7 @@ mod tests {
                     matches!(
                         result,
                         Err(VerifyError::ContractMismatch {
-                            func: 1,
+                            func: FuncId(1),
                             position: ContractPosition::Argument { index: 0, .. },
                             ..
                         })
@@ -6789,15 +6827,17 @@ mod tests {
         assert_eq!(verified, verified_with_lints);
         assert_eq!(lints, owned_lints);
 
-        assert!(
-            lints
-                .iter()
-                .any(|l| matches!(l, VerifyLint::UnreachableBlock { func: 1, .. }))
-        );
+        assert!(lints.iter().any(|l| matches!(
+            l,
+            VerifyLint::UnreachableBlock {
+                func: FuncId(1),
+                ..
+            }
+        )));
         assert!(lints.iter().any(|l| matches!(
             l,
             VerifyLint::DeadStore {
-                func: 1,
+                func: FuncId(1),
                 reg: Reg(1),
                 ..
             }
@@ -6805,7 +6845,7 @@ mod tests {
         assert!(lints.iter().any(|l| matches!(
             l,
             VerifyLint::RedundantMove {
-                func: 1,
+                func: FuncId(1),
                 dst: Reg(2),
                 src: Reg(2),
                 ..
@@ -6814,7 +6854,7 @@ mod tests {
         assert!(lints.iter().any(|l| matches!(
             l,
             VerifyLint::UnusedCallReturn {
-                func: 1,
+                func: FuncId(1),
                 reg: Reg(3),
                 ..
             }

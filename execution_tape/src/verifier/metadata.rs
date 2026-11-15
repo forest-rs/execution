@@ -5,7 +5,7 @@
 
 use super::VerifyError;
 use crate::format::DecodeError;
-use crate::program::{ConstEntry, ConstId, FieldNameId, Program};
+use crate::program::{ConstEntry, ConstId, FieldNameId, Pc, Program, SymbolId};
 
 /// Program metadata table containing an invalid entry.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -138,7 +138,7 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
     super::contracts::verify_definitions(program)?;
     let valid_name = |id: u32| id == 0 || (id as usize) < program.symbols.len();
     for (index, &name) in program.value_name_ids.iter().enumerate() {
-        if !valid_name(name) {
+        if !valid_name(name.map_or(0, SymbolId::index)) {
             return Err(invalid(T::ValueNames, index, DecodeError::OutOfBounds));
         }
     }
@@ -148,7 +148,7 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         return Err(invalid(T::ProgramName, 0, DecodeError::OutOfBounds));
     }
     for (index, name) in program.function_names.iter().enumerate() {
-        if name.func as usize >= program.functions.len() || !valid_name(name.name.index()) {
+        if name.func.0 as usize >= program.functions.len() || !valid_name(name.name.index()) {
             return Err(invalid(T::FunctionNames, index, DecodeError::OutOfBounds));
         }
     }
@@ -156,8 +156,8 @@ pub(super) fn verify(program: &Program) -> Result<(), VerifyError> {
         if !valid_name(label.name.index())
             || program
                 .functions
-                .get(label.func as usize)
-                .is_none_or(|f| label.pc > f.bytecode.len)
+                .get(label.func.0 as usize)
+                .is_none_or(|f| label.pc > Pc(f.bytecode.len))
         {
             return Err(invalid(T::LabelNames, index, DecodeError::OutOfBounds));
         }
@@ -191,6 +191,7 @@ mod tests {
         ByteRange, Const, FunctionNameEntry, HostSymbol, LabelNameEntry, StructTypeDef,
         TypeTableDef, ValueType,
     };
+    use crate::value::FuncId;
     use crate::verifier::{
         VerifyConfig, verify_program, verify_program_owned, verify_program_owned_with_lints,
         verify_program_with_lints,
@@ -288,24 +289,24 @@ mod tests {
         let mut p = base.clone();
         p.types.structs[0].field_types.offset = 9;
         assert_invalid(p, MetadataTable::Structs);
-        let invalid_symbol = crate::program::SymbolId(NonZeroU32::new(9).unwrap());
+        let invalid_symbol = SymbolId(NonZeroU32::new(9).unwrap());
         let mut p = base.clone();
         p.program_name = Some(invalid_symbol);
         assert_invalid(p, MetadataTable::ProgramName);
         let mut p = base.clone();
         p.function_names.push(FunctionNameEntry {
-            func: 0,
+            func: FuncId(0),
             name: invalid_symbol,
         });
         assert_invalid(p, MetadataTable::FunctionNames);
         let mut p = base.clone();
         p.labels.push(LabelNameEntry {
-            func: 0,
-            pc: 0,
+            func: FuncId(0),
+            pc: Pc(0),
             name: invalid_symbol,
         });
         assert_invalid(p, MetadataTable::LabelNames);
-        base.value_name_ids.push(9);
+        base.value_name_ids.push(Some(invalid_symbol));
         assert_invalid(base, MetadataTable::ValueNames);
     }
 
@@ -325,7 +326,7 @@ mod tests {
         .unwrap();
         let base = pb.build();
         let mut p = base.clone();
-        p.value_name_ids = vec![0, 0];
+        p.value_name_ids = vec![None, None];
         p.functions[0].arg_name_ids.len = 2;
         assert_invalid(p, MetadataTable::ArgumentNames);
         let mut p = base.clone();

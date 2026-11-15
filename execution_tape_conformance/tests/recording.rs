@@ -6,7 +6,7 @@
 use execution_tape::aggregates::AggShape;
 use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef};
-use execution_tape::program::{HostTypeId, StructTypeDef, ValueType};
+use execution_tape::program::{HostTypeId, Pc, StructTypeDef, ValueType};
 use execution_tape::recording::{
     CaptureFault, CaptureResource, HostOutcome, Outcome, RecordLimits, RecordedValue, Recorder,
     Recording, ReplayError, ReplayOutcome,
@@ -180,7 +180,8 @@ fn final_outcome_locations_resolve_returns_traps_and_absent_completion() {
         "recordings keep the VM's unit identities"
     );
     assert_ne!(
-        trap.pc, 0,
+        trap.pc,
+        Pc(0),
         "trap provenance is the executed trap instruction"
     );
 }
@@ -820,7 +821,9 @@ fn missing_masks_program_mismatch_reuse_and_invalid_graphs_never_claim_completen
     let record = recorder.finish();
     assert_eq!(
         record.status(),
-        Err(&CaptureFault::InvalidAggregate { handle: u32::MAX })
+        Err(&CaptureFault::InvalidAggregate {
+            handle: AggHandle(u32::MAX)
+        })
     );
     assert!(record.fault_location().is_some());
     assert!(matches!(record.outcome(), Some(Outcome::Trapped(_))));

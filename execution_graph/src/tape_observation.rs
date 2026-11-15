@@ -5,7 +5,7 @@ use super::{StrictDepsTrace, TapeError};
 use crate::NodeId;
 use alloc::sync::Arc;
 use core::fmt;
-use execution_tape::program::Program;
+use execution_tape::program::{Pc, Program, SpanId};
 use execution_tape::trace::{
     RegisterEvent, RegisterPhase, ScopeKind, TraceLocation, TraceMask, TraceOutcome, TraceSink,
     ValueEvent,
@@ -152,8 +152,8 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         &mut self,
         program: &Program,
         location: TraceLocation,
-        next: u32,
-        span: Option<u64>,
+        next: Pc,
+        span: Option<SpanId>,
         opcode: u16,
     ) {
         if let Some(observer) = self.observer(TraceMask::INSTR) {
@@ -177,7 +177,7 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        span: Option<u64>,
+        span: Option<SpanId>,
     ) {
         if self.strict_enabled {
             self.strict
@@ -197,7 +197,7 @@ impl<S: TraceSink> TraceSink for CombinedTrace<'_, '_, S> {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        span: Option<u64>,
+        span: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         if self.strict_enabled {

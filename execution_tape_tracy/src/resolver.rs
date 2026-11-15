@@ -35,7 +35,7 @@ pub struct ProgramSymbolResolver {}
 
 impl LabelResolver for ProgramSymbolResolver {
     fn call_frame_label(&mut self, func: FuncId, program: &Program) -> Option<String> {
-        let name = program.function_name(func.0)?;
+        let name = program.function_name(func)?;
         Some(format!("func:{name}"))
     }
 
@@ -102,7 +102,10 @@ mod tests {
         for program in [&first, &second, &first] {
             assert_eq!(
                 resolver.call_frame_label(FuncId(0), program),
-                Some(format!("func:{}", program.function_name(0).unwrap()))
+                Some(format!(
+                    "func:{}",
+                    program.function_name(FuncId(0)).unwrap()
+                ))
             );
             let import = program.host_sig(HostSigId(0)).unwrap();
             assert_eq!(

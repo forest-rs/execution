@@ -11,7 +11,7 @@ use execution_tape::asm::{Asm, FunctionSig, ProgramBuilder, Reg};
 use execution_tape::host::{
     Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef,
 };
-use execution_tape::program::ValueType;
+use execution_tape::program::{Pc, SpanId, ValueType};
 use execution_tape::recording::{
     InstructionCapture, InstructionStatus, RecordLimits, Recorder, Recording, RegisterWatch,
     ReplayOutcome,
@@ -80,7 +80,7 @@ impl TapeObserver for Observe {
                     watches: vec![RegisterWatch {
                         location: CodeLocation {
                             func: invocation.entry,
-                            pc: 0,
+                            pc: Pc(0),
                         },
                         registers: vec![Reg(1), Reg(2)],
                     }],
@@ -289,7 +289,7 @@ impl TraceSink for RunOnly {
         _: execution_tape::trace::ScopeKind,
         _: usize,
         _location: execution_tape::trace::TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         panic!("internal strict-deps events must not leak");
     }

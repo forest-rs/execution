@@ -145,7 +145,7 @@ pub(crate) fn build_basic_blocks(
         }
         // Validated clause targets are block headers within the function.
         for handler in protection.handlers(i) {
-            let target = handler.catch.target();
+            let target = handler.catch.target().0;
             if target < byte_len {
                 leader[target as usize] = true;
                 leader_src[target as usize].get_or_insert(di.offset);
@@ -254,7 +254,7 @@ pub(crate) fn build_basic_blocks(
                 });
                 block
                     .succs
-                    .push(pc_to_block[handler.catch.target() as usize]);
+                    .push(pc_to_block[handler.catch.target().0 as usize]);
             }
         }
     }

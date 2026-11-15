@@ -111,7 +111,7 @@ impl ExecutionControl {
             TraceLocation {
                 unit: frame.unit,
                 func: frame.func,
-                pc: frame.pc,
+                pc: Pc(frame.pc),
             }
         }
     }
@@ -408,14 +408,14 @@ impl<'a> InvocationInspection<'a> {
         }
         let initialized = self
             .locations
-            .entry((unit.0, func.0, pc))
+            .entry((unit.0, func.0, pc.0))
             .or_insert_with(|| {
                 let source = program.program();
                 let definition = &source.functions[func.0 as usize];
                 program.init_table(func).expect("verified function").before(
                     definition.bytecode(source).expect("verified bytecode"),
                     definition.reg_count as usize,
-                    pc,
+                    pc.0,
                 )
             });
         (registers, initialized.as_ref())

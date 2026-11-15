@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for event in &session.policy {
         let name = code
             .program()
-            .function_name(event.location.func.0)
+            .function_name(event.location.func)
             .unwrap_or("unnamed");
         let source = sources.lookup(event.location);
         println!(

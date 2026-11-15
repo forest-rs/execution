@@ -7,7 +7,7 @@
 
 use std::error::Error;
 
-use execution_tape::program::{Program, Reg};
+use execution_tape::program::{Pc, Program, Reg};
 use execution_tape::value::FuncId;
 use execution_tape::verifier::{ProgramAnalysis, ValueFact, VerifyConfig, verify_program_owned};
 
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .function(FuncId(id))
                 .ok_or("unknown function id")?;
             let facts = analysis
-                .instruction(pc)
+                .instruction(Pc(pc))
                 .ok_or("PC is not a source instruction boundary")?;
             println!("inferred_contract_id\tdefinition");
             for (id, contract) in facts.contracts().iter() {

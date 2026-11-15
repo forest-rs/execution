@@ -9,7 +9,7 @@ use execution_tape::value::UnitId;
 use execution_tape::{
     asm::{FunctionSig, ProgramBuilder, Reg},
     host::{AccessSink, Host, HostContext, HostError, HostSig, ResourceKeyRef, SigHash, ValueRef},
-    program::{Program, ValueType},
+    program::{Pc, Program, SpanId, ValueType},
     recording::{CaptureFault, RecordLimits, Recorder, ReplayOutcome},
     source::{SourceDocument, SourceId, SourceLimits, SourceMap, SourceMapping},
     trace::{
@@ -46,7 +46,7 @@ struct Fixture {
     program: Arc<VerifiedProgram>,
     entry: FuncId,
     child: FuncId,
-    pc: u32,
+    pc: Pc,
     result: Reg,
     sources: SourceMap,
 }
@@ -779,7 +779,7 @@ impl TraceSink for Log {
         let entry = entry.func;
         self.0.borrow_mut().push(format!("start {entry:?} {count}"));
     }
-    fn instr(&mut self, _: &Program, location: TraceLocation, next: u32, _: Option<u64>, _: u16) {
+    fn instr(&mut self, _: &Program, location: TraceLocation, next: Pc, _: Option<SpanId>, _: u16) {
         let (func, pc) = (location.func, location.pc);
         self.0
             .borrow_mut()
@@ -802,7 +802,7 @@ impl TraceSink for Log {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
     ) {
         let (func, pc) = (location.func, location.pc);
         self.0
@@ -815,7 +815,7 @@ impl TraceSink for Log {
         kind: ScopeKind,
         depth: usize,
         location: TraceLocation,
-        _: Option<u64>,
+        _: Option<SpanId>,
         outcome: TraceOutcome<'_>,
     ) {
         let (func, pc) = (location.func, location.pc);

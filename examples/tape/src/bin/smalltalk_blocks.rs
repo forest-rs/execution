@@ -54,7 +54,7 @@ fn main() -> program::Result<()> {
                         let name = fixture
                             .program
                             .program()
-                            .function_name(frame.location.func.0)
+                            .function_name(frame.location.func)
                             .unwrap_or("unnamed");
                         println!(
                             "  activation #{}: {name} at byte {}",

@@ -8,7 +8,7 @@ use execution_tape::value::{TagRef, UnitId};
 use execution_tape::{
     asm::{Catch, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, HostSig, SigHash, ValueRef},
-    program::{TagId, ValueType},
+    program::{Pc, TagId, ValueType},
     recording::{RecordLimits, Recorder, ReplayOutcome},
     trace::{TraceLocation, TraceMask, TraceSink},
     value::{FuncId, Value},
@@ -53,7 +53,7 @@ struct Fixture {
     protected: FuncId,
     bare: FuncId,
     /// `host_call` in `bare`.
-    call_pc: u32,
+    call_pc: Pc,
 }
 
 /// `protected(code)` catches `failed(tuple)` around the host call and returns the tuple's field

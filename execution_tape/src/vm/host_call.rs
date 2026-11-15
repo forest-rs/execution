@@ -85,7 +85,7 @@ pub(super) fn admit_return(
     outcome: Result<u64, HostError>,
 ) -> Result<(), TrapInfo> {
     let trap =
-        |ctx: &Registers, trap| ctx.trap(site.location.func, site.location.pc, site.span, trap);
+        |ctx: &Registers, trap| ctx.trap(site.location.func, site.location.pc.0, site.span, trap);
     let fuel = outcome.map_err(|error| {
         trap(
             ctx,

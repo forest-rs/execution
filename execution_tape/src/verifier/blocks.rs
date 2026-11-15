@@ -44,7 +44,7 @@ pub enum BlockEdgeError {
     /// An edge enters a typed block after its declaration.
     BypassesHeader {
         /// Required target header PC.
-        header: u32,
+        header: Pc,
     },
     /// An argument has the wrong type, or no definite type.
     Type {
@@ -68,7 +68,7 @@ pub(super) fn declaration(decoded: &[DecodedInstr], target: u32) -> Option<&[u32
 }
 
 pub(super) fn validate_structure(
-    func: u32,
+    func: FuncId,
     reg_count: u32,
     decoded: &[DecodedInstr],
 ) -> Result<(), VerifyError> {
@@ -111,7 +111,7 @@ pub(super) fn validate_structure(
             if let Some(error) = invalid {
                 return Err(VerifyError::BlockDeclaration {
                     func,
-                    pc: di.offset,
+                    pc: Pc(di.offset),
                     error,
                 });
             }
@@ -133,9 +133,9 @@ pub(super) fn validate_structure(
         {
             return Err(VerifyError::BlockEdge {
                 func,
-                pc: di.offset,
+                pc: Pc(di.offset),
                 arm: 0,
-                target: *pc_true,
+                target: Pc(*pc_true),
                 error: BlockEdgeError::InvalidArgumentSplit,
             });
         }
@@ -147,7 +147,7 @@ pub(super) fn validate_structure(
                 continue;
             };
             let error = if let Some(header) = owners[ix].filter(|&header| header != target) {
-                Some(BlockEdgeError::BypassesHeader { header })
+                Some(BlockEdgeError::BypassesHeader { header: Pc(header) })
             } else {
                 let expected = declaration(decoded, target).map_or(0, |params| params.len());
                 (expected != args.len()).then_some(BlockEdgeError::Arity {
@@ -158,9 +158,9 @@ pub(super) fn validate_structure(
             if let Some(error) = error {
                 return Err(VerifyError::BlockEdge {
                     func,
-                    pc: di.offset,
+                    pc: Pc(di.offset),
                     arm,
-                    target,
+                    target: Pc(target),
                     error,
                 });
             }
@@ -170,7 +170,7 @@ pub(super) fn validate_structure(
 }
 
 pub(super) fn validate_initialized(
-    func: u32,
+    func: FuncId,
     pc: u32,
     instr: &Instr,
     state: &BitSet,
@@ -189,9 +189,9 @@ pub(super) fn validate_initialized(
             if !state.get(reg as usize) {
                 return Err(VerifyError::BlockEdge {
                     func,
-                    pc,
+                    pc: Pc(pc),
                     arm,
-                    target,
+                    target: Pc(target),
                     error: BlockEdgeError::Type {
                         index,
                         reg: Reg(reg),
@@ -206,7 +206,7 @@ pub(super) fn validate_initialized(
 }
 
 pub(super) fn validate_types(
-    func: u32,
+    func: FuncId,
     pc: u32,
     instr: &Instr,
     types: RegisterTypes<'_>,
@@ -225,9 +225,9 @@ pub(super) fn validate_types(
             if actual != Some(expected) {
                 return Err(VerifyError::BlockEdge {
                     func,
-                    pc,
+                    pc: Pc(pc),
                     arm,
-                    target,
+                    target: Pc(target),
                     error: BlockEdgeError::Type {
                         index,
                         reg: Reg(reg),

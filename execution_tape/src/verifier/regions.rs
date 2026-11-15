@@ -8,7 +8,8 @@ use alloc::boxed::Box;
 use super::VerifyError;
 use super::metadata::MetadataTable;
 use crate::bytecode::DecodedInstr;
-use crate::program::{Function, Program, Reg, ValueType};
+use crate::program::{Function, Pc, Program, Reg, RegionId, TagId, ValueType};
+use crate::value::FuncId;
 
 /// Why a protected region or one of its clauses is invalid.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,21 +18,21 @@ pub enum RegionError {
     /// The parent is not an earlier region of the same function.
     Parent {
         /// Declared parent region.
-        parent: u32,
+        parent: RegionId,
     },
     /// A clause names a tag outside the program's tag table.
     ClauseTag {
         /// Clause index within the region.
         clause: u32,
         /// Requested tag id.
-        tag: u32,
+        tag: TagId,
     },
     /// A clause target is not an instruction boundary of this function.
     ClauseTarget {
         /// Clause index within the region.
         clause: u32,
-        /// Requested target offset.
-        target: u32,
+        /// Requested target.
+        target: Pc,
     },
     /// A clause target's block parameters do not receive exactly the clause's values.
     ///
@@ -42,7 +43,7 @@ pub enum RegionError {
         /// Clause index within the region.
         clause: u32,
         /// Caught tag id; `None` for catch-all.
-        tag: Option<u32>,
+        tag: Option<TagId>,
         /// Caught tag name, when the clause names a tag.
         name: Option<Box<str>>,
         /// Values delivered by the clause.
@@ -69,7 +70,7 @@ pub enum RegionError {
         /// Clause index within the region.
         clause: u32,
         /// Caught tag id.
-        tag: u32,
+        tag: TagId,
         /// Caught tag name.
         name: Box<str>,
         /// Zero-based payload position.
@@ -145,7 +146,7 @@ pub enum RegionRunError {
     /// The run names a region outside the function's region table.
     UnknownRegion {
         /// Requested region.
-        region: u32,
+        region: RegionId,
     },
     /// The run is empty, extends past the bytecode, or does not start and end at instruction
     /// boundaries.
@@ -171,37 +172,37 @@ fn boundary(decoded: &[DecodedInstr], pc: u32) -> bool {
 /// Validates every region, clause and run of one function, including unreachable ones.
 pub(super) fn verify(
     program: &Program,
-    func: u32,
+    func: FuncId,
     function: &Function,
     decoded: &[DecodedInstr],
     byte_len: u32,
 ) -> Result<(), VerifyError> {
     let malformed = |error| VerifyError::InvalidMetadata {
         table: MetadataTable::Regions,
-        entry: func,
+        entry: func.0,
         error,
     };
     let regions = function.regions(program).map_err(malformed)?;
     let runs = function.region_runs(program).map_err(malformed)?;
     let invalid = |region: usize, error| VerifyError::InvalidRegion {
         func,
-        region: u32::try_from(region).unwrap_or(u32::MAX),
+        region: RegionId(u32::try_from(region).unwrap_or(u32::MAX)),
         error,
     };
     for (index, region) in regions.iter().enumerate() {
         if let Some(parent) = region.parent
             && parent.0 as usize >= index
         {
-            return Err(invalid(index, RegionError::Parent { parent: parent.0 }));
+            return Err(invalid(index, RegionError::Parent { parent }));
         }
         let clauses = program.region_clauses(region).map_err(malformed)?;
         for (clause, &catch) in clauses.iter().enumerate() {
             let clause = u32::try_from(clause).unwrap_or(u32::MAX);
             let payload = match catch.tag() {
                 Some(tag) => {
-                    let entry = program.tag(tag).ok_or_else(|| {
-                        invalid(index, RegionError::ClauseTag { clause, tag: tag.0 })
-                    })?;
+                    let entry = program
+                        .tag(tag)
+                        .ok_or_else(|| invalid(index, RegionError::ClauseTag { clause, tag }))?;
                     Some((
                         tag,
                         program.tag_payload(entry).expect("verified tag payload"),
@@ -210,10 +211,10 @@ pub(super) fn verify(
                 None => None,
             };
             let target = catch.target();
-            if target >= byte_len || !boundary(decoded, target) {
+            if target >= Pc(byte_len) || !boundary(decoded, target.0) {
                 return Err(invalid(index, RegionError::ClauseTarget { clause, target }));
             }
-            let params = super::blocks::declaration(decoded, target).unwrap_or(&[]);
+            let params = super::blocks::declaration(decoded, target.0).unwrap_or(&[]);
             let expected = payload.as_ref().map_or(0, |(_, payload)| payload.len())
                 + usize::from(catch.binds_exception())
                 + usize::from(catch.handles_suspension());
@@ -222,7 +223,7 @@ pub(super) fn verify(
                     index,
                     RegionError::ClauseParams {
                         clause,
-                        tag: catch.tag().map(|tag| tag.0),
+                        tag: catch.tag(),
                         name: catch
                             .tag()
                             .and_then(|tag| program.tag_name(tag))
@@ -242,7 +243,7 @@ pub(super) fn verify(
                             index,
                             RegionError::ClauseParamKind {
                                 clause,
-                                tag: tag.0,
+                                tag,
                                 name: program.tag_name(tag).unwrap_or_default().into(),
                                 index: u32::try_from(position).unwrap_or(u32::MAX),
                                 expected: kind,
@@ -287,20 +288,20 @@ pub(super) fn verify(
         };
         if run.region.0 as usize >= regions.len() {
             return Err(run_error(RegionRunError::UnknownRegion {
-                region: run.region.0,
+                region: run.region,
             }));
         }
         if run.start_pc >= run.end_pc
-            || run.end_pc > byte_len
-            || !boundary(decoded, run.start_pc)
-            || (run.end_pc != byte_len && !boundary(decoded, run.end_pc))
+            || run.end_pc > Pc(byte_len)
+            || !boundary(decoded, run.start_pc.0)
+            || (run.end_pc != Pc(byte_len) && !boundary(decoded, run.end_pc.0))
         {
             return Err(run_error(RegionRunError::Range));
         }
-        if index != 0 && run.start_pc < previous_end {
+        if index != 0 && run.start_pc < Pc(previous_end) {
             return Err(run_error(RegionRunError::Order));
         }
-        previous_end = run.end_pc;
+        previous_end = run.end_pc.0;
     }
     Ok(())
 }

@@ -17,7 +17,7 @@ use execution_tape::disasm::{DisasmError, disassemble_function};
 use execution_tape::format::DecodeError;
 use execution_tape::host::{Host, HostContext, HostError, SigHash, ValueRef};
 use execution_tape::opcode::{Opcode, OpcodePrefix};
-use execution_tape::program::{FunctionDef, Program, TypeTableDef, ValueType};
+use execution_tape::program::{FunctionDef, Pc, Program, SpanId, TypeTableDef, ValueType};
 use execution_tape::trace::{TraceLocation, TraceMask, TraceSink};
 use execution_tape::value::{FuncId, FuncRef, Value};
 use execution_tape::verifier::{
@@ -90,8 +90,8 @@ fn unknown_opcodes_are_reported_with_code_and_pc() {
         assert_eq!(
             err,
             VerifyError::UnknownOpcode {
-                func: 0,
-                pc: 1,
+                func: FuncId(0),
+                pc: Pc(1),
                 opcode
             }
         );
@@ -102,7 +102,7 @@ fn unknown_opcodes_are_reported_with_code_and_pc() {
 
         assert!(matches!(
             disassemble_function(&program, FuncId(0)),
-            Err(DisasmError::UnknownOpcode { pc: 1, opcode: o }) if o == opcode
+            Err(DisasmError::UnknownOpcode { pc: Pc(1), opcode: o }) if o == opcode
         ));
 
         let err = decode_instruction(&tail).unwrap_err();
@@ -116,7 +116,7 @@ fn a_prefix_at_the_end_of_a_function_is_truncated() {
     let program = program_with(&[EXTENDED]);
     assert_eq!(
         verify_program(&program, &VerifyConfig::default()).unwrap_err(),
-        VerifyError::BytecodeDecode { func: 0 }
+        VerifyError::BytecodeDecode { func: FuncId(0) }
     );
     assert!(matches!(
         disassemble_function(&program, FuncId(0)),
@@ -174,7 +174,7 @@ impl Host for NoHost {
 #[derive(Default)]
 struct Codes(Vec<u16>);
 impl TraceSink for Codes {
-    fn instr(&mut self, _: &Program, _: TraceLocation, _: u32, _: Option<u64>, opcode: u16) {
+    fn instr(&mut self, _: &Program, _: TraceLocation, _: Pc, _: Option<SpanId>, opcode: u16) {
         self.0.push(opcode);
     }
 }
@@ -241,7 +241,7 @@ fn prefixed_instructions_round_trip_through_every_decoder() {
     let mut pc = 0;
     for (view, (opcode, _, mnemonic)) in views.iter().zip(BIT_OPS) {
         assert_eq!(view.opcode(), opcode);
-        assert_eq!(view.pc(), pc, "{mnemonic}");
+        assert_eq!(view.pc(), Pc(pc), "{mnemonic}");
         assert!(view.to_string().contains(mnemonic), "{view}");
         pc += if view.reads().count() == 1 { 4 } else { 5 };
     }
@@ -256,6 +256,7 @@ fn prefixed_instructions_round_trip_through_every_decoder() {
         pcs,
         [0, 4, 8, 12, 17, 22]
             .into_iter()
+            .map(Pc)
             .zip(expected.iter().copied())
             .collect::<Vec<_>>()
     );
@@ -332,7 +333,13 @@ fn verifier_requires_u64_operands_for_bit_ops() {
         .unwrap();
         let error = verify_program(&pb.build(), &VerifyConfig::default()).unwrap_err();
         assert!(
-            matches!(error, VerifyError::RegisterTypeMismatch { pc: Some(0), .. }),
+            matches!(
+                error,
+                VerifyError::RegisterTypeMismatch {
+                    pc: Some(Pc(0)),
+                    ..
+                }
+            ),
             "{error:?}"
         );
     }

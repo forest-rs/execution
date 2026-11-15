@@ -10,7 +10,7 @@ use execution_tape::value::FuncRef;
 use execution_tape::{
     asm::{Asm, FunctionSig, ProgramBuilder, Reg},
     host::{Host, HostContext, HostError, SigHash, ValueRef},
-    program::{Program, ValueType},
+    program::{Pc, Program, ValueType},
     trace::{TraceMask, TraceSink},
     value::Value,
     verifier::{VerifyConfig, verify_program_owned},
@@ -145,7 +145,7 @@ fn compile(name: String, source: String) -> Result<(Program, SourceMap), Box<dyn
         expression: &Expr,
         body: &mut Asm,
         kinds: &mut Vec<ValueType>,
-        ranges: &mut Vec<(u32, Range<usize>)>,
+        ranges: &mut Vec<(Pc, Range<usize>)>,
     ) -> Reg {
         let (left, right) = match &expression.kind {
             ExprKind::Number(_) => (Reg(0), Reg(0)),
