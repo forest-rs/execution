@@ -1158,6 +1158,71 @@ pub(crate) enum ExecInstr {
         dst: F64Reg,
         a: U32Reg,
     },
+    I64ToI32Ovf {
+        dst: I32Reg,
+        overflow: BoolReg,
+        a: I64Reg,
+    },
+    I64ToU32Ovf {
+        dst: U32Reg,
+        overflow: BoolReg,
+        a: I64Reg,
+    },
+    U64ToU32Ovf {
+        dst: U32Reg,
+        overflow: BoolReg,
+        a: U64Reg,
+    },
+    I32ToU32Ovf {
+        dst: U32Reg,
+        overflow: BoolReg,
+        a: I32Reg,
+    },
+    U32ToI32Ovf {
+        dst: I32Reg,
+        overflow: BoolReg,
+        a: U32Reg,
+    },
+    I64ToU64Ovf {
+        dst: U64Reg,
+        overflow: BoolReg,
+        a: I64Reg,
+    },
+    U64ToI64Ovf {
+        dst: I64Reg,
+        overflow: BoolReg,
+        a: U64Reg,
+    },
+    F32ToI32Exact {
+        dst: I32Reg,
+        inexact: BoolReg,
+        a: F32Reg,
+    },
+    F32ToU32Exact {
+        dst: U32Reg,
+        inexact: BoolReg,
+        a: F32Reg,
+    },
+    F64ToI32Exact {
+        dst: I32Reg,
+        inexact: BoolReg,
+        a: F64Reg,
+    },
+    F64ToU32Exact {
+        dst: U32Reg,
+        inexact: BoolReg,
+        a: F64Reg,
+    },
+    F64ToI64Exact {
+        dst: I64Reg,
+        inexact: BoolReg,
+        a: F64Reg,
+    },
+    F64ToU64Exact {
+        dst: U64Reg,
+        inexact: BoolReg,
+        a: F64Reg,
+    },
 
     I64Eq {
         dst: BoolReg,

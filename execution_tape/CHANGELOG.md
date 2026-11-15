@@ -16,6 +16,20 @@ This release has an [MSRV][] of 1.88.
 
 ### Added
 
+- Add checked conversions, which report a value that does not fit instead of trapping, so a
+  language can turn a failed range check into a recoverable error. Each writes the converted
+  value and a `bool` flag, like the `_ovf` arithmetic, and the frontend branches on the flag.
+  `i64.to_i32_ovf` (`0xFD 0xE0`), `i64.to_u32_ovf`, `u64.to_u32_ovf`, `i32.to_u32_ovf`,
+  `u32.to_i32_ovf`, `i64.to_u64_ovf` and `u64.to_i64_ovf` (`0xFD 0xE6`) write the wrapped value
+  and whether `a` was out of range. `f32.to_i32_exact` (`0xFD 0xE7`), `f32.to_u32_exact`,
+  `f64.to_i32_exact`, `f64.to_u32_exact`, `f64.to_i64_exact` and `f64.to_u64_exact` (`0xFD
+  0xEC`) write the saturating truncation and whether `a` was anything but an integer in range
+  (NaN, infinite, fractional or out of range; `-0.0` is zero). Every trapping integer and
+  float-to-integer conversion now has a checked twin; `i64.to_u32_ovf` has no trapping form.
+  `Asm` gains a method for each (`i64_to_i32_ovf(dst, overflow, a)`, `f64_to_i64_exact(dst,
+  inexact, a)`, ...). The bytes are additive within wire version 0.6. Migration: handle the new
+  `Opcode` variants in exhaustive matches.
+
 - Add links: relinkable call targets for languages that devirtualize calls but replace code
   live. A program declares a link with `ProgramBuilder::declare_link(name, target)` (a new
   optional `links` section, tag 17), and `call.link` (`0x56`, emitted by `Asm::call_link` or

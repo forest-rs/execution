@@ -3129,6 +3129,142 @@ impl Asm {
         self
     }
 
+    /// Encodes `i64.to_i32_ovf dst, overflow, a`: `a` as `i32` in `dst`, keeping its low bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn i64_to_i32_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::I64ToI32Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i64.to_u32_ovf dst, overflow, a`: `a` as `u32` in `dst`, keeping its low bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn i64_to_u32_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::I64ToU32Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64.to_u32_ovf dst, overflow, a`: `a` as `u32` in `dst`, keeping its low bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn u64_to_u32_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::U64ToU32Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i32.to_u32_ovf dst, overflow, a`: `a` as `u32` in `dst`, reinterpreting its bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn i32_to_u32_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::I32ToU32Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u32.to_i32_ovf dst, overflow, a`: `a` as `i32` in `dst`, reinterpreting its bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn u32_to_i32_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::U32ToI32Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `i64.to_u64_ovf dst, overflow, a`: `a` as `u64` in `dst`, reinterpreting its bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn i64_to_u64_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::I64ToU64Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `u64.to_i64_ovf dst, overflow, a`: `a` as `i64` in `dst`, reinterpreting its bits
+    /// when it does not fit, and whether it did not fit in `overflow` (`bool`).
+    pub fn u64_to_i64_ovf(&mut self, dst: Reg, overflow: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::U64ToI64Ovf);
+        self.reg(dst);
+        self.reg(overflow);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_i32_exact dst, inexact, a`: the `i32` that `a` equals in `dst` (the
+    /// saturating truncation when there is none), and in `inexact` (`bool`) whether `a` is NaN,
+    /// infinite, fractional or outside `i32`.
+    pub fn f32_to_i32_exact(&mut self, dst: Reg, inexact: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::F32ToI32Exact);
+        self.reg(dst);
+        self.reg(inexact);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f32.to_u32_exact dst, inexact, a`: the `u32` that `a` equals in `dst` (the
+    /// saturating truncation when there is none), and in `inexact` (`bool`) whether `a` is NaN,
+    /// infinite, fractional or outside `u32`.
+    pub fn f32_to_u32_exact(&mut self, dst: Reg, inexact: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::F32ToU32Exact);
+        self.reg(dst);
+        self.reg(inexact);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_i32_exact dst, inexact, a`: the `i32` that `a` equals in `dst` (the
+    /// saturating truncation when there is none), and in `inexact` (`bool`) whether `a` is NaN,
+    /// infinite, fractional or outside `i32`.
+    pub fn f64_to_i32_exact(&mut self, dst: Reg, inexact: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::F64ToI32Exact);
+        self.reg(dst);
+        self.reg(inexact);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_u32_exact dst, inexact, a`: the `u32` that `a` equals in `dst` (the
+    /// saturating truncation when there is none), and in `inexact` (`bool`) whether `a` is NaN,
+    /// infinite, fractional or outside `u32`.
+    pub fn f64_to_u32_exact(&mut self, dst: Reg, inexact: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::F64ToU32Exact);
+        self.reg(dst);
+        self.reg(inexact);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_i64_exact dst, inexact, a`: the `i64` that `a` equals in `dst` (the
+    /// saturating truncation when there is none), and in `inexact` (`bool`) whether `a` is NaN,
+    /// infinite, fractional or outside `i64`.
+    pub fn f64_to_i64_exact(&mut self, dst: Reg, inexact: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::F64ToI64Exact);
+        self.reg(dst);
+        self.reg(inexact);
+        self.reg(a);
+        self
+    }
+
+    /// Encodes `f64.to_u64_exact dst, inexact, a`: the `u64` that `a` equals in `dst` (the
+    /// saturating truncation when there is none), and in `inexact` (`bool`) whether `a` is NaN,
+    /// infinite, fractional or outside `u64`.
+    pub fn f64_to_u64_exact(&mut self, dst: Reg, inexact: Reg, a: Reg) -> &mut Self {
+        self.opcode(Opcode::F64ToU64Exact);
+        self.reg(dst);
+        self.reg(inexact);
+        self.reg(a);
+        self
+    }
+
     /// Encodes `u64_shr dst, a, b` (shift amount masked with `& 63`).
     pub fn u64_shr(&mut self, dst: Reg, a: Reg, b: Reg) -> &mut Self {
         self.opcode(Opcode::U64Shr);

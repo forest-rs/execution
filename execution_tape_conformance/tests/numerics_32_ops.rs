@@ -139,6 +139,17 @@ fn f2i(x: f64, lo: f64, hi: f64) -> Result<f64, Trap> {
     Ok(t)
 }
 
+/// Whether `x` is an integer in `lo..end` (both bounds exact in `f64`): the inputs a checked
+/// float conversion accepts without reporting it inexact. `-0.0` is the integer zero.
+fn is_exact(x: f64, lo: f64, end: f64) -> bool {
+    x.is_finite() && x.trunc() == x && lo <= x && x < end
+}
+
+/// A checked conversion's two results: the converted value and its flag.
+fn flagged(v: Value, flag: bool) -> Outcome {
+    Ok(vec![v, Value::Bool(flag)])
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "reference conversions use Rust's defined casts"
@@ -484,6 +495,66 @@ fn cases() -> Vec<Case> {
         case!(U32ToF64, [U32], [F64], |v| one(Value::F64(f64::from(u(
             &v[0]
         ))))),
+        case!(I64ToI32Ovf, [I64], [I32, Bool], |v| {
+            let a = i64v(&v[0]);
+            let fits = (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&a);
+            flagged(Value::I32(a as i32), !fits)
+        }),
+        case!(I64ToU32Ovf, [I64], [U32, Bool], |v| {
+            let a = i64v(&v[0]);
+            let fits = (0..=i64::from(u32::MAX)).contains(&a);
+            flagged(Value::U32(a as u32), !fits)
+        }),
+        case!(U64ToU32Ovf, [U64], [U32, Bool], |v| {
+            let a = u64v(&v[0]);
+            flagged(Value::U32(a as u32), a > u64::from(u32::MAX))
+        }),
+        case!(I32ToU32Ovf, [I32], [U32, Bool], |v| {
+            let a = i(&v[0]);
+            flagged(Value::U32(a.cast_unsigned()), a < 0)
+        }),
+        case!(U32ToI32Ovf, [U32], [I32, Bool], |v| {
+            let a = u(&v[0]);
+            flagged(Value::I32(a.cast_signed()), a > 0x7FFF_FFFF)
+        }),
+        case!(I64ToU64Ovf, [I64], [U64, Bool], |v| {
+            let a = i64v(&v[0]);
+            flagged(Value::U64(a.cast_unsigned()), a < 0)
+        }),
+        case!(U64ToI64Ovf, [U64], [I64, Bool], |v| {
+            let a = u64v(&v[0]);
+            flagged(Value::I64(a.cast_signed()), a > 0x7FFF_FFFF_FFFF_FFFF)
+        }),
+        case!(F32ToI32Exact, [F32], [I32, Bool], |v| {
+            let x = f(&v[0]);
+            let exact = is_exact(f64::from(x), -2_147_483_648.0, 2_147_483_648.0);
+            flagged(Value::I32(x as i32), !exact)
+        }),
+        case!(F32ToU32Exact, [F32], [U32, Bool], |v| {
+            let x = f(&v[0]);
+            let exact = is_exact(f64::from(x), 0.0, 4_294_967_296.0);
+            flagged(Value::U32(x as u32), !exact)
+        }),
+        case!(F64ToI32Exact, [F64], [I32, Bool], |v| {
+            let x = f64v(&v[0]);
+            let exact = is_exact(x, -2_147_483_648.0, 2_147_483_648.0);
+            flagged(Value::I32(x as i32), !exact)
+        }),
+        case!(F64ToU32Exact, [F64], [U32, Bool], |v| {
+            let x = f64v(&v[0]);
+            let exact = is_exact(x, 0.0, 4_294_967_296.0);
+            flagged(Value::U32(x as u32), !exact)
+        }),
+        case!(F64ToI64Exact, [F64], [I64, Bool], |v| {
+            let x = f64v(&v[0]);
+            let exact = is_exact(x, -9_223_372_036_854_775_808.0, 9_223_372_036_854_775_808.0);
+            flagged(Value::I64(x as i64), !exact)
+        }),
+        case!(F64ToU64Exact, [F64], [U64, Bool], |v| {
+            let x = f64v(&v[0]);
+            let exact = is_exact(x, 0.0, 18_446_744_073_709_551_616.0);
+            flagged(Value::U64(x as u64), !exact)
+        }),
     ]
 }
 
@@ -503,6 +574,7 @@ fn samples(t: ValueType) -> Vec<Value> {
             -98_765,
             i32::MIN,
             i32::MIN + 1,
+            i32::MAX - 1,
             i32::MAX,
         ]
         .map(Value::I32)
@@ -517,6 +589,7 @@ fn samples(t: ValueType) -> Vec<Value> {
             33,
             1_000_000,
             0xDEAD_BEEF,
+            (1 << 31) - 1,
             1 << 31,
             u32::MAX,
         ]
@@ -565,9 +638,13 @@ fn samples(t: ValueType) -> Vec<Value> {
             i64::from(i32::MAX) + 1,
             i64::from(i32::MIN),
             i64::from(i32::MIN) - 1,
+            i64::from(u32::MAX),
+            i64::from(u32::MAX) + 1,
+            -(1 << 32),
             (1 << 53) + 1,
             i64::MAX,
             i64::MIN,
+            i64::MIN + 1,
         ]
         .map(Value::I64)
         .to_vec(),
@@ -577,6 +654,8 @@ fn samples(t: ValueType) -> Vec<Value> {
             u64::from(u32::MAX),
             u64::from(u32::MAX) + 1,
             (1 << 53) + 1,
+            (1 << 63) - 1,
+            1 << 63,
             (1 << 63) + (1 << 39) + 1,
             u64::MAX,
         ]
@@ -599,8 +678,25 @@ fn samples(t: ValueType) -> Vec<Value> {
             1.0 + f64::from(f32::EPSILON) / 2.0,
             f64::from(f32::MAX) * 1.000_000_1,
             f64::INFINITY,
+            f64::NEG_INFINITY,
             f64::NAN,
             f64::from_bits(0x7FF0_0000_2000_0001),
+            0.5,
+            -0.5,
+            3.0,
+            -3.0,
+            f64::from_bits(1),
+            2_147_483_647.0,
+            -2_147_483_648.0,
+            4_294_967_295.0,
+            // 2^63, the largest `f64` below it, -2^63 and the next `f64` below that.
+            9_223_372_036_854_775_808.0,
+            9_223_372_036_854_774_784.0,
+            -9_223_372_036_854_775_808.0,
+            -9_223_372_036_854_777_856.0,
+            // 2^64 and the largest `f64` below it.
+            18_446_744_073_709_551_616.0,
+            18_446_744_073_709_549_568.0,
         ]
         .map(Value::F64)
         .to_vec(),

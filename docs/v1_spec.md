@@ -335,7 +335,7 @@ form and no second spelling of an opcode, so an opcode's bytes identify it exact
   `f32.pow`). New instruction families take the next free byte outside that block.
 - `0xFD` (`OpcodePrefix::Numeric32`): 32-bit numerics and conversions, in aligned blocks
   (`i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80` with its math intrinsics from `0xA0`,
-  conversions from `0xC0`).
+  conversions from `0xC0` with the checked conversions from `0xE0`).
 
 Every opcode has a 16-bit *code*: its byte for single-byte opcodes, and `prefix << 8 | byte` for
 prefixed ones (`0xFC 0x05` is code `0xFC05`). Traces, recordings and diagnostics report opcodes by
@@ -816,6 +816,8 @@ widths or signedness; conversions are explicit:
   ties to even (`f64.to_f32` overflows to infinity).
 - `f32.to_i32`, `f32.to_u32`, `f64.to_i32`, `f64.to_u32` and their `_sat` forms: truncate,
   then trap or saturate; see [Float-to-integer conversions](#float-to-integer-conversions).
+- The checked conversions `*_ovf` and `*_exact` never trap; they write the converted value and
+  a `bool` flag. See [Checked conversions](#checked-conversions).
 - `f32.to_bits`/`f32.from_bits`: raw IEEE bits to and from `u32`.
 
 `f32.round_half_away` and `f64.round_half_away` round like `nearest` but break ties away from zero
@@ -834,6 +836,35 @@ Decimal has no 32-bit conversions; go through `i64`/`u64`.
   for `u64`. They match Cranelift `sadd_overflow`/`ssub_overflow`/`smul_overflow` and
   `uadd_overflow`/`usub_overflow`/`umul_overflow`, and never trap. A frontend with unbounded
   integers uses them as its fast path, branching on the flag to promote or signal.
+
+#### Checked conversions
+A checked conversion `op dst, flag, a` writes the converted value to `dst` and, to `flag`
+(`Bool`), whether `a` had no exact value in the target type. It never traps: the frontend
+branches on the flag, as it does after an `_ovf` arithmetic instruction, and decides itself what
+a value that does not fit means. Each trapping integer or float-to-integer conversion has a
+checked twin, so a language can report a recoverable error without the trap that no guest code
+can catch.
+
+- `i64.to_i32_ovf`, `i64.to_u32_ovf`, `u64.to_u32_ovf`, `i32.to_u32_ovf`, `u32.to_i32_ovf`,
+  `i64.to_u64_ovf` and `u64.to_i64_ovf` set `overflow` when `a` is outside the target type's
+  range. `dst` holds the low bits of `a` either way (the result of the matching `_wrap`
+  conversion), so it is `a` exactly when `overflow` is false. `i64.to_u32_ovf` has no trapping or
+  wrapping form; it is the one-instruction range check for `i64` to `u32`.
+- `f32.to_i32_exact`, `f32.to_u32_exact`, `f64.to_i32_exact`, `f64.to_u32_exact`,
+  `f64.to_i64_exact` and `f64.to_u64_exact` set `inexact` unless `a` is an integer in the target
+  type's range: NaN, the infinities, any value with a fractional part and any value outside the
+  range set it. `-0.0` is the integer zero and converts to `0` without setting it, for unsigned
+  targets too. `dst` holds the result of the matching `_sat` conversion either way, so it is `a`
+  exactly when `inexact` is false. The accepted inputs are the integers in `-2^31..=2^31 - 1`
+  for `i32`, `0..=2^32 - 1` for `u32`, `-2^63..2^63` for `i64` and `0..2^64` for `u64`: 2^63
+  saturates to `i64::MAX` but is not equal to it, so it sets `inexact`.
+
+The float forms test exactness rather than the trapping forms' truncate-then-range-check,
+because a frontend converting a float to an integer type needs the value it holds: truncation
+toward zero is one rounding among several (`floor`, `ceil`, `nearest`, `round_half_away`), and
+each composes the same way as `rounding op` then `_exact`, where the `_exact` flag then reports
+only NaN, infinities and range. An `f32` source widens to `f64` with `f32.to_f64`, which is
+exact, before an `f64` form with no `f32` twin.
 
 #### Decimal semantics
 - `r_scale` is a `U64` register holding the result scale; a value above 255 traps with
@@ -912,6 +943,8 @@ just as for signed ones, and `-1.0` is the first negative value outside an unsig
   range (including `-inf`) produces the minimum (`i32::MIN`, `i64::MIN` or `0`), one above it
   (including `+inf`) produces the maximum, and NaN produces `0`. On every input the trapping form
   accepts, both forms give the same result.
+- The `_exact` forms (`f32.to_i32_exact` ... `f64.to_u64_exact`) write the `_sat` result and a
+  flag that is clear only for an integer in range; see [Checked conversions](#checked-conversions).
 
 #### Math intrinsics
 The math intrinsics are `pow` (`a` raised to `b`), `exp`, `ln` (natural logarithm), `sin`,
@@ -1360,12 +1393,28 @@ Conversions (`0xC0..=0xFF`):
 - `0xFD 0xDC u64.to_f32 dst, a`
 - `0xFD 0xDD i32.to_f64 dst, a`
 - `0xFD 0xDE u32.to_f64 dst, a`
+
+Checked conversions (`0xE0..`; `dst` and the `bool` flag are both written, see
+[Checked conversions](#checked-conversions)):
+- `0xFD 0xE0 i64.to_i32_ovf dst, overflow, a`
+- `0xFD 0xE1 i64.to_u32_ovf dst, overflow, a`
+- `0xFD 0xE2 u64.to_u32_ovf dst, overflow, a`
+- `0xFD 0xE3 i32.to_u32_ovf dst, overflow, a`
+- `0xFD 0xE4 u32.to_i32_ovf dst, overflow, a`
+- `0xFD 0xE5 i64.to_u64_ovf dst, overflow, a`
+- `0xFD 0xE6 u64.to_i64_ovf dst, overflow, a`
+- `0xFD 0xE7 f32.to_i32_exact dst, inexact, a`
+- `0xFD 0xE8 f32.to_u32_exact dst, inexact, a`
+- `0xFD 0xE9 f64.to_i32_exact dst, inexact, a`
+- `0xFD 0xEA f64.to_u32_exact dst, inexact, a`
+- `0xFD 0xEB f64.to_i64_exact dst, inexact, a`
+- `0xFD 0xEC f64.to_u64_exact dst, inexact, a`
 - `0x31 u64_le dst, a, b`
 - `0x32 u64_ge dst, a, b`
 - `0x33 i64_and dst, a, b`
 
-- `0x34 u64_to_i64 dst, a` (traps on overflow)
-- `0x35 i64_to_u64 dst, a` (traps on negative)
+- `0x34 u64_to_i64 dst, a` (traps on overflow; `u64.to_i64_ovf` reports it instead)
+- `0x35 i64_to_u64 dst, a` (traps on negative; `i64.to_u64_ovf` reports it instead)
 - `0x36 i64_or dst, a, b`
 - `0x37 i64_xor dst, a, b`
 
