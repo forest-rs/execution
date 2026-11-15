@@ -141,6 +141,40 @@ pub(crate) fn to_u64(x: f64) -> Result<u64, FloatToIntError> {
     Ok(to_u64_sat(x))
 }
 
+/// Converts `x` to the `i64` it equals, reporting whether it equals none.
+///
+/// Returns the saturating truncation ([`to_i64_sat`]) and `true` unless `x` is an integer in
+/// `-2^63..2^63`: NaN, the infinities, fractions and out-of-range values all report `true`.
+/// `-0.0` is the integer `0`.
+#[inline]
+pub(crate) fn to_i64_exact(x: f64) -> (i64, bool) {
+    let out = to_i64_sat(x);
+    // In range the truncation fits and converts back exactly, so a round trip that changes
+    // the value means `x` had a fraction. NaN fails the range test.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the truncation of an in-range f64 is an f64, so this is exact"
+    )]
+    let exact =
+        (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&x) && out as f64 == x;
+    (out, !exact)
+}
+
+/// Converts `x` to the `u64` it equals, reporting whether it equals none.
+///
+/// Returns the saturating truncation ([`to_u64_sat`]) and `true` unless `x` is an integer in
+/// `0..2^64`. `-0.0` is the integer `0`; `-0.5` is not an integer.
+#[inline]
+pub(crate) fn to_u64_exact(x: f64) -> (u64, bool) {
+    let out = to_u64_sat(x);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the truncation of an in-range f64 is an f64, so this is exact"
+    )]
+    let exact = (0.0..18_446_744_073_709_551_616.0).contains(&x) && out as f64 == x;
+    (out, !exact)
+}
+
 /// Returns the input NaN with its quiet bit set.
 #[inline]
 fn quiet_nan(bits: u64) -> f64 {
@@ -399,7 +433,7 @@ mod tests {
 
     use super::{
         FloatToIntError, ceil, copysign, floor, nearest, rem, round_half_away, sqrt, to_i64,
-        to_i64_sat, to_u64, to_u64_sat, trunc,
+        to_i64_exact, to_i64_sat, to_u64, to_u64_exact, to_u64_sat, trunc,
     };
     use std::vec::Vec;
 
@@ -840,6 +874,50 @@ mod tests {
             assert_eq!(to_i64(x).map(i128::from), want, "to_i64({x:e})");
             let want = reference_trapping(x, 0, i128::from(u64::MAX));
             assert_eq!(to_u64(x).map(i128::from), want, "to_u64({x:e})");
+        }
+    }
+
+    /// Whether `x` is exactly an integer in `min..=max`.
+    fn reference_exact(x: f64, min: i128, max: i128) -> bool {
+        if !x.is_finite() || x.abs() >= 2.0_f64.powi(120) {
+            return false;
+        }
+        let t = truncated_value(x);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "t below 2^120 that equals an f64 converts back exactly"
+        )]
+        let integral = t as f64 == x;
+        integral && (min..=max).contains(&t)
+    }
+
+    #[test]
+    fn exact_conversions_flag_everything_but_integers_in_range() {
+        let two63 = 9_223_372_036_854_775_808.0_f64;
+        assert_eq!(to_i64_exact(-two63), (i64::MIN, false));
+        assert_eq!(to_i64_exact(two63), (i64::MAX, true));
+        assert_eq!(to_i64_exact(-0.0), (0, false));
+        assert_eq!(to_u64_exact(-0.0), (0, false));
+        assert_eq!(to_u64_exact(-0.5), (0, true));
+        assert_eq!(to_i64_exact(2.5), (2, true));
+        assert_eq!(to_i64_exact(f64::NAN), (0, true));
+        assert_eq!(to_u64_exact(two63), (1 << 63, false));
+        for x in saturation_inputs() {
+            let i64_range = (i128::from(i64::MIN), i128::from(i64::MAX));
+            let (value, inexact) = to_i64_exact(x);
+            assert_eq!(value, to_i64_sat(x), "to_i64_exact({x:e}) value");
+            assert_eq!(
+                !inexact,
+                reference_exact(x, i64_range.0, i64_range.1),
+                "to_i64_exact({x:e})"
+            );
+            let (value, inexact) = to_u64_exact(x);
+            assert_eq!(value, to_u64_sat(x), "to_u64_exact({x:e}) value");
+            assert_eq!(
+                !inexact,
+                reference_exact(x, 0, i128::from(u64::MAX)),
+                "to_u64_exact({x:e})"
+            );
         }
     }
 

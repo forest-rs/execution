@@ -9,7 +9,7 @@
     {
       "name": "Numeric32",
       "byte": "0xFD",
-      "doc": "32-bit numerics in aligned blocks: `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`\n(math intrinsics from `0xA0`), conversions from `0xC0`."
+      "doc": "32-bit numerics in aligned blocks: `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`\n(math intrinsics from `0xA0`), conversions from `0xC0`\n(checked conversions, which report a value that does not fit, from `0xE0`)."
     }
   ],
   "opcodes": [
@@ -7563,6 +7563,422 @@
           "role": "dst",
           "encoding": "reg_u32_uleb",
           "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "I64ToI32Ovf",
+      "mnemonic": "i64.to_i32_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE0",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = i64_to_i32_ovf(a)` (`i64` -> `i32`; low 32 bits; `bool` true when `a` is outside `i32`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "I64ToU32Ovf",
+      "mnemonic": "i64.to_u32_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE1",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = i64_to_u32_ovf(a)` (`i64` -> `u32`; low 32 bits; `bool` true when `a` is outside `u32`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64ToU32Ovf",
+      "mnemonic": "u64.to_u32_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE2",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = u64_to_u32_ovf(a)` (`u64` -> `u32`; low 32 bits; `bool` true when `a` is above `u32::MAX`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "I32ToU32Ovf",
+      "mnemonic": "i32.to_u32_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE3",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = i32_to_u32_ovf(a)` (`i32` -> `u32`; same bits; `bool` true when `a` is negative).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U32ToI32Ovf",
+      "mnemonic": "u32.to_i32_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE4",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = u32_to_i32_ovf(a)` (`u32` -> `i32`; same bits; `bool` true when `a` is above `i32::MAX`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "I64ToU64Ovf",
+      "mnemonic": "i64.to_u64_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE5",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = i64_to_u64_ovf(a)` (`i64` -> `u64`; same bits; `bool` true when `a` is negative).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "U64ToI64Ovf",
+      "mnemonic": "u64.to_i64_ovf",
+      "prefix": "0xFD",
+      "byte": "0xE6",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, overflow) = u64_to_i64_ovf(a)` (`u64` -> `i64`; same bits; `bool` true when `a` is above `i64::MAX`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "overflow",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32ToI32Exact",
+      "mnemonic": "f32.to_i32_exact",
+      "prefix": "0xFD",
+      "byte": "0xE7",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, inexact) = f32_to_i32_exact(a)` (`f32` -> `i32`; the `_sat` result; `bool` true unless `a` is an integer in `i32`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "inexact",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F32ToU32Exact",
+      "mnemonic": "f32.to_u32_exact",
+      "prefix": "0xFD",
+      "byte": "0xE8",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, inexact) = f32_to_u32_exact(a)` (`f32` -> `u32`; the `_sat` result; `bool` true unless `a` is an integer in `u32`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "inexact",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64ToI32Exact",
+      "mnemonic": "f64.to_i32_exact",
+      "prefix": "0xFD",
+      "byte": "0xE9",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, inexact) = f64_to_i32_exact(a)` (`f64` -> `i32`; the `_sat` result; `bool` true unless `a` is an integer in `i32`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "inexact",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64ToU32Exact",
+      "mnemonic": "f64.to_u32_exact",
+      "prefix": "0xFD",
+      "byte": "0xEA",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, inexact) = f64_to_u32_exact(a)` (`f64` -> `u32`; the `_sat` result; `bool` true unless `a` is an integer in `u32`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "inexact",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64ToI64Exact",
+      "mnemonic": "f64.to_i64_exact",
+      "prefix": "0xFD",
+      "byte": "0xEB",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, inexact) = f64_to_i64_exact(a)` (`f64` -> `i64`; the `_sat` result; `bool` true unless `a` is an integer in `i64`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "inexact",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "a",
+          "encoding": "reg_u32_uleb",
+          "field": "a",
+          "access": "read"
+        }
+      ]
+    },
+    {
+      "name": "F64ToU64Exact",
+      "mnemonic": "f64.to_u64_exact",
+      "prefix": "0xFD",
+      "byte": "0xEC",
+      "terminator": false,
+      "flags": [],
+      "doc": "`(dst, inexact) = f64_to_u64_exact(a)` (`f64` -> `u64`; the `_sat` result; `bool` true unless `a` is an integer in `u64`).",
+      "operands": [
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "dst",
+          "access": "write"
+        },
+        {
+          "kind": "reg",
+          "role": "dst",
+          "encoding": "reg_u32_uleb",
+          "field": "inexact",
           "access": "write"
         },
         {

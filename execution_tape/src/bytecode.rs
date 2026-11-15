@@ -575,6 +575,32 @@ pub(crate) enum Instr {
     I32ToF64 { dst: u32, a: u32 },
     /// `dst = u32_to_f64(a)` (`u32` -> `f64`; exact).
     U32ToF64 { dst: u32, a: u32 },
+    /// `(dst, overflow) = i64_to_i32_ovf(a)` (`i64` -> `i32`; low 32 bits; `bool` true when `a` is outside `i32`).
+    I64ToI32Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, overflow) = i64_to_u32_ovf(a)` (`i64` -> `u32`; low 32 bits; `bool` true when `a` is outside `u32`).
+    I64ToU32Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, overflow) = u64_to_u32_ovf(a)` (`u64` -> `u32`; low 32 bits; `bool` true when `a` is above `u32::MAX`).
+    U64ToU32Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, overflow) = i32_to_u32_ovf(a)` (`i32` -> `u32`; same bits; `bool` true when `a` is negative).
+    I32ToU32Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, overflow) = u32_to_i32_ovf(a)` (`u32` -> `i32`; same bits; `bool` true when `a` is above `i32::MAX`).
+    U32ToI32Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, overflow) = i64_to_u64_ovf(a)` (`i64` -> `u64`; same bits; `bool` true when `a` is negative).
+    I64ToU64Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, overflow) = u64_to_i64_ovf(a)` (`u64` -> `i64`; same bits; `bool` true when `a` is above `i64::MAX`).
+    U64ToI64Ovf { dst: u32, overflow: u32, a: u32 },
+    /// `(dst, inexact) = f32_to_i32_exact(a)` (`f32` -> `i32`; the `_sat` result; `bool` true unless `a` is an integer in `i32`).
+    F32ToI32Exact { dst: u32, inexact: u32, a: u32 },
+    /// `(dst, inexact) = f32_to_u32_exact(a)` (`f32` -> `u32`; the `_sat` result; `bool` true unless `a` is an integer in `u32`).
+    F32ToU32Exact { dst: u32, inexact: u32, a: u32 },
+    /// `(dst, inexact) = f64_to_i32_exact(a)` (`f64` -> `i32`; the `_sat` result; `bool` true unless `a` is an integer in `i32`).
+    F64ToI32Exact { dst: u32, inexact: u32, a: u32 },
+    /// `(dst, inexact) = f64_to_u32_exact(a)` (`f64` -> `u32`; the `_sat` result; `bool` true unless `a` is an integer in `u32`).
+    F64ToU32Exact { dst: u32, inexact: u32, a: u32 },
+    /// `(dst, inexact) = f64_to_i64_exact(a)` (`f64` -> `i64`; the `_sat` result; `bool` true unless `a` is an integer in `i64`).
+    F64ToI64Exact { dst: u32, inexact: u32, a: u32 },
+    /// `(dst, inexact) = f64_to_u64_exact(a)` (`f64` -> `u64`; the `_sat` result; `bool` true unless `a` is an integer in `u64`).
+    F64ToU64Exact { dst: u32, inexact: u32, a: u32 },
 
     /// `dst = (a == b)` (`i64` -> `bool`).
     I64Eq { dst: u32, a: u32, b: u32 },

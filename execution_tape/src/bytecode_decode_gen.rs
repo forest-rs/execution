@@ -2433,5 +2433,135 @@ pub(crate) fn decode_instr(opcode: Opcode, r: &mut Reader<'_>) -> Result<Instr, 
                 a,
             }
         },
+        Opcode::I64ToI32Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToI32Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::I64ToU32Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToU32Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::U64ToU32Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64ToU32Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::I32ToU32Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I32ToU32Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::U32ToI32Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U32ToI32Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::I64ToU64Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::I64ToU64Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::U64ToI64Ovf => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let overflow = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::U64ToI64Ovf {
+                dst,
+                overflow,
+                a,
+            }
+        },
+        Opcode::F32ToI32Exact => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let inexact = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToI32Exact {
+                dst,
+                inexact,
+                a,
+            }
+        },
+        Opcode::F32ToU32Exact => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let inexact = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F32ToU32Exact {
+                dst,
+                inexact,
+                a,
+            }
+        },
+        Opcode::F64ToI32Exact => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let inexact = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToI32Exact {
+                dst,
+                inexact,
+                a,
+            }
+        },
+        Opcode::F64ToU32Exact => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let inexact = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToU32Exact {
+                dst,
+                inexact,
+                a,
+            }
+        },
+        Opcode::F64ToI64Exact => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let inexact = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToI64Exact {
+                dst,
+                inexact,
+                a,
+            }
+        },
+        Opcode::F64ToU64Exact => {
+            let dst = crate::codec_primitives::read_reg(r)?;
+            let inexact = crate::codec_primitives::read_reg(r)?;
+            let a = crate::codec_primitives::read_reg(r)?;
+            Instr::F64ToU64Exact {
+                dst,
+                inexact,
+                a,
+            }
+        },
     })
 }

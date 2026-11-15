@@ -270,6 +270,19 @@ impl Instr {
             Self::U64ToF32 { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
             Self::I32ToF64 { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
             Self::U32ToF64 { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::I64ToI32Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::I64ToU32Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::U64ToU32Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::I32ToU32Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::U32ToI32Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::I64ToU64Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::U64ToI64Ovf { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F32ToI32Exact { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F32ToU32Exact { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64ToI32Exact { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64ToU32Exact { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64ToI64Exact { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
+            Self::F64ToU64Exact { a, .. } => ReadsIter::from_parts([*a, 0, 0], 1, [&[]]),
         }
     }
     /// Iterates virtual registers write by this instruction without allocation.
@@ -532,6 +545,19 @@ impl Instr {
             Self::U64ToF32 { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
             Self::I32ToF64 { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
             Self::U32ToF64 { dst, .. } => WritesIter::from_parts([*dst, 0], 1, [&[]]),
+            Self::I64ToI32Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::I64ToU32Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::U64ToU32Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::I32ToU32Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::U32ToI32Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::I64ToU64Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::U64ToI64Ovf { dst, overflow, .. } => WritesIter::from_parts([*dst, *overflow], 2, [&[]]),
+            Self::F32ToI32Exact { dst, inexact, .. } => WritesIter::from_parts([*dst, *inexact], 2, [&[]]),
+            Self::F32ToU32Exact { dst, inexact, .. } => WritesIter::from_parts([*dst, *inexact], 2, [&[]]),
+            Self::F64ToI32Exact { dst, inexact, .. } => WritesIter::from_parts([*dst, *inexact], 2, [&[]]),
+            Self::F64ToU32Exact { dst, inexact, .. } => WritesIter::from_parts([*dst, *inexact], 2, [&[]]),
+            Self::F64ToI64Exact { dst, inexact, .. } => WritesIter::from_parts([*dst, *inexact], 2, [&[]]),
+            Self::F64ToU64Exact { dst, inexact, .. } => WritesIter::from_parts([*dst, *inexact], 2, [&[]]),
         }
     }
 }

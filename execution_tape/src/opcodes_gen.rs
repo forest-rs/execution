@@ -836,6 +836,45 @@ pub const OPERANDS: &[OperandSchema] = &[
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
     OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
     OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::Dst, OperandEncoding::RegU32Uleb, Some(OperandAccess::Write)),
+    OperandSchema::new(OperandKind::Reg, OperandRole::A, OperandEncoding::RegU32Uleb, Some(OperandAccess::Read)),
 ];
 
 /// Per-opcode metadata used by decode, disasm, and verification.
@@ -1293,6 +1332,20 @@ const NUMERIC32_OPCODE_INFO: &[OpcodeInfo] = &[
     OpcodeInfo { mnemonic: "u64.to_f32", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 694, len: 2 } }, // 0xFD 0xDC U64ToF32
     OpcodeInfo { mnemonic: "i32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 696, len: 2 } }, // 0xFD 0xDD I32ToF64
     OpcodeInfo { mnemonic: "u32.to_f64", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 698, len: 2 } }, // 0xFD 0xDE U32ToF64
+    OpcodeInfo { mnemonic: "<invalid>", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 0, len: 0 } }, // 0xFD 0xDF
+    OpcodeInfo { mnemonic: "i64.to_i32_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 700, len: 3 } }, // 0xFD 0xE0 I64ToI32Ovf
+    OpcodeInfo { mnemonic: "i64.to_u32_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 703, len: 3 } }, // 0xFD 0xE1 I64ToU32Ovf
+    OpcodeInfo { mnemonic: "u64.to_u32_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 706, len: 3 } }, // 0xFD 0xE2 U64ToU32Ovf
+    OpcodeInfo { mnemonic: "i32.to_u32_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 709, len: 3 } }, // 0xFD 0xE3 I32ToU32Ovf
+    OpcodeInfo { mnemonic: "u32.to_i32_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 712, len: 3 } }, // 0xFD 0xE4 U32ToI32Ovf
+    OpcodeInfo { mnemonic: "i64.to_u64_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 715, len: 3 } }, // 0xFD 0xE5 I64ToU64Ovf
+    OpcodeInfo { mnemonic: "u64.to_i64_ovf", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 718, len: 3 } }, // 0xFD 0xE6 U64ToI64Ovf
+    OpcodeInfo { mnemonic: "f32.to_i32_exact", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 721, len: 3 } }, // 0xFD 0xE7 F32ToI32Exact
+    OpcodeInfo { mnemonic: "f32.to_u32_exact", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 724, len: 3 } }, // 0xFD 0xE8 F32ToU32Exact
+    OpcodeInfo { mnemonic: "f64.to_i32_exact", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 727, len: 3 } }, // 0xFD 0xE9 F64ToI32Exact
+    OpcodeInfo { mnemonic: "f64.to_u32_exact", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 730, len: 3 } }, // 0xFD 0xEA F64ToU32Exact
+    OpcodeInfo { mnemonic: "f64.to_i64_exact", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 733, len: 3 } }, // 0xFD 0xEB F64ToI64Exact
+    OpcodeInfo { mnemonic: "f64.to_u64_exact", is_terminator: false, flags: OpcodeFlags::NONE, operands: OperandLayout { start: 736, len: 3 } }, // 0xFD 0xEC F64ToU64Exact
 ];
 
 /// Lead bytes that introduce a prefixed opcode.
@@ -1308,7 +1361,8 @@ pub enum OpcodePrefix {
     /// New instruction families allocate the next free byte outside those blocks.
     Extended = 0xFC,
     /// 32-bit numerics in aligned blocks: `i32` from `0x00`, `u32` from `0x40`, `f32` from `0x80`
-    /// (math intrinsics from `0xA0`), conversions from `0xC0`.
+    /// (math intrinsics from `0xA0`), conversions from `0xC0`
+    /// (checked conversions, which report a value that does not fit, from `0xE0`).
     Numeric32 = 0xFD,
 }
 
@@ -1842,6 +1896,32 @@ pub enum Opcode {
     I32ToF64 = 0xFDDD,
     /// `dst = u32_to_f64(a)` (`u32` -> `f64`; exact).
     U32ToF64 = 0xFDDE,
+    /// `(dst, overflow) = i64_to_i32_ovf(a)` (`i64` -> `i32`; low 32 bits; `bool` true when `a` is outside `i32`).
+    I64ToI32Ovf = 0xFDE0,
+    /// `(dst, overflow) = i64_to_u32_ovf(a)` (`i64` -> `u32`; low 32 bits; `bool` true when `a` is outside `u32`).
+    I64ToU32Ovf = 0xFDE1,
+    /// `(dst, overflow) = u64_to_u32_ovf(a)` (`u64` -> `u32`; low 32 bits; `bool` true when `a` is above `u32::MAX`).
+    U64ToU32Ovf = 0xFDE2,
+    /// `(dst, overflow) = i32_to_u32_ovf(a)` (`i32` -> `u32`; same bits; `bool` true when `a` is negative).
+    I32ToU32Ovf = 0xFDE3,
+    /// `(dst, overflow) = u32_to_i32_ovf(a)` (`u32` -> `i32`; same bits; `bool` true when `a` is above `i32::MAX`).
+    U32ToI32Ovf = 0xFDE4,
+    /// `(dst, overflow) = i64_to_u64_ovf(a)` (`i64` -> `u64`; same bits; `bool` true when `a` is negative).
+    I64ToU64Ovf = 0xFDE5,
+    /// `(dst, overflow) = u64_to_i64_ovf(a)` (`u64` -> `i64`; same bits; `bool` true when `a` is above `i64::MAX`).
+    U64ToI64Ovf = 0xFDE6,
+    /// `(dst, inexact) = f32_to_i32_exact(a)` (`f32` -> `i32`; the `_sat` result; `bool` true unless `a` is an integer in `i32`).
+    F32ToI32Exact = 0xFDE7,
+    /// `(dst, inexact) = f32_to_u32_exact(a)` (`f32` -> `u32`; the `_sat` result; `bool` true unless `a` is an integer in `u32`).
+    F32ToU32Exact = 0xFDE8,
+    /// `(dst, inexact) = f64_to_i32_exact(a)` (`f64` -> `i32`; the `_sat` result; `bool` true unless `a` is an integer in `i32`).
+    F64ToI32Exact = 0xFDE9,
+    /// `(dst, inexact) = f64_to_u32_exact(a)` (`f64` -> `u32`; the `_sat` result; `bool` true unless `a` is an integer in `u32`).
+    F64ToU32Exact = 0xFDEA,
+    /// `(dst, inexact) = f64_to_i64_exact(a)` (`f64` -> `i64`; the `_sat` result; `bool` true unless `a` is an integer in `i64`).
+    F64ToI64Exact = 0xFDEB,
+    /// `(dst, inexact) = f64_to_u64_exact(a)` (`f64` -> `u64`; the `_sat` result; `bool` true unless `a` is an integer in `u64`).
+    F64ToU64Exact = 0xFDEC,
 }
 
 impl Opcode {
@@ -2116,6 +2196,19 @@ impl Opcode {
             (OpcodePrefix::Numeric32, 0xDC) => Self::U64ToF32,
             (OpcodePrefix::Numeric32, 0xDD) => Self::I32ToF64,
             (OpcodePrefix::Numeric32, 0xDE) => Self::U32ToF64,
+            (OpcodePrefix::Numeric32, 0xE0) => Self::I64ToI32Ovf,
+            (OpcodePrefix::Numeric32, 0xE1) => Self::I64ToU32Ovf,
+            (OpcodePrefix::Numeric32, 0xE2) => Self::U64ToU32Ovf,
+            (OpcodePrefix::Numeric32, 0xE3) => Self::I32ToU32Ovf,
+            (OpcodePrefix::Numeric32, 0xE4) => Self::U32ToI32Ovf,
+            (OpcodePrefix::Numeric32, 0xE5) => Self::I64ToU64Ovf,
+            (OpcodePrefix::Numeric32, 0xE6) => Self::U64ToI64Ovf,
+            (OpcodePrefix::Numeric32, 0xE7) => Self::F32ToI32Exact,
+            (OpcodePrefix::Numeric32, 0xE8) => Self::F32ToU32Exact,
+            (OpcodePrefix::Numeric32, 0xE9) => Self::F64ToI32Exact,
+            (OpcodePrefix::Numeric32, 0xEA) => Self::F64ToU32Exact,
+            (OpcodePrefix::Numeric32, 0xEB) => Self::F64ToI64Exact,
+            (OpcodePrefix::Numeric32, 0xEC) => Self::F64ToU64Exact,
             _ => return None,
         })
     }
@@ -2380,6 +2473,19 @@ impl Opcode {
             0xFDDC => Self::U64ToF32,
             0xFDDD => Self::I32ToF64,
             0xFDDE => Self::U32ToF64,
+            0xFDE0 => Self::I64ToI32Ovf,
+            0xFDE1 => Self::I64ToU32Ovf,
+            0xFDE2 => Self::U64ToU32Ovf,
+            0xFDE3 => Self::I32ToU32Ovf,
+            0xFDE4 => Self::U32ToI32Ovf,
+            0xFDE5 => Self::I64ToU64Ovf,
+            0xFDE6 => Self::U64ToI64Ovf,
+            0xFDE7 => Self::F32ToI32Exact,
+            0xFDE8 => Self::F32ToU32Exact,
+            0xFDE9 => Self::F64ToI32Exact,
+            0xFDEA => Self::F64ToU32Exact,
+            0xFDEB => Self::F64ToI64Exact,
+            0xFDEC => Self::F64ToU64Exact,
             _ => return None,
         })
     }

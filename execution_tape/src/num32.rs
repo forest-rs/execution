@@ -184,6 +184,27 @@ pub(crate) fn to_u32(x: f64) -> Result<u32, FloatToIntError> {
     Ok(to_u32_sat(x))
 }
 
+/// Converts `x` to the `i32` it equals, reporting whether it equals none.
+///
+/// Returns the saturating truncation ([`to_i32_sat`]) and `true` unless `x` is an integer in
+/// `i32`'s range. Every `i32` converts to `f64` exactly, so the round trip alone decides:
+/// NaN, infinities, fractions and saturated values all differ from `x` after it.
+#[inline]
+pub(crate) fn to_i32_exact(x: f64) -> (i32, bool) {
+    let out = to_i32_sat(x);
+    (out, f64::from(out) != x)
+}
+
+/// Converts `x` to the `u32` it equals, reporting whether it equals none.
+///
+/// Returns the saturating truncation ([`to_u32_sat`]) and `true` unless `x` is an integer in
+/// `u32`'s range. `-0.0` is the integer `0`.
+#[inline]
+pub(crate) fn to_u32_exact(x: f64) -> (u32, bool) {
+    let out = to_u32_sat(x);
+    (out, f64::from(out) != x)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

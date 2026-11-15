@@ -3245,6 +3245,71 @@ fn verify_function_bytecode(
                 dst: map_f64(*dst)?,
                 a: map_u32(*a)?,
             },
+            Instr::I64ToI32Ovf { dst, overflow, a } => ExecInstr::I64ToI32Ovf {
+                dst: map_i32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i64(*a)?,
+            },
+            Instr::I64ToU32Ovf { dst, overflow, a } => ExecInstr::I64ToU32Ovf {
+                dst: map_u32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i64(*a)?,
+            },
+            Instr::U64ToU32Ovf { dst, overflow, a } => ExecInstr::U64ToU32Ovf {
+                dst: map_u32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u64(*a)?,
+            },
+            Instr::I32ToU32Ovf { dst, overflow, a } => ExecInstr::I32ToU32Ovf {
+                dst: map_u32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i32(*a)?,
+            },
+            Instr::U32ToI32Ovf { dst, overflow, a } => ExecInstr::U32ToI32Ovf {
+                dst: map_i32(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u32(*a)?,
+            },
+            Instr::I64ToU64Ovf { dst, overflow, a } => ExecInstr::I64ToU64Ovf {
+                dst: map_u64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_i64(*a)?,
+            },
+            Instr::U64ToI64Ovf { dst, overflow, a } => ExecInstr::U64ToI64Ovf {
+                dst: map_i64(*dst)?,
+                overflow: map_bool(*overflow)?,
+                a: map_u64(*a)?,
+            },
+            Instr::F32ToI32Exact { dst, inexact, a } => ExecInstr::F32ToI32Exact {
+                dst: map_i32(*dst)?,
+                inexact: map_bool(*inexact)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F32ToU32Exact { dst, inexact, a } => ExecInstr::F32ToU32Exact {
+                dst: map_u32(*dst)?,
+                inexact: map_bool(*inexact)?,
+                a: map_f32(*a)?,
+            },
+            Instr::F64ToI32Exact { dst, inexact, a } => ExecInstr::F64ToI32Exact {
+                dst: map_i32(*dst)?,
+                inexact: map_bool(*inexact)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToU32Exact { dst, inexact, a } => ExecInstr::F64ToU32Exact {
+                dst: map_u32(*dst)?,
+                inexact: map_bool(*inexact)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToI64Exact { dst, inexact, a } => ExecInstr::F64ToI64Exact {
+                dst: map_i64(*dst)?,
+                inexact: map_bool(*inexact)?,
+                a: map_f64(*a)?,
+            },
+            Instr::F64ToU64Exact { dst, inexact, a } => ExecInstr::F64ToU64Exact {
+                dst: map_u64(*dst)?,
+                inexact: map_bool(*inexact)?,
+                a: map_f64(*a)?,
+            },
 
             Instr::I64Eq { dst, a, b } => ExecInstr::I64Eq {
                 dst: map_bool(*dst)?,
@@ -4812,6 +4877,29 @@ fn validate_instr_types(
         }
         Instr::U32ToF64 { a, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::I64ToI32Ovf { a, .. }
+        | Instr::I64ToU32Ovf { a, .. }
+        | Instr::I64ToU64Ovf { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;
+        }
+        Instr::U64ToU32Ovf { a, .. } | Instr::U64ToI64Ovf { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U64)?;
+        }
+        Instr::I32ToU32Ovf { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::I32)?;
+        }
+        Instr::U32ToI32Ovf { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::U32)?;
+        }
+        Instr::F32ToI32Exact { a, .. } | Instr::F32ToU32Exact { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F32)?;
+        }
+        Instr::F64ToI32Exact { a, .. }
+        | Instr::F64ToU32Exact { a, .. }
+        | Instr::F64ToI64Exact { a, .. }
+        | Instr::F64ToU64Exact { a, .. } => {
+            check_expected(func_id, pc, *a, t(*a), ValueType::F64)?;
         }
         Instr::I64Eq { a, b, .. } | Instr::I64Lt { a, b, .. } => {
             check_expected(func_id, pc, *a, t(*a), ValueType::I64)?;

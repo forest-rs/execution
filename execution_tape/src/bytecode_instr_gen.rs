@@ -264,6 +264,19 @@ impl Instr {
             Self::U64ToF32 { .. } => Opcode::U64ToF32,
             Self::I32ToF64 { .. } => Opcode::I32ToF64,
             Self::U32ToF64 { .. } => Opcode::U32ToF64,
+            Self::I64ToI32Ovf { .. } => Opcode::I64ToI32Ovf,
+            Self::I64ToU32Ovf { .. } => Opcode::I64ToU32Ovf,
+            Self::U64ToU32Ovf { .. } => Opcode::U64ToU32Ovf,
+            Self::I32ToU32Ovf { .. } => Opcode::I32ToU32Ovf,
+            Self::U32ToI32Ovf { .. } => Opcode::U32ToI32Ovf,
+            Self::I64ToU64Ovf { .. } => Opcode::I64ToU64Ovf,
+            Self::U64ToI64Ovf { .. } => Opcode::U64ToI64Ovf,
+            Self::F32ToI32Exact { .. } => Opcode::F32ToI32Exact,
+            Self::F32ToU32Exact { .. } => Opcode::F32ToU32Exact,
+            Self::F64ToI32Exact { .. } => Opcode::F64ToI32Exact,
+            Self::F64ToU32Exact { .. } => Opcode::F64ToU32Exact,
+            Self::F64ToI64Exact { .. } => Opcode::F64ToI64Exact,
+            Self::F64ToU64Exact { .. } => Opcode::F64ToU64Exact,
         }
     }
 

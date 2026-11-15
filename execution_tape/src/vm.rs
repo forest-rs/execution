@@ -3158,6 +3158,100 @@ impl<H: Host> Vm<H> {
                     ctx.write_f64(base, *dst, out);
                     ctx.frames[frame_index].pc = next_pc;
                 }
+                ExecInstr::I64ToI32Ovf { dst, overflow, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let (out, overflow_flag) = (num32::wrap_i32(a), i32::try_from(a).is_err());
+                    ctx.write_i32(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64ToU32Ovf { dst, overflow, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let (out, overflow_flag) = (
+                        num32::wrap_u32(a.cast_unsigned()),
+                        u32::try_from(a).is_err(),
+                    );
+                    ctx.write_u32(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64ToU32Ovf { dst, overflow, a } => {
+                    let a = ctx.read_u64(base, *a);
+                    let (out, overflow_flag) = (num32::wrap_u32(a), u32::try_from(a).is_err());
+                    ctx.write_u32(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I32ToU32Ovf { dst, overflow, a } => {
+                    let a = ctx.read_i32(base, *a);
+                    let (out, overflow_flag) = (a.cast_unsigned(), a < 0);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U32ToI32Ovf { dst, overflow, a } => {
+                    let a = ctx.read_u32(base, *a);
+                    let (out, overflow_flag) = (a.cast_signed(), i32::try_from(a).is_err());
+                    ctx.write_i32(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::I64ToU64Ovf { dst, overflow, a } => {
+                    let a = ctx.read_i64(base, *a);
+                    let (out, overflow_flag) = (a.cast_unsigned(), a < 0);
+                    ctx.write_u64(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::U64ToI64Ovf { dst, overflow, a } => {
+                    let a = ctx.read_u64(base, *a);
+                    let (out, overflow_flag) = (a.cast_signed(), i64::try_from(a).is_err());
+                    ctx.write_i64(base, *dst, out);
+                    ctx.write_bool(base, *overflow, overflow_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToI32Exact { dst, inexact, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let (out, inexact_flag) = num32::to_i32_exact(num32::promote(a));
+                    ctx.write_i32(base, *dst, out);
+                    ctx.write_bool(base, *inexact, inexact_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F32ToU32Exact { dst, inexact, a } => {
+                    let a = ctx.read_f32(base, *a);
+                    let (out, inexact_flag) = num32::to_u32_exact(num32::promote(a));
+                    ctx.write_u32(base, *dst, out);
+                    ctx.write_bool(base, *inexact, inexact_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToI32Exact { dst, inexact, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let (out, inexact_flag) = num32::to_i32_exact(a);
+                    ctx.write_i32(base, *dst, out);
+                    ctx.write_bool(base, *inexact, inexact_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToU32Exact { dst, inexact, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let (out, inexact_flag) = num32::to_u32_exact(a);
+                    ctx.write_u32(base, *dst, out);
+                    ctx.write_bool(base, *inexact, inexact_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToI64Exact { dst, inexact, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let (out, inexact_flag) = float::to_i64_exact(a);
+                    ctx.write_i64(base, *dst, out);
+                    ctx.write_bool(base, *inexact, inexact_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
+                ExecInstr::F64ToU64Exact { dst, inexact, a } => {
+                    let a = ctx.read_f64(base, *a);
+                    let (out, inexact_flag) = float::to_u64_exact(a);
+                    ctx.write_u64(base, *dst, out);
+                    ctx.write_bool(base, *inexact, inexact_flag);
+                    ctx.frames[frame_index].pc = next_pc;
+                }
 
                 ExecInstr::I64Eq { dst, a, b } => {
                     ctx.write_bool(base, *dst, ctx.read_i64(base, *a) == ctx.read_i64(base, *b));
