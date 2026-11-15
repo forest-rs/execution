@@ -98,6 +98,27 @@ impl Exception {
     pub(super) fn payload(&self) -> &[Value] {
         &self.payload
     }
+
+    /// Moves the payload's aggregates where a collection moved them.
+    pub(super) fn relocate(&mut self, remap: &crate::aggregates::AggRemap) {
+        remap
+            .remap_values_in_place(&mut self.payload)
+            .expect("planning rooted every live exception payload");
+    }
+
+    /// A copy of this exception, its payload's aggregates moved where a collection moved them.
+    ///
+    /// Collection shares one copy among every register that shared the original.
+    pub(super) fn relocated(&self, remap: &crate::aggregates::AggRemap) -> Self {
+        let mut relocated = Self {
+            tag: self.tag,
+            payload: self.payload.clone(),
+            origin: self.origin,
+            ordinal: self.ordinal,
+        };
+        relocated.relocate(remap);
+        relocated
+    }
 }
 
 impl<H: Host> Vm<H> {

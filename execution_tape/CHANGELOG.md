@@ -22,16 +22,27 @@ This release has an [MSRV][] of 1.88.
   `Vm::release(RootedValues)` unregisters it and returns them; dropping the handle unregisters
   it at the next collection. `Vm::collect() -> Result<CollectionReport, CollectError>` traces
   the heap from every registered group, slides survivors down in their original order
-  (preserving sharing and distinct identity) and rewrites the groups. It is planned before
-  anything moves: a dangling handle refuses it and changes nothing. Nothing collects
-  implicitly. A collection that reclaims anything moves the survivors to a fresh handle window
-  (`AggHeap::handle_end` is the window's end; `AggHeap::len_u32` stays the node count), so a
-  handle copied out before it names nothing afterwards and fails with `AggError::BadHandle`
-  rather than reading a survivor. Windows wrap after about `2^31` handles, which caps a heap at
-  about `2^31` nodes, and a handle older than one wrap can alias again. `AggHeap::clear` and
-  `AggHeap::take_nodes` return the heap's window to zero. `CollectionReport` counts live and
-  reclaimed aggregates and logical bytes, moved aggregates, groups and traced roots;
-  `Vm::heap_stats() -> HeapStats` reports size and collection history without walking the heap.
+  (preserving sharing and distinct identity) and rewrites the groups; `Invocation::collect`
+  does the same while an invocation waits between quanta, at a host request or at a
+  suspension, adding its arguments, outputs, callback results, the aggregates its waiting
+  hosts built and promoted, and the reference registers of its active frames and held
+  continuations as roots, and compacting its string and byte descriptors. Registers count
+  only where verification establishes they hold values, so no runtime marker is needed.
+  Collection is planned before anything moves: a dangling handle, a waiting request holding
+  host aggregates in staging (`CollectError::HostStaging`), or promoted by calling back when
+  the collection would move anything (`CollectError::HostHandles`), or an abandoned delivery
+  refuses it and changes nothing. Nothing collects implicitly. A collection that reclaims
+  anything moves the survivors to a fresh handle window (`AggHeap::handle_end` is the window's
+  end; `AggHeap::len_u32` stays the node count), so a handle copied out before it names nothing
+  afterwards and fails with `AggError::BadHandle` rather than reading a survivor; registered
+  groups are updated. Windows wrap after about `2^31` handles, which caps a heap at about
+  `2^31` nodes, and a handle older than one wrap can alias again. `AggHeap::clear` and
+  `AggHeap::take_nodes` return the heap's window to zero. `CollectionReport` counts live and reclaimed aggregates and logical bytes,
+  moved aggregates, payload descriptors and bytes, groups and traced roots; `Vm::heap_stats()
+  -> HeapStats` reports size and collection history without walking the heap. Observers of a
+  waiting invocation subscribed to values see `ValueEvent::Collected`, and a recording reports
+  the new `CaptureFault::Relocated` rather than replay across it; collecting between recorded
+  runs is unaffected.
 
 - Look up a function by id with `Program::function(FuncId) -> Option<&Function>`, like
   `Program::tag` and `Program::link`, instead of indexing `program.functions`. A verified

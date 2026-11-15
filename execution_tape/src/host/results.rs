@@ -37,6 +37,10 @@ impl HostResults {
             limits,
         }
     }
+    /// Whether the host constructed aggregates it has not returned yet.
+    pub(crate) fn is_staging(&self) -> bool {
+        self.delta.is_some()
+    }
     pub(crate) fn resolve<'a>(
         &'a self,
         base: &'a AggHeap,

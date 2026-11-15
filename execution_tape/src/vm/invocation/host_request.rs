@@ -145,9 +145,13 @@ pub(in crate::vm) fn read_registers<'a>(
 /// [`complete`](Self::complete) of the same invocation, including from a nested or later request.
 /// Guest execution, callbacks, completions and caught exceptions only append to the heap; the
 /// heap is compacted only when the root returns, and a trap or cancellation truncates it to the
-/// invocation's start. Handles from [`context`](Self::context) are staged: `call_guest` promotes
-/// them unchanged, while `complete` adopts only those reachable from its outcome, under new
-/// handles. Retain values that must outlive the invocation through its outputs, a snapshot or
+/// invocation's start. The one exception is an explicit [`Invocation::collect`] while the
+/// request waits: it moves aggregates, so every handle read before it names nothing afterwards
+/// and fails with [`AggError::BadHandle`]. Read the arguments and callback results again
+/// afterwards. Handles from [`context`](Self::context) are staged: `call_guest` promotes them
+/// unchanged, while `complete` adopts only those reachable from its outcome, under new handles.
+/// Promoted handles stay valid until this request completes: while any are held, a collection
+/// that would move aggregates is refused with [`CollectError::HostHandles`]. Retain values that must outlive the invocation through its outputs, a snapshot or
 /// [`HostContext::retain`].
 pub struct PendingHostCall<'request, 'vm, H: Host> {
     pub(super) running: Running<'request, 'vm, H>,
@@ -348,8 +352,8 @@ impl<H: Host> PendingHostCall<'_, '_, H> {
     /// The raw outcome is observed before arity, type and payload-work validation. Aggregate,
     /// function, closure and nominal type IDs must belong to this request's original heap/code;
     /// this method does not import foreign VM handles. An aggregate handle or closure
-    /// environment naming no node traps with [`AggError::BadHandle`]. Validation failure
-    /// terminates the run,
+    /// environment naming no node, such as one read before an [`Invocation::collect`], traps
+    /// with [`AggError::BadHandle`]. Validation failure terminates the run,
     /// rolls back new guest aggregates, and preserves already performed external effects.
     /// Values may be handles read from any earlier request of this invocation; see
     /// [handle validity](Self#handle-validity).
@@ -572,6 +576,10 @@ impl<'request, 'vm, H: Host> Running<'request, 'vm, H> {
             .pending_host
             .take()
             .expect("pending guard");
+        if let Some(callbacks) = &mut self.continuation.control.callbacks {
+            // Its outcome and registers now hold whatever it kept of its promoted aggregates.
+            callbacks.completed(pending.depth);
+        }
         let result = match result {
             Ok(Some(thrown)) => self.raise_pending(pending, thrown),
             Ok(None) => Ok(()),

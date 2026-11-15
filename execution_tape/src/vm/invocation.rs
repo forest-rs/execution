@@ -525,6 +525,76 @@ impl<H: Host> Invocation<'_, H> {
         self.vm.memory.aggs()
     }
 
+    /// Reclaims every aggregate this invocation and the VM's registered groups do not reach,
+    /// while the invocation waits between quanta, at a host request or at a suspension.
+    ///
+    /// This is [`Vm::collect`] with the invocation's state as further roots: its arguments, the
+    /// reference registers of its active frames and of the frames its unresumed continuations
+    /// hold, the payloads of exceptions those registers hold, pending callback results and,
+    /// once it has returned, its outputs. A register is a root only where verification
+    /// establishes that it holds a value: a register not yet written retains nothing, while a
+    /// written one keeps its value alive until overwritten, even if never read again. The
+    /// invocation's string and byte descriptors are compacted the same way, dropping owned
+    /// payloads no live register names. Aggregates a waiting host built and promoted by calling
+    /// back stay alive until its request completes.
+    ///
+    /// The invocation continues as before. Every aggregate handle copied out of it earlier,
+    /// such as a request's [`arguments`](PendingHostCall::arguments), callback results already
+    /// taken, or a previous resolution of a registered group, names nothing afterwards and
+    /// fails with [`AggError::BadHandle`]: read them again. Borrowed entry arguments are left untouched; the invocation keeps its own relocated copy.
+    ///
+    /// Collection is refused, moving and reclaiming nothing, while a host request holds
+    /// aggregates its host constructed in staging ([`CollectError::HostStaging`]), or holds
+    /// ones it built and promoted by calling back and the collection would move anything
+    /// ([`CollectError::HostHandles`]),
+    /// after an interrupted delivery ([`CollectError::Abandoned`]), or when planning finds a
+    /// handle or register it cannot account for. Observers of an invocation that has not
+    /// finished see [`ValueEvent::Collected`]; a recording cannot replay across it and reports
+    /// [`crate::recording::CaptureFault::Relocated`].
+    pub fn collect(&mut self) -> Result<CollectionReport, CollectError> {
+        let vm = &mut *self.vm;
+        let stack = &mut self.continuation;
+        let mut handles = Vec::new();
+        let stack_plan = stack.plan_collection(&vm.units, vm.memory.aggs(), &mut handles)?;
+        let plan = vm.plan_collection(&mut handles, stack_plan.roots())?;
+        stack.check_host_handles(&plan)?;
+        // Planning succeeded: nothing below can fail.
+        let mut report = vm.apply_collection(&plan, Some(self.checkpoint));
+        let compaction = plan.compaction();
+        self.checkpoint = self.checkpoint.relocated(compaction);
+        stack.relocate(&stack_plan, compaction);
+        stack_plan.report(&mut report);
+        // Contract proofs are keyed by handles that may now name other aggregates.
+        self.budget.contract_scratch.clear_proofs();
+        if stack.outcome.is_none() {
+            // A finished invocation's observers have seen its end, and a finished recording
+            // already holds its values by content.
+            let program = Arc::clone(&stack.program);
+            let aggregates = vm.memory.aggs();
+            stack
+                .trace
+                .values(program.program(), || ValueEvent::Collected {
+                    report: &report,
+                    aggregates,
+                });
+        }
+        Ok(report)
+    }
+
+    /// Borrows the current values of a group registered with this invocation's VM.
+    ///
+    /// This is [`Vm::resolve`] while the invocation borrows or owns the VM; resolve again after
+    /// [`Self::collect`].
+    pub fn resolve(&self, root: &RootedValues) -> Result<&[Value], RootError> {
+        self.vm.resolve(root)
+    }
+
+    /// Reports the VM's heap size and collection history; see [`Vm::heap_stats`].
+    #[must_use]
+    pub fn heap_stats(&self) -> HeapStats {
+        self.vm.heap_stats()
+    }
+
     /// Borrows host state for read-only inspection between scheduling quanta.
     #[must_use]
     pub fn host(&self) -> &H {

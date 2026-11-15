@@ -252,6 +252,13 @@ pub enum CaptureFault {
     /// not rebuild it. Installs while the invocation is suspended must go through
     /// [`crate::vm::Invocation::install`] or [`crate::vm::PendingHostCall::install`].
     ForeignUnit,
+    /// An explicit collection moved the invocation's aggregates while it waited
+    /// ([`crate::vm::Invocation::collect`]).
+    ///
+    /// Replay identifies guest-created aggregates by their order in an append-only heap, which
+    /// a moving collection does not preserve. Collect between recorded runs instead, with
+    /// [`crate::vm::Vm::collect`]: each recording captures the aggregates it observes at entry.
+    Relocated,
 }
 
 impl core::fmt::Display for CaptureFault {

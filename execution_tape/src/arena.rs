@@ -10,10 +10,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::aggregates::AggHeap;
+use crate::aggregates::{AggHeap, AggRemap};
 use crate::program::ConstId;
 use crate::value::{AggHandle, UnitId, Value};
 use crate::vm::UnitTable;
+use alloc::vec;
 
 /// Immutable payload source within one active run.
 #[derive(Copy, Clone, Debug)]
@@ -165,6 +166,143 @@ impl ValueArena {
             Stored::Owned(s) => Some(s),
             Stored::Source(source) => sources.str(*source),
         }
+    }
+}
+
+/// A descriptor slot no live register names; collection removes it.
+const DEAD: u32 = u32::MAX;
+
+/// A planned compaction of a [`ValueArena`]: where each live descriptor moves.
+///
+/// Planning validates every live descriptor against its sources and mutates nothing, so
+/// applying a plan cannot fail.
+#[derive(Debug, Default)]
+pub(crate) struct ArenaPlan {
+    bytes: Vec<u32>,
+    strs: Vec<u32>,
+    /// Live and removed descriptors.
+    pub(crate) descriptors: (u64, u64),
+    /// Owned payload bytes of live and removed descriptors; borrowed payloads own nothing.
+    pub(crate) owned_bytes: (u64, u64),
+}
+
+/// A live register names a descriptor that is missing or no longer resolves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DanglingPayload;
+
+impl ArenaPlan {
+    pub(crate) fn bytes(&self, handle: BytesHandle) -> BytesHandle {
+        BytesHandle(self.bytes[handle.0 as usize])
+    }
+    pub(crate) fn str(&self, handle: StrHandle) -> StrHandle {
+        StrHandle(self.strs[handle.0 as usize])
+    }
+}
+
+/// Marks the descriptors `live` names, numbering survivors in index order.
+fn plan_slots(length: usize, live: impl Iterator<Item = u32>) -> Result<Vec<u32>, DanglingPayload> {
+    let mut mapping = vec![DEAD; length];
+    for index in live {
+        *mapping.get_mut(index as usize).ok_or(DanglingPayload)? = 0;
+    }
+    let mut next = 0;
+    for slot in &mut mapping {
+        if *slot != DEAD {
+            *slot = next;
+            next += 1;
+        }
+    }
+    Ok(mapping)
+}
+
+fn tally<T>(
+    stored: &[Stored<T>],
+    mapping: &[u32],
+    len: impl Fn(&T) -> usize,
+    plan: &mut ArenaPlan,
+    roots: &mut Vec<AggHandle>,
+) {
+    for (stored, &mapped) in stored.iter().zip(mapping) {
+        let owned = match stored {
+            Stored::Owned(value) => u64::try_from(len(value)).unwrap_or(u64::MAX),
+            Stored::Source(_) => 0,
+        };
+        if mapped == DEAD {
+            plan.descriptors.1 += 1;
+            plan.owned_bytes.1 += owned;
+        } else {
+            plan.descriptors.0 += 1;
+            plan.owned_bytes.0 += owned;
+            if let Stored::Source(PayloadSource::Aggregate { handle, .. }) = stored {
+                roots.push(*handle);
+            }
+        }
+    }
+}
+
+fn compact<T>(stored: &mut Vec<Stored<T>>, mapping: &[u32], remap: &AggRemap) {
+    let mut next = 0;
+    for (index, &mapped) in mapping.iter().enumerate() {
+        if mapped == DEAD {
+            continue;
+        }
+        debug_assert_eq!(mapped as usize, next, "survivors keep their order");
+        if let Stored::Source(PayloadSource::Aggregate { handle, .. }) = &mut stored[index] {
+            *handle = remap
+                .remap_handle(*handle)
+                .expect("planning rooted every aggregate payload source");
+        }
+        stored.swap(index, next);
+        next += 1;
+    }
+    stored.truncate(next);
+}
+
+impl ValueArena {
+    /// Plans keeping only the descriptors live registers name, without mutating.
+    ///
+    /// Every live descriptor must resolve against `sources`. Aggregates that live borrowed
+    /// payloads project from are added to `roots`, so they survive the heap's compaction.
+    pub(crate) fn plan_compaction(
+        &self,
+        bytes: impl Iterator<Item = BytesHandle>,
+        strs: impl Iterator<Item = StrHandle>,
+        sources: ValueSources<'_>,
+        roots: &mut Vec<AggHandle>,
+    ) -> Result<ArenaPlan, DanglingPayload> {
+        let mut plan = ArenaPlan {
+            bytes: plan_slots(self.bytes.len(), bytes.map(|handle| handle.0))?,
+            strs: plan_slots(self.strs.len(), strs.map(|handle| handle.0))?,
+            ..ArenaPlan::default()
+        };
+        for (index, &mapped) in plan.bytes.iter().enumerate() {
+            let handle = BytesHandle(u32::try_from(index).expect("arena indices fit u32"));
+            if mapped != DEAD && self.bytes(handle, sources).is_none() {
+                return Err(DanglingPayload);
+            }
+        }
+        for (index, &mapped) in plan.strs.iter().enumerate() {
+            let handle = StrHandle(u32::try_from(index).expect("arena indices fit u32"));
+            if mapped != DEAD && self.str(handle, sources).is_none() {
+                return Err(DanglingPayload);
+            }
+        }
+        let (bytes, strs) = (
+            core::mem::take(&mut plan.bytes),
+            core::mem::take(&mut plan.strs),
+        );
+        tally(&self.bytes, &bytes, Vec::len, &mut plan, roots);
+        tally(&self.strs, &strs, String::len, &mut plan, roots);
+        plan.bytes = bytes;
+        plan.strs = strs;
+        Ok(plan)
+    }
+
+    /// Applies a plan made for this arena's current contents, moving aggregate payload sources
+    /// with the heap. It cannot fail.
+    pub(crate) fn apply_compaction(&mut self, plan: &ArenaPlan, remap: &AggRemap) {
+        compact(&mut self.bytes, &plan.bytes, remap);
+        compact(&mut self.strs, &plan.strs, remap);
     }
 }
 

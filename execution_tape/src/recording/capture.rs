@@ -262,7 +262,9 @@ impl Recorder {
     fn capture(&mut self, event: ValueEvent<'_>) -> Result<(), CaptureFault> {
         match event {
             // The unit table is recorded before capture; see `values`.
-            ValueEvent::Installed { .. } | ValueEvent::Relinked { .. } => {}
+            ValueEvent::Installed { .. }
+            | ValueEvent::Relinked { .. }
+            | ValueEvent::Collected { .. } => {}
             ValueEvent::CallbackEnter {
                 location,
                 callee,
@@ -786,6 +788,13 @@ impl TraceSink for Recorder {
                 }
                 return;
             }
+            ValueEvent::Collected { .. } => {
+                // Replay rebuilds guest-created aggregates by their order in an append-only
+                // heap. A moving collection breaks that arithmetic, so stop retaining evidence
+                // rather than record handles replay could not resolve.
+                self.fail(CaptureFault::Relocated);
+                return;
+            }
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }
@@ -799,7 +808,8 @@ impl TraceSink for Recorder {
         let location = match event {
             ValueEvent::Entry { .. }
             | ValueEvent::Installed { .. }
-            | ValueEvent::Relinked { .. } => None,
+            | ValueEvent::Relinked { .. }
+            | ValueEvent::Collected { .. } => None,
             ValueEvent::HostCall { location, .. }
             | ValueEvent::CallbackEnter { location, .. }
             | ValueEvent::CallbackReturn { location, .. }

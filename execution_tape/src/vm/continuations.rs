@@ -168,11 +168,11 @@ impl Continuations {
     pub(super) fn held<'a>(
         &'a self,
         units: &'a UnitTable,
-    ) -> impl Iterator<Item = (Option<inspection::Activation>, FrameRegisters<'a>)> {
-        self.slots
-            .iter()
-            .filter(|slot| slot.live)
-            .flat_map(move |slot| {
+    ) -> impl Iterator<Item = (u32, Option<inspection::Activation>, FrameRegisters<'a>)> {
+        (0_u32..)
+            .zip(&self.slots)
+            .filter(|(_, slot)| slot.live)
+            .flat_map(move |(slot_index, slot)| {
                 let segment = &slot.segment;
                 let top = segment.frames.len() - 1;
                 segment
@@ -213,10 +213,40 @@ impl Continuations {
                             base: frame.base,
                             objs: &segment.objs,
                             exns: &segment.exns,
+                            aggs: &segment.aggs,
+                            closures: &segment.closures,
+                            bytes: &segment.bytes,
+                            strs: &segment.strs,
                         };
-                        (segment.activations.get(index).copied(), registers)
+                        (
+                            slot_index,
+                            segment.activations.get(index).copied(),
+                            registers,
+                        )
                     })
             })
+    }
+
+    /// The reference registers of the continuation in `slot`, for relocation.
+    pub(super) fn banks_mut(&mut self, slot: u32) -> collection::ReferenceBanks<'_> {
+        let segment = &mut self.slots[slot as usize].segment;
+        collection::ReferenceBanks {
+            aggs: &mut segment.aggs,
+            closures: &mut segment.closures,
+            bytes: &mut segment.bytes,
+            strs: &mut segment.strs,
+            exns: &mut segment.exns,
+        }
+    }
+
+    /// The exception references held continuations' registers hold, in slot order.
+    #[cfg(test)]
+    pub(super) fn held_exceptions(&self) -> Vec<Arc<Exception>> {
+        self.slots
+            .iter()
+            .filter(|slot| slot.live)
+            .flat_map(|slot| slot.segment.exns.iter().flatten().cloned())
+            .collect()
     }
 
     /// The live slot `cont` names, or the trap for a consumed or never-created continuation.
