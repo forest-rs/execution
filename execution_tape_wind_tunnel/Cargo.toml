@@ -84,3 +84,7 @@ harness = false
 [[bench]]
 name = "linked_calls"
 harness = false
+
+[[bench]]
+name = "checked_conversions"
+harness = false
