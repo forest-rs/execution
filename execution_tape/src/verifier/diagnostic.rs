@@ -61,6 +61,7 @@ impl VerifyError {
             | Self::InvalidRegion { func, .. }
             | Self::InvalidRegionRun { func, .. }
             | Self::TagOutOfBounds { func, .. }
+            | Self::LinkOutOfBounds { func, .. }
             | Self::ThrowArityMismatch { func, .. }
             | Self::ThrowPayloadMismatch { func, .. }
             | Self::ConstOutOfBounds { func, .. }
@@ -89,6 +90,8 @@ impl VerifyError {
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
             | Self::DuplicateTagName { .. }
+            | Self::DuplicateLinkName { .. }
+            | Self::LinkSignatureMismatch { .. }
             | Self::HostSigHashMismatch { .. } => None,
         }
     }
@@ -127,6 +130,7 @@ impl VerifyError {
             | Self::CallSigOutOfBounds { pc, .. }
             | Self::ContBindSignature { pc, .. }
             | Self::TagOutOfBounds { pc, .. }
+            | Self::LinkOutOfBounds { pc, .. }
             | Self::ThrowArityMismatch { pc, .. }
             | Self::ThrowPayloadMismatch { pc, .. }
             | Self::ConstOutOfBounds { pc, .. }
@@ -169,6 +173,8 @@ impl VerifyError {
             | Self::HostSigMalformed { .. }
             | Self::CallSigMalformed { .. }
             | Self::DuplicateTagName { .. }
+            | Self::DuplicateLinkName { .. }
+            | Self::LinkSignatureMismatch { .. }
             | Self::InvalidRegion { .. }
             | Self::InvalidRegionRun { .. }
             | Self::HostSigHashMismatch { .. }

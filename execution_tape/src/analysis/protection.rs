@@ -42,6 +42,7 @@ fn raises(instr: &Instr) -> Option<Raises> {
         // A `suspend` raises what `resume_throw` delivers to its suspended continuation.
         Instr::Call { .. }
         | Instr::CallIndirect { .. }
+        | Instr::CallLink { .. }
         | Instr::HostCall { .. }
         | Instr::ThrowRef { .. }
         | Instr::Resume { .. }

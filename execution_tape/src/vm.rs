@@ -61,7 +61,7 @@ pub use invocation::{
     Invocation, InvocationOptions, PendingHostCall, PendingSuspension, RunStatus,
 };
 use ownership::BorrowedOrOwned;
-pub use units::{InstallError, StoreEvent, TagError, Units};
+pub use units::{InstallError, LinkMismatch, RelinkError, StoreEvent, TagError, Units};
 pub(crate) use units::{Unit, UnitTable};
 pub use work::ExecutionWork;
 #[cfg(test)]
@@ -4040,6 +4040,100 @@ impl<H: Host> Vm<H> {
                     P::call_scope_enter(
                         trace,
                         callee_program,
+                        ctx.frames.len(),
+                        TraceLocation {
+                            unit: target.unit,
+                            func: target.func,
+                            pc: Pc(callee_vf.pc_at_ix(0).unwrap_or(0)),
+                        },
+                        callee_vf.span_at_ix(0).map(|id| id.get()),
+                        Some(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        }),
+                    );
+
+                    debug_assert_eq!(
+                        callee_fn.bytecode.len, callee_vf.byte_len,
+                        "verified byte_len must match decoded bytecode length"
+                    );
+                }
+                ExecInstr::CallLink {
+                    link,
+                    args,
+                    rets: dst_rets,
+                } => {
+                    if budget.frames >= max_call_depth {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::CallDepthExceeded));
+                    }
+
+                    // The calling unit's link names the target now. Relinking admitted only
+                    // installed functions with the link's exact signature, so the target needs
+                    // no signature check here; it runs its own unit's program.
+                    let target = current.link(*link);
+                    let callee_program = if target.unit == unit_id {
+                        program
+                    } else {
+                        &self.units.unit(target.unit).program
+                    };
+                    let callee_fn = callee_program
+                        .program()
+                        .functions
+                        .get(target.func.0 as usize)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+                    let callee_vf = callee_program
+                        .verified(target.func)
+                        .ok_or_else(|| ctx.trap(func_id, pc, span_id, Trap::InvalidPc))?;
+
+                    let callee_base = ctx.alloc_frame(callee_vf);
+                    let args = vf.vregs(*args);
+                    if args.len() != callee_vf.reg_layout.arg_regs.len() {
+                        return Err(ctx.trap(func_id, pc, span_id, Trap::InvalidPc));
+                    }
+                    for (src, dst) in args
+                        .iter()
+                        .copied()
+                        .zip(callee_vf.reg_layout.arg_regs.iter().copied())
+                    {
+                        ctx.copy_vreg(base, src, callee_base, dst)
+                            .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+                    }
+
+                    self.check_arg_contracts(
+                        ctx,
+                        budget,
+                        target.unit,
+                        target.func,
+                        callee_vf,
+                        callee_base,
+                    )
+                    .map_err(|t| ctx.trap(func_id, pc, span_id, t))?;
+
+                    budget.frames += 1;
+                    ctx.frames.push(Frame {
+                        unit: target.unit,
+                        func: target.func,
+                        pc: callee_vf.pc_at_ix(0).unwrap_or(0),
+                        instr_ix: 0,
+                        byte_len: callee_vf.byte_len,
+                        base: callee_base,
+                        return_to: Some(ReturnTo {
+                            dst_rets: *dst_rets,
+                            resumed: false,
+                        }),
+                    });
+
+                    if YIELD {
+                        control.enter(TraceLocation {
+                            unit: unit_id,
+                            func: func_id,
+                            pc: Pc(pc),
+                        });
+                    }
+                    P::call_scope_enter(
+                        trace,
+                        callee_program.program(),
                         ctx.frames.len(),
                         TraceLocation {
                             unit: target.unit,

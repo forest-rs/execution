@@ -67,6 +67,7 @@ impl Instr {
             Self::ConstFunc { .. } => Opcode::ConstFunc,
             Self::CallIndirect { .. } => Opcode::CallIndirect,
             Self::ClosureNew { .. } => Opcode::ClosureNew,
+            Self::CallLink { .. } => Opcode::CallLink,
             Self::TupleNew { .. } => Opcode::TupleNew,
             Self::TupleGet { .. } => Opcode::TupleGet,
             Self::StructNew { .. } => Opcode::StructNew,

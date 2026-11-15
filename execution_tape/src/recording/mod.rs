@@ -9,9 +9,10 @@
 //!
 //! Share a prepared program in `Arc`, construct [`Recorder::new`], and pass [`TraceSink::mask`]
 //! and `Some(&mut recorder)` to ordinary VM execution. Execution may enter any installed unit:
-//! the recording snapshots the VM's units and tags at entry, records installs made while the
-//! invocation is suspended, and keeps the VM's unit and tag identities in every location and
-//! value. Replay repeats those installs and tag definitions in order and checks the identities. Consume it with [`Recorder::finish`]
+//! the recording snapshots the VM's units, tags and link targets at entry, records installs made
+//! while the invocation is suspended, and keeps the VM's unit and tag identities in every
+//! location and value. Replay repeats those installs and tag definitions in order, points each
+//! link where it pointed at entry, and checks the identities. Consume it with [`Recorder::finish`]
 //! and inspect [`Recording::status`]. [`Recording::replay`] executes the guest
 //! again in a fresh VM, checks host arguments and the final values/trap, and returns the actual
 //! replay result. It invokes no live host or resource-access sink.
@@ -268,6 +269,10 @@ pub struct RecordedUnit<'a> {
     pub program: &'a Arc<VerifiedProgram>,
     /// The VM tag of each program tag, in [`crate::program::TagId`] order; imports are among them.
     pub tags: &'a [TagRef],
+    /// The function each link of the program named when the unit was recorded, in
+    /// [`crate::program::LinkId`] order: at entry for a unit installed before the invocation,
+    /// and at installation otherwise.
+    pub links: &'a [FuncRef],
     /// The observation sequence before which the unit was installed while the invocation was
     /// suspended, or `None` for a unit installed before the invocation started.
     pub installed: Option<usize>,
@@ -301,6 +306,7 @@ struct UnitRecord {
     unit: UnitId,
     program: Arc<VerifiedProgram>,
     tags: Box<[TagRef]>,
+    links: Box<[FuncRef]>,
     installed: Option<usize>,
 }
 #[derive(Debug)]
@@ -315,6 +321,17 @@ enum Store {
     /// Index into [`Recording::units`]; units are recorded in [`UnitId`] order.
     Unit(usize),
     Tag(TagRecord),
+}
+
+impl Store {
+    /// The observation sequence before which this change happened during the invocation, or
+    /// `None` when it happened before entry.
+    fn during(&self, units: &[UnitRecord]) -> Option<usize> {
+        match self {
+            Self::Unit(index) => units[*index].installed,
+            Self::Tag(_) => None,
+        }
+    }
 }
 
 /// Invocation inputs, borrowed from a recording.
@@ -816,6 +833,7 @@ impl UnitRecord {
             unit: self.unit,
             program: &self.program,
             tags: &self.tags,
+            links: &self.links,
             installed: self.installed,
         }
     }

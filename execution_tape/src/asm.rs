@@ -14,6 +14,8 @@ pub use crate::program::Reg;
 pub use calls::{CallArg, CallArgs, CallBuildError, CallTarget};
 mod closures;
 pub use closures::{ClosureBuildError, ClosureLayout};
+mod links;
+pub use links::LinkBuildError;
 mod regions;
 mod sources;
 pub use regions::Catch;
@@ -33,9 +35,9 @@ use crate::host_binding::HostImport;
 use crate::opcode::Opcode;
 use crate::program::{
     ByteRange, CallSigEntry, CallSigId, Const, ConstId, ElemTypeId, FunctionNameEntry,
-    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, Pc, Program, RegionDef,
-    RegionId, RegionRun, SpanEntry, SpanId, StructTypeDef, SymbolId, TagEntry, TagId, TypeId,
-    TypeTableDef, ValueType,
+    GuestFunctionDef, HostSigDef, HostSigId, HostSymbol, LabelNameEntry, LinkEntry, LinkId, Pc,
+    Program, RegionDef, RegionId, RegionRun, SpanEntry, SpanId, StructTypeDef, SymbolId, TagEntry,
+    TagId, TypeId, TypeTableDef, ValueType,
 };
 use crate::value::FuncId;
 use crate::value::{Decimal, DecimalRounding};
@@ -183,6 +185,8 @@ pub enum BuildError {
     Closure(ClosureBuildError),
     /// Exception tag declaration or `throw` emission was denied before mutation.
     Tag(TagBuildError),
+    /// Link declaration was denied before mutation.
+    Link(LinkBuildError),
     /// A function id was out of range for the builder.
     BadFuncId {
         /// The invalid function id.
@@ -227,6 +231,7 @@ impl fmt::Display for BuildError {
             Self::Call(error) => error.fmt(f),
             Self::Closure(error) => error.fmt(f),
             Self::Tag(error) => error.fmt(f),
+            Self::Link(error) => error.fmt(f),
             Self::BadFuncId { func } => write!(f, "invalid function id {func}"),
             Self::BadArgIndex {
                 func,
@@ -279,6 +284,7 @@ impl core::error::Error for BuildError {
             Self::Call(error) => Some(error),
             Self::Closure(error) => Some(error),
             Self::Tag(error) => Some(error),
+            Self::Link(error) => Some(error),
             _ => None,
         }
     }
@@ -310,6 +316,12 @@ impl From<ClosureBuildError> for BuildError {
 impl From<TagBuildError> for BuildError {
     fn from(error: TagBuildError) -> Self {
         Self::Tag(error)
+    }
+}
+
+impl From<LinkBuildError> for BuildError {
+    fn from(error: LinkBuildError) -> Self {
+        Self::Link(error)
     }
 }
 
@@ -470,6 +482,7 @@ pub struct ProgramBuilder {
     const_pool: Vec<Const>,
     call_sigs: Vec<CallSigDef>,
     tags: Vec<TagDef>,
+    links: Vec<LinkEntry>,
     host_sigs: Vec<HostSigDef>,
     types: TypeTableDef,
     functions: Vec<GuestFunctionDef>,
@@ -974,6 +987,7 @@ impl ProgramBuilder {
                 results,
             });
         }
+        p.links = self.links;
         p.program_name = self.program_name;
         p.function_names = self.function_names;
         p.labels = self.labels;
@@ -3386,6 +3400,35 @@ impl Asm {
         self.opcode(Opcode::Call);
         self.reg(eff_out);
         self.uleb(func_id.0);
+        self.reg(eff_in);
+        self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
+        for &a in args {
+            self.reg(a);
+        }
+        self.uleb(u32::try_from(rets.len()).unwrap_or(u32::MAX));
+        for &r in rets {
+            self.reg(r);
+        }
+        self
+    }
+
+    /// Encodes `call.link eff_out, link, eff_in, argc, args..., retc, rets...`.
+    ///
+    /// The call runs whatever function the calling unit's `link` names when it executes: the
+    /// link's declared target until the embedding repoints it with [`Vm::relink`]. Arguments and
+    /// results match the link's signature 1:1. Declare links with
+    /// [`ProgramBuilder::declare_link`].
+    pub fn call_link(
+        &mut self,
+        eff_out: Reg,
+        link: LinkId,
+        eff_in: Reg,
+        args: &[Reg],
+        rets: &[Reg],
+    ) -> &mut Self {
+        self.opcode(Opcode::CallLink);
+        self.reg(eff_out);
+        self.uleb(link.0);
         self.reg(eff_in);
         self.uleb(u32::try_from(args.len()).unwrap_or(u32::MAX));
         for &a in args {

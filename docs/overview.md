@@ -216,6 +216,18 @@ and variance/subtyping are separate capabilities.
   `call_indirect`, the VM injects `env` as the callee's first (`Agg`) argument; the call signature covers
   only the caller-visible arguments (see the [specification](v1_spec.md)).
 
+### Links
+A *link* is a relinkable call target. A program declares each link with a name, a call signature
+and an initial target function; every install gives the unit its own link table, starting at its
+own functions. `call.link` calls whatever the calling unit's link names when it executes, and
+`Vm::relink` repoints a unit's link at a function of any installed unit whose canonical signature
+is exactly the link's. Callers are verified against the link's signature, so relinking needs no
+reverification, and activations that already entered the old target keep running it. A language
+with live replacement can call a statically selected method directly, at roughly the cost of
+`call`, and still repoint the call when new code replaces the method. `Units::links` reports
+every unit's current targets. Relinking keeps no history, so it never grows the VM; a recording
+snapshots the targets at entry and replay restores them.
+
 Function references name their installed unit, and struct/array type IDs are resolved to shapes
 interned in the VM heap when a program is installed, so equal layouts are the same runtime type
 across programs. Unit IDs and aggregate handles belong to one VM. The graph's `TapeValue` adapter

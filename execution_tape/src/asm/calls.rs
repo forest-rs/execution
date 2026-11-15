@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// A declared direct, host or indirect call in one [`ProgramBuilder`].
+/// A declared direct, host, indirect or linked call in one [`ProgramBuilder`].
 ///
 /// IDs and registers retain their ordinary program/function-local meaning. This authoring
 /// descriptor does not import code or make a raw ID valid in another builder.
@@ -22,6 +22,8 @@ pub enum CallTarget {
         /// Function-local register containing a function or closure.
         callee: Reg,
     },
+    /// A declared link: the function the calling unit's link names when the call executes.
+    Link(LinkId),
 }
 impl From<FuncId> for CallTarget {
     fn from(id: FuncId) -> Self {
@@ -31,6 +33,11 @@ impl From<FuncId> for CallTarget {
 impl From<HostSigId> for CallTarget {
     fn from(id: HostSigId) -> Self {
         Self::Host(id)
+    }
+}
+impl From<LinkId> for CallTarget {
+    fn from(id: LinkId) -> Self {
+        Self::Link(id)
     }
 }
 
@@ -384,6 +391,9 @@ impl ProgramBuilder {
             CallTarget::Indirect { signature, callee } => {
                 body.call_indirect(Reg(0), signature, callee, Reg(0), args, &results);
             }
+            CallTarget::Link(id) => {
+                body.call_link(Reg(0), id, Reg(0), args, &results);
+            }
         }
         Ok(results)
     }
@@ -552,6 +562,17 @@ impl ProgramBuilder {
                 if !matches!(kind, ValueType::Func | ValueType::Closure) {
                     return Err(CallBuildError::CalleeKind(*kind));
                 }
+                (
+                    Kinds::Contracts(&signature.args, &self.contracts),
+                    Kinds::Contracts(&signature.rets, &self.contracts),
+                )
+            }
+            CallTarget::Link(id) => {
+                let link = self
+                    .links
+                    .get(id.0 as usize)
+                    .ok_or(CallBuildError::UnknownTarget(target))?;
+                let signature = &self.call_sigs[link.call_sig.0 as usize];
                 (
                     Kinds::Contracts(&signature.args, &self.contracts),
                     Kinds::Contracts(&signature.rets, &self.contracts),

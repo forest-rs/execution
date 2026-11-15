@@ -57,6 +57,22 @@ pub(super) fn verification(
                 .and_then(|ids| ids.get(index as usize))
                 .copied(),
         ),
+        ContractPosition::LinkArgument { link, index } => {
+            let name = program
+                .link_name(link)
+                .map_or_else(|| format!("#{}", link.0), String::from);
+            (
+                format!("Call through link {name}"),
+                format!("argument[{index}]"),
+                format!("Argument {} through link {name}", u64::from(index) + 1),
+                program
+                    .link(link)
+                    .and_then(|entry| program.call_sig(entry.call_sig))
+                    .and_then(|entry| program.call_sig_arg_contracts(entry).ok())
+                    .and_then(|ids| ids.get(index as usize))
+                    .copied(),
+            )
+        }
         ContractPosition::Payload { tag, index } => (
             format!("Throw of {}", exception_tag(program, tag)),
             format!("payload[{index}]"),
@@ -547,6 +563,10 @@ pub(super) fn instruction(program: &Program, instruction: InstrView<'_>) -> Stri
                 CallTarget::Indirect { callee, call_sig } => {
                     format!("call {callee} [signature #{}]", call_sig.0)
                 }
+                CallTarget::Link { link, name } => match name {
+                    Some(name) => format!("call link {name}"),
+                    None => format!("call link #{}", link.0),
+                },
             };
             assignment(
                 call.rets,

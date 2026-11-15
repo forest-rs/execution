@@ -3,7 +3,7 @@
 
 use crate::aggregates::{AggError, AggHeap, ValueSnapshot};
 use crate::host::{Host, HostContext, HostError, SigHash, ValueRef};
-use crate::program::{HostSigId, Pc, Program, SpanId};
+use crate::program::{HostSigId, LinkId, Pc, Program, SpanId};
 use crate::recording::control::Action;
 use crate::recording::{
     AggregateId, Answer, CallOutcome, CaptureFault, End, RecordedValue, Recording, Store,
@@ -12,7 +12,7 @@ use crate::recording::{
 use crate::trace::{
     ScopeKind, SuspensionAnswer, TraceLocation, TraceMask, TraceOutcome, TraceSink, ValueEvent,
 };
-use crate::value::{AggHandle, AggType, Closure, TagRef, UnitId, Value};
+use crate::value::{AggHandle, AggType, Closure, FuncRef, TagRef, UnitId, Value};
 use crate::verifier::VerifiedProgram;
 use crate::vm::{InstallError, Trap, TrapInfo, Units, Vm};
 use alloc::collections::BTreeMap;
@@ -102,6 +102,17 @@ pub enum Divergence {
         expected: UnitId,
         /// Unit the replay install produced, if it succeeded.
         actual: Option<UnitId>,
+    },
+    /// Rebuilding the recorded VM could not point a link at its recorded target.
+    Relink {
+        /// The unit whose link was repointed.
+        unit: UnitId,
+        /// The link.
+        link: LinkId,
+        /// The recorded target.
+        expected: FuncRef,
+        /// The replay unit's target for the link afterwards, if it has the link.
+        actual: Option<FuncRef>,
     },
     /// Rebuilding the recorded VM defined a tag with another identity, or could not define it.
     Tag {
@@ -565,6 +576,32 @@ fn check_install(
             expected: unit.unit,
             actual,
         }));
+    }
+    Ok(())
+}
+
+/// Points every link of `unit` where the recording found it, checking that each now does.
+fn restore_links(
+    state: &State,
+    vm: &mut Vm<NoReplayEffects>,
+    unit: &UnitRecord,
+) -> Result<(), ReplayError> {
+    for (index, &expected) in unit.links.iter().enumerate() {
+        let link = LinkId(u32::try_from(index).expect("verified link count"));
+        // A failure leaves the old target, which the check below reports.
+        let _ = vm.relink(unit.unit, link, expected);
+        let actual = vm
+            .units()
+            .links(unit.unit)
+            .and_then(|links| links.get(index).copied());
+        if actual != Some(expected) {
+            return Err(state.mismatch(Divergence::Relink {
+                unit: unit.unit,
+                link,
+                expected,
+                actual,
+            }));
+        }
     }
     Ok(())
 }
@@ -1363,7 +1400,7 @@ impl Recording {
             let mut state = state.borrow_mut();
             state.boundary = ReplayBoundary::Store { index };
             match record {
-                Store::Unit(unit) if self.units[*unit].installed.is_some() => break,
+                record if record.during(&self.units).is_some() => break,
                 Store::Unit(unit) => {
                     let unit = &self.units[*unit];
                     let installed = vm.install(Arc::clone(&unit.program));
@@ -1382,6 +1419,14 @@ impl Recording {
                 }
             }
             state.stored = index + 1;
+        }
+        // Links may name units installed after their own, so they are restored once all exist.
+        {
+            let mut state = state.borrow_mut();
+            state.boundary = ReplayBoundary::InitialState;
+            for unit in self.units.iter().filter(|unit| unit.installed.is_none()) {
+                restore_links(&state, &mut vm, unit)?;
+            }
         }
         for &id in &self.initial {
             let node = self.aggregate(id).expect("complete initial node");

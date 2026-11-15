@@ -134,6 +134,14 @@ pub struct CallSigId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TagId(pub u32);
 
+/// Link identifier (index into [`Program::links`]).
+///
+/// A link is a call target that each installed unit of the program owns and the embedding can
+/// repoint with [`crate::vm::Vm::relink`]; `call.link` calls whatever the calling unit's link
+/// names at that moment.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LinkId(pub u32);
+
 /// Function-local protected region identifier (index into the function's
 /// [`Function::regions`] range).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -239,6 +247,7 @@ display_index!(
     HostSigId,
     CallSigId,
     TagId,
+    LinkId,
     RegionId,
     TypeId,
     FieldNameId,
@@ -651,6 +660,11 @@ pub struct Program {
     /// Installing the program binds each to the VM tag defined under its name; every other tag
     /// becomes a new tag of the installed unit.
     pub tag_imports: Vec<TagId>,
+    /// Relinkable call targets, indexed by [`LinkId`].
+    ///
+    /// Each install of the program gets its own copy of the table, starting at every entry's
+    /// [`LinkEntry::target`] in the new unit.
+    pub links: Vec<LinkEntry>,
     /// Packed protected regions; functions reference slices by [`Function::regions`].
     pub regions: Vec<RegionEntry>,
     /// Packed handler clauses; regions reference slices by [`RegionEntry::clauses`].
@@ -836,6 +850,22 @@ pub struct TagEntry {
     /// Contracts of the values a handler resumes a suspension with, into
     /// `Program::contract_ids`.
     pub results: ByteRange,
+}
+
+/// A relinkable call target: its name, the exact signature every target must have, and the
+/// function of this program it names when the program is installed.
+///
+/// `call.link` sites are verified against [`Self::call_sig`] alone, so the embedding can repoint
+/// an installed unit's link at any function with that signature, in any unit, without
+/// verifying the callers again.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LinkEntry {
+    /// Link name; unique within the program and used by diagnostics and tooling.
+    pub name: SymbolId,
+    /// The signature callers use and every target must match exactly.
+    pub call_sig: CallSigId,
+    /// The function of this program the link names when the program is installed.
+    pub target: FuncId,
 }
 
 /// An input struct type definition used to construct a [`TypeTable`].
@@ -1199,6 +1229,7 @@ impl Program {
             call_sigs: Vec::new(),
             tags: Vec::new(),
             tag_imports: Vec::new(),
+            links: Vec::new(),
             regions: Vec::new(),
             catch_clauses: Vec::new(),
             region_runs: Vec::new(),
@@ -1438,6 +1469,26 @@ impl Program {
         self.functions[function].region_runs = run_range;
     }
 
+    /// Returns the link entry for `id`.
+    #[must_use]
+    pub fn link(&self, id: LinkId) -> Option<&LinkEntry> {
+        self.links.get(id.0 as usize)
+    }
+
+    /// Returns the name of link `id`, if both the link and its symbol exist.
+    #[must_use]
+    pub fn link_name(&self, id: LinkId) -> Option<&str> {
+        self.symbol_str(self.link(id)?.name).ok()
+    }
+
+    /// Returns the link named `name`. Verified programs have at most one.
+    #[must_use]
+    pub fn link_by_name(&self, name: &str) -> Option<LinkId> {
+        (0..self.links.len())
+            .map(|index| LinkId(u32::try_from(index).unwrap_or(u32::MAX)))
+            .find(|&link| self.link_name(link) == Some(name))
+    }
+
     /// Returns the name of exception tag `id`, if both the tag and its symbol exist.
     pub fn tag_name(&self, id: TagId) -> Option<&str> {
         self.symbol_str(self.tag(id)?.name).ok()
@@ -1542,6 +1593,8 @@ impl Program {
         // 13 = exception tags (optional)
         // 14 = protected regions (optional)
         // 15 = tag imports (optional)
+        // 16 = tag results (optional)
+        // 17 = links (optional)
         let mut w = Writer::new();
         w.write_bytes(MAGIC);
         w.write_u16_le(VERSION_MAJOR);
@@ -1810,6 +1863,18 @@ impl Program {
             write_section(&mut w, SectionTag::TagImports, payload.as_slice());
         }
 
+        // link section (optional; omitted when the program declares no links)
+        if !self.links.is_empty() {
+            let mut payload = Writer::new();
+            payload.write_uleb128_u64(self.links.len() as u64);
+            for link in &self.links {
+                payload.write_uleb128_u32(link.name.index());
+                payload.write_uleb128_u32(link.call_sig.0);
+                payload.write_uleb128_u32(link.target.0);
+            }
+            write_section(&mut w, SectionTag::Links, payload.as_slice());
+        }
+
         if self.program_name.is_some() || !self.function_names.is_empty() || !self.labels.is_empty()
         {
             let mut payload = Writer::new();
@@ -1892,6 +1957,7 @@ enum SectionTag {
     Regions = 14,
     TagImports = 15,
     TagResults = 16,
+    Links = 17,
 }
 
 impl SectionTag {
@@ -1912,6 +1978,7 @@ impl SectionTag {
             14 => Some(Self::Regions),
             15 => Some(Self::TagImports),
             16 => Some(Self::TagResults),
+            17 => Some(Self::Links),
             _ => None,
         }
     }
@@ -2026,6 +2093,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
     let mut saw_regions = false;
     let mut tag_imports: Option<Vec<TagId>> = None;
     let mut tag_results: Option<Vec<DecodedTagResults>> = None;
+    let mut links: Option<Vec<LinkEntry>> = None;
     let mut saw_host_sigs = false;
     let mut saw_types = false;
     let mut saw_function_table = false;
@@ -2121,6 +2189,12 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
                     return Err(DecodeError::DuplicateSection);
                 }
                 tag_results = Some(decode_tag_results(payload)?);
+            }
+            Some(SectionTag::Links) => {
+                if links.is_some() {
+                    return Err(DecodeError::DuplicateSection);
+                }
+                links = Some(decode_links(payload)?);
             }
             Some(SectionTag::Regions) => {
                 if saw_regions {
@@ -2495,6 +2569,7 @@ fn decode_current(bytes: &[u8], mut r: Reader<'_>) -> Result<Program, DecodeErro
         call_sigs,
         tags,
         tag_imports: tag_imports.unwrap_or_default(),
+        links: links.unwrap_or_default(),
         regions,
         catch_clauses,
         region_runs,
@@ -2988,6 +3063,26 @@ fn decode_tags(payload: &[u8]) -> Result<Vec<DecodedTag>, DecodeError> {
             contracts.push(ContractId(r.read_uleb128_u32()?));
         }
         out.push((name, contracts));
+    }
+    if r.remaining() != 0 {
+        return Err(DecodeError::OutOfBounds);
+    }
+    Ok(out)
+}
+
+fn decode_links(payload: &[u8]) -> Result<Vec<LinkEntry>, DecodeError> {
+    let mut r = Reader::new(payload);
+    let n = read_count(&mut r)?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let name = SymbolId(r.read_uleb128_u32_nz()?);
+        let call_sig = CallSigId(r.read_uleb128_u32()?);
+        let target = FuncId(r.read_uleb128_u32()?);
+        out.push(LinkEntry {
+            name,
+            call_sig,
+            target,
+        });
     }
     if r.remaining() != 0 {
         return Err(DecodeError::OutOfBounds);

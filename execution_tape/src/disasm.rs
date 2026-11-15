@@ -22,7 +22,7 @@ use crate::bytecode::{BytecodeError, DecodedInstr, Instr, decode_instructions};
 use crate::format::DecodeError;
 use crate::opcode::{Opcode, OperandRole};
 use crate::program::{
-    CallSigId, ConstId, ElemTypeId, HostSigId, Pc, Program, Reg, TagId, TypeId, ValueType,
+    CallSigId, ConstId, ElemTypeId, HostSigId, LinkId, Pc, Program, Reg, TagId, TypeId, ValueType,
 };
 pub use crate::register_operands::{RegIter, RegList};
 use crate::value::{Decimal, DecimalRounding, FuncId};
@@ -263,6 +263,13 @@ pub enum CallTarget<'a> {
         /// Register holding the dynamic callee value.
         callee: Reg,
     },
+    /// The function a link of the calling unit names when the call executes.
+    Link {
+        /// Link table id.
+        link: LinkId,
+        /// Best-effort resolved link name.
+        name: Option<&'a str>,
+    },
 }
 
 /// Disassembled instruction operands.
@@ -364,6 +371,8 @@ pub enum InputIndex {
     ElemType(ElemTypeId),
     /// Exception tag index for [`Opcode::Throw`].
     Tag(TagId),
+    /// Link table index for [`Opcode::CallLink`].
+    Link(LinkId),
     /// Generic immediate index (tuple/struct/array access, decimal scale, etc.).
     Index(u32),
     /// Rounding-mode byte for [`Opcode::DecRescale`] and [`Opcode::DecDiv`].
@@ -429,6 +438,9 @@ impl<'a> InstrView<'a> {
     pub fn input_index(&self) -> Option<InputIndex> {
         if let Instr::Throw { tag, .. } = &self.decoded.instr {
             return Some(InputIndex::Tag(TagId(*tag)));
+        }
+        if let Instr::CallLink { link, .. } = &self.decoded.instr {
+            return Some(InputIndex::Link(LinkId(*link)));
         }
         let operands = self.opcode().operands();
         // Keep the behavior stable: if there are multiple index-like roles, prefer the first one.
@@ -592,6 +604,22 @@ impl<'a> InstrView<'a> {
                     callee: CallTarget::Indirect {
                         call_sig: CallSigId(*call_sig),
                         callee: Reg(*callee),
+                    },
+                    eff_in: Reg(*eff_in),
+                    args: RegList::new(args),
+                    rets: RegList::new(rets),
+                }),
+                Instr::CallLink {
+                    eff_out,
+                    link,
+                    eff_in,
+                    args,
+                    rets,
+                } => Operands::Call(CallOperands {
+                    eff_out: Reg(*eff_out),
+                    callee: CallTarget::Link {
+                        link: LinkId(*link),
+                        name: self.program.link_name(LinkId(*link)),
                     },
                     eff_in: Reg(*eff_in),
                     args: RegList::new(args),
@@ -1424,6 +1452,14 @@ fn fmt_tag_payload_annotation(
     }
 }
 
+fn fmt_link(w: &mut fmt::Formatter<'_>, link: LinkId, name: Option<&str>) -> fmt::Result {
+    write!(w, "link#{}", link.0)?;
+    if let Some(name) = name {
+        write!(w, "(\"{name}\")")?;
+    }
+    Ok(())
+}
+
 fn fmt_call_sig_annotation(
     w: &mut fmt::Formatter<'_>,
     program: &Program,
@@ -1465,6 +1501,20 @@ impl fmt::Display for Disassembly<'_> {
                     None => write!(f, " <invalid name>")?,
                 }
                 fmt_tag_payload_annotation(f, self.program, tag)?;
+                writeln!(f)?;
+            }
+            writeln!(f)?;
+        }
+        if !self.program.links.is_empty() {
+            for (index, entry) in self.program.links.iter().enumerate() {
+                let link = LinkId(u32::try_from(index).unwrap_or(u32::MAX));
+                write!(f, "link#{}", link.0)?;
+                match self.program.link_name(link) {
+                    Some(name) => write!(f, " \"{name}\"")?,
+                    None => write!(f, " <invalid name>")?,
+                }
+                write!(f, " -> f{}", entry.target.0)?;
+                fmt_call_sig_annotation(f, self.program, entry.call_sig)?;
                 writeln!(f)?;
             }
             writeln!(f)?;
@@ -1724,6 +1774,10 @@ fn fmt_instr_with_labels(
                     write!(f, ", callee=")?;
                     fmt_reg(f, callee)?;
                 }
+                CallTarget::Link { link, name } => {
+                    call_sig_for_annotation = iv.program.link(link).map(|entry| entry.call_sig);
+                    fmt_link(f, link, name)?;
+                }
             }
             write!(f, ", eff_in=")?;
             fmt_reg(f, call.eff_in)?;
@@ -1905,6 +1959,11 @@ impl fmt::Display for InstrView<'_> {
                         write!(f, ", callee=")?;
                         fmt_reg(f, callee)?;
                     }
+                    CallTarget::Link { link, name } => {
+                        call_sig_for_annotation =
+                            self.program.link(link).map(|entry| entry.call_sig);
+                        fmt_link(f, link, name)?;
+                    }
                 }
                 write!(f, ", eff_in=")?;
                 fmt_reg(f, call.eff_in)?;
@@ -1948,6 +2007,7 @@ impl fmt::Display for InputIndex {
             Self::Type(id) => write!(f, "type#{}", id.0),
             Self::ElemType(id) => write!(f, "elem_type#{}", id.0),
             Self::Tag(id) => write!(f, "tag#{}", id.0),
+            Self::Link(id) => write!(f, "link#{}", id.0),
             Self::Index(ix) => write!(f, "index={ix}"),
             Self::Rounding(byte) => match DecimalRounding::from_byte(byte) {
                 Some(mode) => write!(f, "rounding={}", mode.name()),

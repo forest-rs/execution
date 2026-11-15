@@ -16,6 +16,7 @@ pub(crate) use diagnostic::write_location;
 mod host_calls;
 pub use host_calls::{HostCallSite, HostCallSites};
 mod inspection;
+mod links;
 mod metadata;
 mod regions;
 pub use regions::{RegionError, RegionRunError};
@@ -46,8 +47,8 @@ use crate::host::sig_hash_slices;
 use crate::instr_operands;
 use crate::opcode::CodeBytes;
 use crate::program::{
-    CallSigId, ConstEntry, ConstId, ElemTypeId, Function, HostSigId, Pc, Program, Reg, RegionId,
-    RegisterTypes, SpanEntry, SpanId, SymbolId, TagId, TypeId, ValueType,
+    CallSigId, ConstEntry, ConstId, ElemTypeId, Function, HostSigId, LinkId, Pc, Program, Reg,
+    RegionId, RegisterTypes, SpanEntry, SpanId, SymbolId, TagId, TypeId, ValueType,
 };
 use crate::typed::{
     AggReg, BoolReg, BytesReg, ClosureReg, ContReg, DecimalReg, ExecClause, ExecDecoded, ExecFunc,
@@ -590,6 +591,33 @@ pub enum VerifyError {
         /// Host signature id.
         host_sig: HostSigId,
     },
+    /// Two links share a name. Names identify links in diagnostics and tooling.
+    DuplicateLinkName {
+        /// Later link with the repeated name.
+        link: LinkId,
+        /// Earlier link that already uses the name.
+        first: LinkId,
+        /// The repeated name.
+        name: Box<str>,
+    },
+    /// A link's initial target does not have exactly the link's signature.
+    LinkSignatureMismatch {
+        /// The link.
+        link: LinkId,
+        /// The link's declared signature.
+        call_sig: CallSigId,
+        /// The function the link names when installed.
+        target: FuncId,
+    },
+    /// A `call.link` references a link outside the program's link table.
+    LinkOutOfBounds {
+        /// Function index within the program.
+        func: FuncId,
+        /// Byte offset of the instruction.
+        pc: Pc,
+        /// Requested link id.
+        link: LinkId,
+    },
     /// Two exception tags share a name. Names identify tags in diagnostics and tooling.
     DuplicateTagName {
         /// Later tag with the repeated name.
@@ -933,6 +961,19 @@ impl VerifyError {
             Self::HostSigHashMismatch { host_sig } => {
                 write!(f, "host_sig {host_sig} sig_hash mismatch")
             }
+            Self::DuplicateLinkName { link, first, name } => write!(
+                f,
+                "link#{link} reuses the name \"{name}\" already declared by link#{first}"
+            ),
+            Self::LinkSignatureMismatch {
+                link,
+                call_sig,
+                target,
+            } => write!(
+                f,
+                "link#{link} declares call_sig {call_sig}, but its target f{target} has a different signature"
+            ),
+            Self::LinkOutOfBounds { link, .. } => write!(f, "call.link: link#{link} out of bounds"),
             Self::DuplicateTagName { tag, first, name } => write!(
                 f,
                 "tag#{tag} reuses the name \"{name}\" already declared by tag#{first}"
@@ -1197,6 +1238,7 @@ pub fn verify_program(program: &Program, cfg: &VerifyConfig) -> Result<(), Verif
     tags::verify(program)?;
     verify_exception_places(program)?;
     verify_function_value_names(program)?;
+    links::verify(program)?;
 
     for (i, func) in program.functions.iter().enumerate() {
         let func_id = FuncId(u32::try_from(i).unwrap_or(u32::MAX));
@@ -1216,6 +1258,7 @@ pub fn verify_program_with_lints(
     tags::verify(program)?;
     verify_exception_places(program)?;
     verify_function_value_names(program)?;
+    links::verify(program)?;
 
     let mut lints: Vec<VerifyLint> = Vec::new();
     for (i, func) in program.functions.iter().enumerate() {
@@ -1292,6 +1335,7 @@ fn verify_functions(
     verify_exception_places(program)?;
     verify_function_value_names(program)?;
     verify_signature_ranges(program)?;
+    links::verify(program)?;
 
     let mut verified_functions: Vec<ExecFunc> = Vec::with_capacity(program.functions.len());
     let mut init_tables = Vec::with_capacity(program.functions.len());
@@ -1673,6 +1717,16 @@ fn verify_id_operands_in_bounds(
                 func,
                 pc: Pc(pc),
                 call_sig: CallSigId(*call_sig),
+            });
+        }
+
+        if let Instr::CallLink { link, .. } = &di.instr
+            && program.link(LinkId(*link)).is_none()
+        {
+            err = Some(VerifyError::LinkOutOfBounds {
+                func,
+                pc: Pc(pc),
+                link: LinkId(*link),
             });
         }
 
@@ -3556,6 +3610,21 @@ fn verify_function_bytecode(
                     }
                 }
             }
+            Instr::CallLink {
+                eff_out,
+                link,
+                eff_in,
+                args,
+                rets,
+            } => {
+                check_unit(*eff_out)?;
+                check_unit(*eff_in)?;
+                ExecInstr::CallLink {
+                    link: LinkId(*link),
+                    args: push_vregs(args)?,
+                    rets: push_vregs(rets)?,
+                }
+            }
             Instr::ClosureNew { dst, func, env } => ExecInstr::ClosureNew {
                 dst: map_closure(*dst)?,
                 func: map_func(*func)?,
@@ -3933,7 +4002,7 @@ fn lint_function_bytecode(
             let opcode = di.opcode;
             let is_call_like = opcode.is_call_like();
             let mut call_rets: Option<&[u32]> = None;
-            if let Instr::Call { rets, .. } = &di.instr {
+            if let Instr::Call { rets, .. } | Instr::CallLink { rets, .. } = &di.instr {
                 call_rets = Some(rets.as_slice());
             } else if let Instr::HostCall { rets, .. } = &di.instr {
                 call_rets = Some(rets.as_slice());
@@ -4139,6 +4208,23 @@ fn validate_instr_reads_writes(
                         pc: Pc(pc),
                         call_sig: CallSigId(*call_sig),
                     })?;
+            if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
+                return Err(VerifyError::CallArityMismatch {
+                    func: func_id,
+                    pc: Pc(pc),
+                });
+            }
+        }
+        Instr::CallLink {
+            eff_out,
+            link,
+            eff_in,
+            args,
+            rets,
+        } => {
+            require_eff_in_r0(*eff_in)?;
+            require_eff_out_r0(*eff_out)?;
+            let (cs_args, cs_rets) = links::signature(program, LinkId(*link));
             if args.len() != cs_args.len() || rets.len() != cs_rets.len() {
                 return Err(VerifyError::CallArityMismatch {
                     func: func_id,
@@ -4967,6 +5053,17 @@ fn validate_instr_types(
             if !matches!(t(*callee), Some(ValueType::Func | ValueType::Closure)) {
                 check_expected(func_id, pc, *callee, t(*callee), ValueType::Func)?;
             }
+            for (&r, &expected) in args.iter().zip(cs_args.iter()) {
+                check_expected(func_id, pc, r, t(r), expected)?;
+            }
+            for (&r, &expected) in rets.iter().zip(cs_rets.iter()) {
+                check_expected(func_id, pc, r, t(r), expected)?;
+            }
+        }
+        Instr::CallLink {
+            link, args, rets, ..
+        } => {
+            let (cs_args, cs_rets) = links::signature(program, LinkId(*link));
             for (&r, &expected) in args.iter().zip(cs_args.iter()) {
                 check_expected(func_id, pc, r, t(r), expected)?;
             }

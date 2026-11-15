@@ -586,7 +586,28 @@ the target's own unit, checking its exact contract signature, which every unit o
 the same way. Struct and array types are interned as heap shapes, so values keep their meaning
 in every unit. Each activation keeps the unit it entered: installing replacement code changes
 no running or suspended frame, and new calls reach new code only through the function values a
-language hands out, for example from a host-owned method table:
+language hands out, for example from a host-owned method table, or through links.
+
+A link is a call target each unit owns and the embedding repoints. A program declares it with
+`ProgramBuilder::declare_link(name, target)`, and `call.link` calls whatever the calling
+unit's link names at that moment: its own `target` until [`Vm::relink`](vm::Vm::relink)
+points it at a function of any unit with exactly the link's signature. A language that has
+selected a method statically calls it directly, at about the cost of `call`, and repoints the
+link when new code replaces the method; callers are not verified again, and activations that
+already entered the old method keep it. [`Units::links`](vm::Units::links) shows every unit's
+current targets.
+
+```rust
+use execution_tape::{host::Host, program::LinkId, value::{FuncId, FuncRef, UnitId},
+    vm::{RelinkError, Vm}};
+fn take_over<H: Host>(vm: &mut Vm<H>, caller: UnitId, link: LinkId, newer: UnitId,
+    method: FuncId) -> Result<(), RelinkError> {
+    vm.relink(caller, link, FuncRef::new(newer, method))?;
+    Ok(())
+}
+```
+
+A method lookup can also answer a host request with a function value:
 
 ```rust
 use std::sync::Arc;

@@ -681,6 +681,15 @@ pub(crate) enum Instr {
         rets: Vec<u32>,
     },
 
+    /// Call the function the calling unit's link `link` currently names.
+    CallLink {
+        eff_out: u32,
+        link: u32,
+        eff_in: u32,
+        args: Vec<u32>,
+        rets: Vec<u32>,
+    },
+
     /// Construct a closure value from `func` and `env`.
     ClosureNew { dst: u32, func: u32, env: u32 },
 
@@ -1016,6 +1025,16 @@ mod tests {
                 },
             ),
             (
+                Opcode::CallLink,
+                Instr::CallLink {
+                    eff_out: 0,
+                    link: 0,
+                    eff_in: 0,
+                    args: vec![1],
+                    rets: vec![2],
+                },
+            ),
+            (
                 Opcode::ClosureNew,
                 Instr::ClosureNew {
                     dst: 1,
@@ -1160,6 +1179,16 @@ mod tests {
         };
         assert_eq!(indirect.reads().collect::<Vec<_>>(), vec![4, 0, 5, 6]);
         assert_eq!(indirect.writes().collect::<Vec<_>>(), vec![0, 7]);
+
+        let linked = Instr::CallLink {
+            eff_out: 0,
+            link: 2,
+            eff_in: 0,
+            args: vec![5, 6],
+            rets: vec![7],
+        };
+        assert_eq!(linked.reads().collect::<Vec<_>>(), vec![0, 5, 6]);
+        assert_eq!(linked.writes().collect::<Vec<_>>(), vec![0, 7]);
     }
 
     #[test]
@@ -1237,6 +1266,13 @@ mod tests {
                 eff_out: 0,
                 call_sig: 0,
                 callee: 3,
+                eff_in: 0,
+                args: vec![1, 2],
+                rets: vec![4],
+            },
+            Instr::CallLink {
+                eff_out: 0,
+                link: 1,
                 eff_in: 0,
                 args: vec![1, 2],
                 rets: vec![4],

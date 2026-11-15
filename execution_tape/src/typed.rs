@@ -10,7 +10,7 @@
 
 use alloc::vec::Vec;
 
-use crate::program::{CallSigId, HostSigId, RegionId, TagId};
+use crate::program::{CallSigId, HostSigId, LinkId, RegionId, TagId};
 use crate::program::{ConstId, ValueType};
 use crate::program::{ElemTypeId, SpanId, TypeId};
 use crate::value::{Decimal, DecimalRounding, FuncId};
@@ -1391,6 +1391,12 @@ pub(crate) enum ExecInstr {
     CallIndirectClosure {
         call_sig: CallSigId,
         callee: ClosureReg,
+        args: VRegSlice,
+        rets: VRegSlice,
+    },
+    /// Call the function the calling unit's `link` names when the call executes.
+    CallLink {
+        link: LinkId,
         args: VRegSlice,
         rets: VRegSlice,
     },
