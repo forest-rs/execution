@@ -19,6 +19,17 @@ whose host is swapped with `Vm::replace_host` around each call.
 cargo bench -p execution_tape_wind_tunnel --bench borrowed_host
 ```
 
+## Linked calls
+
+`linked_calls` runs a guest loop of 1,000 dependent calls to `step(x) = x + 1` through a direct
+`call`, a `call.link` whose link names `step` in the calling unit or, after `Vm::relink`, in
+another unit, and a `call.indirect` to a function value of either unit. `loop_only` is the same
+loop with the add inline; subtract it and divide by 1,000 for a per-call cost.
+
+```sh
+cargo bench -p execution_tape_wind_tunnel --bench linked_calls
+```
+
 ## Math intrinsics
 
 `math_intrinsics` chains 128 dependent `pow`, `sin` and (for `f64`) `exp` calls three ways: as
