@@ -42,7 +42,7 @@ This release has an [MSRV][] of 1.88.
   -> HeapStats` reports size and collection history without walking the heap. Observers of a
   waiting invocation subscribed to values see `ValueEvent::Collected`, and a recording reports
   the new `CaptureFault::Relocated` rather than replay across it; collecting between recorded
-  runs is unaffected.
+  runs is unaffected. The `collection` wind-tunnel bench measures it.
 
 - Look up a function by id with `Program::function(FuncId) -> Option<&Function>`, like
   `Program::tag` and `Program::link`, instead of indexing `program.functions`. A verified

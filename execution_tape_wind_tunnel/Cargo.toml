@@ -92,3 +92,7 @@ harness = false
 [[bench]]
 name = "host_imports"
 harness = false
+
+[[bench]]
+name = "collection"
+harness = false
