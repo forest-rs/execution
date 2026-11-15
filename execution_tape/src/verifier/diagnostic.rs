@@ -456,7 +456,7 @@ mod tests {
         asm.const_f32(out, 0.5);
         let weathered = asm.label_named("weathered");
         asm.place(weathered).unwrap();
-        asm.span(SpanId::try_from(7_u64).unwrap())
+        asm.span(SpanId::new(7_u64))
             .f32_mul(out, Reg(1), out)
             .f32_mul(out, Reg(2), out)
             .ret(Reg::EFFECT, &[out]);

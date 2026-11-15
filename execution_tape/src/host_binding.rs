@@ -966,7 +966,7 @@ mod tests {
         let r = a.alloc_register(ValueType::Str);
         a.const_pool(r, pb.const_str("rustiness"));
         let pc = a.pc();
-        a.span(SpanId::try_from(7_u64).unwrap());
+        a.span(SpanId::new(7_u64));
         let [] = pb.emit_call(&mut a, set, &[r]).unwrap();
         a.ret(Reg::EFFECT, &[]);
         pb.define_function(f, a).unwrap();
@@ -980,7 +980,7 @@ mod tests {
         let [call] = &error.calls[..] else {
             panic!("{error}");
         };
-        assert_eq!(call.span, Some(SpanId::try_from(7_u64).unwrap()));
+        assert_eq!(call.span, Some(SpanId::new(7_u64)));
         assert_eq!(
             alloc::format!("{call}"),
             alloc::format!(

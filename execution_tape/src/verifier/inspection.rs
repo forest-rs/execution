@@ -267,7 +267,6 @@ mod tests {
     use crate::disasm::disassemble_function;
     use crate::program::HostTypeId;
     use alloc::{format, vec, vec::Vec};
-    use core::num::NonZeroU64;
 
     #[test]
     fn unit_declarations_do_not_require_frame_payload_storage() {
@@ -436,8 +435,8 @@ mod tests {
 
     #[test]
     fn prepared_instruction_locations_match_source_decoding_and_runtime_spans() {
-        let first_span = SpanId(NonZeroU64::new(5).unwrap());
-        let last_span = SpanId(NonZeroU64::new(7).unwrap());
+        let first_span = SpanId::new(5);
+        let last_span = SpanId::new(7);
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
         let yes = body.label();

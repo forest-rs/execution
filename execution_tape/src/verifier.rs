@@ -5422,7 +5422,7 @@ mod tests {
     }
 
     fn sid(v: u64) -> SpanId {
-        SpanId::try_from(v).unwrap()
+        SpanId::new(v)
     }
 
     fn add_call_sig(p: &mut Program, args: &[ValueType], rets: &[ValueType]) -> u32 {

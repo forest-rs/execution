@@ -619,12 +619,10 @@ fn source_headers_lexical_ends_successors_spans_and_fuel_stay_distinct() {
     let join = asm.block(&[Reg(1), Reg(2)]);
     asm.place(entry).unwrap();
     let branch = asm.pc();
-    asm.span(SpanId(core::num::NonZeroU64::new(11).unwrap()))
+    asm.span(SpanId::new(11))
         .jmp(join.with_args(&[Reg(2), Reg(1)]));
     let header = asm.pc();
-    asm.span(SpanId(core::num::NonZeroU64::new(22).unwrap()))
-        .place(join)
-        .unwrap();
+    asm.span(SpanId::new(22)).place(join).unwrap();
     let body = asm.pc();
     asm.ret(Reg::EFFECT, &[Reg(1), Reg(2)]);
     let p = verify(asm, &[ValueType::I64; 2], &[ValueType::I64; 2]);
@@ -819,12 +817,9 @@ fn calls_into_entry_declarations_keep_scope_locations_and_spans_together() {
         let mut body = Asm::new();
         body.set_register_types(vec![ValueType::Unit, ValueType::I64]);
         let entry = body.block(&[]);
-        body.span(SpanId(core::num::NonZeroU64::new(11).unwrap()))
-            .place(entry)
-            .unwrap();
+        body.span(SpanId::new(11)).place(entry).unwrap();
         let body_pc = body.pc();
-        body.span(SpanId(core::num::NonZeroU64::new(22).unwrap()))
-            .ret(Reg::EFFECT, &[Reg(1)]);
+        body.span(SpanId::new(22)).ret(Reg::EFFECT, &[Reg(1)]);
         let callee = builder
             .push_function_checked(
                 body,

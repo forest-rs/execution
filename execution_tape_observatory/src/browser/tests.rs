@@ -28,7 +28,7 @@ fn fixture() -> Program {
     root.set_register_types(vec![ValueType::Unit, ValueType::Bool]);
     let yes = root.label();
     let no = root.label();
-    root.span(SpanId::try_from(42).unwrap());
+    root.span(SpanId::new(42));
     root.const_bool(Reg(1), true).br(Reg(1), yes, no);
     root.place(yes).unwrap();
     root.call(Reg::EFFECT, helper, Reg::EFFECT, &[], &[])

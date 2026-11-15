@@ -4608,10 +4608,10 @@ mod tests {
     #[test]
     fn asm_span_overwrites_at_same_pc() {
         let mut a = Asm::new();
-        a.span(SpanId::try_from(1).unwrap());
-        a.span(SpanId::try_from(2).unwrap());
+        a.span(SpanId::new(1));
+        a.span(SpanId::new(2));
         a.const_unit(Reg(0));
-        a.span(SpanId::try_from(3).unwrap());
+        a.span(SpanId::new(3));
         a.trap(0);
 
         let parts = a.finish_parts().unwrap();
@@ -4620,11 +4620,11 @@ mod tests {
             vec![
                 SpanEntry {
                     pc_delta: 0,
-                    span_id: SpanId::try_from(2).unwrap()
+                    span_id: SpanId::new(2)
                 },
                 SpanEntry {
                     pc_delta: 2,
-                    span_id: SpanId::try_from(3).unwrap()
+                    span_id: SpanId::new(3)
                 }
             ]
         );
